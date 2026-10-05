@@ -15,7 +15,7 @@
 //!   TYPESAFE_API_KEY=... cargo run --bin code [project-dir]
 //!
 //! Commands: /model haiku|sonnet|opus|auto · /new (fresh session) · /quit
-//! Env: CHEAP_THRESHOLD (0.50) STRONG_THRESHOLD (0.85) DOWNGRADE_AFTER (2)
+//! Env: CODE_CHEAP_THRESHOLD (0.60) CODE_STRONG_THRESHOLD (0.80) DOWNGRADE_AFTER (2)
 //!      CODE_PERMISSION_MODE (acceptEdits) CODE_ALLOWED_TOOLS (e.g. "Bash(cargo *) Bash(git status)")
 
 use std::io::{self, Write};
@@ -28,16 +28,11 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Command;
 
 use jev_router::anthropic::{MODEL_CHEAP, MODEL_MID, MODEL_STRONG};
-use jev_router::router::{is_security_sensitive, Router};
+use jev_router::router::{CodeWant, Router};
 use jev_router::typesafe::TypeSafe;
 
 const TIERS: [&str; 3] = [MODEL_CHEAP, MODEL_MID, MODEL_STRONG];
 const READ_ONLY_TOOLS: &str = "Read,Grep,Glob";
-/// Above this many context tokens the cheap model is skipped: Haiku's window is
-/// 200K, and a big context is exactly where a cache rebuild costs the most.
-const CHEAP_MAX_CONTEXT: u64 = 120_000;
-/// `needs_changes` probability at or above which a turn counts as an edit turn.
-const EDIT_P: f64 = 0.5;
 
 fn env_f64(key: &str, default: f64) -> f64 {
     std::env::var(key).ok().and_then(|s| s.parse().ok()).unwrap_or(default)
@@ -49,13 +44,6 @@ fn short(name: &str) -> &str {
         n if n == MODEL_MID => "sonnet",
         _ => "opus",
     }
-}
-
-/// What Jev's judgment asks for this turn, before stickiness.
-struct Want {
-    tier: usize,
-    confident: bool,
-    reason: String,
 }
 
 struct Session {
@@ -87,38 +75,17 @@ impl Session {
     }
 }
 
-async fn want(router: &Router, s: &Session, prompt: &str) -> Want {
-    if is_security_sensitive(prompt) {
-        return Want { tier: 2, confident: true, reason: "security-sensitive".into() };
+async fn want(router: &Router, s: &Session, prompt: &str) -> CodeWant {
+    let w = router.code_want(prompt, &s.recent_context(), s.context_tokens, s.tier.unwrap_or(1)).await;
+    if w.reason.starts_with("jev unavailable") {
+        // Never crash the session; stay put (or start on Sonnet).
+        eprintln!("  [jev] {}; keeping current model", w.reason);
     }
-    let ctx = s.recent_context();
-    let (ans, edit_p) = match tokio::join!(router.classify(prompt, &ctx), router.needs_changes(prompt, &ctx)) {
-        (Ok(a), Ok(p)) => (a, p),
-        (Err(e), _) | (_, Err(e)) => {
-            // Jev unavailable: never crash the session; stay put (or start on Sonnet).
-            eprintln!("  [jev] unavailable ({e:#}); keeping current model");
-            return Want { tier: s.tier.unwrap_or(1), confident: false, reason: "jev unavailable".into() };
-        }
-    };
-    let edit = edit_p >= EDIT_P;
-    let tag = format!("{} {:.2}, edit p {:.2}", ans.choice, ans.confidence, edit_p);
-    if ans.choice == "reasoning" && ans.confidence >= router.strong_threshold {
-        return Want { tier: 2, confident: true, reason: format!("confidently reasoning ({tag})") };
-    }
-    if ans.choice == "simple" && ans.confidence >= router.cheap_threshold {
-        if edit {
-            return Want { tier: 1, confident: true, reason: format!("simple but edits ({tag})") };
-        }
-        if s.context_tokens > CHEAP_MAX_CONTEXT {
-            return Want { tier: 1, confident: true, reason: format!("simple, context too big for haiku ({tag})") };
-        }
-        return Want { tier: 0, confident: true, reason: format!("simple, read-only ({tag})") };
-    }
-    Want { tier: 1, confident: ans.choice == "standard" && ans.confidence >= 0.5, reason: format!("everyday ({tag})") }
+    w
 }
 
 /// Apply stickiness: upgrade now, downgrade only after a streak.
-fn decide(s: &mut Session, w: &Want, downgrade_after: u32) -> (usize, String) {
+fn decide(s: &mut Session, w: &CodeWant, downgrade_after: u32) -> (usize, String) {
     if let Some(p) = s.pinned {
         return (p, "pinned with /model".into());
     }
@@ -251,8 +218,10 @@ async fn main() -> Result<()> {
     }
     .canonicalize()
     .context("project dir")?;
-    let router = Router::new(TypeSafe::from_env()?, env_f64("CHEAP_THRESHOLD", 0.50))
-        .with_strong_threshold(env_f64("STRONG_THRESHOLD", 0.85));
+    // Stricter than chat: a wrong answer costs more in a real codebase. Both misses
+    // in the 24-answer lunagraph check sat at the chat cutoffs (cheap 0.51, strong 0.83).
+    let router = Router::new(TypeSafe::from_env()?, env_f64("CODE_CHEAP_THRESHOLD", 0.60))
+        .with_strong_threshold(env_f64("CODE_STRONG_THRESHOLD", 0.80));
     let downgrade_after = env_f64("DOWNGRADE_AFTER", 2.0) as u32;
     let mut s = Session::new(dir);
 

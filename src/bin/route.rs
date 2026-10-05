@@ -15,10 +15,16 @@ use tokio::sync::Semaphore;
 use tokio::task::JoinSet;
 
 use jev_router::anthropic::{MODEL_CHEAP, MODEL_MID, MODEL_STRONG};
-use jev_router::router::Router;
+use jev_router::router::{Decision, Router};
+
+const TIERS: [&str; 3] = [MODEL_CHEAP, MODEL_MID, MODEL_STRONG];
 use jev_router::typesafe::TypeSafe;
 
 const CONCURRENCY: usize = 8;
+
+fn env_or(key: &str, default: f64) -> f64 {
+    std::env::var(key).ok().and_then(|s| s.parse().ok()).unwrap_or(default)
+}
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -45,14 +51,28 @@ async fn main() -> Result<()> {
         })
         .collect();
 
+    // ROUTE_MODE=code dry-runs code mode's first-turn policy (kind column = reason),
+    // with code mode's own cutoffs.
+    let code_mode = std::env::var("ROUTE_MODE").as_deref() == Ok("code");
+    let (threshold, strong) = if code_mode {
+        (env_or("CODE_CHEAP_THRESHOLD", 0.60), env_or("CODE_STRONG_THRESHOLD", 0.80))
+    } else {
+        (threshold, strong)
+    };
     let router = Arc::new(Router::new(TypeSafe::from_env()?, threshold).with_strong_threshold(strong));
     let sem = Arc::new(Semaphore::new(CONCURRENCY));
     let mut tasks = JoinSet::new();
     for (i, (cat, prompt)) in prompts.into_iter().enumerate() {
         let (router, sem) = (router.clone(), sem.clone());
+        let code_mode = code_mode;
         tasks.spawn(async move {
             let _permit = sem.acquire_owned().await;
-            let d = router.route(&prompt, "").await;
+            let d = if code_mode {
+                let w = router.code_want(&prompt, "", 0, 1).await;
+                Ok(Decision { model: TIERS[w.tier], kind: w.reason.clone(), confidence: 0.0, reason: "code" })
+            } else {
+                router.route(&prompt, "").await
+            };
             (i, cat, prompt, d)
         });
     }
@@ -63,8 +83,7 @@ async fn main() -> Result<()> {
     }
     rows.sort_by_key(|r| r.0);
 
-    const MODELS: [&str; 3] = [MODEL_CHEAP, MODEL_MID, MODEL_STRONG];
-    let tier = |m: &str| MODELS.iter().position(|x| *x == m).unwrap_or(2);
+    let tier = |m: &str| TIERS.iter().position(|x| *x == m).unwrap_or(2);
     // category -> count per tier
     let mut by_cat: BTreeMap<String, [usize; 3]> = BTreeMap::new();
     let mut failed = 0;
