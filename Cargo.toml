@@ -1,0 +1,28 @@
+[package]
+name = "jev-router"
+version = "0.1.0"
+edition = "2021"
+description = "A Jev-gated LLM router for Claude models — carries the full transcript across model switches, and calibrates its threshold from data."
+
+[dependencies]
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "io-std", "io-util", "process", "sync"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+anyhow = "1"
+
+[[bin]]
+name = "chat"
+path = "src/bin/chat.rs"
+
+[[bin]]
+name = "tune"
+path = "src/bin/tune.rs"
+
+[[bin]]
+name = "route"
+path = "src/bin/route.rs"
+
+[[bin]]
+name = "code"
+path = "src/bin/code.rs"
