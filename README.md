@@ -46,7 +46,7 @@ cargo run --bin chat               # defaults: CHEAP_THRESHOLD=0.50 STRONG_THRES
 ### Code mode
 
 ```bash
-cd ~/some-project && cargo run --manifest-path ~/jev-router/Cargo.toml --bin code
+cd ~/some-project && cargo run --manifest-path ~/Playground/jev-router/Cargo.toml --bin code
 # or: cargo run --bin code /path/to/project
 ```
 
