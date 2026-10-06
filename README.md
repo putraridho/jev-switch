@@ -40,13 +40,13 @@ export TYPESAFE_API_KEY=...        # Jev (JEV_API_KEY also works)
 cargo run --bin tune                # reads eval/cases.json; prints the sweep + a suggested cutoff
 
 # 2) Chat with the router at that threshold
-cargo run --bin chat               # defaults: CHEAP_THRESHOLD=0.50 STRONG_THRESHOLD=0.85
+jev-chat                           # after scripts/install.sh; or: cargo run --bin chat
 ```
 
 ### Code mode (`jev-code`)
 
 ```bash
-./scripts/install.sh          # builds release, installs ~/.local/bin/jev-code
+./scripts/install.sh          # builds release, installs ~/.local/bin/jev-code and jev-chat
 cd ~/some-project && jev-code # or: jev-code /path/to/project; jev-code --help
 ```
 
