@@ -54,12 +54,15 @@ A routed coding agent: every turn runs Claude Code in the project with tools on,
 resuming one Claude Code session so files read, edits, and command output carry
 across turns and model switches. Policy differs from chat:
 
-- Stricter cutoffs than chat (`CODE_CHEAP_THRESHOLD=0.65`, `CODE_STRONG_THRESHOLD=0.80`):
+- Stricter cutoffs than chat (`CODE_CHEAP_THRESHOLD=0.65`, `CODE_STRONG_THRESHOLD=0.75`):
   in a 24-answer check on a real monorepo, verified against the code, both routing
   misses sat right at the chat cutoffs.
 - Security has two levels: vulnerability/secret/crypto/audit terms always go to Opus;
   auth/session/token plumbing goes to Opus only when the turn changes files, and is
   never sent to Haiku.
+- Haiku skips read-only questions that need a search across many files ("who calls X",
+  "which prompts do Y"): Jev scores that separately, and every Haiku miss on a plain
+  explanation across four repos was one of these.
 - Haiku only for confidently-simple **read-only** turns (Jev also judges "does this
   change files or run commands?"), and only with Read/Grep/Glob tools.
 - Edits, tests, and commands get Sonnet at minimum; confident reasoning or

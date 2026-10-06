@@ -26,6 +26,10 @@ pub struct CodeWant {
 
 /// `needs_changes` probability at or above which a code turn counts as editing.
 pub const CODE_EDIT_P: f64 = 0.5;
+/// `needs_exhaustive_search` probability at or above which a read-only turn skips
+/// the cheap model. Across four repos, every Haiku miss on a plain explanation was
+/// a find-every-occurrence question scoring >= 0.46; single-place questions scored lower.
+pub const CODE_EXHAUSTIVE_P: f64 = 0.45;
 /// Above this many context tokens the cheap model is skipped: Haiku's window is
 /// 200K, and a big context is exactly where a cache rebuild costs the most.
 pub const CODE_CHEAP_MAX_CONTEXT: u64 = 120_000;
@@ -137,7 +141,7 @@ impl Router {
 
     /// Code-mode tier for one turn, before session stickiness. Tiers: 0 cheap,
     /// 1 mid, 2 strong. Strong security signals, confident reasoning, and edits to
-    /// auth code → strong; reading auth code → mid; confidently
+    /// auth code → strong; reading auth code, or a find-every-occurrence search → mid; confidently
     /// simple, read-only, small-context → cheap; edits/commands → mid minimum.
     /// If Jev is unavailable, returns `fallback` (unconfident) instead of failing.
     pub async fn code_want(
@@ -173,20 +177,45 @@ impl Router {
             };
         }
         if ans.choice == "simple" && ans.confidence >= self.cheap_threshold {
-            let (tier, why) = if edit_p >= CODE_EDIT_P {
-                (1, "simple, needs changes/commands")
-            } else if context_tokens > CODE_CHEAP_MAX_CONTEXT {
-                (1, "simple, context too big for cheap")
-            } else {
-                (0, "simple, read-only")
-            };
-            return CodeWant { tier, confident: true, reason: format!("{why} ({tag})") };
+            if edit_p >= CODE_EDIT_P {
+                return CodeWant { tier: 1, confident: true, reason: format!("simple, needs changes/commands ({tag})") };
+            }
+            if context_tokens > CODE_CHEAP_MAX_CONTEXT {
+                return CodeWant { tier: 1, confident: true, reason: format!("simple, context too big for cheap ({tag})") };
+            }
+            // Only asked when the turn would otherwise go cheap. If Jev fails here,
+            // stay safe and use mid.
+            let exhaustive = self.needs_exhaustive_search(request, recent_context).await.unwrap_or(1.0);
+            if exhaustive >= CODE_EXHAUSTIVE_P {
+                return CodeWant {
+                    tier: 1,
+                    confident: true,
+                    reason: format!("simple, but searches many files ({tag}, exhaustive p {exhaustive:.2})"),
+                };
+            }
+            return CodeWant { tier: 0, confident: true, reason: format!("simple, read-only ({tag}, exhaustive p {exhaustive:.2})") };
         }
         CodeWant {
             tier: 1,
             confident: ans.choice == "standard" && ans.confidence >= 0.5,
             reason: format!("everyday ({tag})"),
         }
+    }
+
+    /// Code mode: probability that answering means finding every occurrence or
+    /// item across many files (who calls X, where is X used, which files do Y),
+    /// the kind of read-only question the cheap model answers incompletely.
+    pub async fn needs_exhaustive_search(&self, request: &str, recent_context: &str) -> Result<f64> {
+        self.ts
+            .noul(
+                json!({ "request": request, "recent_context": recent_context }),
+                "Does answering this need an exhaustive search across many files (finding every caller, usage, mount point, or every item of a kind), rather than reading one or a few specific places?",
+                json!({
+                    "true": "must find all occurrences or enumerate every item across the codebase: who calls X, where is X used/triggered/consumed, which files/prompts/handlers do Y, how do several named components all work",
+                    "false": "answerable by reading one file, one function, or one well-defined flow"
+                }),
+            )
+            .await
     }
 
     /// Verify variant: judge whether a cheap answer actually resolved the request.

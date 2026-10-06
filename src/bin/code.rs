@@ -15,7 +15,7 @@
 //!   TYPESAFE_API_KEY=... cargo run --bin code [project-dir]
 //!
 //! Commands: /model haiku|sonnet|opus|auto · /new (fresh session) · /quit
-//! Env: CODE_CHEAP_THRESHOLD (0.65) CODE_STRONG_THRESHOLD (0.80) DOWNGRADE_AFTER (2)
+//! Env: CODE_CHEAP_THRESHOLD (0.65) CODE_STRONG_THRESHOLD (0.75) DOWNGRADE_AFTER (2)
 //!      CODE_PERMISSION_MODE (acceptEdits) CODE_ALLOWED_TOOLS (e.g. "Bash(cargo *) Bash(git status)")
 
 use std::io::{self, Write};
@@ -221,7 +221,7 @@ async fn main() -> Result<()> {
     // Stricter than chat: a wrong answer costs more in a real codebase. Both misses
     // in the 24-answer lunagraph check sat at the chat cutoffs (cheap 0.51, strong 0.83).
     let router = Router::new(TypeSafe::from_env()?, env_f64("CODE_CHEAP_THRESHOLD", 0.65))
-        .with_strong_threshold(env_f64("CODE_STRONG_THRESHOLD", 0.80));
+        .with_strong_threshold(env_f64("CODE_STRONG_THRESHOLD", 0.75));
     let downgrade_after = env_f64("DOWNGRADE_AFTER", 2.0) as u32;
     let mut s = Session::new(dir);
 
