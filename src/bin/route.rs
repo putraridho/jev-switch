@@ -55,7 +55,7 @@ async fn main() -> Result<()> {
     // with code mode's own cutoffs.
     let code_mode = std::env::var("ROUTE_MODE").as_deref() == Ok("code");
     let (threshold, strong) = if code_mode {
-        (env_or("CODE_CHEAP_THRESHOLD", 0.65), env_or("CODE_STRONG_THRESHOLD", 0.75))
+        (1.0, env_or("CODE_STRONG_THRESHOLD", 0.75))
     } else {
         (threshold, strong)
     };
@@ -68,7 +68,7 @@ async fn main() -> Result<()> {
         tasks.spawn(async move {
             let _permit = sem.acquire_owned().await;
             let d = if code_mode {
-                let w = router.code_want(&prompt, "", 0, 1).await;
+                let w = router.code_want(&prompt, "", 1).await;
                 Ok(Decision { model: TIERS[w.tier], kind: w.reason.clone(), confidence: 0.0, reason: "code" })
             } else {
                 router.route(&prompt, "").await

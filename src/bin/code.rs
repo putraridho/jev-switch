@@ -1,12 +1,11 @@
 //! Code mode: a routed coding agent. Each turn runs Claude Code (`claude -p`) in
 //! your project with tools on, resuming ONE Claude Code session so files read,
 //! edits, and command output persist across turns and across model switches.
-//! Jev picks the tier per turn; this policy adapts it for agentic coding:
+//! Jev picks the tier per turn; code mode uses two tiers:
 //!
-//! - Security-sensitive or confidently-reasoning turns → Opus.
-//! - Confidently-simple, read-only turns while the context is small → Haiku,
-//!   restricted to read-only tools (Read/Grep/Glob) so it can't edit.
-//! - Everything else, and every turn that edits or runs commands → Sonnet minimum.
+//! - Security-sensitive or confidently-reasoning turns, and edits to auth code → Opus.
+//! - Everything else → Sonnet. (No Haiku: across five repos its explanations held
+//!   up ~85% at every confidence, and its cache-cold turns save little here.)
 //! - Upgrades happen immediately; downgrades only after DOWNGRADE_AFTER confident turns
 //!   in a row want a lower tier (one tier at a time). Prompt caches are per model and a coding context is
 //!   ~100K tokens, so a switch rebuilds the whole cache — one cheap turn on a
@@ -14,8 +13,8 @@
 //!
 //!   TYPESAFE_API_KEY=... cargo run --bin code [project-dir]
 //!
-//! Commands: /model haiku|sonnet|opus|auto · /new (fresh session) · /quit
-//! Env: CODE_CHEAP_THRESHOLD (0.65) CODE_STRONG_THRESHOLD (0.75) DOWNGRADE_AFTER (2)
+//! Commands: /model sonnet|opus|auto · /new (fresh session) · /quit
+//! Env: CODE_STRONG_THRESHOLD (0.75) DOWNGRADE_AFTER (2)
 //!      CODE_PERMISSION_MODE (acceptEdits) CODE_ALLOWED_TOOLS (e.g. "Bash(cargo *) Bash(git status)")
 
 use std::io::{self, Write};
@@ -32,7 +31,6 @@ use jev_router::router::{CodeWant, Router};
 use jev_router::typesafe::TypeSafe;
 
 const TIERS: [&str; 3] = [MODEL_CHEAP, MODEL_MID, MODEL_STRONG];
-const READ_ONLY_TOOLS: &str = "Read,Grep,Glob";
 
 fn env_f64(key: &str, default: f64) -> f64 {
     std::env::var(key).ok().and_then(|s| s.parse().ok()).unwrap_or(default)
@@ -76,7 +74,7 @@ impl Session {
 }
 
 async fn want(router: &Router, s: &Session, prompt: &str) -> CodeWant {
-    let w = router.code_want(prompt, &s.recent_context(), s.context_tokens, s.tier.unwrap_or(1)).await;
+    let w = router.code_want(prompt, &s.recent_context(), s.tier.unwrap_or(1)).await;
     if w.reason.starts_with("jev unavailable") {
         // Never crash the session; stay put (or start on Sonnet).
         eprintln!("  [jev] {}; keeping current model", w.reason);
@@ -103,8 +101,8 @@ fn decide(s: &mut Session, w: &CodeWant, downgrade_after: u32) -> (usize, String
     s.lower_streak += 1;
     if s.lower_streak >= downgrade_after {
         s.lower_streak = 0;
-        // Step down one tier at a time.
-        return (cur - 1, format!("downgrade after {downgrade_after} easier turns: {}", w.reason));
+        // Step down one tier at a time, never below mid.
+        return ((cur - 1).max(1), format!("downgrade after {downgrade_after} easier turns: {}", w.reason));
     }
     (cur, format!("stay ({}/{} toward downgrade): {}", s.lower_streak, downgrade_after, w.reason))
 }
@@ -132,13 +130,9 @@ async fn run_turn(s: &mut Session, tier: usize, prompt: &str) -> Result<String> 
     if let Some(id) = &s.id {
         cmd.args(["--resume", id]);
     }
-    if tier == 0 {
-        cmd.args(["--tools", READ_ONLY_TOOLS]);
-    } else {
-        cmd.args(["--permission-mode", &mode]);
-        if let Ok(allowed) = std::env::var("CODE_ALLOWED_TOOLS") {
-            cmd.args(["--allowedTools", &allowed]);
-        }
+    cmd.args(["--permission-mode", &mode]);
+    if let Ok(allowed) = std::env::var("CODE_ALLOWED_TOOLS") {
+        cmd.args(["--allowedTools", &allowed]);
     }
 
     let mut child = cmd.spawn().context("failed to run `claude` (is Claude Code installed?)")?;
@@ -218,15 +212,15 @@ async fn main() -> Result<()> {
     }
     .canonicalize()
     .context("project dir")?;
-    // Stricter than chat: a wrong answer costs more in a real codebase. Both misses
-    // in the 24-answer lunagraph check sat at the chat cutoffs (cheap 0.51, strong 0.83).
-    let router = Router::new(TypeSafe::from_env()?, env_f64("CODE_CHEAP_THRESHOLD", 0.65))
+    // Stricter than chat: Sonnet's hard-debugging misses sat at reasoning 0.78-0.83.
+    // The cheap cutoff is unused here (code mode has no Haiku tier).
+    let router = Router::new(TypeSafe::from_env()?, 1.0)
         .with_strong_threshold(env_f64("CODE_STRONG_THRESHOLD", 0.75));
     let downgrade_after = env_f64("DOWNGRADE_AFTER", 2.0) as u32;
     let mut s = Session::new(dir);
 
     println!(
-        "jev-router code mode — {}\n  haiku (read-only) / sonnet / opus · /model haiku|sonnet|opus|auto · /new · /quit\n",
+        "jev-router code mode — {}\n  sonnet / opus · /model sonnet|opus|auto · /new · /quit\n",
         s.dir.display()
     );
     let stdin = io::stdin();
@@ -248,7 +242,6 @@ async fn main() -> Result<()> {
             }
             _ if prompt.starts_with("/model") => {
                 s.pinned = match prompt.split_whitespace().nth(1) {
-                    Some("haiku") => Some(0),
                     Some("sonnet") => Some(1),
                     Some("opus") => Some(2),
                     _ => None,

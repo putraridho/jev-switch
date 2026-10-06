@@ -52,28 +52,21 @@ cd ~/some-project && cargo run --manifest-path ~/Playground/jev-router/Cargo.tom
 
 A routed coding agent: every turn runs Claude Code in the project with tools on,
 resuming one Claude Code session so files read, edits, and command output carry
-across turns and model switches. Policy differs from chat:
+across turns and model switches. Two tiers, no Haiku:
 
-- Stricter cutoffs than chat (`CODE_CHEAP_THRESHOLD=0.65`, `CODE_STRONG_THRESHOLD=0.75`):
-  in a 24-answer check on a real monorepo, verified against the code, both routing
-  misses sat right at the chat cutoffs.
-- Security has two levels: vulnerability/secret/crypto/audit terms always go to Opus;
-  auth/session/token plumbing goes to Opus only when the turn changes files, and is
-  never sent to Haiku.
-- Haiku skips read-only questions that need a search across many files ("who calls X",
-  "which prompts do Y"): Jev scores that separately, and every Haiku miss on a plain
-  explanation across four repos was one of these.
-- Haiku only for confidently-simple **read-only** turns (Jev also judges "does this
-  change files or run commands?"), and only with Read/Grep/Glob tools.
-- Edits, tests, and commands get Sonnet at minimum; confident reasoning or
-  security-sensitive turns get Opus.
-- Upgrades are immediate; downgrades need `DOWNGRADE_AFTER` (2) confident easier
-  turns in a row. Prompt caches are per model, so each switch rebuilds the whole
-  context cache — staying put is often cheaper than a cheaper model.
+- Sonnet by default; Opus for confident reasoning (`CODE_STRONG_THRESHOLD=0.75`),
+  strong security terms (vulnerabilities, secrets, crypto, audits), and edits to
+  auth/session code.
+- No Haiku. Tested on five repos (2,500 questions, 120 answers verified against the
+  code): Haiku's code explanations held up ~85% at every Jev confidence, so no
+  cutoff separated its misses, and prompt caches are per model, so its cache-cold
+  turns saved little. Sonnet held up on 60 of 68 graded answers.
+- Upgrades are immediate; stepping back down to Sonnet needs `DOWNGRADE_AFTER` (2)
+  confident easier turns in a row, because each switch rebuilds the context cache.
 - Edits are auto-accepted (`CODE_PERMISSION_MODE=acceptEdits`); commands need your
   Claude Code permission allowlist or `CODE_ALLOWED_TOOLS="Bash(cargo test) Bash(git status)"`.
   Denied commands are reported, never silently skipped.
-- `/model haiku|sonnet|opus|auto` pins or unpins the model, `/new` starts a fresh session.
+- `/model sonnet|opus|auto` pins or unpins the model, `/new` starts a fresh session.
 
 `eval/cases.json` is a list of `{ request, cheap_was_fine }` — the ground truth is
 whether the **cheap** model actually handled each request well. 20–30 real examples
