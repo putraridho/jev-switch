@@ -43,12 +43,16 @@ cargo run --bin tune                # reads eval/cases.json; prints the sweep + 
 cargo run --bin chat               # defaults: CHEAP_THRESHOLD=0.50 STRONG_THRESHOLD=0.85
 ```
 
-### Code mode
+### Code mode (`jev-code`)
 
 ```bash
-cd ~/some-project && cargo run --manifest-path ~/Playground/jev-router/Cargo.toml --bin code
-# or: cargo run --bin code /path/to/project
+./scripts/install.sh          # builds release, installs ~/.local/bin/jev-code
+cd ~/some-project && jev-code # or: jev-code /path/to/project; jev-code --help
 ```
+
+The Jev key is read from `TYPESAFE_API_KEY` / `JEV_API_KEY`, or from
+`~/.jev-router.env` (`JEV_API_KEY=...`), so it works from any directory. Re-run
+`scripts/install.sh` after changing the code.
 
 A routed coding agent: every turn runs Claude Code in the project with tools on,
 resuming one Claude Code session so files read, edits, and command output carry

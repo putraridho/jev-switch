@@ -32,6 +32,26 @@ use jev_router::typesafe::TypeSafe;
 
 const TIERS: [&str; 3] = [MODEL_CHEAP, MODEL_MID, MODEL_STRONG];
 
+const HELP: &str = "jev-code: Claude Code with per-turn model routing (Sonnet, or Opus for hard and security work)
+
+USAGE:
+  jev-code [project-dir]     start in project-dir (default: current directory)
+
+IN SESSION:
+  /model sonnet|opus|auto    pin a model, or hand control back to the router
+  /new                       start a fresh Claude Code session
+  /quit                      exit (or Ctrl-D)
+
+ENVIRONMENT:
+  Jev key                    TYPESAFE_API_KEY or JEV_API_KEY, else ~/.jev-router.env
+  CODE_STRONG_THRESHOLD      Jev reasoning confidence for Opus (default 0.75)
+  DOWNGRADE_AFTER            easier turns before stepping back to Sonnet (default 2)
+  CODE_PERMISSION_MODE       Claude Code permission mode (default acceptEdits)
+  CODE_ALLOWED_TOOLS         extra allowed tools, e.g. \"Bash(cargo test) Bash(git status)\"
+  CLAUDE_BIN                 path to the claude binary (default: claude on PATH)
+
+Edits are applied without asking, so use it inside a git repo.";
+
 fn env_f64(key: &str, default: f64) -> f64 {
     std::env::var(key).ok().and_then(|s| s.parse().ok()).unwrap_or(default)
 }
@@ -206,6 +226,19 @@ async fn run_turn(s: &mut Session, tier: usize, prompt: &str) -> Result<String> 
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    if let Some(flag) = std::env::args().nth(1).filter(|a| a.starts_with('-')) {
+        match flag.as_str() {
+            "-h" | "--help" => {
+                println!("{HELP}");
+                return Ok(());
+            }
+            "-V" | "--version" => {
+                println!("jev-code {}", env!("CARGO_PKG_VERSION"));
+                return Ok(());
+            }
+            other => bail!("unknown option {other} (try --help)"),
+        }
+    }
     let dir = match std::env::args().nth(1) {
         Some(d) => PathBuf::from(d),
         None => std::env::current_dir()?,
@@ -220,7 +253,7 @@ async fn main() -> Result<()> {
     let mut s = Session::new(dir);
 
     println!(
-        "jev-router code mode — {}\n  sonnet / opus · /model sonnet|opus|auto · /new · /quit\n",
+        "jev-code — {}\n  sonnet / opus · /model sonnet|opus|auto · /new · /quit\n",
         s.dir.display()
     );
     let stdin = io::stdin();
