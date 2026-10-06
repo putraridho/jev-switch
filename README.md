@@ -43,6 +43,32 @@ cargo run --bin tune                # reads eval/cases.json; prints the sweep + 
 jev-chat                           # after scripts/install.sh; or: cargo run --bin chat
 ```
 
+### Claude Code interface (`jev-claude`)
+
+```bash
+./scripts/install.sh
+cd ~/some-project && jev-claude     # normal Claude Code, with "Jev Code" selected in /model
+```
+
+`jev-claude` starts `jev-gateway` (a local Anthropic-format gateway on
+127.0.0.1:18780) if needed, then runs `claude` with `ANTHROPIC_BASE_URL` pointing at
+it and a custom `/model` entry, **Jev Code** (`ANTHROPIC_CUSTOM_MODEL_OPTION`). Your
+claude.ai / Max login passes through unchanged; plain `claude` is unaffected.
+
+- The gateway forwards every request to Anthropic byte-for-byte and streams the
+  response back. It changes only the `model` field, and only when it is `jev-code`.
+- It decides once per user prompt (Claude Code's `x-claude-code-prompt-id` hint
+  header, enabled with `CLAUDE_CODE_GATEWAY_HINT_HEADERS=1`), so all API calls in a
+  turn use one model, with code mode's policy: Sonnet by default; Opus for confident
+  reasoning, strong security terms, or edits to auth code; slow downgrades.
+  Background requests (titles, summaries) go to Haiku; subagents and compaction stay
+  on the turn's model.
+- Picking Sonnet or Opus in `/model` bypasses routing for that session.
+- Decisions are logged to `~/.local/state/jev-router/gateway.jsonl` (gateway output
+  in `gateway.out`). Stop it with `pkill jev-gateway`; `jev-claude` restarts it.
+- Claude Code prints an "unrecognized model" note for `jev-code`; it is harmless.
+  The `[1m]` suffix tells Claude Code the context window is 1M, like Sonnet and Opus.
+
 ### Code mode (`jev-code`)
 
 ```bash
@@ -84,6 +110,8 @@ beat any guess. Re-run `tune` when prompts, models, or request mix change.
 - `src/transcript.rs` — the one canonical conversation history.
 - `src/bin/chat.rs` — interactive router REPL.
 - `src/bin/tune.rs` — threshold calibration (the sweep).
+- `src/bin/gateway.rs` — local gateway that adds the Jev Code model to Claude Code.
+- `scripts/jev-claude` — launcher: starts the gateway and opens Claude Code on Jev Code.
 - `src/bin/code.rs` — routed coding agent over Claude Code sessions.
 - `src/bin/route.rs` — routing-only dry run over a prompt file (Jev only, no Claude calls).
 

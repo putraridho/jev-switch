@@ -27,7 +27,7 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Command;
 
 use jev_router::anthropic::{MODEL_CHEAP, MODEL_MID, MODEL_STRONG};
-use jev_router::router::{CodeWant, Router};
+use jev_router::router::{CodeWant, Router, Sticky};
 use jev_router::typesafe::TypeSafe;
 
 const TIERS: [&str; 3] = [MODEL_CHEAP, MODEL_MID, MODEL_STRONG];
@@ -67,9 +67,7 @@ fn short(name: &str) -> &str {
 struct Session {
     dir: PathBuf,
     id: Option<String>,
-    tier: Option<usize>,
-    /// Consecutive turns that wanted a lower tier than the current one.
-    lower_streak: u32,
+    sticky: Sticky,
     pinned: Option<usize>,
     context_tokens: u64,
     recent: Vec<String>,
@@ -77,7 +75,7 @@ struct Session {
 
 impl Session {
     fn new(dir: PathBuf) -> Self {
-        Self { dir, id: None, tier: None, lower_streak: 0, pinned: None, context_tokens: 0, recent: Vec::new() }
+        Self { dir, id: None, sticky: Sticky::default(), pinned: None, context_tokens: 0, recent: Vec::new() }
     }
 
     fn recent_context(&self) -> String {
@@ -94,7 +92,7 @@ impl Session {
 }
 
 async fn want(router: &Router, s: &Session, prompt: &str) -> CodeWant {
-    let w = router.code_want(prompt, &s.recent_context(), s.tier.unwrap_or(1)).await;
+    let w = router.code_want(prompt, &s.recent_context(), s.sticky.tier.unwrap_or(1)).await;
     if w.reason.starts_with("jev unavailable") {
         // Never crash the session; stay put (or start on Sonnet).
         eprintln!("  [jev] {}; keeping current model", w.reason);
@@ -102,29 +100,12 @@ async fn want(router: &Router, s: &Session, prompt: &str) -> CodeWant {
     w
 }
 
-/// Apply stickiness: upgrade now, downgrade only after a streak.
+/// Apply a /model pin, else the shared upgrade-now, downgrade-slowly rule.
 fn decide(s: &mut Session, w: &CodeWant, downgrade_after: u32) -> (usize, String) {
-    if let Some(p) = s.pinned {
-        return (p, "pinned with /model".into());
+    match s.pinned {
+        Some(p) => (p, "pinned with /model".into()),
+        None => s.sticky.decide(w, downgrade_after),
     }
-    let Some(cur) = s.tier else {
-        return (w.tier, w.reason.clone());
-    };
-    if w.tier > cur {
-        s.lower_streak = 0;
-        return (w.tier, format!("upgrade: {}", w.reason));
-    }
-    if w.tier == cur || !w.confident {
-        s.lower_streak = 0;
-        return (cur, format!("stay (warm cache): {}", w.reason));
-    }
-    s.lower_streak += 1;
-    if s.lower_streak >= downgrade_after {
-        s.lower_streak = 0;
-        // Step down one tier at a time, never below mid.
-        return ((cur - 1).max(1), format!("downgrade after {downgrade_after} easier turns: {}", w.reason));
-    }
-    (cur, format!("stay ({}/{} toward downgrade): {}", s.lower_streak, downgrade_after, w.reason))
 }
 
 fn tool_summary(name: &str, input: &Value) -> String {
@@ -290,7 +271,7 @@ async fn main() -> Result<()> {
         eprintln!("  [route] {} — {}", short(TIERS[tier]), reason);
         match run_turn(&mut s, tier, prompt).await {
             Ok(text) => {
-                s.tier = Some(tier);
+                s.sticky.tier = Some(tier);
                 s.remember(prompt, &text);
             }
             // Keep the session alive; the user can retry or switch with /model.

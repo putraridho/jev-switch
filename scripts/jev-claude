@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+# jev-claude: the normal Claude Code interface with a "Jev Code" model that routes
+# each turn (Sonnet, or Opus for hard and security work) through jev-gateway.
+# Starts the gateway if it isn't running. Plain `claude` is unaffected.
+set -euo pipefail
+ADDR="${JEV_GATEWAY_ADDR:-127.0.0.1:18780}"
+STATE="${XDG_STATE_HOME:-$HOME/.local/state}/jev-router"
+mkdir -p "$STATE"
+up() { curl -fsS --max-time 1 "http://$ADDR/healthz" >/dev/null 2>&1; }
+if ! up; then
+  JEV_GATEWAY_ADDR="$ADDR" nohup jev-gateway >>"$STATE/gateway.out" 2>&1 &
+  for _ in $(seq 1 30); do up && break; sleep 0.1; done
+  up || { echo "jev-claude: jev-gateway didn't start; see $STATE/gateway.out" >&2; exit 1; }
+fi
+export ANTHROPIC_BASE_URL="http://$ADDR"
+export CLAUDE_CODE_GATEWAY_HINT_HEADERS=1
+export ANTHROPIC_CUSTOM_MODEL_OPTION="jev-code[1m]"
+export ANTHROPIC_CUSTOM_MODEL_OPTION_NAME="Jev Code"
+export ANTHROPIC_CUSTOM_MODEL_OPTION_DESCRIPTION="Routes each turn: Sonnet, or Opus for hard and security work"
+for a in "$@"; do
+  case "$a" in --model|--model=*) exec claude "$@" ;; esac
+done
+exec claude --model 'jev-code[1m]' "$@"

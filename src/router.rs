@@ -27,6 +27,40 @@ pub struct CodeWant {
 /// `needs_changes` probability at or above which a code turn counts as editing.
 pub const CODE_EDIT_P: f64 = 0.5;
 
+/// Session stickiness for code-mode tiers. Prompt caches are per model, so a
+/// switch rebuilds the whole context cache: upgrade at once, but step down (one
+/// tier, never below mid) only after `downgrade_after` confident easier turns.
+#[derive(Debug, Default, Clone)]
+pub struct Sticky {
+    /// Tier of the model that answered the previous turn.
+    pub tier: Option<usize>,
+    lower_streak: u32,
+}
+
+impl Sticky {
+    /// The tier for this turn given Jev's `want`. Callers set `tier` once the
+    /// turn runs on it.
+    pub fn decide(&mut self, w: &CodeWant, downgrade_after: u32) -> (usize, String) {
+        let Some(cur) = self.tier else {
+            return (w.tier, w.reason.clone());
+        };
+        if w.tier > cur {
+            self.lower_streak = 0;
+            return (w.tier, format!("upgrade: {}", w.reason));
+        }
+        if w.tier == cur || !w.confident {
+            self.lower_streak = 0;
+            return (cur, format!("stay (warm cache): {}", w.reason));
+        }
+        self.lower_streak += 1;
+        if self.lower_streak >= downgrade_after {
+            self.lower_streak = 0;
+            return ((cur - 1).max(1), format!("downgrade after {downgrade_after} easier turns: {}", w.reason));
+        }
+        (cur, format!("stay ({}/{} toward downgrade): {}", self.lower_streak, downgrade_after, w.reason))
+    }
+}
+
 pub struct Router {
     pub ts: TypeSafe,
     /// Route to the cheap model only when the task is `simple` AND confidence is
