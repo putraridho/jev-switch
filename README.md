@@ -54,7 +54,7 @@ A routed coding agent: every turn runs Claude Code in the project with tools on,
 resuming one Claude Code session so files read, edits, and command output carry
 across turns and model switches. Policy differs from chat:
 
-- Stricter cutoffs than chat (`CODE_CHEAP_THRESHOLD=0.60`, `CODE_STRONG_THRESHOLD=0.80`):
+- Stricter cutoffs than chat (`CODE_CHEAP_THRESHOLD=0.65`, `CODE_STRONG_THRESHOLD=0.80`):
   in a 24-answer check on a real monorepo, verified against the code, both routing
   misses sat right at the chat cutoffs.
 - Security has two levels: vulnerability/secret/crypto/audit terms always go to Opus;

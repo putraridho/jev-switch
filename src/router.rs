@@ -223,13 +223,16 @@ const SECURITY_STRONG_WORDS: &[&str] = &[
     "secret", "secrets", "password", "passwords", "passwd", "passphrase",
     "credential", "credentials", "apikey", "hmac", "signature", "signatures",
     "bcrypt", "argon2", "scrypt", "pbkdf2", "cipher", "csp", "escape", "escaping",
-    "secure", "securely", "security",
+    "secure", "securely", "security", "allowlist", "allowlists", "denylist", "blocklist",
+    "isolation", "tenant", "tenants", "leak", "leaks", "leakage", "leaking", "redos", "untrusted",
+    "bypass", "forge", "forged", "forgery", "noopener", "tabnabbing", "dangerously",
 ];
 const SECURITY_STRONG_PREFIXES: &[&str] = &[
     "vulnerab", "sanitiz", "sanitis", "escalat", "audit", "crypt", "encrypt", "decrypt",
+    "inject", "poison", "exfiltrat",
 ];
 const SECURITY_STRONG_PHRASES: &[&str] =
-    &["api key", "access key", "private key", "mass assignment", "path travers"];
+    &["api key", "access key", "private key", "mass assignment", "path travers", "javascript:"];
 
 /// Weak signals: auth plumbing. Routine to read about, risky to change.
 const SECURITY_WEAK_WORDS: &[&str] = &[
@@ -237,11 +240,27 @@ const SECURITY_WEAK_WORDS: &[&str] = &[
     "login", "logout", "signin", "signup", "session", "sessions", "cookie", "cookies",
     "token", "tokens", "cors", "permission", "permissions", "rbac", "tls", "ssl",
     "certificate", "certificates", "webhook", "webhooks", "admin", "parameterize",
-    "parameterized",
+    "parameterized", "redirect", "redirects", "origin", "origins", "postmessage", "turnstile",
+    "captcha",
 ];
-const SECURITY_WEAK_PREFIXES: &[&str] = &["authenticat", "authoriz"];
+const SECURITY_WEAK_PREFIXES: &[&str] = &["authenticat", "authoriz", "sandbox"];
 /// Common non-security uses of weak words, removed before matching.
 const SECURITY_WEAK_EXCLUDES: &[&str] = &["design token", "color token", "css token", "theme token"];
+
+/// "securityLevel" → "security Level", so identifiers match like words. Keeps the
+/// original word too ("postMessage" also stays "postmessage").
+fn split_camel(text: &str) -> String {
+    let mut split = String::with_capacity(text.len() + 8);
+    let mut prev_lower = false;
+    for c in text.chars() {
+        if c.is_uppercase() && prev_lower {
+            split.push(' ');
+        }
+        prev_lower = c.is_lowercase() || c.is_ascii_digit();
+        split.push(c);
+    }
+    format!("{text} {split}")
+}
 
 /// How security-sensitive a request is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -254,7 +273,7 @@ pub enum Security {
 }
 
 pub fn security_level(request: &str) -> Security {
-    let lower = request.to_lowercase();
+    let lower = split_camel(request).to_lowercase();
     if SECURITY_STRONG_PHRASES.iter().any(|p| lower.contains(p)) {
         return Security::Strong;
     }
@@ -310,6 +329,13 @@ mod tests {
             "Check pages.ts for IDOR",
             "Audit cards.ts routes for mass assignment",
             "can a member escalate their own role",
+            "call_tool.py lets a workflow call tools by name. Is there an allowlist?",
+            "Review storage.py for cross-tenant file leakage",
+            "Is there any way to inject a system message through the API?",
+            "is the mermaid securityLevel set to strict",
+            "do we block javascript: and data: URLs when pasting links",
+            "can markdown images exfiltrate data via query strings",
+            "never use dangerouslySetInnerHTML here",
         ] {
             assert_eq!(security_level(r), Security::Strong, "{r}");
         }
@@ -319,6 +345,10 @@ mod tests {
             "implement session management",
             "where is the login page",
             "where are the Better Auth config and session helpers",
+            "Are there CPU and memory limits on sandboxed execution?",
+            "How does use_sandbox.py decide which backend to use?",
+            "check each window.addEventListener('message') handler validates the origin",
+            "validate the redirect path in routes-utils.ts",
         ] {
             assert_eq!(security_level(r), Security::Weak, "{r}");
         }

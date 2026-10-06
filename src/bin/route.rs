@@ -55,7 +55,7 @@ async fn main() -> Result<()> {
     // with code mode's own cutoffs.
     let code_mode = std::env::var("ROUTE_MODE").as_deref() == Ok("code");
     let (threshold, strong) = if code_mode {
-        (env_or("CODE_CHEAP_THRESHOLD", 0.60), env_or("CODE_STRONG_THRESHOLD", 0.80))
+        (env_or("CODE_CHEAP_THRESHOLD", 0.65), env_or("CODE_STRONG_THRESHOLD", 0.80))
     } else {
         (threshold, strong)
     };
