@@ -26,6 +26,13 @@ pub struct CodeWant {
 
 /// `needs_changes` probability at or above which a code turn counts as editing.
 pub const CODE_EDIT_P: f64 = 0.5;
+/// Code mode: `security_review` probability at or above which a turn goes strong
+/// even with no security keyword ("can a viewer see X?", "who can call this?").
+/// On lunagraph, real security questions scored a median 0.96, and the three
+/// keyword-less questions Sonnet missed and Opus answered correctly scored
+/// 0.95-0.97; 0.90 leaves margin for about 3% more non-security turns on Opus in
+/// security-heavy code.
+pub const CODE_SECURITY_P: f64 = 0.9;
 
 /// Session stickiness for code-mode tiers. Prompt caches are per model, so a
 /// switch rebuilds the whole context cache: upgrade at once, but step down (one
@@ -48,8 +55,12 @@ impl Sticky {
             self.lower_streak = 0;
             return (w.tier, format!("upgrade: {}", w.reason));
         }
-        if w.tier == cur || !w.confident {
+        if w.tier == cur {
             self.lower_streak = 0;
+            return (cur, format!("stay (warm cache): {}", w.reason));
+        }
+        if !w.confident {
+            // Uncertain turn: keep the streak so one vague message doesn't erase progress.
             return (cur, format!("stay (warm cache): {}", w.reason));
         }
         self.lower_streak += 1;
@@ -166,27 +177,49 @@ impl Router {
             .await
     }
 
+    /// Code mode: probability that `request` is about security: who can access or
+    /// change what, or whether something is safe against misuse. Catches authz and
+    /// trust-boundary questions that carry no security keyword, and lets keyword
+    /// matches that are about something else (design tokens, React keys) through.
+    pub async fn security_review(&self, request: &str, recent_context: &str) -> Result<f64> {
+        self.ts
+            .noul(
+                json!({ "request": request, "recent_context": recent_context }),
+                "Is this request about security: who can access or change what, or whether something is safe against misuse or attack?",
+                json!({
+                    "true": "authorization and access control (can a user, role, or member see or change something they shouldn't), data exposure, trust boundaries, untrusted input (injection, path traversal, SSRF, XSS, unsafe URLs or IPC), secrets and credentials, crypto, signatures, or reviewing code for vulnerabilities",
+                    "false": "ordinary coding, debugging, or design; or security-sounding words that mean something else here: design or CSS tokens, React keys, editor or canvas session state, hashing for ids, caching or dedupe, sandboxed iframe layout"
+                }),
+            )
+            .await
+    }
+
     /// Code-mode tier for one turn, before session stickiness: 1 mid or 2 strong.
     /// Code mode never uses the cheap model: across five repos Haiku explanations
     /// held up ~85% at every Jev confidence, so no cutoff could sort out its misses,
     /// and per-model prompt caches make its savings small in a coding session.
-    /// Strong security signals, confident reasoning, and edits to auth code →
-    /// strong; everything else → mid. If Jev is unavailable, returns `fallback`.
+    /// Strong security signals, security questions without keywords (Jev
+    /// `security_review`), confident reasoning, and edits to auth code → strong;
+    /// everything else → mid. If Jev is unavailable, returns `fallback`.
     pub async fn code_want(&self, request: &str, recent_context: &str, fallback: usize) -> CodeWant {
         let security = security_level(request);
         if security == Security::Strong {
             return CodeWant { tier: 2, confident: true, reason: "security-sensitive".into() };
         }
-        let (ans, edit_p) = match tokio::join!(
+        let (ans, edit_p, sec_p) = match tokio::join!(
             self.classify(request, recent_context),
-            self.needs_changes(request, recent_context)
+            self.needs_changes(request, recent_context),
+            self.security_review(request, recent_context)
         ) {
-            (Ok(a), Ok(p)) => (a, p),
-            (Err(e), _) | (_, Err(e)) => {
+            (Ok(a), Ok(p), Ok(s)) => (a, p, s),
+            (Err(e), _, _) | (_, Err(e), _) | (_, _, Err(e)) => {
                 return CodeWant { tier: fallback, confident: false, reason: format!("jev unavailable ({e:#})") };
             }
         };
-        let tag = format!("{} {:.2}, edit p {:.2}", ans.choice, ans.confidence, edit_p);
+        let tag = format!("{} {:.2}, edit p {:.2}, sec p {:.2}", ans.choice, ans.confidence, edit_p, sec_p);
+        if sec_p >= CODE_SECURITY_P {
+            return CodeWant { tier: 2, confident: true, reason: format!("security review ({tag})") };
+        }
         if ans.choice == "reasoning" && ans.confidence >= self.strong_threshold {
             return CodeWant { tier: 2, confident: true, reason: format!("confidently reasoning ({tag})") };
         }
@@ -194,7 +227,9 @@ impl Router {
             return CodeWant { tier: 2, confident: true, reason: format!("changes auth/session code ({tag})") };
         }
         // Confident it isn't hard work: lets a session step back down from strong.
-        let confident = matches!(ans.choice.as_str(), "simple" | "standard") && ans.confidence >= 0.5;
+        // Short replies ("thanks", "done") come back `unclear` but aren't edits.
+        let confident = (matches!(ans.choice.as_str(), "simple" | "standard") && ans.confidence >= 0.5)
+            || (ans.choice == "unclear" && edit_p < 0.2);
         CodeWant { tier: 1, confident, reason: format!("everyday ({tag})") }
     }
 
@@ -323,6 +358,26 @@ pub fn is_short_follow_up(request: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn want(tier: usize, confident: bool) -> CodeWant {
+        CodeWant { tier, confident, reason: String::new() }
+    }
+
+    #[test]
+    fn uncertain_turn_holds_downgrade_streak() {
+        let mut s = Sticky { tier: Some(2), ..Default::default() };
+        assert_eq!(s.decide(&want(1, true), 2).0, 2); // 1/2
+        assert_eq!(s.decide(&want(1, false), 2).0, 2); // vague turn: streak kept
+        assert_eq!(s.decide(&want(1, true), 2).0, 1); // 2/2: step down
+    }
+
+    #[test]
+    fn hard_turn_resets_downgrade_streak() {
+        let mut s = Sticky { tier: Some(2), ..Default::default() };
+        assert_eq!(s.decide(&want(1, true), 2).0, 2);
+        assert_eq!(s.decide(&want(2, true), 2).0, 2); // needs Opus: streak reset
+        assert_eq!(s.decide(&want(1, true), 2).0, 2); // back to 1/2
+    }
 
     #[test]
     fn security_detection() {

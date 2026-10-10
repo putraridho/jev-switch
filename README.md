@@ -60,7 +60,8 @@ claude.ai / Max login passes through unchanged; plain `claude` is unaffected.
 - It decides once per user prompt (Claude Code's `x-claude-code-prompt-id` hint
   header, enabled with `CLAUDE_CODE_GATEWAY_HINT_HEADERS=1`), so all API calls in a
   turn use one model, with code mode's policy: Sonnet by default; Opus for confident
-  reasoning, strong security terms, or edits to auth code; slow downgrades.
+  reasoning, security work (keywords or Jev's `security_review`), or edits to auth
+  code; slow downgrades.
   Background requests (titles, summaries) go to Haiku; subagents and compaction stay
   on the turn's model.
 - Picking Sonnet or Opus in `/model` bypasses routing for that session.
@@ -85,14 +86,26 @@ resuming one Claude Code session so files read, edits, and command output carry
 across turns and model switches. Two tiers, no Haiku:
 
 - Sonnet by default; Opus for confident reasoning (`CODE_STRONG_THRESHOLD=0.75`),
-  strong security terms (vulnerabilities, secrets, crypto, audits), and edits to
-  auth/session code.
+  strong security terms (vulnerabilities, secrets, crypto, audits), security
+  questions without those terms, and edits to auth/session code.
+- Security questions without keywords ("can a viewer see who the org shares files
+  with?", "who can call this?") are caught by a third Jev judgment,
+  `security_review`, at `CODE_SECURITY_P` (0.90). On lunagraph (270
+  security-weighted prompts, 84 Sonnet answers graded against the code), Sonnet
+  answered 78 correctly. Three of its misses were keyword-less security questions
+  that Opus answered correctly, such as "no" when any member can list guest
+  emails; they scored 0.95–0.97. Real security questions scored a median 0.96 and
+  design-token or React-key false alarms a median 0.59. 0.90 leaves margin, at
+  about 3% more non-security turns on Opus in security-heavy code.
 - No Haiku. Tested on five repos (2,500 questions, 120 answers verified against the
   code): Haiku's code explanations held up ~85% at every Jev confidence, so no
   cutoff separated its misses, and prompt caches are per model, so its cache-cold
   turns saved little. Sonnet held up on 60 of 68 graded answers.
 - Upgrades are immediate; stepping back down to Sonnet needs `DOWNGRADE_AFTER` (2)
-  confident easier turns in a row, because each switch rebuilds the context cache.
+  confident easier turns, because each switch rebuilds the context cache. Short
+  replies Jev calls `unclear` count as easier when `edit p` < 0.2, and an uncertain
+  turn holds the streak instead of resetting it; only a turn that needs the current
+  tier resets it.
 - Edits are auto-accepted (`CODE_PERMISSION_MODE=acceptEdits`); commands need your
   Claude Code permission allowlist or `CODE_ALLOWED_TOOLS="Bash(cargo test) Bash(git status)"`.
   Denied commands are reported, never silently skipped.
