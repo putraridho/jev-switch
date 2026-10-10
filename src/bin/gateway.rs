@@ -13,7 +13,7 @@
 //!   jev-gateway        (normally started by the `jev-claude` launcher)
 //!
 //! Env: JEV_GATEWAY_ADDR (127.0.0.1:18780), JEV_GATEWAY_UPSTREAM
-//! (https://api.anthropic.com), CODE_STRONG_THRESHOLD (0.75), DOWNGRADE_AFTER (2),
+//! (https://api.anthropic.com), CODE_STRONG_THRESHOLD (0.85), DOWNGRADE_AFTER (2),
 //! JEV_GATEWAY_LOG (~/.local/state/jev-router/gateway.jsonl).
 
 use std::collections::HashMap;
@@ -31,7 +31,7 @@ use serde_json::{json, Value};
 use tokio::sync::Mutex;
 
 use jev_router::anthropic::{MODEL_CHEAP, MODEL_MID, MODEL_STRONG};
-use jev_router::router::{Router, Sticky};
+use jev_router::router::{Router, Sticky, CODE_STRONG_THRESHOLD};
 use jev_router::typesafe::TypeSafe;
 
 const ALIAS: &str = "jev-code";
@@ -82,7 +82,7 @@ async fn main() -> Result<()> {
         Some(format!("{dir}/gateway.jsonl"))
     });
     let app = Arc::new(App {
-        router: Router::new(TypeSafe::from_env()?, 1.0).with_strong_threshold(env_f64("CODE_STRONG_THRESHOLD", 0.75)),
+        router: Router::new(TypeSafe::from_env()?, 1.0).with_strong_threshold(env_f64("CODE_STRONG_THRESHOLD", CODE_STRONG_THRESHOLD)),
         http: reqwest::Client::builder()
             .connect_timeout(std::time::Duration::from_secs(30))
             .build()?,

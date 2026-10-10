@@ -85,18 +85,32 @@ A routed coding agent: every turn runs Claude Code in the project with tools on,
 resuming one Claude Code session so files read, edits, and command output carry
 across turns and model switches. Two tiers, no Haiku:
 
-- Sonnet by default; Opus for confident reasoning (`CODE_STRONG_THRESHOLD=0.75`),
+- Sonnet by default; Opus for confident reasoning (`CODE_STRONG_THRESHOLD=0.85`),
   strong security terms (vulnerabilities, secrets, crypto, audits), security
   questions without those terms, and edits to auth/session code.
 - Security questions without keywords ("can a viewer see who the org shares files
   with?", "who can call this?") are caught by a third Jev judgment,
-  `security_review`, at `CODE_SECURITY_P` (0.90). On lunagraph (270
-  security-weighted prompts, 84 Sonnet answers graded against the code), Sonnet
-  answered 78 correctly. Three of its misses were keyword-less security questions
-  that Opus answered correctly, such as "no" when any member can list guest
-  emails; they scored 0.95–0.97. Real security questions scored a median 0.96 and
-  design-token or React-key false alarms a median 0.59. 0.90 leaves margin, at
-  about 3% more non-security turns on Opus in security-heavy code.
+  `security_review`, at `CODE_SECURITY_P` (0.85).
+- Both cutoffs come from lunagraph: 2,296 prompts over the whole monorepo, routed
+  with every Jev signal recorded (`ROUTE_SIGNALS=1`), 408 Sonnet answers graded
+  against the code by Opus, and Opus reruns of every Sonnet miss, graded the same
+  way. Sonnet was correct on 383 (94%). Replaying candidate policies on the
+  recorded signals:
+
+  | policy | turns on Opus | Sonnet misses Opus fixes, left on Sonnet |
+  |---|---|---|
+  | reasoning 0.75, security 0.90 (before) | 31% | 7 |
+  | reasoning 0.85, security 0.85 (now) | 28% | 5 |
+  | reasoning 0.90, security 0.85 | 26% | 6 |
+  | security only, 0.85 (no reasoning rule) | 15% | 7 |
+
+  Sonnet's answers at reasoning confidence 0.75–0.85 were 31 correct and 2 partial
+  that Opus also got partly wrong. The keyword-less security questions it missed and
+  Opus fixed scored 0.86–0.97. The 5 left are misses no signal predicts: a refactor
+  and a small edit Jev called simple, two security-sounding questions that weren't
+  (a theme-token lookup, md5 for content hashes), and one security question Jev scored
+  0.60. Strong keywords still go to Opus unconditionally: gating them on
+  `security_review` would save under 2% and they also cover Jev being down.
 - No Haiku. Tested on five repos (2,500 questions, 120 answers verified against the
   code): Haiku's code explanations held up ~85% at every Jev confidence, so no
   cutoff separated its misses, and prompt caches are per model, so its cache-cold
@@ -126,7 +140,9 @@ beat any guess. Re-run `tune` when prompts, models, or request mix change.
 - `src/bin/gateway.rs` — local gateway that adds the Jev Code model to Claude Code.
 - `scripts/jev-claude` — launcher: starts the gateway and opens Claude Code on Jev Code.
 - `src/bin/code.rs` — routed coding agent over Claude Code sessions.
-- `src/bin/route.rs` — routing-only dry run over a prompt file (Jev only, no Claude calls).
+- `src/bin/route.rs` — routing-only dry run over a prompt file (Jev only, no Claude calls);
+  `ROUTE_MODE=code ROUTE_SIGNALS=1` also records every Jev judgment per prompt for
+  replaying policies offline.
 
 ## Notes
 

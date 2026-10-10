@@ -18,7 +18,7 @@ use tokio::sync::Semaphore;
 use tokio::task::JoinSet;
 
 use jev_router::anthropic::{MODEL_CHEAP, MODEL_MID, MODEL_STRONG};
-use jev_router::router::{Decision, Router};
+use jev_router::router::{security_level, Decision, Router, CODE_STRONG_THRESHOLD};
 
 const TIERS: [&str; 3] = [MODEL_CHEAP, MODEL_MID, MODEL_STRONG];
 use jev_router::typesafe::TypeSafe;
@@ -37,6 +37,24 @@ struct Item {
 
 fn dash() -> String {
     "-".into()
+}
+
+/// All code-mode inputs for one prompt as JSON: keyword level and the three Jev
+/// judgments (null when Jev failed).
+async fn code_signals(router: &Router, prompt: &str, context: &str) -> String {
+    let (c, e, s) = tokio::join!(
+        router.classify(prompt, context),
+        router.needs_changes(prompt, context),
+        router.security_review(prompt, context)
+    );
+    serde_json::json!({
+        "kw": format!("{:?}", security_level(prompt)),
+        "choice": c.as_ref().ok().map(|a| a.choice.clone()),
+        "conf": c.as_ref().ok().map(|a| a.confidence),
+        "edit_p": e.ok(),
+        "sec_p": s.ok(),
+    })
+    .to_string()
 }
 
 fn env_or(key: &str, default: f64) -> f64 {
@@ -77,8 +95,12 @@ async fn main() -> Result<()> {
     // ROUTE_MODE=code dry-runs code mode's first-turn policy (kind column = reason),
     // with code mode's own cutoffs.
     let code_mode = std::env::var("ROUTE_MODE").as_deref() == Ok("code");
+    // ROUTE_SIGNALS=1 (code mode) adds a `signals` column after kind: every judgment
+    // as JSON, even when a keyword decided the route, so policies can be replayed
+    // offline without calling Jev again.
+    let signals = code_mode && std::env::var("ROUTE_SIGNALS").is_ok();
     let (threshold, strong) = if code_mode {
-        (1.0, env_or("CODE_STRONG_THRESHOLD", 0.75))
+        (1.0, env_or("CODE_STRONG_THRESHOLD", CODE_STRONG_THRESHOLD))
     } else {
         (threshold, strong)
     };
@@ -87,12 +109,16 @@ async fn main() -> Result<()> {
     let mut tasks = JoinSet::new();
     for (i, Item { id, category: cat, prompt, context }) in prompts.into_iter().enumerate() {
         let (router, sem) = (router.clone(), sem.clone());
-        let code_mode = code_mode;
+        let (code_mode, signals) = (code_mode, signals);
         tasks.spawn(async move {
             let _permit = sem.acquire_owned().await;
             let d = if code_mode {
                 let w = router.code_want(&prompt, &context, 1).await;
-                Ok(Decision { model: TIERS[w.tier], kind: w.reason.clone(), confidence: 0.0, reason: "code" })
+                let mut kind = w.reason.clone();
+                if signals {
+                    kind = format!("{kind}\t{}", code_signals(&router, &prompt, &context).await);
+                }
+                Ok(Decision { model: TIERS[w.tier], kind, confidence: 0.0, reason: "code" })
             } else {
                 router.route(&prompt, &context).await
             };
@@ -110,7 +136,8 @@ async fn main() -> Result<()> {
     // category -> count per tier
     let mut by_cat: BTreeMap<String, [usize; 3]> = BTreeMap::new();
     let mut failed = 0;
-    println!("id\tcategory\tkind\tconfidence\tmodel\treason\tprompt");
+    let header = if signals { "kind\tsignals" } else { "kind" };
+    println!("id\tcategory\t{header}\tconfidence\tmodel\treason\tprompt");
     for (_, id, cat, prompt, d) in &rows {
         let prompt = prompt.replace('\n', "\\n").replace('\t', " ");
         match d {

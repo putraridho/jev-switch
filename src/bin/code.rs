@@ -14,7 +14,7 @@
 //!   TYPESAFE_API_KEY=... cargo run --bin code [project-dir]
 //!
 //! Commands: /model sonnet|opus|auto · /new (fresh session) · /quit
-//! Env: CODE_STRONG_THRESHOLD (0.75) DOWNGRADE_AFTER (2)
+//! Env: CODE_STRONG_THRESHOLD (0.85) DOWNGRADE_AFTER (2)
 //!      CODE_PERMISSION_MODE (acceptEdits) CODE_ALLOWED_TOOLS (e.g. "Bash(cargo *) Bash(git status)")
 
 use std::io::{self, Write};
@@ -27,7 +27,7 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Command;
 
 use jev_router::anthropic::{MODEL_CHEAP, MODEL_MID, MODEL_STRONG};
-use jev_router::router::{CodeWant, Router, Sticky};
+use jev_router::router::{CodeWant, Router, Sticky, CODE_STRONG_THRESHOLD};
 use jev_router::typesafe::TypeSafe;
 
 const TIERS: [&str; 3] = [MODEL_CHEAP, MODEL_MID, MODEL_STRONG];
@@ -44,7 +44,7 @@ IN SESSION:
 
 ENVIRONMENT:
   Jev key                    TYPESAFE_API_KEY or JEV_API_KEY, else ~/.jev-router.env
-  CODE_STRONG_THRESHOLD      Jev reasoning confidence for Opus (default 0.75)
+  CODE_STRONG_THRESHOLD      Jev reasoning confidence for Opus (default 0.85)
   DOWNGRADE_AFTER            easier turns before stepping back to Sonnet (default 2)
   CODE_PERMISSION_MODE       Claude Code permission mode (default acceptEdits)
   CODE_ALLOWED_TOOLS         extra allowed tools, e.g. \"Bash(cargo test) Bash(git status)\"
@@ -229,7 +229,7 @@ async fn main() -> Result<()> {
     // Stricter than chat: Sonnet's hard-debugging misses sat at reasoning 0.78-0.83.
     // The cheap cutoff is unused here (code mode has no Haiku tier).
     let router = Router::new(TypeSafe::from_env()?, 1.0)
-        .with_strong_threshold(env_f64("CODE_STRONG_THRESHOLD", 0.75));
+        .with_strong_threshold(env_f64("CODE_STRONG_THRESHOLD", CODE_STRONG_THRESHOLD));
     let downgrade_after = env_f64("DOWNGRADE_AFTER", 2.0) as u32;
     let mut s = Session::new(dir);
 

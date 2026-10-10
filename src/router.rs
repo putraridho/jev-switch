@@ -28,11 +28,16 @@ pub struct CodeWant {
 pub const CODE_EDIT_P: f64 = 0.5;
 /// Code mode: `security_review` probability at or above which a turn goes strong
 /// even with no security keyword ("can a viewer see X?", "who can call this?").
-/// On lunagraph, real security questions scored a median 0.96, and the three
-/// keyword-less questions Sonnet missed and Opus answered correctly scored
-/// 0.95-0.97; 0.90 leaves margin for about 3% more non-security turns on Opus in
-/// security-heavy code.
-pub const CODE_SECURITY_P: f64 = 0.9;
+/// On lunagraph (2,296 prompts, 408 Sonnet answers graded against the code), the
+/// keyword-less security questions Sonnet missed and Opus fixed scored 0.86-0.97;
+/// 0.85 catches all but one at 0.60, for 0.9% more turns on Opus than 0.90.
+pub const CODE_SECURITY_P: f64 = 0.85;
+/// Code mode default for `CODE_STRONG_THRESHOLD`: Jev `reasoning` confidence at or
+/// above which a turn goes strong. On lunagraph, Sonnet's answers with reasoning
+/// confidence 0.75-0.85 were 31 correct and 2 partial that Opus didn't fix either;
+/// its misses Opus fixed scored 0.89 and 0.92. Raising it from 0.75 cut Opus turns
+/// from 32% to 28% with no fixable miss lost.
+pub const CODE_STRONG_THRESHOLD: f64 = 0.85;
 
 /// Session stickiness for code-mode tiers. Prompt caches are per model, so a
 /// switch rebuilds the whole context cache: upgrade at once, but step down (one
