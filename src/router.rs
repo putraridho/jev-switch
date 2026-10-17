@@ -4,7 +4,7 @@
 //! Both cutoffs are calibrated, not guessed (see README).
 
 use anyhow::Result;
-use serde_json::json;
+use serde_json::{json, Value};
 
 use crate::anthropic::{MODEL_CHEAP, MODEL_MID, MODEL_STRONG};
 use crate::typesafe::{ChoiceAnswer, TypeSafe};
@@ -22,6 +22,8 @@ pub struct CodeWant {
     pub tier: usize,
     pub confident: bool,
     pub reason: String,
+    /// Jev's raw signals for the usage log (`Value::Null` when Jev wasn't asked).
+    pub signals: Value,
 }
 
 /// `needs_changes` probability at or above which a code turn counts as editing.
@@ -39,6 +41,14 @@ pub const CODE_SECURITY_P: f64 = 0.85;
 /// from 32% to 28% with no fixable miss lost.
 pub const CODE_STRONG_THRESHOLD: f64 = 0.85;
 
+/// Most consecutive easier turns (confident or not) a tier is held for. A cache
+/// rebuild costs about one turn's worth of re-reading the context at the new model's
+/// write price; against a ~5x Opus premium that is repaid in ~3 turns, so holding
+/// Opus through 4+ vague turns costs more than it saves. On the logged turns, 5 of
+/// 24 holds ran 4-9 turns, all of them unclear/low-confidence ones that never counted
+/// toward `downgrade_after`.
+pub const MAX_HOLD: u32 = 4;
+
 /// Session stickiness for code-mode tiers. Prompt caches are per model, so a
 /// switch rebuilds the whole context cache: upgrade at once, but step down (one
 /// tier, never below mid) only after `downgrade_after` confident easier turns.
@@ -47,6 +57,8 @@ pub struct Sticky {
     /// Tier of the model that answered the previous turn.
     pub tier: Option<usize>,
     lower_streak: u32,
+    /// Consecutive turns wanting a lower tier than `tier`, confident or not.
+    held: u32,
 }
 
 impl Sticky {
@@ -58,11 +70,19 @@ impl Sticky {
         };
         if w.tier > cur {
             self.lower_streak = 0;
+            self.held = 0;
             return (w.tier, format!("upgrade: {}", w.reason));
         }
         if w.tier == cur {
             self.lower_streak = 0;
+            self.held = 0;
             return (cur, format!("stay (warm cache): {}", w.reason));
+        }
+        self.held += 1;
+        if self.held >= MAX_HOLD && cur > 1 {
+            self.lower_streak = 0;
+            self.held = 0;
+            return (cur - 1, format!("downgrade after holding {MAX_HOLD} easier turns: {}", w.reason));
         }
         if !w.confident {
             // Uncertain turn: keep the streak so one vague message doesn't erase progress.
@@ -71,6 +91,7 @@ impl Sticky {
         self.lower_streak += 1;
         if self.lower_streak >= downgrade_after {
             self.lower_streak = 0;
+            self.held = 0;
             return ((cur - 1).max(1), format!("downgrade after {downgrade_after} easier turns: {}", w.reason));
         }
         (cur, format!("stay ({}/{} toward downgrade): {}", self.lower_streak, downgrade_after, w.reason))
@@ -199,6 +220,22 @@ impl Router {
             .await
     }
 
+    /// Outcome signal: probability that `request` reacts to the previous answer as
+    /// wrong, incomplete or not what was wanted (a correction, complaint, retry or
+    /// the same question again). Logged for later analysis; never used for routing.
+    pub async fn is_correction(&self, request: &str, previous_request: &str, previous_answer: &str) -> Result<f64> {
+        self.ts
+            .noul(
+                json!({ "request": request, "previous_request": previous_request, "previous_answer": previous_answer }),
+                "Is this new message a reaction to the previous answer being wrong, incomplete, or not what the user wanted?",
+                json!({
+                    "true": "a correction, complaint, retry, or the same question asked again; the user is unhappy with or re-asking about what the assistant just did",
+                    "false": "a new task, a follow-up building on a good answer, a clarification the user was asked for, or an acknowledgement"
+                }),
+            )
+            .await
+    }
+
     /// Code-mode tier for one turn, before session stickiness: 1 mid or 2 strong.
     /// Code mode never uses the cheap model: across five repos Haiku explanations
     /// held up ~85% at every Jev confidence, so no cutoff could sort out its misses,
@@ -209,7 +246,12 @@ impl Router {
     pub async fn code_want(&self, request: &str, recent_context: &str, fallback: usize) -> CodeWant {
         let security = security_level(request);
         if security == Security::Strong {
-            return CodeWant { tier: 2, confident: true, reason: "security-sensitive".into() };
+            return CodeWant {
+                tier: 2,
+                confident: true,
+                reason: "security-sensitive".into(),
+                signals: json!({ "security": "strong" }),
+            };
         }
         let (ans, edit_p, sec_p) = match tokio::join!(
             self.classify(request, recent_context),
@@ -218,24 +260,33 @@ impl Router {
         ) {
             (Ok(a), Ok(p), Ok(s)) => (a, p, s),
             (Err(e), _, _) | (_, Err(e), _) | (_, _, Err(e)) => {
-                return CodeWant { tier: fallback, confident: false, reason: format!("jev unavailable ({e:#})") };
+                return CodeWant {
+                    tier: fallback,
+                    confident: false,
+                    reason: format!("jev unavailable ({e:#})"),
+                    signals: Value::Null,
+                };
             }
         };
         let tag = format!("{} {:.2}, edit p {:.2}, sec p {:.2}", ans.choice, ans.confidence, edit_p, sec_p);
+        let signals = json!({
+            "choice": ans.choice, "confidence": ans.confidence, "edit_p": edit_p, "sec_p": sec_p,
+            "security": format!("{security:?}").to_lowercase(),
+        });
         if sec_p >= CODE_SECURITY_P {
-            return CodeWant { tier: 2, confident: true, reason: format!("security review ({tag})") };
+            return CodeWant { tier: 2, confident: true, reason: format!("security review ({tag})"), signals };
         }
         if ans.choice == "reasoning" && ans.confidence >= self.strong_threshold {
-            return CodeWant { tier: 2, confident: true, reason: format!("confidently reasoning ({tag})") };
+            return CodeWant { tier: 2, confident: true, reason: format!("confidently reasoning ({tag})"), signals };
         }
         if security == Security::Weak && edit_p >= CODE_EDIT_P {
-            return CodeWant { tier: 2, confident: true, reason: format!("changes auth/session code ({tag})") };
+            return CodeWant { tier: 2, confident: true, reason: format!("changes auth/session code ({tag})"), signals };
         }
         // Confident it isn't hard work: lets a session step back down from strong.
         // Short replies ("thanks", "done") come back `unclear` but aren't edits.
         let confident = (matches!(ans.choice.as_str(), "simple" | "standard") && ans.confidence >= 0.5)
             || (ans.choice == "unclear" && edit_p < 0.2);
-        CodeWant { tier: 1, confident, reason: format!("everyday ({tag})") }
+        CodeWant { tier: 1, confident, reason: format!("everyday ({tag})"), signals }
     }
 
     /// Verify variant: judge whether a cheap answer actually resolved the request.
@@ -365,7 +416,7 @@ mod tests {
     use super::*;
 
     fn want(tier: usize, confident: bool) -> CodeWant {
-        CodeWant { tier, confident, reason: String::new() }
+        CodeWant { tier, confident, reason: String::new(), signals: Value::Null }
     }
 
     #[test]
@@ -382,6 +433,15 @@ mod tests {
         assert_eq!(s.decide(&want(1, true), 2).0, 2);
         assert_eq!(s.decide(&want(2, true), 2).0, 2); // needs Opus: streak reset
         assert_eq!(s.decide(&want(1, true), 2).0, 2); // back to 1/2
+    }
+
+    #[test]
+    fn vague_turns_cannot_hold_a_tier_forever() {
+        let mut s = Sticky { tier: Some(2), ..Default::default() };
+        for _ in 1..MAX_HOLD {
+            assert_eq!(s.decide(&want(1, false), 2).0, 2);
+        }
+        assert_eq!(s.decide(&want(1, false), 2).0, 1);
     }
 
     #[test]

@@ -7,19 +7,21 @@
 //! It decides once per user prompt (Claude Code's `x-claude-code-prompt-id` hint
 //! header groups a turn's requests), using code mode's policy: Sonnet by default,
 //! Opus for confident reasoning, strong security terms, or edits to auth code,
-//! with the same upgrade-now / downgrade-slowly stickiness. Background requests
-//! (titles, summaries) go to Haiku. Decisions are logged as JSON lines.
+//! with the same upgrade-now / downgrade-slowly stickiness. Small background
+//! requests (titles, summaries) go to Haiku, adapted to what Haiku accepts; forks of
+//! the conversation stay on the turn's model. Three JSON-lines logs: routing decisions, one usage
+//! record per /v1/messages request, and one record per user turn (see README).
 //!
 //!   jev-gateway        (normally started by the `jev-claude` launcher)
 //!
 //! Env: JEV_GATEWAY_ADDR (127.0.0.1:18780), JEV_GATEWAY_UPSTREAM
 //! (https://api.anthropic.com), CODE_STRONG_THRESHOLD (0.85), DOWNGRADE_AFTER (2),
-//! JEV_GATEWAY_LOG (~/.local/state/jev-router/gateway.jsonl).
+//! JEV_GATEWAY_LOG (~/.local/state/jev-router/gateway.jsonl), JEV_USAGE_LOG
+//! (usage.jsonl), JEV_TURNS_LOG (turns.jsonl).
 
 use std::collections::HashMap;
-use std::io::Write as _;
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::Instant;
 
 use anyhow::{Context, Result};
 use axum::body::{to_bytes, Body};
@@ -27,12 +29,15 @@ use axum::extract::{Request, State};
 use axum::http::{HeaderMap, HeaderName, Method, Response, StatusCode};
 use axum::routing::{any, get};
 use axum::Router as Http;
+use futures_util::StreamExt as _;
 use serde_json::{json, Value};
 use tokio::sync::Mutex;
 
 use jev_router::anthropic::{MODEL_CHEAP, MODEL_MID, MODEL_STRONG};
+use jev_router::log;
 use jev_router::router::{Router, Sticky, CODE_STRONG_THRESHOLD};
 use jev_router::typesafe::TypeSafe;
+use jev_router::usage::{find_cwd, project_of, request_params, Turns, UsageTap};
 
 const ALIAS: &str = "jev-code";
 const TIERS: [&str; 3] = [MODEL_CHEAP, MODEL_MID, MODEL_STRONG];
@@ -46,6 +51,8 @@ struct SessionState {
     sticky: Sticky,
     prompt_id: Option<String>,
     model: Option<&'static str>,
+    /// Routing record of the current turn, attached to the usage rows of its requests.
+    decision: Option<Value>,
 }
 
 struct App {
@@ -55,6 +62,8 @@ struct App {
     downgrade_after: u32,
     sessions: Mutex<HashMap<String, SessionState>>,
     log_path: Option<String>,
+    usage_path: Option<String>,
+    turns: Arc<Turns>,
 }
 
 fn env_f64(key: &str, default: f64) -> f64 {
@@ -76,11 +85,9 @@ async fn main() -> Result<()> {
         }
     }
     let addr = std::env::var("JEV_GATEWAY_ADDR").unwrap_or_else(|_| "127.0.0.1:18780".into());
-    let log_path = std::env::var("JEV_GATEWAY_LOG").ok().or_else(|| {
-        let dir = format!("{}/.local/state/jev-router", std::env::var("HOME").ok()?);
-        std::fs::create_dir_all(&dir).ok()?;
-        Some(format!("{dir}/gateway.jsonl"))
-    });
+    let log_path = log::path_from_env("JEV_GATEWAY_LOG", "gateway.jsonl");
+    let usage_path = log::path_from_env("JEV_USAGE_LOG", "usage.jsonl");
+    let turns = Turns::new(log::path_from_env("JEV_TURNS_LOG", "turns.jsonl"));
     let app = Arc::new(App {
         router: Router::new(TypeSafe::from_env()?, 1.0).with_strong_threshold(env_f64("CODE_STRONG_THRESHOLD", CODE_STRONG_THRESHOLD)),
         http: reqwest::Client::builder()
@@ -93,6 +100,8 @@ async fn main() -> Result<()> {
         downgrade_after: env_f64("DOWNGRADE_AFTER", 2.0) as u32,
         sessions: Mutex::new(HashMap::new()),
         log_path,
+        usage_path,
+        turns,
     });
     let http = Http::new()
         .route("/healthz", get(|| async { "ok" }))
@@ -119,24 +128,114 @@ async fn proxy(State(app): State<Arc<App>>, req: Request) -> Response<Body> {
     }
 }
 
-async fn forward(app: &App, req: Request) -> Result<Response<Body>> {
+async fn forward(app: &Arc<App>, req: Request) -> Result<Response<Body>> {
     let (parts, body) = req.into_parts();
     let path_q = parts.uri.path_and_query().map(|p| p.as_str().to_string()).unwrap_or_else(|| "/".into());
     let mut bytes = to_bytes(body, MAX_BODY).await.context("read request body")?.to_vec();
+    let started = Instant::now();
+    let ts_ms = log::now_ms();
 
-    if parts.method == Method::POST && parts.uri.path().starts_with("/v1/messages") {
-        if let Some(model) = choose_model(app, &parts.headers, &bytes, parts.uri.path()).await {
-            bytes = set_model(&bytes, model);
+    // Only real message requests are logged; token counting and the rest pass through.
+    let mut tap = None;
+    let mut for_haiku = false;
+    // The request as sent by the client, on the main model: retried if Haiku rejects it.
+    let mut fallback: Option<Vec<u8>> = None;
+    if parts.method == Method::POST && parts.uri.path() == "/v1/messages" {
+        let meta = Meta::from_headers(&parts.headers);
+        let json: Option<Value> = serde_json::from_slice(&bytes).ok();
+        let requested = json.as_ref().and_then(|j| j.get("model")).and_then(Value::as_str).unwrap_or("").to_string();
+        if let Some(j) = &json {
+            let prompt = last_user_prompt(j);
+            let new_turn = app.turns.observe(&meta.session, meta.prompt_id.as_deref(), &meta.class, j, &requested, prompt.as_deref(), ts_ms);
+            if let (true, Some(prev), Some(pid), Some(prompt)) = (correction_check_enabled(), new_turn.and_then(|n| n.prev_prompt), &meta.prompt_id, prompt) {
+                app.turns.begin_check(&meta.session, pid);
+                spawn_outcome_check(app, meta.session.clone(), pid.clone(), prompt, prev, recent_context(j));
+            }
         }
+        let picked = match &json {
+            Some(j) => choose_model(app, &meta, j).await,
+            None => None,
+        };
+        if let (Some(p), Some(pid)) = (&picked, &meta.prompt_id) {
+            if let (true, Some(d)) = (p.new_turn, &p.decision) {
+                app.turns.set_decision(&meta.session, pid, d.clone());
+            }
+        }
+        let model = picked.as_ref().map(|p| p.model.to_string()).unwrap_or_else(|| requested.clone());
+        if let Some(p) = &picked {
+            if p.model == MODEL_CHEAP {
+                fallback = Some(set_model(&bytes, MODEL_MID));
+            }
+            bytes = set_model(&bytes, p.model);
+            if let (MODEL_CHEAP, Some(j)) = (p.model, &json) {
+                let mut adapted = j.clone();
+                adapted["model"] = Value::String(MODEL_CHEAP.into());
+                adapt_for_haiku(&mut adapted);
+                bytes = serde_json::to_vec(&adapted).unwrap_or(bytes);
+                for_haiku = true;
+            }
+        }
+        tap = app.usage_path.clone().map(|path| {
+            let j = json.as_ref();
+            let cwd = app.turns.cwd(&meta.session).or_else(|| j.and_then(find_cwd));
+            UsageTap::new(
+                path,
+                started,
+                json!({
+                    "ts_ms": ts_ms, "session": meta.session, "prompt_id": meta.prompt_id, "class": meta.class,
+                    "cwd": cwd, "project": cwd.as_deref().map(project_of),
+                    "requested_model": requested, "model": model, "routed": picked.is_some(),
+                    "new_turn": picked.as_ref().is_some_and(|p| p.new_turn), "adapted": for_haiku,
+                    "decision": picked.as_ref().and_then(|p| p.decision.clone()),
+                    "stream": j.and_then(|j| j.get("stream")).and_then(Value::as_bool).unwrap_or(false),
+                    "params": j.map(request_params),
+                    "beta": header(&parts.headers, "anthropic-beta"),
+                    "client": header(&parts.headers, "user-agent"),
+                    "messages": j.and_then(|j| j.get("messages")).and_then(Value::as_array).map(Vec::len),
+                    "tools": j.and_then(|j| j.get("tools")).and_then(Value::as_array).map(Vec::len),
+                    "req_bytes": bytes.len(),
+                }),
+                app.turns.clone(),
+                meta.session.clone(),
+                meta.prompt_id.clone(),
+                meta.class.clone(),
+            )
+        });
     }
 
-    let mut up = app.http.request(parts.method.clone(), format!("{}{}", app.upstream, path_q));
-    for (k, v) in parts.headers.iter() {
-        if !SKIP_HEADERS.contains(&k.as_str()) {
-            up = up.header(k, v);
+    let logged = tap.is_some();
+    let sent = upstream_request(app, &parts, &path_q, bytes, for_haiku, logged).send().await;
+    let mut resp = match sent {
+        Ok(r) => r,
+        Err(e) => {
+            if let Some(t) = &mut tap {
+                t.error = Some(json!({ "type": "gateway_upstream", "message": format!("{e:#}") }));
+            }
+            return Err(anyhow::Error::new(e).context("upstream request failed"));
         }
+    };
+    // Haiku has restrictions that can change without notice. Rather than lose a
+    // background request, retry it once as sent by the client, on the main model.
+    if let (Some(retry), true) = (fallback, matches!(resp.status().as_u16(), 400 | 413 | 422)) {
+        let status = resp.status().as_u16();
+        let body = resp.bytes().await.unwrap_or_default();
+        let msg = serde_json::from_slice::<Value>(&body).ok().and_then(|v| v["error"]["message"].as_str().map(str::to_string)).unwrap_or_default();
+        eprintln!("[warn] {MODEL_CHEAP} rejected a request ({status}): {msg} — retrying on {MODEL_MID}");
+        if let Some(t) = &mut tap {
+            t.set("fallback_from", json!({ "model": MODEL_CHEAP, "status": status, "error": msg }));
+            t.set("model", json!(MODEL_MID));
+            t.set("adapted", json!(false));
+        }
+        resp = match upstream_request(app, &parts, &path_q, retry, false, logged).send().await {
+            Ok(r) => r,
+            Err(e) => {
+                if let Some(t) = &mut tap {
+                    t.error = Some(json!({ "type": "gateway_upstream", "message": format!("{e:#}") }));
+                }
+                return Err(anyhow::Error::new(e).context("upstream request failed"));
+            }
+        };
     }
-    let resp = up.body(bytes).send().await.context("upstream request failed")?;
 
     let mut out = Response::builder().status(resp.status().as_u16());
     for (k, v) in resp.headers().iter() {
@@ -144,39 +243,123 @@ async fn forward(app: &App, req: Request) -> Result<Response<Body>> {
             out = out.header(HeaderName::from_bytes(k.as_str().as_bytes())?, v.as_bytes());
         }
     }
-    // Stream the response through as it arrives (SSE pings included).
-    Ok(out.body(Body::from_stream(resp.bytes_stream()))?)
+    // Stream the response through as it arrives (SSE pings included). The tap only
+    // reads the chunks; what the client receives is unchanged.
+    if let Some(t) = &mut tap {
+        t.start_response(resp.status().as_u16(), resp.headers());
+    }
+    let stream = resp.bytes_stream();
+    let body = match tap {
+        Some(mut t) => {
+            Body::from_stream(stream.map(move |chunk| {
+                match &chunk {
+                    Ok(c) => t.feed(c),
+                    Err(e) => t.error = Some(json!({ "type": "gateway_stream", "message": e.to_string() })),
+                }
+                chunk
+            }))
+        }
+        None => Body::from_stream(stream),
+    };
+    Ok(out.body(body)?)
+}
+
+/// The upstream request: the client's headers, minus hop-by-hop ones. A logged request
+/// asks for an uncompressed response so the tap can read it; a Haiku request loses the
+/// long-context beta.
+fn upstream_request(app: &App, parts: &axum::http::request::Parts, path_q: &str, body: Vec<u8>, for_haiku: bool, logged: bool) -> reqwest::RequestBuilder {
+    let mut up = app.http.request(parts.method.clone(), format!("{}{}", app.upstream, path_q));
+    for (k, v) in parts.headers.iter() {
+        if SKIP_HEADERS.contains(&k.as_str()) || (logged && k == "accept-encoding") {
+            continue;
+        }
+        match (for_haiku && k == "anthropic-beta", v.to_str()) {
+            (true, Ok(list)) => {
+                let list = without_long_context(list);
+                if !list.is_empty() {
+                    up = up.header(k, list);
+                }
+            }
+            _ => up = up.header(k, v),
+        }
+    }
+    up.body(body)
+}
+
+/// The LLM-judged `correction_p` is opt-in (`JEV_CORRECTION_CHECK=1`): on 276 logged
+/// turns it did not correlate with aborts, quick follow-ups or model switches, so it
+/// is not worth a classifier call per turn until it is validated against real labels.
+fn correction_check_enabled() -> bool {
+    std::env::var("JEV_CORRECTION_CHECK").is_ok_and(|v| v == "1")
+}
+
+/// Background: ask Jev whether the user's new prompt reacts to the last answer as
+/// wrong or incomplete. The result lands in the turn's `followup.correction_p`; the
+/// turn row waits for it. Never delays or affects routing.
+fn spawn_outcome_check(app: &Arc<App>, session: String, prompt_id: String, prompt: String, prev_prompt: String, prev_answer: String) {
+    let app = app.clone();
+    tokio::spawn(async move {
+        let check = app.router.is_correction(&prompt, &prev_prompt, &prev_answer);
+        let p = tokio::time::timeout(std::time::Duration::from_secs(20), check).await.ok().and_then(Result::ok);
+        app.turns.finish_check(&session, &prompt_id, "correction_p", p.map(|p| json!(p)));
+    });
 }
 
 fn header<'a>(h: &'a HeaderMap, name: &str) -> Option<&'a str> {
     h.get(name).and_then(|v| v.to_str().ok())
 }
 
+/// Claude Code's per-request hint headers.
+struct Meta {
+    class: String,
+    session: String,
+    prompt_id: Option<String>,
+}
+
+impl Meta {
+    fn from_headers(h: &HeaderMap) -> Self {
+        Self {
+            class: header(h, "x-claude-code-request-class").unwrap_or("main").to_string(),
+            session: header(h, "x-claude-code-session-id").unwrap_or("default").to_string(),
+            prompt_id: header(h, "x-claude-code-prompt-id").map(str::to_string),
+        }
+    }
+}
+
+/// A routed request: the real model, and the turn's decision for the usage log.
+struct Picked {
+    model: &'static str,
+    new_turn: bool,
+    decision: Option<Value>,
+}
+
 /// The real model for a `jev-code` request, or None to forward it untouched.
-async fn choose_model(app: &App, headers: &HeaderMap, body: &[u8], path: &str) -> Option<&'static str> {
-    let req: Value = serde_json::from_slice(body).ok()?;
+async fn choose_model(app: &App, meta: &Meta, req: &Value) -> Option<Picked> {
     if req.get("model")?.as_str()? != ALIAS {
         return None;
     }
-    let class = header(headers, "x-claude-code-request-class").unwrap_or("main");
-    let session_id = header(headers, "x-claude-code-session-id").unwrap_or("default").to_string();
-    let prompt_id = header(headers, "x-claude-code-prompt-id").map(str::to_string);
+    let (class, session_id, prompt_id) = (meta.class.as_str(), meta.session.clone(), meta.prompt_id.clone());
     let mut sessions = app.sessions.lock().await;
     let st = sessions.entry(session_id.clone()).or_default();
+    let same_turn = |st: &SessionState| Picked {
+        model: st.model.unwrap_or(MODEL_MID),
+        new_turn: false,
+        decision: st.decision.clone(),
+    };
 
-    // Token counting and side requests never trigger a routing decision.
-    if path.ends_with("/count_tokens") {
-        return Some(st.model.unwrap_or(MODEL_MID));
-    }
     if class == "auxiliary" {
-        return Some(MODEL_CHEAP);
+        // A fork of the conversation (carries the tool list) shares the main model's
+        // prompt cache and can exceed Haiku's 200k window; only small one-shot
+        // requests (titles, summaries) go to Haiku.
+        let fork = req.get("tools").and_then(Value::as_array).is_some_and(|t| !t.is_empty());
+        return Some(if fork { same_turn(st) } else { Picked { model: MODEL_CHEAP, new_turn: false, decision: None } });
     }
     if class != "main" {
         // Subagents, workflows, compaction: stay on the turn's model.
-        return Some(st.model.unwrap_or(MODEL_MID));
+        return Some(same_turn(st));
     }
 
-    let prompt = last_user_prompt(&req);
+    let prompt = last_user_prompt(req);
     let new_turn = match (&prompt_id, &st.prompt_id) {
         (Some(p), Some(prev)) => p != prev,
         (Some(_), None) => true,
@@ -184,10 +367,10 @@ async fn choose_model(app: &App, headers: &HeaderMap, body: &[u8], path: &str) -
         (None, _) => prompt.is_some(),
     };
     if !new_turn || prompt.is_none() {
-        return Some(st.model.unwrap_or(MODEL_MID));
+        return Some(same_turn(st));
     }
     let prompt = prompt.unwrap();
-    let context = recent_context(&req);
+    let context = recent_context(req);
     let fallback = st.sticky.tier.unwrap_or(1);
     drop(sessions); // don't hold the lock across the Jev call
 
@@ -198,8 +381,10 @@ async fn choose_model(app: &App, headers: &HeaderMap, body: &[u8], path: &str) -
     st.sticky.tier = Some(tier);
     st.prompt_id = prompt_id.clone();
     st.model = Some(TIERS[tier]);
-    log_decision(app, &session_id, prompt_id.as_deref(), TIERS[tier], &reason, &prompt);
-    Some(TIERS[tier])
+    let decision = json!({ "tier": tier, "reason": reason, "confident": want.confident, "signals": want.signals });
+    st.decision = Some(decision.clone());
+    log_decision(app, &session_id, prompt_id.as_deref(), TIERS[tier], &decision, &prompt);
+    Some(Picked { model: TIERS[tier], new_turn: true, decision: Some(decision) })
 }
 
 /// Text of the newest user message, ignoring tool results and Claude Code's
@@ -268,6 +453,30 @@ fn recent_context(req: &Value) -> String {
         .unwrap_or_default()
 }
 
+/// A 1M-context session makes Claude Code add settings Haiku 4.5 rejects: the
+/// long-context beta, adaptive thinking, effort, and mid-conversation system
+/// messages. Claude Code only finds out by failing, so adapt the request up front.
+fn adapt_for_haiku(req: &mut Value) {
+    let Some(o) = req.as_object_mut() else { return };
+    if let Some(m) = o.get_mut("messages").and_then(Value::as_array_mut) {
+        m.retain(|m| m.get("role").and_then(Value::as_str) != Some("system"));
+    }
+    if o.get("thinking").and_then(|t| t.get("type")).and_then(Value::as_str) == Some("adaptive") {
+        o.remove("thinking");
+        o.remove("context_management"); // its edits only apply with thinking
+    }
+    if let Some(cfg) = o.get_mut("output_config").and_then(Value::as_object_mut) {
+        cfg.remove("effort");
+    }
+    if o.get("output_config").and_then(Value::as_object).is_some_and(|c| c.is_empty()) {
+        o.remove("output_config");
+    }
+}
+
+fn without_long_context(beta: &str) -> String {
+    beta.split(',').map(str::trim).filter(|b| !b.is_empty() && !b.starts_with("context-1m")).collect::<Vec<_>>().join(",")
+}
+
 /// Replace the model value, leaving every other byte of the body as sent.
 fn set_model(body: &[u8], model: &str) -> Vec<u8> {
     let needle = format!("\"model\":\"{ALIAS}\"");
@@ -289,15 +498,53 @@ fn set_model(body: &[u8], model: &str) -> Vec<u8> {
     }
 }
 
-fn log_decision(app: &App, session: &str, prompt_id: Option<&str>, model: &str, reason: &str, prompt: &str) {
-    let ts = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
-    eprintln!("[route] {model} — {reason}");
+fn log_decision(app: &App, session: &str, prompt_id: Option<&str>, model: &str, decision: &Value, prompt: &str) {
+    eprintln!("[route] {model} — {}", decision["reason"].as_str().unwrap_or(""));
     let Some(path) = &app.log_path else { return };
-    let line = json!({
-        "ts": ts, "session": session, "prompt_id": prompt_id, "model": model, "reason": reason,
-        "prompt": prompt.chars().take(200).collect::<String>(),
-    });
-    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
-        let _ = writeln!(f, "{line}");
+    log::append(
+        path,
+        &json!({
+            "ts": log::now_ms() / 1000, "session": session, "prompt_id": prompt_id, "model": model,
+            "reason": decision["reason"], "signals": decision["signals"],
+            "prompt": prompt.chars().take(200).collect::<String>(),
+        }),
+    );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn haiku_request_loses_what_haiku_rejects() {
+        let mut req = json!({
+            "model": MODEL_CHEAP, "max_tokens": 5,
+            "thinking": {"type": "adaptive"}, "context_management": {"edits": []},
+            "output_config": {"effort": "high"},
+            "messages": [{"role": "user", "content": "a"}, {"role": "system", "content": "note"}, {"role": "user", "content": "b"}],
+        });
+        adapt_for_haiku(&mut req);
+        assert_eq!(req["messages"].as_array().unwrap().len(), 2);
+        for gone in ["thinking", "context_management", "output_config"] {
+            assert!(req.get(gone).is_none(), "{gone} should be removed");
+        }
+        assert_eq!(req["max_tokens"], 5);
+    }
+
+    #[test]
+    fn explicit_thinking_budget_and_other_output_config_survive() {
+        let mut req = json!({"thinking": {"type": "enabled", "budget_tokens": 1024}, "output_config": {"effort": "low", "format": {}}});
+        adapt_for_haiku(&mut req);
+        assert_eq!(req["thinking"]["budget_tokens"], 1024);
+        assert_eq!(req["output_config"], json!({"format": {}}));
+    }
+
+    #[test]
+    fn long_context_beta_is_stripped_from_the_list() {
+        assert_eq!(
+            without_long_context("claude-code-20250219,oauth-2025-04-20,context-1m-2025-08-07,interleaved-thinking-2025-05-14"),
+            "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14"
+        );
+        assert_eq!(without_long_context("context-1m-2025-08-07"), "");
     }
 }

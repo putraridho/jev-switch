@@ -61,14 +61,78 @@ claude.ai / Max login passes through unchanged; plain `claude` is unaffected.
   header, enabled with `CLAUDE_CODE_GATEWAY_HINT_HEADERS=1`), so all API calls in a
   turn use one model, with code mode's policy: Sonnet by default; Opus for confident
   reasoning, security work (keywords or Jev's `security_review`), or edits to auth
-  code; slow downgrades.
-  Background requests (titles, summaries) go to Haiku; subagents and compaction stay
-  on the turn's model.
+  code; slow downgrades (a tier is held for at most 4 easier turns, even vague ones:
+  a cache rebuild pays for itself in about 3 turns against Opus's premium).
+  Small background requests (titles, summaries) go to Haiku, with the settings Haiku
+  rejects removed (long-context beta, adaptive thinking, effort, system-role messages;
+  logged as `adapted`). Background forks of the conversation (they carry the tool
+  list), subagents and compaction stay on the turn's model, which also keeps the
+  prompt cache warm and avoids Haiku's 200k limit.
 - Picking Sonnet or Opus in `/model` bypasses routing for that session.
-- Decisions are logged to `~/.local/state/jev-router/gateway.jsonl` (gateway output
-  in `gateway.out`). Stop it with `pkill jev-gateway`; `jev-claude` restarts it.
+- Logs are in `~/.local/state/jev-router/` (see [Usage log](#usage-log)); gateway
+  output is in `gateway.out`. Stop it with `pkill jev-gateway`; `jev-claude` restarts it.
 - Claude Code prints an "unrecognized model" note for `jev-code`; it is harmless.
   The `[1m]` suffix tells Claude Code the context window is 1M, like Sonnet and Opus.
+
+#### Usage log
+
+The gateway writes three JSON-lines files (mode 0600) for later analysis. They cover
+every `/v1/messages` request, including ones you send to Sonnet or Opus directly
+(`routed: false`), which gives you a baseline to compare routing against.
+
+- `gateway.jsonl`: one line per routing decision: `ts`, `session`, `prompt_id`,
+  `model`, `reason`, `signals`, and the first 200 characters of the prompt. It is the
+  only file with any prompt text.
+- `usage.jsonl`: one line per request.
+  - **Who/where:** `ts_ms`, `session`, `prompt_id`, `class` (`main`, `auxiliary`,
+    subagent…), `cwd`, `project`, `client`.
+  - **Routing:** `requested_model`, `model`, `routed`, `adapted`, `new_turn`, `decision` (`tier`,
+    `reason`, `confident`, Jev's `signals`: `choice`, `confidence`, `edit_p`, `sec_p`,
+    `security`; the same for every request of a turn).
+  - **Request shape:** `params` (`max_tokens`, `thinking`, `context_management`, …),
+    `beta`, `stream`, `messages`, `tools`, `req_bytes`.
+  - **Result:** `status`, `request_id`, `message_id`, `response_model`, `stop_reason`,
+    `error`, `complete` (false if the client aborted mid-stream), `content_encoding`
+    (set only if a response was compressed and so couldn't be read).
+  - **Cost:** `usage`, exactly as Anthropic returns it (`input_tokens`,
+    `output_tokens`, `cache_read_input_tokens`, `cache_creation_input_tokens`,
+    `output_tokens_details.thinking_tokens`, …).
+  - **Quota:** `ratelimit`: the `anthropic-ratelimit-*` response headers (on a Max
+    login, 5-hour and 7-day utilization and reset times) and `retry-after`.
+  - **Behavior:** `blocks` (counts by type: text, thinking, tool_use…),
+    `tools_called` (tool names only, no arguments), `ttfb_ms`, `latency_ms`,
+    `resp_bytes`.
+- `turns.jsonl`: one line per user turn, summing its requests (`requests`, `by_class`,
+  `models`, `tokens`, `tools`, `errors`, `wall_ms`, `ended`: `end_turn`, `max_tokens`,
+  `aborted`, `error` or `superseded`) plus the **outcome signals**, in `followup`,
+  describing how the user reacted to the *previous* turn:
+  - `gap_ms`: time from the previous answer to this prompt.
+  - `similarity`: word overlap with the previous prompt (near 1 = asked again).
+  - `model_switched`, `prev_requested_model`: you changed `/model` between turns.
+  - `correction_p` (opt-in, `JEV_CORRECTION_CHECK=1`): Jev's probability that the
+    prompt reacts to the last answer as wrong or incomplete (a background call; never
+    used for routing). Off by default: on 276 logged turns it did not track aborts,
+    gaps or model switches, so it needs real labels before it is worth a call per turn.
+
+  To judge routing, read turn *n+1*'s `followup` as a verdict on turn *n*. An `aborted`
+  turn means you interrupted it. Turns with no `prompt_id` header are not rolled up.
+
+The tap reads the usage events as the response streams past and never changes what the
+client receives. It does remove `Accept-Encoding` from logged requests so responses
+arrive uncompressed. Join files on `(session, prompt_id)`. Example:
+
+```bash
+jq -s 'group_by(.model)[] | {model: .[0].model, requests: length,
+  out: (map(.usage.output_tokens // 0) | add)}' ~/.local/state/jev-router/usage.jsonl
+```
+
+Paths: `JEV_USAGE_LOG`, `JEV_TURNS_LOG`, `JEV_GATEWAY_LOG`. A file over
+`JEV_LOG_MAX_MB` (default 50, 0 = never) is moved to `<name>.1`, replacing the previous
+one.
+
+Failed requests print a `[warn]` line to `gateway.out`. If Haiku rejects a background
+request (400/413/422), the gateway retries it once on Sonnet as the client sent it and
+records `fallback_from` (model, status, error) on the usage row.
 
 ### Code mode (`jev-code`)
 
