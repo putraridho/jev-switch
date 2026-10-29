@@ -9,7 +9,7 @@
 //! Opus for confident reasoning, strong security terms, or edits to auth code,
 //! with the same upgrade-now / downgrade-slowly stickiness. Small background
 //! requests (titles, summaries) go to Haiku, adapted to what Haiku accepts; forks of
-//! the conversation stay on the turn's model. Three JSON-lines logs: routing decisions, one usage
+//! the conversation and compaction stay on the turn's model; subagents run on Sonnet. Three JSON-lines logs: routing decisions, one usage
 //! record per /v1/messages request, and one record per user turn (see README).
 //!
 //!   jev-gateway        (normally started by the `jev-claude` launcher)
@@ -354,8 +354,15 @@ async fn choose_model(app: &App, meta: &Meta, req: &Value) -> Option<Picked> {
         let fork = req.get("tools").and_then(Value::as_array).is_some_and(|t| !t.is_empty());
         return Some(if fork { same_turn(st) } else { Picked { model: MODEL_CHEAP, new_turn: false, decision: None } });
     }
+    if class == "subagent" {
+        // Subagents arriving as jev-code (the main model named no model) are mostly
+        // searches and reads. Sonnet for every request keeps a run on one model, so a
+        // main-model switch can't rebuild the subagent's cache mid-run. An explicit
+        // model on the Agent tool never reaches here: only the alias is routed.
+        return Some(Picked { model: MODEL_MID, new_turn: false, decision: None });
+    }
     if class != "main" {
-        // Subagents, workflows, compaction: stay on the turn's model.
+        // Workflows, compaction: stay on the turn's model.
         return Some(same_turn(st));
     }
 

@@ -66,8 +66,10 @@ claude.ai / Max login passes through unchanged; plain `claude` is unaffected.
   Small background requests (titles, summaries) go to Haiku, with the settings Haiku
   rejects removed (long-context beta, adaptive thinking, effort, system-role messages;
   logged as `adapted`). Background forks of the conversation (they carry the tool
-  list), subagents and compaction stay on the turn's model, which also keeps the
-  prompt cache warm and avoids Haiku's 200k limit.
+  list) and compaction stay on the turn's model, which also keeps the
+  prompt cache warm and avoids Haiku's 200k limit. Subagents that arrive as `jev-code`
+  run on Sonnet for the whole run; a model set explicitly on the `Agent` tool is
+  forwarded as is.
 - Picking Sonnet or Opus in `/model` bypasses routing for that session.
 - Logs are in `~/.local/state/jev-router/` (see [Usage log](#usage-log)); gateway
   output is in `gateway.out`. Stop it with `pkill jev-gateway`; `jev-claude` restarts it.
