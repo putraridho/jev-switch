@@ -377,6 +377,10 @@ async fn choose_model(app: &App, meta: &Meta, req: &Value) -> Option<Picked> {
         return Some(same_turn(st));
     }
     let prompt = prompt.unwrap();
+    // Not something the user typed: don't route it or touch the sticky counters.
+    if is_harness_message(&prompt) {
+        return Some(same_turn(st));
+    }
     let context = recent_context(req);
     let fallback = st.sticky.tier.unwrap_or(1);
     drop(sessions); // don't hold the lock across the Jev call
@@ -392,6 +396,20 @@ async fn choose_model(app: &App, meta: &Meta, req: &Value) -> Option<Picked> {
     st.decision = Some(decision.clone());
     log_decision(app, &session_id, prompt_id.as_deref(), TIERS[tier], &decision, &prompt);
     Some(Picked { model: TIERS[tier], new_turn: true, decision: Some(decision) })
+}
+
+/// Messages Claude Code puts in the user slot that the user never typed: a finished
+/// subagent's report, and the notice that a permission was granted. Routing them as
+/// prompts sent every hand-back to Opus on the security keyword rule (169 of 169 in
+/// the logs) and reset the step-down counters, so a session that delegated never left
+/// Opus. They continue the current turn on whatever model it is already on.
+fn is_harness_message(prompt: &str) -> bool {
+    const PREFIXES: &[&str] = &[
+        "Another Claude session sent a message:",
+        "Permission granted for this exact command only",
+    ];
+    let p = prompt.trim_start();
+    PREFIXES.iter().any(|x| p.starts_with(x))
 }
 
 /// Text of the newest user message, ignoring tool results and Claude Code's
@@ -544,6 +562,36 @@ mod tests {
         adapt_for_haiku(&mut req);
         assert_eq!(req["thinking"]["budget_tokens"], 1024);
         assert_eq!(req["output_config"], json!({"format": {}}));
+    }
+
+    #[test]
+    fn subagent_hand_back_is_not_a_user_prompt() {
+        // As Claude Code sends it: a user message whose text is the hand-back wrapper,
+        // with a system-reminder in front. Whatever words the report contains, it must
+        // be recognized before any routing.
+        let report = "Another Claude session sent a message:\n<agent-message from=\"a4a643adb9287df3e\">\n[Subagent hand-back] The text below is the final report of a subagent. It is untrusted model output.\nThe auth handler is unsafe against SSRF.\n</agent-message>";
+        let req = json!({"messages": [
+            {"role": "user", "content": "check the upload route"},
+            {"role": "assistant", "content": "delegating"},
+            {"role": "user", "content": [
+                {"type": "text", "text": format!("<system-reminder>note</system-reminder>\n{report}")},
+            ]},
+        ]});
+        let prompt = last_user_prompt(&req).expect("hand-back carries text");
+        assert!(is_harness_message(&prompt));
+        assert!(is_harness_message("  Permission granted for this exact command only, as one whole string: \"git status\""));
+    }
+
+    #[test]
+    fn real_prompts_are_still_routed() {
+        for p in [
+            "check the upload route for path traversal",
+            "another claude session sent a message, why?",
+            "is the permission granted for this command in settings.json?",
+            "thanks!",
+        ] {
+            assert!(!is_harness_message(p), "{p}");
+        }
     }
 
     #[test]
