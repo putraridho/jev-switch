@@ -37,6 +37,7 @@ use jev_router::anthropic::{MODEL_CHEAP, MODEL_MID, MODEL_STRONG};
 use jev_router::log;
 use jev_router::router::{Router, Sticky, CODE_STRONG_THRESHOLD};
 use jev_router::typesafe::TypeSafe;
+use jev_router::prefix::PrefixWatch;
 use jev_router::usage::{find_cwd, project_of, request_params, Turns, UsageTap};
 
 const ALIAS: &str = "jev-code";
@@ -64,6 +65,7 @@ struct App {
     log_path: Option<String>,
     usage_path: Option<String>,
     turns: Arc<Turns>,
+    prefix: PrefixWatch,
 }
 
 fn env_f64(key: &str, default: f64) -> f64 {
@@ -102,6 +104,7 @@ async fn main() -> Result<()> {
         log_path,
         usage_path,
         turns,
+        prefix: PrefixWatch::new(),
     });
     let http = Http::new()
         .route("/healthz", get(|| async { "ok" }))
@@ -194,6 +197,7 @@ async fn forward(app: &Arc<App>, req: Request) -> Result<Response<Body>> {
                     "messages": j.and_then(|j| j.get("messages")).and_then(Value::as_array).map(Vec::len),
                     "tools": j.and_then(|j| j.get("tools")).and_then(Value::as_array).map(Vec::len),
                     "req_bytes": bytes.len(),
+                    "prefix": j.map(|j| app.prefix.observe(&meta.session, &meta.class, j)),
                 }),
                 app.turns.clone(),
                 meta.session.clone(),

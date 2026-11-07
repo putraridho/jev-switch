@@ -10,6 +10,7 @@
 
 pub mod anthropic;
 pub mod log;
+pub mod prefix;
 pub mod router;
 pub mod transcript;
 pub mod typesafe;
