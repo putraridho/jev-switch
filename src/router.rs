@@ -48,6 +48,13 @@ pub const CODE_STRONG_THRESHOLD: f64 = 0.85;
 /// one PR). The 0.60-0.70 band starts mixing in follow-ups and single asks.
 pub const ORCH_TRIGGER_P: f64 = 0.70;
 
+/// Default `FABLE_THRESHOLD`: `very_hard` probability at or above which a turn that
+/// would go to Opus goes to Fable instead. NOT calibrated: there is no graded
+/// Opus-versus-Fable comparison yet, and Fable's price is unknown. The cutoff is high
+/// so few turns qualify; the gateway logs `hard_p` on every Opus-bound turn so it can
+/// be tuned from real usage. `JEV_FABLE=off` disables the tier.
+pub const TOP_THRESHOLD: f64 = 0.90;
+
 /// Most consecutive easier turns (confident or not) a tier is held for. A cache
 /// rebuild costs about one turn's worth of re-reading the context at the new model's
 /// write price; against a ~5x Opus premium that is repaid in ~3 turns, so holding
@@ -113,11 +120,19 @@ pub struct Router {
     /// Route `reasoning` to the strong model only at or above this confidence;
     /// below it, the mid model. 0.0 sends all `reasoning` to strong.
     pub strong_threshold: f64,
+    /// When set, a turn headed to the strong model is also asked `very_hard`, and goes
+    /// to tier 3 (Fable) at or above this. `None` keeps code mode at tiers 0-2.
+    pub top_threshold: Option<f64>,
 }
 
 impl Router {
     pub fn new(ts: TypeSafe, cheap_threshold: f64) -> Self {
-        Self { ts, cheap_threshold, strong_threshold: 0.0 }
+        Self { ts, cheap_threshold, strong_threshold: 0.0, top_threshold: None }
+    }
+
+    pub fn with_top_threshold(mut self, top_threshold: Option<f64>) -> Self {
+        self.top_threshold = top_threshold;
+        self
     }
 
     pub fn with_strong_threshold(mut self, strong_threshold: f64) -> Self {
@@ -227,6 +242,21 @@ impl Router {
             .await
     }
 
+    /// Probability that `request` is among the hardest work: it needs the most capable
+    /// model, not just a strong one. Asked only of turns already headed to Opus.
+    pub async fn very_hard(&self, request: &str, recent_context: &str) -> Result<f64> {
+        self.ts
+            .noul(
+                json!({ "request": request, "recent_context": recent_context }),
+                "Is this one of the hardest requests, where only the most capable model will do and a mistake would be costly?",
+                json!({
+                    "true": "designing or untangling a subtle architecture that spans many systems, debugging a deep concurrency, consistency or distributed-state problem, a security-critical design where a flaw would be costly, or reasoning that must stay exact across a very large amount of code",
+                    "false": "a question or explanation, a lookup, a routine feature, bug fix or refactor, reviewing a change, or anything a strong model would handle comfortably"
+                }),
+            )
+            .await
+    }
+
     /// Orchestrate mode: probability that `request` is a large task that splits into
     /// separate pieces of work (several files, layers or systems, each a step of its
     /// own), so a planner can hand the pieces to cheaper workers. Questions, single
@@ -268,6 +298,28 @@ impl Router {
     /// `security_review`), confident reasoning, and edits to auth code → strong;
     /// everything else → mid. If Jev is unavailable, returns `fallback`.
     pub async fn code_want(&self, request: &str, recent_context: &str, fallback: usize) -> CodeWant {
+        let mut want = self.code_want_base(request, recent_context, fallback).await;
+        let Some(cutoff) = self.top_threshold else { return want };
+        if want.tier != 2 {
+            return want;
+        }
+        // Only Opus-bound turns pay for the extra judgment. If Jev fails, stay on Opus.
+        if let Ok(p) = self.very_hard(request, recent_context).await {
+            match &mut want.signals {
+                Value::Object(o) => {
+                    o.insert("hard_p".into(), json!(p));
+                }
+                s => *s = json!({ "hard_p": p }),
+            }
+            if p >= cutoff {
+                want.tier = 3;
+                want.reason = format!("very hard (hard p {p:.2}): {}", want.reason);
+            }
+        }
+        want
+    }
+
+    async fn code_want_base(&self, request: &str, recent_context: &str, fallback: usize) -> CodeWant {
         let security = security_level(request);
         if security == Security::Strong {
             return CodeWant {
@@ -449,6 +501,19 @@ mod tests {
         assert_eq!(s.decide(&want(1, true), 2).0, 2); // 1/2
         assert_eq!(s.decide(&want(1, false), 2).0, 2); // vague turn: streak kept
         assert_eq!(s.decide(&want(1, true), 2).0, 1); // 2/2: step down
+    }
+
+    #[test]
+    fn top_tier_steps_down_one_tier_at_a_time() {
+        let mut s = Sticky { tier: Some(2), ..Default::default() };
+        let (t, why) = s.decide(&want(3, true), 2);
+        assert_eq!((t, why.starts_with("upgrade")), (3, true));
+        s.tier = Some(3);
+        assert_eq!(s.decide(&want(1, true), 2).0, 3);
+        let (t, _) = s.decide(&want(1, true), 2);
+        assert_eq!(t, 2, "Fable steps down to Opus, not straight to Sonnet");
+        s.tier = Some(2);
+        assert_eq!(s.decide(&want(1, true), 2).0, 2);
     }
 
     #[test]

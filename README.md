@@ -86,7 +86,8 @@ strong model and carried out by Sonnet subagents. Everything else routes as abov
   `jev-claude` with `--plugin-dir`) sends each typed prompt to the gateway's
   `POST /jev/orchestrate`, which asks Jev a `multi_part` Noul. At `ORCH_TRIGGER_P`
   (0.70) or above, the mod attaches a brief the user doesn't see: plan, delegate every
-  edit to the Agent tool with `model: "sonnet"` (`"opus"` for security steps), review,
+  edit to the Agent tool, one subagent per step and independent steps in parallel, each
+  with `model: "sonnet"` (`"opus"` for security steps), review,
   and make no edits itself. The gateway sees the brief's `<jev-orchestrate>` marker and
   runs the turn's main thread on `ORCH_PLANNER` (default `claude-opus-5-5`;
   `claude-fable-5-2` also works). Subagents name their own model, so they pass through.

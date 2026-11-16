@@ -11,6 +11,8 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
+import { isHarnessPrompt } from './harness'
+
 const enabled = atom({ plugin: 'jev-orchestrate', key: 'enabled' } as const, true)
 const active = atom({ plugin: 'jev-orchestrate', key: 'active' } as const, false)
 
@@ -20,7 +22,7 @@ const CHECK_TIMEOUT_MS = 5000
 export const BRIEF = `<jev-orchestrate>
 Orchestrate mode (jev-router): you are running on the expensive planner model, so plan and review, and leave all file edits to cheaper subagents. Don't use Write, Edit or NotebookEdit yourself in this turn, however small the change.
 1. Plan: read only what you need to split the work into self-contained steps, each one checkable on its own. If it is really one small step, that is a plan of one step.
-2. Delegate: run each step with the Agent tool, passing model: "sonnet" and a complete brief (the files involved, what to change, how to verify it, what to report back). Use model: "opus" only for a step that touches security (auth, permissions, secrets, crypto, untrusted input). Run steps in parallel only when they touch different files; otherwise run them in order.
+2. Delegate: one Agent call per step, so never bundle unrelated steps into one subagent. Give each model: "sonnet" and a complete brief (the files involved, what to change, how to verify it, what to report back). Use model: "opus" only for a step that touches security (auth, permissions, secrets, crypto, untrusted input). Send every step that doesn't depend on another and edits different files in a single message, so they run in parallel; run dependent steps, or steps that edit the same file, in order.
 3. Review: when the steps report back, check the result against the request (read the diffs, run the tests or the build) and delegate any fixes the same way.
 </jev-orchestrate>`
 
@@ -100,9 +102,10 @@ export const register: Register = on => {
   })
 
   on('prompt.submit', async ($, e, next) => {
-    // Slash commands, prompts the user didn't type, and prompts delivered into a
+    // Slash commands, prompts the user didn't type (including task notifications and
+    // subagent hand-backs, which arrive unflagged), and prompts delivered into a
     // running turn are left alone.
-    if (e.command || e.isMeta || e.turnId || !(await read($, enabled)) || !(await isJevCode($))) {
+    if (e.command || e.isMeta || e.turnId || isHarnessPrompt(e.text) || !(await read($, enabled)) || !(await isJevCode($))) {
       return next(e)
     }
     if (!(await shouldOrchestrate($, e.text))) {

@@ -17,7 +17,8 @@
 //! Env: JEV_GATEWAY_ADDR (127.0.0.1:18780), JEV_GATEWAY_UPSTREAM
 //! (https://api.anthropic.com), CODE_STRONG_THRESHOLD (0.85), DOWNGRADE_AFTER (2),
 //! JEV_GATEWAY_LOG (~/.local/state/jev-router/gateway.jsonl), JEV_USAGE_LOG
-//! (usage.jsonl), JEV_TURNS_LOG (turns.jsonl). Orchestrate mode (README): JEV_ORCH
+//! (usage.jsonl), JEV_TURNS_LOG (turns.jsonl). Fable tier: JEV_FABLE (on; "off" disables),
+//! FABLE_THRESHOLD (0.90). Orchestrate mode (README): JEV_ORCH
 //! (on; "off" disables), ORCH_TRIGGER_P (0.70), ORCH_PLANNER (claude-opus-5-5),
 //! JEV_ORCH_LOG (orch.jsonl).
 
@@ -35,9 +36,9 @@ use futures_util::StreamExt as _;
 use serde_json::{json, Value};
 use tokio::sync::Mutex;
 
-use jev_router::anthropic::{MODEL_CHEAP, MODEL_MID, MODEL_STRONG};
+use jev_router::anthropic::{MODEL_CHEAP, MODEL_MID, MODEL_STRONG, MODEL_TOP};
 use jev_router::log;
-use jev_router::router::{Router, Sticky, CODE_STRONG_THRESHOLD, ORCH_TRIGGER_P};
+use jev_router::router::{Router, Sticky, CODE_STRONG_THRESHOLD, ORCH_TRIGGER_P, TOP_THRESHOLD};
 use jev_router::typesafe::TypeSafe;
 use jev_router::prefix::PrefixWatch;
 use jev_router::usage::{find_cwd, project_of, request_params, Turns, UsageTap};
@@ -46,7 +47,7 @@ const ALIAS: &str = "jev-code";
 /// Start of the context block the jev-orchestrate mod attaches to a prompt that
 /// triggered orchestration. The gateway only reads it; it never edits the request.
 const ORCH_MARKER: &str = "<jev-orchestrate>";
-const TIERS: [&str; 3] = [MODEL_CHEAP, MODEL_MID, MODEL_STRONG];
+const TIERS: [&str; 4] = [MODEL_CHEAP, MODEL_MID, MODEL_STRONG, MODEL_TOP];
 const MAX_BODY: usize = 64 * 1024 * 1024;
 /// Hop-by-hop and recomputed headers that must not be copied across the proxy.
 const SKIP_HEADERS: &[&str] =
@@ -111,7 +112,9 @@ async fn main() -> Result<()> {
     let usage_path = log::path_from_env("JEV_USAGE_LOG", "usage.jsonl");
     let turns = Turns::new(log::path_from_env("JEV_TURNS_LOG", "turns.jsonl"));
     let app = Arc::new(App {
-        router: Router::new(TypeSafe::from_env()?, 1.0).with_strong_threshold(env_f64("CODE_STRONG_THRESHOLD", CODE_STRONG_THRESHOLD)),
+        router: Router::new(TypeSafe::from_env()?, 1.0).with_strong_threshold(env_f64("CODE_STRONG_THRESHOLD", CODE_STRONG_THRESHOLD))
+            // Fable for the hardest Opus-bound turns; JEV_FABLE=off keeps tiers 0-2.
+            .with_top_threshold(std::env::var("JEV_FABLE").map_or(true, |v| v != "off").then(|| env_f64("FABLE_THRESHOLD", TOP_THRESHOLD))),
         http: reqwest::Client::builder()
             .connect_timeout(std::time::Duration::from_secs(30))
             .build()?,
@@ -159,6 +162,10 @@ struct OrchCheck {
 async fn orchestrate_check(State(app): State<Arc<App>>, Json(c): Json<OrchCheck>) -> Json<Value> {
     if !app.orch.enabled {
         return Json(json!({ "trigger": false, "enabled": false }));
+    }
+    // Not typed by the user: no Jev call, no trigger (the mod skips these too).
+    if is_harness_message(&c.prompt) || is_notification(&c.prompt) {
+        return Json(json!({ "trigger": false, "enabled": true, "skipped": "not typed" }));
     }
     let check = app.router.multi_part(&c.prompt, &c.context);
     let p = match tokio::time::timeout(std::time::Duration::from_secs(10), check).await {
@@ -550,6 +557,13 @@ fn is_harness_message(prompt: &str) -> bool {
     PREFIXES.iter().any(|x| p.starts_with(x))
 }
 
+/// Background-task and subagent notices that Claude Code delivers as prompts. Kept out
+/// of `is_harness_message` so routing is unchanged; the orchestrate check skips them.
+fn is_notification(prompt: &str) -> bool {
+    let p = prompt.trim_start();
+    p.starts_with("<task-notification") || p.starts_with("<agent-message")
+}
+
 /// Whether the turn that this request starts carries the jev-orchestrate brief: the
 /// marker in any user message after the last assistant one, reminders included (the
 /// brief may arrive wrapped in one, or as its own block or message).
@@ -751,6 +765,14 @@ mod tests {
         let prompt = last_user_prompt(&req).expect("hand-back carries text");
         assert!(is_harness_message(&prompt));
         assert!(is_harness_message("  Permission granted for this exact command only, as one whole string: \"git status\""));
+    }
+
+    #[test]
+    fn notifications_are_not_orchestrate_candidates() {
+        assert!(is_notification("<task-notification>\n<task-id>a1</task-id>"));
+        assert!(is_notification("  <agent-message from=\"a\">report"));
+        assert!(!is_notification("why does the <task-notification> hook fire twice?"));
+        assert!(!is_notification("add audit logging across the API"));
     }
 
     #[test]

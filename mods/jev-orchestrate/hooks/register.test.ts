@@ -1,6 +1,7 @@
 import { expect, test } from 'claude-code/testing'
 import type { On } from 'claude-code'
 
+import { isHarnessPrompt } from './harness'
 import { BRIEF, parseArgs } from './register'
 
 type Setup = {
@@ -63,6 +64,24 @@ test('other models are never orchestrated or checked', async ($, on) => {
 
   expect(r.context ?? []).not.toContain(BRIEF)
   expect(sent.length).toBe(0)
+})
+
+test('task notifications and hand-backs are never checked', async ($, on) => {
+  const sent = engine(on, { trigger: true })
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+  const note = '<task-notification>\n<task-id>a1</task-id>\nadd audit logging across the API, the web app and the tests\n</task-notification>'
+  const r = await $.prompt.submit(typed(note))
+
+  expect(r.context ?? []).not.toContain(BRIEF)
+  expect(sent.length).toBe(0)
+})
+
+test('harness prompts are recognised, typed ones are not', () => {
+  expect(isHarnessPrompt('<task-notification>\n<task-id>a1</task-id>')).toBe(true)
+  expect(isHarnessPrompt('  Another Claude session sent a message:\n<agent-message from="a">')).toBe(true)
+  expect(isHarnessPrompt('Permission granted for this exact command only, as one whole string: "git status"')).toBe(true)
+  expect(isHarnessPrompt('add audit logging across the API')).toBe(false)
+  expect(isHarnessPrompt('why does the task-notification hook fire twice?')).toBe(false)
 })
 
 test('a gateway that is down lets the prompt through', async ($, on) => {

@@ -13,6 +13,8 @@ pub const MODEL_CHEAP: &str = "claude-haiku-5-5";
 pub const MODEL_MID: &str = "claude-sonnet-5-5";
 /// Strong model for planning, tradeoffs, hard debugging, and security-sensitive work.
 pub const MODEL_STRONG: &str = "claude-opus-5-5";
+/// Top model for the hardest turns, used by the gateway only (`Router::with_top_threshold`).
+pub const MODEL_TOP: &str = "claude-fable-5-2";
 
 /// One turn in the conversation. This is the canonical, provider-neutral unit
 /// the transcript stores and replays to whichever model handles the turn.
