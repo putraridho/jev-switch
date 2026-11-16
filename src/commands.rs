@@ -18,6 +18,10 @@ pub enum Command {
     SetPin(Pin),
     /// `/provider auto|off`: routing across providers on (true) or off (Claude only).
     SetRouting(bool),
+    /// `/orchestrate on|off`: a planner that delegates pieces to workers, for this session.
+    SetOrchestrate(bool),
+    /// `/orchestrate` with no argument: show whether it is on.
+    ShowOrchestrate,
     /// `/providers [refresh]`.
     Providers { refresh: bool },
     /// A command that was recognised but whose argument was not; the text says what is accepted.
@@ -50,6 +54,12 @@ pub fn parse(line: &str) -> Command {
             (Some("auto" | "on"), false) => Command::SetRouting(true),
             (Some("off"), false) => Command::SetRouting(false),
             _ => invalid("usage: /provider auto|off"),
+        },
+        "/orchestrate" => match (arg, extra) {
+            (None, _) => Command::ShowOrchestrate,
+            (Some("on"), false) => Command::SetOrchestrate(true),
+            (Some("off"), false) => Command::SetOrchestrate(false),
+            _ => invalid("usage: /orchestrate on|off"),
         },
         "/providers" => match (arg, extra) {
             (None, _) => Command::Providers { refresh: false },
@@ -125,6 +135,15 @@ mod tests {
         assert_eq!(parse("/provider off"), Command::SetRouting(false));
         assert!(matches!(parse("/provider"), Command::Invalid(_)));
         assert!(matches!(parse("/provider maybe"), Command::Invalid(_)));
+    }
+
+    #[test]
+    fn orchestrate_toggle() {
+        assert_eq!(parse("/orchestrate on"), Command::SetOrchestrate(true));
+        assert_eq!(parse("/orchestrate off"), Command::SetOrchestrate(false));
+        assert_eq!(parse("/orchestrate"), Command::ShowOrchestrate);
+        assert!(matches!(parse("/orchestrate maybe"), Command::Invalid(m) if m.contains("on|off")));
+        assert!(matches!(parse("/orchestrate on now"), Command::Invalid(_)));
     }
 
     #[test]

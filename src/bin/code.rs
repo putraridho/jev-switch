@@ -14,6 +14,7 @@ use anyhow::{bail, Context, Result};
 
 use jev_router::backend::{Event, Usage};
 use jev_router::commands::{self, Command};
+use jev_router::orchestrate::{self, Setup};
 use jev_router::providers::Runtime;
 use jev_router::router::{Router, CODE_STRONG_THRESHOLD};
 use jev_router::turn::{Engine, TurnStatus, Ui};
@@ -31,6 +32,11 @@ IN SESSION:
   /model sonnet|opus|haiku   shorthand for the Claude model of that name
   /model                     show the current pin
   /provider auto|off         routing across providers on (default) or off (Claude only)
+  /orchestrate on|off        a planner model splits a big task and delegates pieces to cheaper
+                             workers (any provider, each in its own git worktree); off by default.
+                             Only when the request splits into parts AND the normal route would
+                             use a top model. Jev picks every worker; claude, codex and deepseek
+                             can plan (gemini and grok cannot take the delegate tool yet)
   /providers                 what was detected, what is cooling down, what was refused
   /providers refresh         probe again (after logging in or adding a key)
   /new                       start a fresh session on every provider
@@ -43,6 +49,9 @@ never shown as an answer. Security work never goes to DeepSeek or Grok.
 
 ENVIRONMENT:
   Jev key                    TYPESAFE_API_KEY or JEV_API_KEY, else ~/.jev-router.env
+  JEV_ORCHESTRATE            on starts with orchestration on; default off
+  JEV_DELEGATE_BIN           the delegate_mcp binary (default: next to jev-code)
+  JEV_DELEGATE_LOG           orchestration log (default <state dir>/orchestration.jsonl)
   JEV_PROVIDERS              off starts with routing off (Claude only); default on
   JEV_ALLOW_CREDITS          1 allows models billed as extra credits (e.g. Claude Fable); default off
   JEV_CHAINS                 JSON file replacing the model order per task type
@@ -97,6 +106,14 @@ fn report_usage(u: &Usage) {
     );
 }
 
+fn on_off(on: bool) -> &'static str {
+    if on {
+        "on"
+    } else {
+        "off"
+    }
+}
+
 fn indented(text: &str) -> String {
     text.lines().map(|l| format!("  {l}")).collect::<Vec<_>>().join("\n")
 }
@@ -129,13 +146,16 @@ async fn main() -> Result<()> {
     let runtime = Runtime::start().await;
     let mut engine = Engine::new(runtime, router, dir)
         .with_enabled(commands::routing_enabled(std::env::var("JEV_PROVIDERS").ok().as_deref()))
+        .with_orchestrate(orchestrate::enabled_from_env(std::env::var("JEV_ORCHESTRATE").ok().as_deref()))
+        .with_orch_setup(Setup::detect())
         .with_downgrade_after(env_f64("DOWNGRADE_AFTER", 2.0) as u32);
 
     println!("jev-code \u{2014} {}", engine.dir().display());
     println!("{}", indented(&engine.summary_text()));
     println!(
-        "  routing: {} \u{b7} /model auto|<provider>[:<model>] \u{b7} /provider auto|off \u{b7} /providers [refresh] \u{b7} /new \u{b7} /quit\n",
-        if engine.enabled() { "on" } else { "off (Claude only)" }
+        "  routing: {} \u{b7} orchestrate: {} \u{b7} /model auto|<provider>[:<model>] \u{b7} /provider auto|off \u{b7} /orchestrate on|off \u{b7} /providers [refresh] \u{b7} /new \u{b7} /quit\n",
+        if engine.enabled() { "on" } else { "off (Claude only)" },
+        on_off(engine.orchestrate())
     );
 
     let stdin = io::stdin();
@@ -163,6 +183,11 @@ async fn main() -> Result<()> {
                 engine.set_enabled(on);
                 println!("  routing: {}\n", if on { "on" } else { "off (Claude only)" });
             }
+            Command::SetOrchestrate(on) => {
+                engine.set_orchestrate(on);
+                println!("  orchestrate: {}\n", on_off(on));
+            }
+            Command::ShowOrchestrate => println!("  orchestrate: {}\n", on_off(engine.orchestrate())),
             Command::Providers { refresh } => {
                 if refresh {
                     engine.refresh_providers().await;

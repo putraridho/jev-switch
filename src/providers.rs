@@ -15,13 +15,13 @@ use crate::backend::claude::ClaudeBackend;
 use crate::backend::codex::CodexBackend;
 use crate::backend::gemini::{auth_looks_configured, Flavor, GeminiBackend, AUTH_ENV_VARS};
 use crate::backend::grok::GrokBackend;
-use crate::backend::{Backend, PlanUsage, ProviderId};
+use crate::backend::{Backend, ErrorKind, PlanUsage, ProviderId, TurnError};
 use crate::catalog::{self, Allowances, Overrides, Usable};
 use crate::cooldown::{self, Cooldowns};
 use crate::envfile;
 
 /// Every provider, in the order `/providers` lists them.
-const ALL_PROVIDERS: [ProviderId; 5] =
+pub const ALL_PROVIDERS: [ProviderId; 5] =
     [ProviderId::Claude, ProviderId::DeepSeek, ProviderId::Codex, ProviderId::Gemini, ProviderId::Grok];
 
 const DEEPSEEK_BASE_URL: &str = "https://api.deepseek.com/anthropic";
@@ -216,6 +216,46 @@ impl Runtime {
         self.plan.get(&p).map(|u| u.utilization)
     }
 
+    /// Apply what a failed attempt teaches the router and say what happens next. `Some`
+    /// is the note for "try the next model"; `None` means the failure would likely recur
+    /// on every provider, so the caller stops. Shared by a turn's failover
+    /// ([`crate::turn::Engine`]) and by orchestration workers
+    /// ([`crate::delegate::Delegator`]) so a limit, a login or an entitlement is handled
+    /// one way everywhere.
+    pub fn react(
+        &mut self,
+        provider: ProviderId,
+        model: &str,
+        err: &TurnError,
+        excluded: &mut HashSet<(ProviderId, String)>,
+        now: u64,
+    ) -> Option<String> {
+        match &err.kind {
+            ErrorKind::Quota { resets_at } => {
+                self.cool_down(provider, resets_at.as_deref(), now);
+                let when = resets_at.as_deref().map(|r| format!(" (resets {r})")).unwrap_or_default();
+                Some(format!("{provider} hit its limit{when}: trying the next model"))
+            }
+            ErrorKind::NotEntitled => {
+                self.mark_unusable(provider, model);
+                Some(format!("{provider}:{model} is not on your plan: trying the next model"))
+            }
+            ErrorKind::Auth => {
+                self.cool_down(provider, None, now);
+                Some(format!(
+                    "{provider} is not logged in or its login expired (log in to {} again, then /providers refresh): trying the next model",
+                    login_target(provider)
+                ))
+            }
+            ErrorKind::Stalled | ErrorKind::Empty => {
+                excluded.insert((provider, model.to_string()));
+                let what = if err.kind == ErrorKind::Stalled { "stopped answering" } else { "gave an empty answer" };
+                Some(format!("{provider}:{model} {what}: trying the next model"))
+            }
+            ErrorKind::Other => None,
+        }
+    }
+
     /// Probe again (for `/providers refresh`). Cooldowns, unusable models and plan
     /// readings are kept: a re-login does not end a usage limit. The per-token
     /// allowance is recomputed because a key may have been added.
@@ -260,6 +300,17 @@ impl Runtime {
         let mut models: Vec<_> = self.unusable_models.iter().collect();
         models.sort();
         models.into_iter().map(|(p, m)| format!("{p}:{m} refused by the provider, not offered")).collect()
+    }
+}
+
+/// The tool a user logs in to again for `provider`.
+pub fn login_target(provider: ProviderId) -> &'static str {
+    match provider {
+        ProviderId::Claude => "claude",
+        ProviderId::Codex => "codex",
+        ProviderId::Gemini => "gemini (or agy)",
+        ProviderId::Grok => "grok",
+        ProviderId::DeepSeek => "DeepSeek: check DEEPSEEK_API_KEY",
     }
 }
 

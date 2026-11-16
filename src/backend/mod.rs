@@ -159,6 +159,19 @@ impl std::fmt::Display for TurnError {
 
 impl std::error::Error for TurnError {}
 
+/// An MCP server to attach to one turn (orchestration's delegate tool). One value
+/// carries both spellings the CLIs need: Claude reads a JSON config FILE
+/// (`--mcp-config`), Codex takes the server as `-c mcp_servers.<name>.*` overrides.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct McpAttachment {
+    /// The server's name; tools reach the model as `mcp__<name>__<tool>`.
+    pub name: String,
+    pub command: PathBuf,
+    pub args: Vec<String>,
+    /// The JSON config file Claude Code is pointed at; the caller writes it before the turn.
+    pub config_path: PathBuf,
+}
+
 /// What one CLI contributes. Object-safe and synchronous on purpose: the only
 /// async part (process IO) is the same for every CLI and lives in [`run_turn`].
 pub trait Backend: Send + Sync {
@@ -176,6 +189,16 @@ pub trait Backend: Send + Sync {
 
     /// Parse ONE stdout line. Non-JSON or irrelevant lines give an empty Vec.
     fn parse_line(&self, line: &str) -> Vec<Event>;
+
+    /// Whether [`Backend::attach_mcp`] works for this CLI. Orchestration only picks a
+    /// planner among providers that say yes: a planner that cannot call the delegate
+    /// tool could not delegate anything. Gemini and Grok say no in this version.
+    fn supports_mcp(&self) -> bool {
+        false
+    }
+
+    /// Add `mcp` to this backend's commands. Only called when [`Backend::supports_mcp`].
+    fn attach_mcp(&mut self, _mcp: &McpAttachment) {}
 
     /// Classify an error message from the CLI (a `Failed` text or a stderr tail).
     /// Implementations call [`classify_common`] first and may add their own rules.

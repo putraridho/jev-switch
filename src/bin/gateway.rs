@@ -38,6 +38,7 @@ use tokio::sync::Mutex;
 
 use jev_router::anthropic::{MODEL_CHEAP, MODEL_MID, MODEL_STRONG, MODEL_TOP};
 use jev_router::log;
+use jev_router::orchestrate::{orch_gate, Gate};
 use jev_router::router::{Router, Sticky, CODE_STRONG_THRESHOLD, ORCH_TRIGGER_P, TOP_THRESHOLD};
 use jev_router::typesafe::TypeSafe;
 use jev_router::prefix::PrefixWatch;
@@ -225,27 +226,6 @@ async fn orchestrate_check(State(app): State<Arc<App>>, Json(c): Json<OrchCheck>
         log::append(path, &line);
     }
     Json(json!({ "trigger": trigger, "enabled": true, "multi_part_p": p, "cutoff": app.orch.cutoff, "planner": planner, "skipped": skipped }))
-}
-
-#[derive(Debug, PartialEq)]
-enum Gate {
-    Trigger,
-    BelowCutoff,
-    /// Multi-part enough, but normal routing would not have used Opus.
-    SingleModelRoute,
-}
-
-/// Whether a prompt is orchestrated: `multi_part` at the cutoff or above and, when
-/// `require_opus`, a normal route of Opus (tier 2) or higher. A route Jev couldn't judge
-/// (`None`) doesn't veto.
-fn orch_gate(multi_part: Option<f64>, cutoff: f64, route_tier: Option<usize>, require_opus: bool) -> Gate {
-    if !multi_part.is_some_and(|p| p >= cutoff) {
-        return Gate::BelowCutoff;
-    }
-    match route_tier {
-        Some(t) if require_opus && t < 2 => Gate::SingleModelRoute,
-        _ => Gate::Trigger,
-    }
 }
 
 #[derive(serde::Deserialize)]
@@ -926,17 +906,6 @@ mod tests {
         let prompt = last_user_prompt(&req).expect("hand-back carries text");
         assert!(is_harness_message(&prompt));
         assert!(is_harness_message("  Permission granted for this exact command only, as one whole string: \"git status\""));
-    }
-
-    #[test]
-    fn orchestrate_only_what_normal_routing_would_send_to_opus() {
-        assert_eq!(orch_gate(Some(0.98), 0.7, Some(2), true), Gate::Trigger, "multi-part and Opus-bound");
-        assert_eq!(orch_gate(Some(0.98), 0.7, Some(3), true), Gate::Trigger, "Fable-bound counts");
-        assert_eq!(orch_gate(Some(0.98), 0.7, Some(1), true), Gate::SingleModelRoute, "Sonnet would do it alone");
-        assert_eq!(orch_gate(Some(0.98), 0.7, Some(1), false), Gate::Trigger, "ORCH_REQUIRE_OPUS=off keeps the old rule");
-        assert_eq!(orch_gate(Some(0.98), 0.7, None, true), Gate::Trigger, "no routing judgment: don't veto");
-        assert_eq!(orch_gate(Some(0.5), 0.7, Some(2), true), Gate::BelowCutoff);
-        assert_eq!(orch_gate(None, 0.7, Some(2), true), Gate::BelowCutoff, "Jev failed the multi-part check");
     }
 
     #[test]

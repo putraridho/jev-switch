@@ -320,6 +320,12 @@ impl Usable {
         self.set.contains(&(spec.provider, spec.id.to_string()))
     }
 
+    /// Only the models of `keep` (for orchestration: a planner must come from providers
+    /// that can have the delegate tool attached).
+    pub fn only_providers(&self, keep: &[ProviderId]) -> Self {
+        Self { set: self.set.iter().filter(|(p, _)| keep.contains(p)).cloned().collect() }
+    }
+
     /// The same set minus `excluded` (for one turn's failover: models that just failed).
     pub fn without(&self, excluded: &HashSet<(ProviderId, String)>) -> Self {
         Self { set: self.set.difference(excluded).cloned().collect() }

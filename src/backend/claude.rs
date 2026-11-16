@@ -2,11 +2,13 @@
 //! CLI also serves Anthropic-compatible APIs (DeepSeek) when started with extra env
 //! vars, so one struct covers every provider that speaks Claude Code's stream.
 
-use serde_json::Value;
+use std::path::PathBuf;
+
+use serde_json::{json, Value};
 use tokio::process::Command;
 
 use super::{
-    classify_common, Backend, ErrorKind, Event, Finish, PlanUsage, ProviderId, TurnRequest, Usage,
+    classify_common, Backend, ErrorKind, Event, Finish, McpAttachment, PlanUsage, ProviderId, TurnRequest, Usage,
 };
 use crate::anthropic::is_limit_message;
 
@@ -17,6 +19,10 @@ pub struct ClaudeBackend {
     pub env: Vec<(String, String)>,
     pub permission_mode: String,
     pub allowed_tools: Option<String>,
+    /// MCP config file passed with `--mcp-config` (the orchestration planner's delegate tool).
+    pub mcp_config: Option<PathBuf>,
+    /// The attached server's name, to allow its tools without a prompt.
+    mcp_name: Option<String>,
 }
 
 impl ClaudeBackend {
@@ -34,8 +40,27 @@ impl ClaudeBackend {
             env,
             permission_mode: std::env::var("CODE_PERMISSION_MODE").unwrap_or_else(|_| "acceptEdits".into()),
             allowed_tools: std::env::var("CODE_ALLOWED_TOOLS").ok(),
+            mcp_config: None,
+            mcp_name: None,
         }
     }
+
+    /// The `--allowedTools` value: the user's list plus, with an MCP server attached,
+    /// that whole server (`mcp__<name>`). Headless `claude -p` cannot ask, so an MCP
+    /// tool that is not allowed would simply be denied and the planner could never delegate.
+    fn allowed_tools_arg(&self) -> Option<String> {
+        let server = self.mcp_name.as_ref().filter(|_| self.mcp_config.is_some()).map(|n| format!("mcp__{n}"));
+        match (&self.allowed_tools, server) {
+            (Some(a), Some(s)) => Some(format!("{a} {s}")),
+            (Some(a), None) => Some(a.clone()),
+            (None, s) => s,
+        }
+    }
+}
+
+/// The JSON file `--mcp-config` reads: one stdio server. Pure so the shape is a test.
+pub fn mcp_config_json(mcp: &McpAttachment) -> Value {
+    json!({ "mcpServers": { mcp.name.as_str(): { "command": mcp.command, "args": mcp.args } } })
 }
 
 /// One-line summary of a tool call: its name plus the most telling input field.
@@ -124,10 +149,23 @@ impl Backend for ClaudeBackend {
             cmd.args(["--resume", id]);
         }
         cmd.args(["--permission-mode", &self.permission_mode]);
-        if let Some(allowed) = &self.allowed_tools {
-            cmd.args(["--allowedTools", allowed]);
+        if let Some(config) = &self.mcp_config {
+            cmd.arg("--mcp-config").arg(config);
+        }
+        if let Some(allowed) = self.allowed_tools_arg() {
+            cmd.args(["--allowedTools", &allowed]);
         }
         cmd
+    }
+
+    /// DeepSeek runs through the same CLI, so it can have the tool attached too.
+    fn supports_mcp(&self) -> bool {
+        true
+    }
+
+    fn attach_mcp(&mut self, mcp: &McpAttachment) {
+        self.mcp_config = Some(mcp.config_path.clone());
+        self.mcp_name = Some(mcp.name.clone());
     }
 
     fn parse_line(&self, line: &str) -> Vec<Event> {
@@ -171,6 +209,8 @@ mod tests {
             env: vec![],
             permission_mode: "acceptEdits".into(),
             allowed_tools: None,
+            mcp_config: None,
+            mcp_name: None,
         }
     }
 
@@ -255,6 +295,40 @@ mod tests {
             ["-p", "--model", "sonnet-x", "--output-format", "stream-json", "--verbose", "--resume", "abc",
              "--permission-mode", "acceptEdits", "--allowedTools", "Bash(cargo *)"]
         );
+    }
+
+    fn attachment() -> McpAttachment {
+        McpAttachment {
+            name: "jev".into(),
+            command: "/bin/delegate_mcp".into(),
+            args: vec!["--dir".into(), "/repo".into()],
+            config_path: "/state/mcp.json".into(),
+        }
+    }
+
+    #[test]
+    fn attached_mcp_config_is_passed_and_its_tools_allowed() {
+        let mut b = backend();
+        assert!(b.supports_mcp());
+        b.attach_mcp(&attachment());
+        let a = args(&b.command(&req(None)));
+        let i = a.iter().position(|x| x == "--mcp-config").expect("flag");
+        assert_eq!(a[i + 1], "/state/mcp.json");
+        let j = a.iter().position(|x| x == "--allowedTools").expect("server allowed");
+        assert_eq!(a[j + 1], "mcp__jev");
+        let mut b = ClaudeBackend { allowed_tools: Some("Bash(cargo *)".into()), ..backend() };
+        b.attach_mcp(&attachment());
+        let a = args(&b.command(&req(None)));
+        assert_eq!(a[a.iter().position(|x| x == "--allowedTools").unwrap() + 1], "Bash(cargo *) mcp__jev");
+        // Without an attachment the command is the one it always was.
+        assert!(!args(&backend().command(&req(None))).iter().any(|x| x.contains("mcp")));
+    }
+
+    #[test]
+    fn mcp_config_file_runs_the_server_command() {
+        let v = mcp_config_json(&attachment());
+        assert_eq!(v["mcpServers"]["jev"]["command"], "/bin/delegate_mcp");
+        assert_eq!(v["mcpServers"]["jev"]["args"], json!(["--dir", "/repo"]));
     }
 
     #[test]
