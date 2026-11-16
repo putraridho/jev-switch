@@ -1,0 +1,9 @@
+{"type":"thread.started","thread_id":"01a1e5a6-9f98-7c21-99f5-6468805d7543"}
+{"type":"turn.started"}
+{"type":"item.completed","item":{"id":"item_0","type":"agent_message","text":"I’ll read `a.txt`, then append `world` on a new line."}}
+{"type":"item.started","item":{"id":"item_1","type":"command_execution","command":"/usr/bin/bash -lc 'cat a.txt'","aggregated_output":"","exit_code":null,"status":"in_progress"}}
+{"type":"item.completed","item":{"id":"item_1","type":"command_execution","command":"/usr/bin/bash -lc 'cat a.txt'","aggregated_output":"hello\n","exit_code":0,"status":"completed"}}
+{"type":"item.started","item":{"id":"item_2","type":"command_execution","command":"/usr/bin/bash -lc \"printf '\\\\nworld\\\\n' >> a.txt\"","aggregated_output":"","exit_code":null,"status":"in_progress"}}
+{"type":"item.completed","item":{"id":"item_2","type":"command_execution","command":"/usr/bin/bash -lc \"printf '\\\\nworld\\\\n' >> a.txt\"","aggregated_output":"","exit_code":0,"status":"completed"}}
+{"type":"item.completed","item":{"id":"item_3","type":"agent_message","text":"hello"}}
+{"type":"turn.completed","usage":{"input_tokens":44970,"cached_input_tokens":36864,"cache_write_input_tokens":0,"output_tokens":159,"reasoning_output_tokens":15}}

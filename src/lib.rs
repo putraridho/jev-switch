@@ -9,9 +9,17 @@
 //!    curve so you read the number off your own data.
 
 pub mod anthropic;
+pub mod availability;
+pub mod backend;
+pub mod catalog;
+pub mod cooldown;
+pub mod envfile;
+pub mod handoff;
 pub mod log;
 pub mod prefix;
 pub mod router;
 pub mod transcript;
+pub mod turnlog;
 pub mod typesafe;
 pub mod usage;
+

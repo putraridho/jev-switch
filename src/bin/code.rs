@@ -16,18 +16,20 @@
 //! Commands: /model sonnet|opus|auto · /new (fresh session) · /quit
 //! Env: CODE_STRONG_THRESHOLD (0.85) DOWNGRADE_AFTER (2)
 //!      CODE_PERMISSION_MODE (acceptEdits) CODE_ALLOWED_TOOLS (e.g. "Bash(cargo *) Bash(git status)")
+//!      CODE_IDLE_TIMEOUT_SECS (900) JEV_CODE_LOG (turn log, default <state dir>/code-turns.jsonl)
 
 use std::io::{self, Write};
 use std::path::PathBuf;
-use std::process::Stdio;
+use std::time::{Duration, Instant};
 
 use anyhow::{bail, Context, Result};
-use serde_json::Value;
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::process::Command;
 
-use jev_router::anthropic::{is_limit_message, MODEL_CHEAP, MODEL_MID, MODEL_STRONG};
+use jev_router::anthropic::{MODEL_CHEAP, MODEL_MID, MODEL_STRONG};
+use jev_router::backend::claude::ClaudeBackend;
+use jev_router::backend::{self, Backend, Event, TurnError, TurnOutcome, TurnRequest, Usage};
+use jev_router::log;
 use jev_router::router::{CodeWant, Router, Sticky, CODE_STRONG_THRESHOLD};
+use jev_router::turnlog::turn_row;
 use jev_router::typesafe::TypeSafe;
 
 const TIERS: [&str; 3] = [MODEL_CHEAP, MODEL_MID, MODEL_STRONG];
@@ -50,6 +52,8 @@ ENVIRONMENT:
   CODE_PERMISSION_MODE       Claude Code permission mode (default acceptEdits)
   CODE_ALLOWED_TOOLS         extra allowed tools, e.g. \"Bash(cargo test) Bash(git status)\"
   CLAUDE_BIN                 path to the claude binary (default: claude on PATH)
+  CODE_IDLE_TIMEOUT_SECS     stop a turn when the CLI prints nothing for this long (default 900)
+  JEV_CODE_LOG               turn log file (default <state dir>/code-turns.jsonl)
 
 Edits are applied without asking, so use it inside a git repo.";
 
@@ -109,106 +113,47 @@ fn decide(s: &mut Session, w: &CodeWant, downgrade_after: u32) -> (usize, String
     }
 }
 
-fn tool_summary(name: &str, input: &Value) -> String {
-    let field = ["file_path", "command", "pattern", "path", "url", "description"]
-        .iter()
-        .find_map(|k| input.get(*k).and_then(Value::as_str));
-    match field {
-        Some(f) => format!("{name} {}", f.chars().take(100).collect::<String>()),
-        None => name.to_string(),
+/// Print progress as the turn streams: tool calls on stderr, assistant text on stdout.
+fn show(ev: &Event) {
+    match ev {
+        Event::Tool(summary) => eprintln!("  \u{23fa} {summary}"),
+        // Permission hints start with \u{2717}; they are diagnostics, so they stay on stderr as before.
+        Event::Text(t) if t.starts_with('\u{2717}') => eprintln!("  {t}"),
+        Event::Text(t) => println!("{t}\n"),
+        _ => {}
     }
 }
 
-/// Run one turn through Claude Code, streaming progress. Returns the final text.
-async fn run_turn(s: &mut Session, tier: usize, prompt: &str) -> Result<String> {
-    let model = TIERS[tier];
-    let mode = std::env::var("CODE_PERMISSION_MODE").unwrap_or_else(|_| "acceptEdits".into());
-    let mut cmd = Command::new(std::env::var("CLAUDE_BIN").unwrap_or_else(|_| "claude".into()));
-    cmd.args(["-p", "--model", model, "--output-format", "stream-json", "--verbose"])
-        .current_dir(&s.dir)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::inherit());
-    if let Some(id) = &s.id {
-        cmd.args(["--resume", id]);
-    }
-    cmd.args(["--permission-mode", &mode]);
-    if let Ok(allowed) = std::env::var("CODE_ALLOWED_TOOLS") {
-        cmd.args(["--allowedTools", &allowed]);
-    }
+fn report_usage(u: &Usage) {
+    eprintln!(
+        "  [usage] context {}K \u{b7} turn total: in {}K (cached {}K), out {}",
+        u.context_tokens.unwrap_or(0) / 1000,
+        u.input_tokens / 1000,
+        u.cached_input_tokens / 1000,
+        u.output_tokens
+    );
+}
 
-    let mut child = cmd.spawn().context("failed to run `claude` (is Claude Code installed?)")?;
-    let mut stdin = child.stdin.take().context("claude stdin")?;
-    stdin.write_all(prompt.as_bytes()).await?;
-    drop(stdin);
+/// Longest silence from the CLI before the turn is cut off, so a hung CLI cannot
+/// freeze the session.
+fn idle_timeout() -> Duration {
+    Duration::from_secs(env_f64("CODE_IDLE_TIMEOUT_SECS", 900.0) as u64)
+}
 
-    let mut lines = BufReader::new(child.stdout.take().context("claude stdout")?).lines();
-    let mut final_text = String::new();
-    let mut got_result = false;
-    while let Some(line) = lines.next_line().await? {
-        let Ok(ev) = serde_json::from_str::<Value>(&line) else { continue };
-        match ev["type"].as_str() {
-            Some("assistant") => {
-                for b in ev["message"]["content"].as_array().into_iter().flatten() {
-                    match b["type"].as_str() {
-                        Some("tool_use") => eprintln!(
-                            "  \u{23fa} {}",
-                            tool_summary(b["name"].as_str().unwrap_or("?"), &b["input"])
-                        ),
-                        Some("text") => {
-                            let t = b["text"].as_str().unwrap_or("").trim();
-                            // The limit notice is reported as an error below, not as an answer.
-                            if !t.is_empty() && !is_limit_message(t) {
-                                println!("{t}\n");
-                            }
-                        }
-                        _ => {}
-                    }
-                }
-            }
-            Some("system") if ev["subtype"] == "permission_denied" => eprintln!(
-                "  \u{2717} denied {} — allow it via CODE_ALLOWED_TOOLS or your Claude Code settings",
-                ev["tool_name"].as_str().unwrap_or("tool")
-            ),
-            Some("result") => {
-                got_result = true;
-                if let Some(id) = ev["session_id"].as_str() {
-                    s.id = Some(id.to_string());
-                }
-                // `usage` sums every API call in the turn; the context size is the
-                // last call's input (fresh + cache read + cache written).
-                let u = &ev["usage"];
-                let last = u["iterations"].as_array().and_then(|a| a.last()).unwrap_or(u);
-                let n = |v: &Value, k: &str| v[k].as_u64().unwrap_or(0);
-                let input = |v: &Value| {
-                    n(v, "input_tokens") + n(v, "cache_read_input_tokens") + n(v, "cache_creation_input_tokens")
-                };
-                s.context_tokens = input(last);
-                eprintln!(
-                    "  [usage] context {}K · turn total: in {}K (cache read {}K, written {}K), out {}",
-                    s.context_tokens / 1000,
-                    input(u) / 1000,
-                    n(u, "cache_read_input_tokens") / 1000,
-                    n(u, "cache_creation_input_tokens") / 1000,
-                    n(u, "output_tokens")
-                );
-                final_text = ev["result"].as_str().unwrap_or("").to_string();
-                if ev["is_error"].as_bool() == Some(true) {
-                    bail!("claude reported an error: {final_text}");
-                }
-                // A used-up plan limit arrives as the answer text, not as an error.
-                if is_limit_message(&final_text) {
-                    bail!("Claude usage limit reached: {}", final_text.trim());
-                }
-            }
-            _ => {}
-        }
-    }
-    let status = child.wait().await?;
-    if !got_result {
-        bail!("claude exited ({status}) without a result");
-    }
-    Ok(final_text)
+/// Run one turn through Claude Code, streaming progress.
+async fn run_turn(
+    backend: &ClaudeBackend,
+    s: &Session,
+    model: &str,
+    prompt: &str,
+) -> Result<TurnOutcome, TurnError> {
+    let req = TurnRequest {
+        dir: s.dir.clone(),
+        model: model.to_string(),
+        prompt: prompt.to_string(),
+        session_id: s.id.clone(),
+    };
+    backend::run_turn(backend, &req, idle_timeout(), &mut show).await
 }
 
 #[tokio::main]
@@ -238,6 +183,8 @@ async fn main() -> Result<()> {
         .with_strong_threshold(env_f64("CODE_STRONG_THRESHOLD", CODE_STRONG_THRESHOLD));
     let downgrade_after = env_f64("DOWNGRADE_AFTER", 2.0) as u32;
     let mut s = Session::new(dir);
+    let backend = ClaudeBackend::claude();
+    let turn_log = log::path_from_env("JEV_CODE_LOG", "code-turns.jsonl");
 
     println!(
         "jev-code — {}\n  sonnet / opus · /model sonnet|opus|auto · /new · /quit\n",
@@ -275,13 +222,25 @@ async fn main() -> Result<()> {
         let w = want(&router, &s, prompt).await;
         let (tier, reason) = decide(&mut s, &w, downgrade_after);
         eprintln!("  [route] {} — {}", short(TIERS[tier]), reason);
-        match run_turn(&mut s, tier, prompt).await {
-            Ok(text) => {
+        let started = Instant::now();
+        let result = run_turn(&backend, &s, TIERS[tier], prompt).await;
+        let wall_ms = started.elapsed().as_millis() as u64;
+        if let Ok(out) = &result {
+            s.id = out.session_id.clone().or(s.id.take());
+        }
+        if let Some(path) = &turn_log {
+            let row = turn_row(backend.provider(), TIERS[tier], s.id.as_deref(), &reason, &w.signals, &result, wall_ms);
+            log::append(path, &row);
+        }
+        match result {
+            Ok(out) => {
+                s.context_tokens = out.usage.context_tokens.unwrap_or(0);
+                report_usage(&out.usage);
                 s.sticky.tier = Some(tier);
-                s.remember(prompt, &text);
+                s.remember(prompt, &out.text);
             }
             // Keep the session alive; the user can retry or switch with /model.
-            Err(e) => eprintln!("  [error] {e:#}\n"),
+            Err(e) => eprintln!("  [error] {e}\n"),
         }
     }
     Ok(())
