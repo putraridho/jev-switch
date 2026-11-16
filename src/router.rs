@@ -124,15 +124,17 @@ pub struct Router {
     /// to tier 3 (Fable) at or above this. `None` keeps code mode at tiers 0-2.
     pub top_threshold: Option<f64>,
     /// Orchestrated workers: a read-only `simple` task at this confidence or above gets
-    /// Haiku. `None` (the default) keeps workers on Sonnet or Opus: Haiku is
+    /// Haiku. `None` (the default) keeps every worker on Sonnet: Haiku is
     /// uncalibrated for workers, and a wrong report from one misleads the planner.
     pub worker_cheap: Option<f64>,
 }
 
-/// The model a worker should run on, as the alias `agent.spawn` takes.
+/// The model a worker should run on, as the alias `agent.spawn` takes. Workers are
+/// never Opus or Fable: those are planner models. A security or hard task still runs
+/// on Sonnet, and the planner's own review is what checks it.
 pub fn worker_alias(tier: usize, signals: &Value, cheap: Option<f64>) -> &'static str {
     if tier >= 2 {
-        return "opus";
+        return "sonnet";
     }
     let edit_p = signals["edit_p"].as_f64().unwrap_or(1.0);
     let confidence = signals["confidence"].as_f64().unwrap_or(0.0);
@@ -152,8 +154,9 @@ impl Router {
         self
     }
 
-    /// Which model an orchestrated worker's task needs, judged by Jev from the worker's
-    /// own prompt with the same signals as code mode (security, reasoning, edits).
+    /// Which model an orchestrated worker's task needs (Sonnet, or Haiku for a read-only
+    /// lookup when enabled), judged by Jev from the worker's own prompt with the same
+    /// signals as code mode (security, reasoning, edits).
     /// `None` when Jev is unavailable: the planner's own choice then stands.
     pub async fn worker_want(&self, task: &str) -> Option<(&'static str, String, Value)> {
         let want = self.code_want_base(task, "", 1).await;
@@ -538,14 +541,15 @@ mod tests {
     }
 
     #[test]
-    fn workers_get_sonnet_or_opus_and_haiku_only_for_read_only_lookups_when_enabled() {
+    fn workers_are_sonnet_and_haiku_only_for_read_only_lookups_when_enabled() {
         let lookup = json!({ "choice": "simple", "confidence": 0.95, "edit_p": 0.05 });
         let edit = json!({ "choice": "simple", "confidence": 0.95, "edit_p": 0.7 });
         assert_eq!(worker_alias(1, &lookup, None), "sonnet", "Haiku is off unless enabled");
         assert_eq!(worker_alias(1, &lookup, Some(0.9)), "haiku");
         assert_eq!(worker_alias(1, &edit, Some(0.9)), "sonnet", "anything that edits stays off Haiku");
         assert_eq!(worker_alias(1, &json!({ "choice": "simple", "confidence": 0.6, "edit_p": 0.05 }), Some(0.9)), "sonnet");
-        assert_eq!(worker_alias(2, &lookup, Some(0.9)), "opus", "security or hard reasoning");
+        assert_eq!(worker_alias(2, &lookup, Some(0.9)), "sonnet", "security or hard reasoning stays off Opus and Fable");
+        assert_eq!(worker_alias(3, &edit, None), "sonnet");
         assert_eq!(worker_alias(1, &json!({ "security": "strong" }), Some(0.9)), "sonnet");
     }
 

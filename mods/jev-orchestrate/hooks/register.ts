@@ -36,7 +36,7 @@ export const BRIEF = `<jev-orchestrate>
 Orchestrate mode (jev-router): you are running on the expensive planner model, so plan and review, and leave all file edits to cheaper subagents. Don't use Write, Edit or NotebookEdit yourself in this turn, however small the change.
 1. Plan: read only what you need to split the work into self-contained steps, each one checkable on its own. If it is really one small step, that is a plan of one step.
 2. Delegate: one Agent call per step, so never bundle unrelated steps into one subagent. Give each a complete brief (the files involved, what to change, how to verify it, what to report back). Don't choose the worker's model: it is picked for you from the task. Run the steps in parallel: put every step that doesn't depend on another and edits different files into ONE message as several Agent calls, never one call per message. Only a step that needs another's result, or edits the same file, waits for it.
-3. Review: don't take a worker's report on trust. When the steps report back, check the result against the request yourself (read the diffs, run the tests or the build), send any step that fell short back out as a new Agent call with what was wrong, and only then report to the user.
+3. Review: don't take a worker's report on trust. When the steps report back, check the result against the request yourself (read the diffs, run the tests or the build), send any step that fell short back out as a new Agent call with what was wrong, and only then report to the user. Look hardest at steps that touch security (auth, permissions, secrets, crypto, untrusted input): their workers run on the same cheaper model, so read those diffs line by line.
 </jev-orchestrate>`
 
 type Mode = 'toggle' | 'on' | 'off' | 'usage'
@@ -91,7 +91,7 @@ async function shouldOrchestrate($: EngineInterface, prompt: string): Promise<bo
   }
 }
 
-/// The model Jev picks for a worker's task, as an alias (`haiku`, `sonnet`, `opus`), or
+/// The model Jev picks for a worker's task, as an alias (`haiku` or `sonnet`), or
 /// undefined to leave the planner's choice (any error, timeout, or Jev unavailable).
 async function workerModel($: EngineInterface, prompt: string): Promise<string | undefined> {
   const ask = (async () => {
@@ -102,7 +102,8 @@ async function workerModel($: EngineInterface, prompt: string): Promise<string |
     })
     if (!res.ok) return undefined
     const model = (JSON.parse(res.text) as { model?: unknown }).model
-    return model === 'haiku' || model === 'sonnet' || model === 'opus' ? model : undefined
+    // Workers are never Opus or Fable: those are planner models.
+    return model === 'haiku' || model === 'sonnet' ? model : undefined
   })()
   const timeout = $.clock.sleep(CHECK_TIMEOUT_MS).then(() => undefined)
   try {
