@@ -178,10 +178,11 @@ async fn orchestrate_check(State(app): State<Arc<App>>, Json(c): Json<OrchCheck>
         return Json(json!({ "trigger": false, "enabled": false }));
     }
     // Not typed by the user: no Jev call, no trigger (the mod skips these too).
-    if is_harness_message(&c.prompt) || is_notification(&c.prompt) {
+    let words = if is_harness_message(&c.prompt) { None } else { user_words(&c.prompt) };
+    let Some(words) = words else {
         return Json(json!({ "trigger": false, "enabled": true, "skipped": "not typed" }));
-    }
-    let check = app.router.multi_part(&c.prompt, &c.context);
+    };
+    let check = app.router.multi_part(&words, &c.context);
     let p = match tokio::time::timeout(std::time::Duration::from_secs(10), check).await {
         Ok(Ok(p)) => Some(p),
         Ok(Err(e)) => {
@@ -199,7 +200,7 @@ async fn orchestrate_check(State(app): State<Arc<App>>, Json(c): Json<OrchCheck>
     let mut route_tier = None;
     let mut hard_p = None;
     if p.is_some_and(|p| p >= app.orch.cutoff) {
-        let want = app.router.code_want(&c.prompt, &c.context, 1).await;
+        let want = app.router.code_want(&words, &c.context, 1).await;
         if !want.signals.is_null() {
             route_tier = Some(want.tier);
             hard_p = want.signals["hard_p"].as_f64();
@@ -611,6 +612,11 @@ async fn choose_model(app: &App, meta: &Meta, req: &Value) -> Option<Picked> {
     if is_harness_message(&prompt) {
         return Some(same_turn(st));
     }
+    // Only the user's own words are judged. Command echoes, `!` shell output and
+    // notifications gave Jev random verdicts (120 of 2,123 logged decisions).
+    let Some(words) = user_words(&prompt) else {
+        return Some(same_turn(st));
+    };
     let orch_check = st.orch_check.take();
     if is_orchestrated(req) {
         // The mod attached the orchestration brief: the main thread plans, delegates
@@ -639,7 +645,7 @@ async fn choose_model(app: &App, meta: &Meta, req: &Value) -> Option<Picked> {
     let fallback = st.sticky.tier.unwrap_or(1);
     drop(sessions); // don't hold the lock across the Jev call
 
-    let want = app.router.code_want(&prompt, &context, fallback).await;
+    let want = app.router.code_want(&words, &context, fallback).await;
     let mut sessions = app.sessions.lock().await;
     let st = sessions.entry(session_id.clone()).or_default();
     let (tier, reason) = st.sticky.decide(&want, app.downgrade_after);
@@ -649,7 +655,7 @@ async fn choose_model(app: &App, meta: &Meta, req: &Value) -> Option<Picked> {
     st.model = Some(TIERS[tier]);
     let decision = json!({ "tier": tier, "reason": reason, "confident": want.confident, "signals": want.signals, "orchestrate": orch_check });
     st.decision = Some(decision.clone());
-    log_decision(app, &session_id, prompt_id.as_deref(), TIERS[tier], &decision, &prompt);
+    log_decision(app, &session_id, prompt_id.as_deref(), TIERS[tier], &decision, &words);
     Some(Picked { model: TIERS[tier], new_turn: true, decision: Some(decision) })
 }
 
@@ -733,12 +739,19 @@ fn last_user_prompt(req: &Value) -> Option<String> {
 }
 
 fn strip_reminders(text: &str) -> String {
+    strip_tag(text, "system-reminder")
+}
+
+/// `text` without every `<tag>…</tag>` block. An unclosed block runs to the end
+/// (prompts are cut at 4,000 characters, so a long one may lose its closing tag).
+fn strip_tag(text: &str, tag: &str) -> String {
+    let (open, close) = (format!("<{tag}>"), format!("</{tag}>"));
     let mut out = String::with_capacity(text.len());
     let mut rest = text;
-    while let Some(start) = rest.find("<system-reminder>") {
+    while let Some(start) = rest.find(&open) {
         out.push_str(&rest[..start]);
-        match rest[start..].find("</system-reminder>") {
-            Some(end) => rest = &rest[start + end + "</system-reminder>".len()..],
+        match rest[start..].find(&close) {
+            Some(end) => rest = &rest[start + end + close.len()..],
             None => {
                 rest = "";
                 break;
@@ -747,6 +760,44 @@ fn strip_reminders(text: &str) -> String {
     }
     out.push_str(rest);
     out
+}
+
+/// The text inside the first `<tag>…</tag>`, if there is one.
+fn tag_text<'a>(text: &'a str, tag: &str) -> Option<&'a str> {
+    let open = format!("<{tag}>");
+    let start = text.find(&open)? + open.len();
+    let end = text[start..].find(&format!("</{tag}>"))?;
+    Some(&text[start..start + end])
+}
+
+/// What the user actually typed in this prompt, for Jev to judge. None when there is
+/// nothing of theirs: a background-task or subagent notice, a local command's echo
+/// (`/cockpit`, `/clear`) or the output of a `!` shell command. A skill or custom
+/// slash command counts as its name and arguments (`/better-ui wdyt so far?`), not
+/// the skill text Claude Code appends. Pasted text is the user's and is kept.
+fn user_words(prompt: &str) -> Option<String> {
+    if is_notification(prompt) {
+        return None;
+    }
+    let local_command = ["<local-command-caveat>", "<local-command-stdout>", "<local-command-stderr>"]
+        .iter()
+        .any(|t| prompt.contains(t));
+    let mut text = prompt.to_string();
+    for tag in ["local-command-caveat", "local-command-stdout", "local-command-stderr", "bash-input", "bash-stdout", "bash-stderr"] {
+        text = strip_tag(&text, tag);
+    }
+    if let Some(name) = tag_text(&text, "command-name").map(|n| n.trim().to_string()) {
+        if local_command {
+            for tag in ["command-name", "command-message", "command-args"] {
+                text = strip_tag(&text, tag);
+            }
+        } else {
+            let args = tag_text(&text, "command-args").unwrap_or("").trim();
+            text = format!("{name} {args}");
+        }
+    }
+    let text = text.trim();
+    (!text.is_empty()).then(|| text.to_string())
 }
 
 /// The previous assistant reply (trimmed), as context for Jev.
@@ -903,6 +954,33 @@ mod tests {
         assert!(is_notification("<task-notification>\n<task-id>a1</task-id>"));
         assert!(is_notification("  <agent-message from=\"a\">report"));
         assert!(!is_notification("why does the <task-notification> hook fire twice?"));
+    }
+
+    #[test]
+    fn only_the_users_own_words_are_judged() {
+        let caveat = "<local-command-caveat>The command below was run directly in Claude Code, not sent to you as a request.</local-command-caveat>";
+        let echo = "<command-name>/cockpit</command-name>\n            <command-message>cockpit</command-message>\n            <command-args></command-args>\n\n<local-command-stdout>mech-hud: MECH-OS // COCKPIT ONLINE</local-command-stdout>";
+        // A local command's echo alone: nothing to judge.
+        assert_eq!(user_words(&format!("{caveat}\n{echo}")), None);
+        assert_eq!(user_words(echo), None);
+        // Echo followed by what the user typed: just their words.
+        assert_eq!(
+            user_words(&format!("{caveat}\n{echo}\nbefore start, think deeply about the execution")).as_deref(),
+            Some("before start, think deeply about the execution")
+        );
+        // A skill command: its name and arguments, not the skill text.
+        let skill = "<command-message>better-ui</command-message>\n<command-name>/better-ui</command-name>\n<command-args>wdyt of this implementation so far?</command-args>\n\nBase directory for this skill: /home/u/.claude/skills/better-ui\n# Better UI\nPolish the interface...";
+        assert_eq!(user_words(skill).as_deref(), Some("/better-ui wdyt of this implementation so far?"));
+        // Output of a `!` command is not a request.
+        assert_eq!(user_words("<bash-input>cargo test</bash-input>\n\n<bash-stdout>ok</bash-stdout><bash-stderr></bash-stderr>"), None);
+        assert_eq!(user_words("<bash-input>sudo pacman -Syu</bash-input>\n<bash-stdout>:: Proceed? [Y/n] Y\n:: Retrieving packages"), None, "unclosed (cut) output");
+        // Notifications are never judged.
+        assert_eq!(user_words("<task-notification>\n<task-id>a1</task-id>\n<status>completed</status>"), None);
+        // Pasted text and ordinary prompts are the user's own.
+        let paste = "<pasted_content id=\"9462\">\nerror[E0308]: mismatched types\n</pasted_content>";
+        assert_eq!(user_words(paste).as_deref(), Some(paste));
+        assert_eq!(user_words("why does the <task-notification> hook fire twice?").as_deref(), Some("why does the <task-notification> hook fire twice?"));
+        assert_eq!(user_words("   "), None);
         assert!(!is_notification("add audit logging across the API"));
     }
 

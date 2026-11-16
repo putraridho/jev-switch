@@ -70,6 +70,11 @@ claude.ai / Max login passes through unchanged; plain `claude` is unaffected.
   prompt cache warm and avoids Haiku's 200k limit. Subagents that arrive as `jev-code`
   run on Sonnet for the whole run; a model set explicitly on the `Agent` tool is
   forwarded as is.
+- Jev judges only what you typed. Local command echoes (`/cockpit`), `!` shell
+  output and background-task notices keep the current model without a Jev call. A
+  skill command counts as its name and arguments, and pasted text counts as yours.
+- A routing judgment takes about 0.5 s. If Jev doesn't answer within
+  `JEV_TIMEOUT_MS` (default 3000), the turn goes ahead on its current model.
 - Picking Sonnet or Opus in `/model` bypasses routing for that session.
 - Logs are in `~/.local/state/jev-router/` (see [Usage log](#usage-log)); gateway
   output is in `gateway.out`. Stop it with `pkill jev-gateway`; `jev-claude` restarts it.

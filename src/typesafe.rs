@@ -17,7 +17,18 @@ pub struct ChoiceAnswer {
 
 pub struct TypeSafe {
     key: String,
+    url: String,
     http: reqwest::Client,
+}
+
+const TYPESAFE_URL: &str = "https://api.typesafe.ai/v1/systemone";
+
+/// Backstop for every Jev request. Routing applies its own shorter limit
+/// (`Router::jev_timeout`); batch tools (`route`, `tune`) rely on this one.
+const HTTP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
+
+fn http_client() -> reqwest::Client {
+    reqwest::Client::builder().timeout(HTTP_TIMEOUT).build().unwrap_or_default()
 }
 
 impl TypeSafe {
@@ -27,14 +38,19 @@ impl TypeSafe {
             .ok()
             .or_else(key_from_env_file)
             .context("Jev key not found: set TYPESAFE_API_KEY or JEV_API_KEY, or put JEV_API_KEY=... in ~/.jev-router.env")?;
-        Ok(Self { key, http: reqwest::Client::new() })
+        Ok(Self { key, url: TYPESAFE_URL.into(), http: http_client() })
+    }
+
+    /// A client for a different endpoint (tests, proxies).
+    pub fn with_url(key: &str, url: &str) -> Self {
+        Self { key: key.into(), url: url.into(), http: http_client() }
     }
 
     async fn ask(&self, state: Value, questions: Value) -> Result<Value> {
         let req = json!({ "state": state, "model": "jev-latest", "questions": questions });
         let resp = self
             .http
-            .post("https://api.typesafe.ai/v1/systemone")
+            .post(&self.url)
             .header("authorization", format!("Bearer {}", self.key))
             .json(&req)
             .send()

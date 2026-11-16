@@ -26,7 +26,7 @@ use serde_json::Value;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Command;
 
-use jev_router::anthropic::{MODEL_CHEAP, MODEL_MID, MODEL_STRONG};
+use jev_router::anthropic::{is_limit_message, MODEL_CHEAP, MODEL_MID, MODEL_STRONG};
 use jev_router::router::{CodeWant, Router, Sticky, CODE_STRONG_THRESHOLD};
 use jev_router::typesafe::TypeSafe;
 
@@ -45,6 +45,7 @@ IN SESSION:
 ENVIRONMENT:
   Jev key                    TYPESAFE_API_KEY or JEV_API_KEY, else ~/.jev-router.env
   CODE_STRONG_THRESHOLD      Jev reasoning confidence for Opus (default 0.85)
+  JEV_TIMEOUT_MS             longest wait for Jev before keeping the current model (default 3000)
   DOWNGRADE_AFTER            easier turns before stepping back to Sonnet (default 2)
   CODE_PERMISSION_MODE       Claude Code permission mode (default acceptEdits)
   CODE_ALLOWED_TOOLS         extra allowed tools, e.g. \"Bash(cargo test) Bash(git status)\"
@@ -156,7 +157,8 @@ async fn run_turn(s: &mut Session, tier: usize, prompt: &str) -> Result<String> 
                         ),
                         Some("text") => {
                             let t = b["text"].as_str().unwrap_or("").trim();
-                            if !t.is_empty() {
+                            // The limit notice is reported as an error below, not as an answer.
+                            if !t.is_empty() && !is_limit_message(t) {
                                 println!("{t}\n");
                             }
                         }
@@ -193,6 +195,10 @@ async fn run_turn(s: &mut Session, tier: usize, prompt: &str) -> Result<String> 
                 final_text = ev["result"].as_str().unwrap_or("").to_string();
                 if ev["is_error"].as_bool() == Some(true) {
                     bail!("claude reported an error: {final_text}");
+                }
+                // A used-up plan limit arrives as the answer text, not as an error.
+                if is_limit_message(&final_text) {
+                    bail!("Claude usage limit reached: {}", final_text.trim());
                 }
             }
             _ => {}

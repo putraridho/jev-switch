@@ -63,6 +63,11 @@ pub const TOP_THRESHOLD: f64 = 0.90;
 /// toward `downgrade_after`.
 pub const MAX_HOLD: u32 = 4;
 
+/// Default `JEV_TIMEOUT_MS`: the longest a routing judgment may take before the turn
+/// goes ahead on the current model. A judgment normally takes ~0.5 s (three questions
+/// in parallel); without a limit a stalled connection held the turn until it broke.
+pub const JEV_TIMEOUT_MS: u64 = 3000;
+
 /// Session stickiness for code-mode tiers. Prompt caches are per model, so a
 /// switch rebuilds the whole context cache: upgrade at once, but step down (one
 /// tier, never below mid) only after `downgrade_after` confident easier turns.
@@ -127,6 +132,8 @@ pub struct Router {
     /// Haiku. `None` (the default) keeps every worker on Sonnet: Haiku is
     /// uncalibrated for workers, and a wrong report from one misleads the planner.
     pub worker_cheap: Option<f64>,
+    /// Longest wait for one routing judgment; past it the turn keeps its current model.
+    pub jev_timeout: std::time::Duration,
 }
 
 /// The model a worker should run on, as the alias `agent.spawn` takes. Fable is never a
@@ -147,7 +154,20 @@ pub fn worker_alias(tier: usize, signals: &Value, cheap: Option<f64>, allow_opus
 
 impl Router {
     pub fn new(ts: TypeSafe, cheap_threshold: f64) -> Self {
-        Self { ts, cheap_threshold, strong_threshold: 0.0, top_threshold: None, worker_cheap: None }
+        let ms = std::env::var("JEV_TIMEOUT_MS").ok().and_then(|v| v.parse().ok()).unwrap_or(JEV_TIMEOUT_MS);
+        Self {
+            ts,
+            cheap_threshold,
+            strong_threshold: 0.0,
+            top_threshold: None,
+            worker_cheap: None,
+            jev_timeout: std::time::Duration::from_millis(ms),
+        }
+    }
+
+    pub fn with_jev_timeout(mut self, timeout: std::time::Duration) -> Self {
+        self.jev_timeout = timeout;
+        self
     }
 
     pub fn with_worker_cheap(mut self, worker_cheap: Option<f64>) -> Self {
@@ -341,8 +361,8 @@ impl Router {
         if want.tier != 2 {
             return want;
         }
-        // Only Opus-bound turns pay for the extra judgment. If Jev fails, stay on Opus.
-        if let Ok(p) = self.very_hard(request, recent_context).await {
+        // Only Opus-bound turns pay for the extra judgment. If Jev fails or is slow, stay on Opus.
+        if let Ok(Ok(p)) = tokio::time::timeout(self.jev_timeout, self.very_hard(request, recent_context)).await {
             match &mut want.signals {
                 Value::Object(o) => {
                     o.insert("hard_p".into(), json!(p));
@@ -376,20 +396,24 @@ impl Router {
                 signals: json!({ "security": "strong" }),
             };
         }
-        let (ans, edit_p, sec_p) = match tokio::join!(
-            self.classify(request, recent_context),
-            self.needs_changes(request, recent_context),
-            self.security_review(request, recent_context)
-        ) {
-            (Ok(a), Ok(p), Ok(s)) => (a, p, s),
-            (Err(e), _, _) | (_, Err(e), _) | (_, _, Err(e)) => {
-                return CodeWant {
-                    tier: fallback,
-                    confident: false,
-                    reason: format!("jev unavailable ({e:#})"),
-                    signals: Value::Null,
-                };
-            }
+        let unavailable = |why: String| CodeWant {
+            tier: fallback,
+            confident: false,
+            reason: format!("jev unavailable ({why})"),
+            signals: Value::Null,
+        };
+        let judged = tokio::time::timeout(self.jev_timeout, async {
+            tokio::join!(
+                self.classify(request, recent_context),
+                self.needs_changes(request, recent_context),
+                self.security_review(request, recent_context)
+            )
+        })
+        .await;
+        let (ans, edit_p, sec_p) = match judged {
+            Ok((Ok(a), Ok(p), Ok(s))) => (a, p, s),
+            Ok((Err(e), _, _)) | Ok((_, Err(e), _)) | Ok((_, _, Err(e))) => return unavailable(format!("{e:#}")),
+            Err(_) => return unavailable(format!("timed out after {} ms", self.jev_timeout.as_millis())),
         };
         let tag = format!("{} {:.2}, edit p {:.2}, sec p {:.2}", ans.choice, ans.confidence, edit_p, sec_p);
         let signals = json!({
@@ -593,6 +617,29 @@ mod tests {
             assert_eq!(s.decide(&want(1, false), 2).0, 2);
         }
         assert_eq!(s.decide(&want(1, false), 2).0, 1);
+    }
+
+    #[tokio::test]
+    async fn a_stalled_jev_connection_keeps_the_current_model_instead_of_hanging() {
+        // Accepts the connection, then never answers.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}/v1/systemone", listener.local_addr().unwrap());
+        tokio::spawn(async move {
+            let mut held = Vec::new();
+            while let Ok((sock, _)) = listener.accept().await {
+                held.push(sock);
+            }
+        });
+        let router = Router::new(TypeSafe::with_url("test-key", &url), 1.0)
+            .with_jev_timeout(std::time::Duration::from_millis(200))
+            .with_top_threshold(Some(0.9));
+        let started = std::time::Instant::now();
+        let w = router.code_want("why does the upload hang on large files", "", 2).await;
+        assert!(started.elapsed() < std::time::Duration::from_secs(2), "took {:?}", started.elapsed());
+        assert_eq!(w.tier, 2, "keeps the fallback (current) tier");
+        assert!(!w.confident);
+        assert!(w.reason.starts_with("jev unavailable (timed out"), "{}", w.reason);
+        assert!(w.signals.is_null());
     }
 
     #[test]

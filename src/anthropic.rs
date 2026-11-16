@@ -110,7 +110,37 @@ impl Anthropic {
         if parsed.is_error || !out.status.success() {
             bail!("claude {}: {}", out.status, parsed.result);
         }
+        if is_limit_message(&parsed.result) {
+            bail!("Claude usage limit reached: {}", parsed.result.trim());
+        }
         Ok((parsed.result, parsed.usage))
+    }
+}
+
+/// Claude Code reports a used-up plan limit as the answer text, with no error flag:
+/// "You've hit your session limit · resets 5pm" (or the older "Claude AI usage limit
+/// reached|<time>"). Shown as an answer it reads like the model replying; it must be
+/// treated as a usage-limit error. Only the start of the text is checked, so a real
+/// answer that mentions limits isn't caught.
+pub fn is_limit_message(text: &str) -> bool {
+    let head: String = text.trim_start().chars().take(120).collect::<String>().to_lowercase();
+    let head = head.replace('\u{2019}', "'");
+    (head.starts_with("you've hit your") || head.starts_with("you have hit your")) && head.contains("limit")
+        || head.starts_with("claude ai usage limit reached")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_limit_message;
+
+    #[test]
+    fn plan_limit_text_is_recognised_but_answers_about_limits_are_not() {
+        assert!(is_limit_message("You've hit your session limit · resets 5pm (Asia/Jakarta)"));
+        assert!(is_limit_message("You\u{2019}ve hit your weekly limit"));
+        assert!(is_limit_message("  Claude AI usage limit reached|1794853451"));
+        assert!(!is_limit_message("The rate limit is 50 requests per minute; you've hit your limit when it returns 429."));
+        assert!(!is_limit_message("Fixed the off-by-one in the pagination limit."));
+        assert!(!is_limit_message(""));
     }
 }
 
