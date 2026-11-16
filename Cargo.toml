@@ -37,5 +37,9 @@ name = "gateway"
 path = "src/bin/gateway.rs"
 
 [[bin]]
+name = "ask"
+path = "src/bin/ask.rs"
+
+[[bin]]
 name = "orch_tune"
 path = "src/bin/orch_tune.rs"

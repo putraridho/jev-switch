@@ -63,9 +63,57 @@ pub fn turn_row(
     })
 }
 
+/// The single JSON line the `ask` binary prints for one headless turn. Same shape
+/// for success and failure (nulls where unknown) so a caller parses one schema.
+pub fn ask_json(provider: &str, model: &str, result: &Result<TurnOutcome, TurnError>, wall_ms: u64) -> Value {
+    let (ok, text, session, usage, error_kind, error) = match result {
+        Ok(o) => (true, o.text.as_str(), o.session_id.as_deref(), Some(usage_json(&o.usage)), None, None),
+        Err(e) => (false, "", None, None, Some(error_kind_name(&e.kind)), Some(e.message.as_str())),
+    };
+    json!({
+        "provider": provider,
+        "model": model,
+        "ok": ok,
+        "text": text,
+        "session_id": session,
+        "usage": usage,
+        "error_kind": error_kind,
+        "error": error,
+        "wall_ms": wall_ms,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ask_json_success_and_failure_share_one_schema() {
+        let out = TurnOutcome {
+            text: "hi".into(),
+            session_id: Some("s1".into()),
+            usage: Usage { input_tokens: 3, cached_input_tokens: 1, output_tokens: 2, context_tokens: None },
+            plan: None,
+        };
+        let ok = ask_json("codex", "m", &Ok(out), 42);
+        assert_eq!(ok["provider"], "codex");
+        assert_eq!(ok["model"], "m");
+        assert_eq!(ok["ok"], true);
+        assert_eq!(ok["text"], "hi");
+        assert_eq!(ok["session_id"], "s1");
+        assert_eq!(ok["usage"]["output_tokens"], 2);
+        assert!(ok["error_kind"].is_null() && ok["error"].is_null());
+        let err = TurnError { kind: ErrorKind::Quota { resets_at: None }, message: "limit".into() };
+        let bad = ask_json("codex", "m", &Err(err), 7);
+        assert_eq!(bad["ok"], false);
+        assert_eq!(bad["text"], "");
+        assert_eq!(bad["error_kind"], "quota");
+        assert_eq!(bad["error"], "limit");
+        assert!(bad["usage"].is_null() && bad["session_id"].is_null());
+        assert_eq!(bad["wall_ms"], 7);
+        let keys = |v: &Value| v.as_object().unwrap().keys().cloned().collect::<Vec<_>>();
+        assert_eq!(keys(&ok), keys(&bad));
+    }
 
     #[test]
     fn success_row_has_usage_and_plan() {
