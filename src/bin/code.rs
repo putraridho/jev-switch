@@ -1,59 +1,60 @@
-//! Code mode: a routed coding agent. Each turn runs Claude Code (`claude -p`) in
-//! your project with tools on, resuming ONE Claude Code session so files read,
-//! edits, and command output persist across turns and across model switches.
-//! Jev picks the tier per turn; code mode uses two tiers:
-//!
-//! - Security-sensitive or confidently-reasoning turns, and edits to auth code → Opus.
-//! - Everything else → Sonnet. (No Haiku: across five repos its explanations held
-//!   up ~85% at every confidence, and its cache-cold turns save little here.)
-//! - Upgrades happen immediately; downgrades only after DOWNGRADE_AFTER confident turns
-//!   in a row want a lower tier (one tier at a time). Prompt caches are per model and a coding context is
-//!   ~100K tokens, so a switch rebuilds the whole cache — one cheap turn on a
-//!   cheaper model usually costs more than staying put.
+//! Code mode: a routed coding agent. Each turn runs one provider's coding CLI
+//! (Claude Code, Codex, Gemini, DeepSeek through Claude Code, Grok) in your project
+//! with tools on. Jev says what kind of task the turn is; the router picks the best
+//! model among the providers you can really use, catches it up on what the others
+//! did, and fails over to the next one on a limit or error. All of that lives in
+//! `jev_router::turn`; this file only reads lines and prints.
 //!
 //!   TYPESAFE_API_KEY=... cargo run --bin code [project-dir]
-//!
-//! Commands: /model sonnet|opus|auto · /new (fresh session) · /quit
-//! Env: CODE_STRONG_THRESHOLD (0.85) DOWNGRADE_AFTER (2)
-//!      CODE_PERMISSION_MODE (acceptEdits) CODE_ALLOWED_TOOLS (e.g. "Bash(cargo *) Bash(git status)")
-//!      CODE_IDLE_TIMEOUT_SECS (900) JEV_CODE_LOG (turn log, default <state dir>/code-turns.jsonl)
 
 use std::io::{self, Write};
 use std::path::PathBuf;
-use std::time::{Duration, Instant};
 
 use anyhow::{bail, Context, Result};
 
-use jev_router::anthropic::{MODEL_CHEAP, MODEL_MID, MODEL_STRONG};
-use jev_router::backend::claude::ClaudeBackend;
-use jev_router::backend::{self, Backend, Event, TurnError, TurnOutcome, TurnRequest, Usage};
-use jev_router::log;
-use jev_router::router::{CodeWant, Router, Sticky, CODE_STRONG_THRESHOLD};
-use jev_router::turnlog::turn_row;
+use jev_router::backend::{Event, Usage};
+use jev_router::commands::{self, Command};
+use jev_router::providers::Runtime;
+use jev_router::router::{Router, CODE_STRONG_THRESHOLD};
+use jev_router::turn::{Engine, TurnStatus, Ui};
 use jev_router::typesafe::TypeSafe;
 
-const TIERS: [&str; 3] = [MODEL_CHEAP, MODEL_MID, MODEL_STRONG];
-
-const HELP: &str = "jev-code: Claude Code with per-turn model routing (Sonnet, or Opus for hard and security work)
+const HELP: &str = "jev-code: a coding agent that routes each turn across the AI coding tools you have
 
 USAGE:
   jev-code [project-dir]     start in project-dir (default: current directory)
 
 IN SESSION:
-  /model sonnet|opus|auto    pin a model, or hand control back to the router
-  /new                       start a fresh Claude Code session
+  /model auto                let the router choose (default)
+  /model <provider>          pin a provider: claude, codex, gemini, grok, deepseek
+  /model <provider>:<model>  pin one model, e.g. codex:gpt-6.1-sol
+  /model sonnet|opus|haiku   shorthand for the Claude model of that name
+  /model                     show the current pin
+  /provider auto|off         routing across providers on (default) or off (Claude only)
+  /providers                 what was detected, what is cooling down, what was refused
+  /providers refresh         probe again (after logging in or adding a key)
+  /new                       start a fresh session on every provider
   /quit                      exit (or Ctrl-D)
+
+A provider is used only if it is installed and logged in (or has its key), is not
+cooling down after a usage limit, and its billing is allowed. When a turn hits a limit
+or fails, the next best model gets the same prompt; the failed attempt's output is
+never shown as an answer. Security work never goes to DeepSeek or Grok.
 
 ENVIRONMENT:
   Jev key                    TYPESAFE_API_KEY or JEV_API_KEY, else ~/.jev-router.env
-  CODE_STRONG_THRESHOLD      Jev reasoning confidence for Opus (default 0.85)
-  JEV_TIMEOUT_MS             longest wait for Jev before keeping the current model (default 3000)
-  DOWNGRADE_AFTER            easier turns before stepping back to Sonnet (default 2)
-  CODE_PERMISSION_MODE       Claude Code permission mode (default acceptEdits)
-  CODE_ALLOWED_TOOLS         extra allowed tools, e.g. \"Bash(cargo test) Bash(git status)\"
-  CLAUDE_BIN                 path to the claude binary (default: claude on PATH)
+  JEV_PROVIDERS              off starts with routing off (Claude only); default on
+  JEV_ALLOW_CREDITS          1 allows models billed as extra credits (e.g. Claude Fable); default off
+  JEV_CHAINS                 JSON file replacing the model order per task type
+  DEEPSEEK_API_KEY           enables DeepSeek (billed per token; used through the claude CLI)
+  JEV_TIMEOUT_MS             longest wait for Jev before routing without it (default 3000)
   CODE_IDLE_TIMEOUT_SECS     stop a turn when the CLI prints nothing for this long (default 900)
   JEV_CODE_LOG               turn log file (default <state dir>/code-turns.jsonl)
+  CODE_PERMISSION_MODE       Claude Code permission mode (default acceptEdits)
+  CODE_ALLOWED_TOOLS         extra tools Claude Code may use, e.g. \"Bash(cargo test) Bash(git status)\"
+  CLAUDE_BIN, CODEX_BIN, GROK_BIN, CODEX_SANDBOX   binary paths and the Codex sandbox
+  CODE_STRONG_THRESHOLD      with routing off: Jev reasoning confidence for Opus (default 0.85)
+  DOWNGRADE_AFTER            with routing off: easier turns before stepping back to Sonnet (default 2)
 
 Edits are applied without asking, so use it inside a git repo.";
 
@@ -61,72 +62,34 @@ fn env_f64(key: &str, default: f64) -> f64 {
     std::env::var(key).ok().and_then(|s| s.parse().ok()).unwrap_or(default)
 }
 
-fn short(name: &str) -> &str {
-    match name {
-        n if n == MODEL_CHEAP => "haiku",
-        n if n == MODEL_MID => "sonnet",
-        _ => "opus",
-    }
-}
+/// Prints a turn as it streams: tool calls and notes on stderr, assistant text on stdout.
+struct Console;
 
-struct Session {
-    dir: PathBuf,
-    id: Option<String>,
-    sticky: Sticky,
-    pinned: Option<usize>,
-    context_tokens: u64,
-    recent: Vec<String>,
-}
-
-impl Session {
-    fn new(dir: PathBuf) -> Self {
-        Self { dir, id: None, sticky: Sticky::default(), pinned: None, context_tokens: 0, recent: Vec::new() }
+impl Ui for Console {
+    fn route(&mut self, line: &str) {
+        eprintln!("  [route] {line}");
     }
 
-    fn recent_context(&self) -> String {
-        self.recent.join("\n")
-    }
-
-    fn remember(&mut self, user: &str, reply: &str) {
-        let reply: String = reply.chars().take(300).collect();
-        self.recent.push(format!("user: {user}\nassistant: {reply}"));
-        if self.recent.len() > 3 {
-            self.recent.remove(0);
+    fn event(&mut self, e: &Event) {
+        match e {
+            Event::Tool(summary) => eprintln!("  \u{23fa} {summary}"),
+            // Permission hints start with \u{2717}; they are diagnostics, so they stay on stderr.
+            Event::Text(t) if t.starts_with('\u{2717}') => eprintln!("  {t}"),
+            Event::Text(t) => println!("{t}\n"),
+            _ => {}
         }
     }
-}
 
-async fn want(router: &Router, s: &Session, prompt: &str) -> CodeWant {
-    let w = router.code_want(prompt, &s.recent_context(), s.sticky.tier.unwrap_or(1)).await;
-    if w.reason.starts_with("jev unavailable") {
-        // Never crash the session; stay put (or start on Sonnet).
-        eprintln!("  [jev] {}; keeping current model", w.reason);
-    }
-    w
-}
-
-/// Apply a /model pin, else the shared upgrade-now, downgrade-slowly rule.
-fn decide(s: &mut Session, w: &CodeWant, downgrade_after: u32) -> (usize, String) {
-    match s.pinned {
-        Some(p) => (p, "pinned with /model".into()),
-        None => s.sticky.decide(w, downgrade_after),
-    }
-}
-
-/// Print progress as the turn streams: tool calls on stderr, assistant text on stdout.
-fn show(ev: &Event) {
-    match ev {
-        Event::Tool(summary) => eprintln!("  \u{23fa} {summary}"),
-        // Permission hints start with \u{2717}; they are diagnostics, so they stay on stderr as before.
-        Event::Text(t) if t.starts_with('\u{2717}') => eprintln!("  {t}"),
-        Event::Text(t) => println!("{t}\n"),
-        _ => {}
+    fn note(&mut self, line: &str) {
+        for l in line.lines() {
+            eprintln!("  {l}");
+        }
     }
 }
 
 fn report_usage(u: &Usage) {
     eprintln!(
-        "  [usage] context {}K \u{b7} turn total: in {}K (cached {}K), out {}",
+        "  [usage] context {}K \u{b7} turn total: in {}K (cached {}K), out {}\n",
         u.context_tokens.unwrap_or(0) / 1000,
         u.input_tokens / 1000,
         u.cached_input_tokens / 1000,
@@ -134,26 +97,8 @@ fn report_usage(u: &Usage) {
     );
 }
 
-/// Longest silence from the CLI before the turn is cut off, so a hung CLI cannot
-/// freeze the session.
-fn idle_timeout() -> Duration {
-    Duration::from_secs(env_f64("CODE_IDLE_TIMEOUT_SECS", 900.0) as u64)
-}
-
-/// Run one turn through Claude Code, streaming progress.
-async fn run_turn(
-    backend: &ClaudeBackend,
-    s: &Session,
-    model: &str,
-    prompt: &str,
-) -> Result<TurnOutcome, TurnError> {
-    let req = TurnRequest {
-        dir: s.dir.clone(),
-        model: model.to_string(),
-        prompt: prompt.to_string(),
-        session_id: s.id.clone(),
-    };
-    backend::run_turn(backend, &req, idle_timeout(), &mut show).await
+fn indented(text: &str) -> String {
+    text.lines().map(|l| format!("  {l}")).collect::<Vec<_>>().join("\n")
 }
 
 #[tokio::main]
@@ -177,20 +122,24 @@ async fn main() -> Result<()> {
     }
     .canonicalize()
     .context("project dir")?;
-    // Stricter than chat: Sonnet's hard-debugging misses sat at reasoning 0.78-0.83.
-    // The cheap cutoff is unused here (code mode has no Haiku tier).
+    // The strong threshold only matters with routing off (the Claude-only tier rule).
     let router = Router::new(TypeSafe::from_env()?, 1.0)
         .with_strong_threshold(env_f64("CODE_STRONG_THRESHOLD", CODE_STRONG_THRESHOLD));
-    let downgrade_after = env_f64("DOWNGRADE_AFTER", 2.0) as u32;
-    let mut s = Session::new(dir);
-    let backend = ClaudeBackend::claude();
-    let turn_log = log::path_from_env("JEV_CODE_LOG", "code-turns.jsonl");
+    eprintln!("detecting providers...");
+    let runtime = Runtime::start().await;
+    let mut engine = Engine::new(runtime, router, dir)
+        .with_enabled(commands::routing_enabled(std::env::var("JEV_PROVIDERS").ok().as_deref()))
+        .with_downgrade_after(env_f64("DOWNGRADE_AFTER", 2.0) as u32);
 
+    println!("jev-code \u{2014} {}", engine.dir().display());
+    println!("{}", indented(&engine.summary_text()));
     println!(
-        "jev-code — {}\n  sonnet / opus · /model sonnet|opus|auto · /new · /quit\n",
-        s.dir.display()
+        "  routing: {} \u{b7} /model auto|<provider>[:<model>] \u{b7} /provider auto|off \u{b7} /providers [refresh] \u{b7} /new \u{b7} /quit\n",
+        if engine.enabled() { "on" } else { "off (Claude only)" }
     );
+
     let stdin = io::stdin();
+    let mut ui = Console;
     loop {
         print!("> ");
         io::stdout().flush()?;
@@ -198,49 +147,37 @@ async fn main() -> Result<()> {
         if stdin.read_line(&mut line)? == 0 {
             break;
         }
-        let prompt = line.trim();
-        match prompt {
-            "" => continue,
-            "/quit" | "/exit" => break,
-            "/new" => {
-                s = Session::new(s.dir.clone());
+        match commands::parse(&line) {
+            Command::Empty => {}
+            Command::Quit => break,
+            Command::New => {
+                engine.new_session();
                 println!("  new session\n");
-                continue;
             }
-            _ if prompt.starts_with("/model") => {
-                s.pinned = match prompt.split_whitespace().nth(1) {
-                    Some("sonnet") => Some(1),
-                    Some("opus") => Some(2),
-                    _ => None,
-                };
-                println!("  model: {}\n", s.pinned.map(|t| short(TIERS[t])).unwrap_or("auto"));
-                continue;
+            Command::ShowModel => println!("  model: {}\n", engine.pin()),
+            Command::SetPin(pin) => {
+                println!("  model: {pin}\n");
+                engine.set_pin(pin);
             }
-            _ => {}
-        }
-
-        let w = want(&router, &s, prompt).await;
-        let (tier, reason) = decide(&mut s, &w, downgrade_after);
-        eprintln!("  [route] {} — {}", short(TIERS[tier]), reason);
-        let started = Instant::now();
-        let result = run_turn(&backend, &s, TIERS[tier], prompt).await;
-        let wall_ms = started.elapsed().as_millis() as u64;
-        if let Ok(out) = &result {
-            s.id = out.session_id.clone().or(s.id.take());
-        }
-        if let Some(path) = &turn_log {
-            let row = turn_row(backend.provider(), TIERS[tier], s.id.as_deref(), &reason, &w.signals, &result, wall_ms);
-            log::append(path, &row);
-        }
-        match result {
-            Ok(out) => {
-                s.context_tokens = out.usage.context_tokens.unwrap_or(0);
-                report_usage(&out.usage);
-                s.sticky.tier = Some(tier);
-                s.remember(prompt, &out.text);
+            Command::SetRouting(on) => {
+                engine.set_enabled(on);
+                println!("  routing: {}\n", if on { "on" } else { "off (Claude only)" });
             }
-            // Keep the session alive; the user can retry or switch with /model.
-            Err(e) => eprintln!("  [error] {e}\n"),
+            Command::Providers { refresh } => {
+                if refresh {
+                    engine.refresh_providers().await;
+                }
+                println!("{}\n", indented(&engine.providers_text()));
+            }
+            Command::Invalid(message) => println!("  {message}\n"),
+            Command::Prompt(prompt) => {
+                let report = engine.run(&prompt, &mut ui).await;
+                match (report.status, &report.usage) {
+                    (TurnStatus::Answered, Some(usage)) => report_usage(usage),
+                    // Errors and "nothing usable" were already printed as notes; the session stays alive.
+                    _ => println!(),
+                }
+            }
         }
     }
     Ok(())

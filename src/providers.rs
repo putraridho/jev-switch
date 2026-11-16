@@ -182,7 +182,7 @@ impl Runtime {
     }
 
     #[cfg(test)]
-    fn for_tests(avail: Vec<Availability>) -> Self {
+    pub(crate) fn for_tests(avail: Vec<Availability>) -> Self {
         let allow = allowances_for(None, &avail);
         Self::build(avail, Cooldowns::default(), allow, Overrides::default(), None)
     }
@@ -236,6 +236,17 @@ impl Runtime {
         ));
         out.extend(self.overrides.notes.iter().map(|n| format!("override: {n}")));
         out.join("\n")
+    }
+
+    /// The compact startup view: only providers that are ready, any cooldowns carried
+    /// over from earlier runs, and where to find the rest.
+    pub fn render_summary(&self, now_ms: u64) -> String {
+        let mut lines: Vec<String> = Vec::new();
+        let ready = availability::render_ready(&self.avail);
+        lines.push(if ready.is_empty() { "no provider is ready".to_string() } else { ready });
+        lines.extend(self.cooldown_lines(now_ms));
+        lines.push("/providers for details".to_string());
+        lines.join("\n")
     }
 
     fn cooldown_lines(&self, now_ms: u64) -> Vec<String> {

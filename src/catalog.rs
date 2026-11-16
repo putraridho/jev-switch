@@ -319,6 +319,11 @@ impl Usable {
     pub fn contains(&self, spec: &ModelSpec) -> bool {
         self.set.contains(&(spec.provider, spec.id.to_string()))
     }
+
+    /// The same set minus `excluded` (for one turn's failover: models that just failed).
+    pub fn without(&self, excluded: &HashSet<(ProviderId, String)>) -> Self {
+        Self { set: self.set.difference(excluded).cloned().collect() }
+    }
 }
 
 /// Which spending the user has agreed to. Subscription models need no permission.

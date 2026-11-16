@@ -1,8 +1,11 @@
 # jev-router
 
-A small, reliable LLM router for Claude models, in Rust. Jev (TypeSafe System One)
-judges each request; code maps the judgment to a model and gates the cheap route on
-confidence. It fixes the two things that make routers bad:
+A small, reliable LLM router, in Rust. Jev (TypeSafe System One) judges each request;
+code maps the judgment to a model and gates the cheap route on confidence. Chat, the
+Claude Code gateway and `jev-claude` route between Claude models. `jev-code` is a
+coding agent that routes each turn across several providers' coding CLIs (Claude,
+Codex, Gemini, DeepSeek, Grok), using only the ones you can really use right now (see
+[Code mode](#code-mode-jev-code)). The router fixes the two things that make routers bad:
 
 1. **Memory across switches.** The model has no memory — the *transcript* does.
    One canonical history (`Transcript`) is sent in full to whichever model a turn
@@ -228,9 +231,73 @@ The Jev key is read from `TYPESAFE_API_KEY` / `JEV_API_KEY`, or from
 `~/.jev-router.env` (`JEV_API_KEY=...`), so it works from any directory. Re-run
 `scripts/install.sh` after changing the code.
 
-A routed coding agent: every turn runs Claude Code in the project with tools on,
-resuming one Claude Code session so files read, edits, and command output carry
-across turns and model switches. Two tiers, no Haiku:
+A routed coding agent. Every turn runs one provider's coding CLI in your project with
+tools on. Jev says what kind of task the turn is (security, hard debugging, review,
+feature, frontend, docs, explain, current info, simple edit, unclear); a catalog maps
+that to an ordered list of models; the router takes the first one you can use.
+
+**Providers and what each needs**
+
+| provider | needs | billing |
+|---|---|---|
+| claude | `claude` installed and logged in | your plan; Fable only with `JEV_ALLOW_CREDITS=1` |
+| codex | `codex` installed and logged in (ChatGPT plan) | your plan |
+| gemini | `gemini` with auth configured, else `agy` (Antigravity) | your plan |
+| grok | Grok Build installed | your plan |
+| deepseek | `claude` installed and `DEEPSEEK_API_KEY` (env or `~/.jev-router.env`) | per token; setting the key is the opt-in |
+
+**Never routes to a provider you cannot use.** At startup each provider is probed
+(installed? logged in? key present?) and only ready ones print. A probe that cannot
+tell counts as not ready. `/providers` shows everything with the reason, plus
+cooldowns, refused models and billing allowances; `/providers refresh` probes again.
+If nothing usable fits a turn, it says so in plain words and starts nothing; a pinned
+provider that is unusable is reported, never swapped for another.
+
+**Failover and cooldown.** A usage limit puts that provider on a cooldown (until its
+reset time when the CLI gives one, else an hour; saved across runs) and the same
+prompt goes to the next model. A model your plan does not include is dropped for the
+run. A login failure cools the provider and tells you which tool to log in to again.
+An empty answer or a stall skips that model for this turn only. Any other error stops
+the turn, since it would likely recur everywhere. At most 6 models are tried per
+turn, and a failed attempt's output is never shown as an answer.
+
+**Switching providers.** Each CLI keeps its own session, so when the turn goes to a
+provider that missed earlier turns, a short catch-up (your prompts, shrunk replies,
+files touched, commands run, `git status`) is put in front of the prompt. Switching
+costs a cold session, so the router changes provider only for a confident new task,
+likely correction, or security work; within a provider an upgrade is immediate and a
+downgrade is held for a few turns (the prompt cache).
+
+**Hard security rule.** Security work (strong keywords, a high `security_review`, or
+auth/session edits) overrides Jev's task label and never goes to DeepSeek or Grok.
+
+**Commands.** `/model auto` | `<provider>` | `<provider>:<model>` | `sonnet|opus|haiku`
+(pins are never silently overridden), `/provider auto|off`, `/providers [refresh]`,
+`/new`, `/quit`.
+
+**Environment.** `JEV_PROVIDERS=off` starts with routing off; `JEV_ALLOW_CREDITS=1`
+allows credit-billed models; `JEV_CHAINS` is a JSON file replacing the model order per
+task type; `DEEPSEEK_API_KEY`; `JEV_TIMEOUT_MS` (Jev wait, default 3000; past it the
+turn is routed without Jev's judgment); `CODE_IDLE_TIMEOUT_SECS` (default 900);
+`JEV_CODE_LOG` (turn log, one row per attempt with the decision reason, Jev's signals,
+attempt number and failover notes). `jev-code --help` lists the rest.
+
+**Permissions.** Edits are auto-accepted on Claude (`CODE_PERMISSION_MODE=acceptEdits`);
+its commands need your Claude Code allowlist or `CODE_ALLOWED_TOOLS="Bash(cargo test) Bash(git status)"`.
+Codex runs in a workspace-write sandbox (`CODEX_SANDBOX`, never full access). Denied
+actions are reported, never silently skipped. Use it inside a git repo.
+
+**How far to trust each adapter.** Verified against real recorded CLI output: claude
+and codex (`tests/fixtures/{claude,codex}`). Built from the vendors' documentation only,
+never run against a logged-in CLI, so expect corrections on first real use: gemini and
+agy (`tests/fixtures/{gemini,agy}`) and grok (`tests/fixtures/grok`). DeepSeek runs the
+`claude` CLI with `ANTHROPIC_BASE_URL` pointed at DeepSeek: the key check is real, but
+that this really bypasses your Claude login and talks to DeepSeek is unverified. Model
+names, tiers and chains in the catalog come from the vendors' pages as of 2026-11-17;
+the task-to-model chains are defaults, not calibrated on your work.
+
+**Routing off** (`/provider off` or `JEV_PROVIDERS=off`) is the earlier Claude-only
+mode: one attempt, no availability check, no failover, two tiers and no Haiku:
 
 - Sonnet by default; Opus for confident reasoning (`CODE_STRONG_THRESHOLD=0.85`),
   strong security terms (vulnerabilities, secrets, crypto, audits), security
@@ -267,10 +334,6 @@ across turns and model switches. Two tiers, no Haiku:
   replies Jev calls `unclear` count as easier when `edit p` < 0.2, and an uncertain
   turn holds the streak instead of resetting it; only a turn that needs the current
   tier resets it.
-- Edits are auto-accepted (`CODE_PERMISSION_MODE=acceptEdits`); commands need your
-  Claude Code permission allowlist or `CODE_ALLOWED_TOOLS="Bash(cargo test) Bash(git status)"`.
-  Denied commands are reported, never silently skipped.
-- `/model sonnet|opus|auto` pins or unpins the model, `/new` starts a fresh session.
 
 `eval/cases.json` is a list of `{ request, cheap_was_fine }` — the ground truth is
 whether the **cheap** model actually handled each request well. 20–30 real examples
@@ -286,7 +349,10 @@ beat any guess. Re-run `tune` when prompts, models, or request mix change.
 - `src/bin/tune.rs` — threshold calibration (the sweep).
 - `src/bin/gateway.rs` — local gateway that adds the Jev Code model to Claude Code.
 - `scripts/jev-claude` — launcher: starts the gateway and opens Claude Code on Jev Code.
-- `src/bin/code.rs` — routed coding agent over Claude Code sessions.
+- `src/bin/code.rs` — thin REPL for the routed coding agent; `src/turn.rs` runs one turn
+  (Jev, choose, hand off, run, fail over), `src/routing.rs` picks the model, `src/catalog.rs`
+  lists the models and chains, `src/providers.rs` and `src/availability.rs` know who is
+  usable, `src/handoff.rs` writes the catch-up, `src/backend/` has one adapter per CLI.
 - `src/bin/orch_tune.rs` — scores logged prompts with `multi_part` to pick `ORCH_TRIGGER_P`.
 - `mods/jev-orchestrate/` — Claude Code mod for orchestrate mode (trigger, brief, `/orchestrate`).
 - `src/bin/route.rs` — routing-only dry run over a prompt file (Jev only, no Claude calls);

@@ -15,11 +15,12 @@
 
 use std::cmp::Reverse;
 
+use crate::anthropic::{MODEL_CHEAP, MODEL_MID, MODEL_STRONG};
 use crate::backend::ProviderId;
 use crate::catalog::{
     Allowances, ModelSpec, Overrides, Pick, TaskType, Usable, allowed_for, chain_with, find, models, pick,
 };
-use crate::router::{CODE_EDIT_P, CODE_SECURITY_P, MAX_HOLD, Security, TOP_THRESHOLD};
+use crate::router::{CODE_EDIT_P, CODE_SECURITY_P, MAX_HOLD, ProviderWant, Security, TOP_THRESHOLD};
 
 /// Jev says a new task is a clear provider-switch candidate only from this
 /// `task_confidence`; below it the turn is too vague to justify a cold session.
@@ -52,6 +53,44 @@ pub enum Pin {
     Model(ProviderId, String),
 }
 
+impl Pin {
+    /// Read the argument of `/model`: `auto`, a provider (`codex`), one model
+    /// (`codex:gpt-6.1-sol`), or the old Claude aliases `sonnet|opus|haiku`. The one
+    /// place the syntax lives; a model id must exist in the catalog, so a typo is
+    /// reported instead of pinning something that can never run.
+    pub fn parse(arg: &str) -> Result<Pin, String> {
+        let arg = arg.trim().to_ascii_lowercase();
+        let alias = |id: &str| Ok(Pin::Model(ProviderId::Claude, id.to_string()));
+        match arg.as_str() {
+            "auto" => Ok(Pin::Auto),
+            "haiku" => alias(MODEL_CHEAP),
+            "sonnet" => alias(MODEL_MID),
+            "opus" => alias(MODEL_STRONG),
+            _ => match arg.split_once(':') {
+                None => arg.parse().map(Pin::Provider),
+                Some((provider, model)) => {
+                    let provider: ProviderId = provider.parse()?;
+                    if find(provider, model).is_none() {
+                        let known: Vec<_> = models().iter().filter(|m| m.provider == provider).map(|m| m.id).collect();
+                        return Err(format!("unknown model `{model}` for {provider} (known: {})", known.join(", ")));
+                    }
+                    Ok(Pin::Model(provider, model.to_string()))
+                }
+            },
+        }
+    }
+}
+
+impl std::fmt::Display for Pin {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Auto => f.write_str("auto"),
+            Self::Provider(p) => write!(f, "{p}"),
+            Self::Model(p, id) => write!(f, "{p}:{id}"),
+        }
+    }
+}
+
 /// Everything Jev judged about the turn. The caller builds it from Jev's answers and
 /// the keyword scan, so this module never calls Jev or reads the prompt.
 #[derive(Debug, Clone)]
@@ -66,6 +105,21 @@ pub struct Signals {
     /// Probability the user is correcting the previous answer, when it was asked.
     pub correction_p: Option<f64>,
     pub security_keywords: Security,
+}
+
+impl From<&ProviderWant> for Signals {
+    fn from(w: &ProviderWant) -> Self {
+        Self {
+            task: w.task,
+            task_confidence: w.task_confidence,
+            very_hard_p: w.very_hard_p,
+            security_p: w.security_p,
+            edit_p: w.edit_p,
+            continues_p: w.continues_p,
+            correction_p: w.correction_p,
+            security_keywords: w.security_keywords,
+        }
+    }
 }
 
 /// What the router remembers between turns.

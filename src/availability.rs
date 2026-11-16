@@ -108,6 +108,11 @@ pub fn render(avail: &[Availability]) -> String {
     avail.iter().map(render_line).collect::<Vec<_>>().join("\n")
 }
 
+/// Only the providers that are ready, for the compact startup summary.
+pub fn render_ready(avail: &[Availability]) -> String {
+    avail.iter().filter(|a| a.state == State::Ready).map(render_line).collect::<Vec<_>>().join("\n")
+}
+
 fn render_line(a: &Availability) -> String {
     let plan = a.plan.as_deref().unwrap_or("-");
     let models = match (&a.state, &a.models) {
