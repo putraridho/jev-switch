@@ -128,6 +128,12 @@ jq -s 'group_by(.model)[] | {model: .[0].model, requests: length,
   out: (map(.usage.output_tokens // 0) | add)}' ~/.local/state/jev-router/usage.jsonl
 ```
 
+`prefix` says how a request's cache prefix compares with its closest predecessor:
+`intact` (the predecessor is wholly contained), `tail_only` (only its last message
+changed: cheap, ~6k tokens rebuilt), or a real break with `first_diff` naming the
+block, plus `system_changed` / `tools_changed`. Count only non-intact, non-`tail_only`
+requests as cache breaks.
+
 Paths: `JEV_USAGE_LOG`, `JEV_TURNS_LOG`, `JEV_GATEWAY_LOG`. A file over
 `JEV_LOG_MAX_MB` (default 50, 0 = never) is moved to `<name>.1`, replacing the previous
 one.

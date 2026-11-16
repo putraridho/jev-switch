@@ -139,8 +139,13 @@ impl PrefixWatch {
                 // (or the conversation was rewound or compacted and it no longer exists).
                 describe_message(messages.and_then(|m| m.get(n)), p.blocks.get(n))
             });
+            // Only the earlier request's last message changed (Claude Code rewrites the
+            // trailing message, e.g. its reminders). On 291 logged main requests this
+            // cost ~6k cache tokens each, against 45k-725k for a real break, so count it apart.
+            let tail_only = !intact && !sys && !tools && n + 1 == p.msgs.len();
             json!({
                 "intact": intact,
+                "tail_only": tail_only,
                 "system_changed": sys,
                 "tools_changed": tools,
                 "prev_messages": p.msgs.len(),
@@ -195,6 +200,20 @@ mod tests {
         assert_eq!(d["shared_messages"], 0);
         assert_eq!(d["first_diff"]["block"]["type"], "text");
         assert!(d["first_diff"]["block"]["text"].as_str().unwrap().contains("tools: A, B"));
+    }
+
+    #[test]
+    fn a_rewritten_last_message_is_a_tail_change_not_a_break() {
+        let w = PrefixWatch::new();
+        w.observe("s", "main", &req("sys", vec![user("a"), user("b <reminder>")]));
+        let d = w.observe("s", "main", &req("sys", vec![user("a"), user("b"), user("c")]));
+        assert_eq!(d["intact"], false);
+        assert_eq!(d["tail_only"], true);
+        // An edit further back is a real break.
+        let w = PrefixWatch::new();
+        w.observe("s", "main", &req("sys", vec![user("a"), user("b"), user("c")]));
+        let d = w.observe("s", "main", &req("sys", vec![user("a2"), user("b"), user("c"), user("d")]));
+        assert_eq!(d["tail_only"], false);
     }
 
     #[test]
