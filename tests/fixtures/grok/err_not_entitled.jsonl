@@ -1,0 +1,2 @@
+{"type":"system","subtype":"init","session_id":"0199c0de-7a3e-7c21-9b8f-3d5e6f7a8b9d","apiKeySource":"none","model":"grok-4.6","cwd":"/tmp/spike","permissionMode":"default","tools":[],"slash_commands":[],"mcp_servers":[],"skills":[],"uuid":"u-1"}
+{"type":"result","subtype":"error_during_execution","is_error":true,"duration_ms":310,"duration_api_ms":0,"num_turns":0,"stop_reason":null,"errors":["Grok Build is not included in your X Premium plan. A SuperGrok or X Premium+ subscription is required."],"session_id":"0199c0de-7a3e-7c21-9b8f-3d5e6f7a8b9d","uuid":"u-2"}
