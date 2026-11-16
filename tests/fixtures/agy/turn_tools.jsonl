@@ -1,0 +1,7 @@
+{"event":"init","conversation_id":"c0ffee00-1111-2222-3333-444455556666","init":{"cwd":"/work","tools":["read_file","write_file","run_command"],"permission_mode":"request-review","model":"gemini-3-pro"}}
+{"event":"step_update","step_update":{"conversation_id":"c0ffee00-1111-2222-3333-444455556666","step_index":0,"state":"DONE","step_type":"user_input"}}
+{"event":"step_update","step_update":{"conversation_id":"c0ffee00-1111-2222-3333-444455556666","step_index":1,"state":"ACTIVE","step_type":"tool","tool_name":"read_file","tool_info":{"name":"read_file","parameters":{"file_path":"/work/a.txt"}}}}
+{"event":"step_update","step_update":{"conversation_id":"c0ffee00-1111-2222-3333-444455556666","step_index":1,"state":"DONE","step_type":"tool","tool_name":"read_file","duration_seconds":0.1,"tool_info":{"name":"read_file","parameters":{"file_path":"/work/a.txt"},"output":"hello"}}}
+{"event":"step_update","step_update":{"conversation_id":"c0ffee00-1111-2222-3333-444455556666","step_index":2,"state":"ACTIVE","step_type":"agent_response","text_delta":"It says "}}
+{"event":"step_update","step_update":{"conversation_id":"c0ffee00-1111-2222-3333-444455556666","step_index":2,"state":"DONE","step_type":"agent_response"}}
+{"event":"result","result":{"conversation_id":"c0ffee00-1111-2222-3333-444455556666","status":"SUCCESS","response":"It says hello.","duration_seconds":4.2,"num_turns":1,"usage":{"input_tokens":1200,"output_tokens":300,"thinking_tokens":50,"cache_read_tokens":800,"total_tokens":1550}}}

@@ -1,0 +1,4 @@
+{"type":"init","timestamp":"2026-11-17T10:00:00.000Z","session_id":"6f1c2d3e-4a5b-4c6d-8e7f-0123456789ab","model":"gemini-2.5-pro"}
+{"type":"message","timestamp":"2026-11-17T10:00:00.010Z","role":"user","content":"hi"}
+{"type":"error","timestamp":"2026-11-17T10:00:03.000Z","severity":"warning","message":"Attempt 1 failed with status 429. Retrying with backoff..."}
+{"type":"result","timestamp":"2026-11-17T10:00:09.000Z","status":"error","error":{"type":"Error","message":"You have exhausted your capacity on this model. Your quota will reset after 3h20m5s."},"stats":{"total_tokens":0,"input_tokens":0,"output_tokens":0,"cached":0,"input":0,"duration_ms":0,"tool_calls":0,"models":{}}}
