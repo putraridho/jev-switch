@@ -7,7 +7,8 @@ use anyhow::Result;
 use serde_json::{json, Value};
 
 use crate::anthropic::{MODEL_CHEAP, MODEL_MID, MODEL_STRONG};
-use crate::typesafe::{ChoiceAnswer, TypeSafe};
+use crate::catalog::TaskType;
+use crate::typesafe::{choice_question, decode_choice, decode_noul, noul_question, ChoiceAnswer, TypeSafe};
 
 #[derive(Debug)]
 pub struct Decision {
@@ -23,6 +24,29 @@ pub struct CodeWant {
     pub confident: bool,
     pub reason: String,
     /// Jev's raw signals for the usage log (`Value::Null` when Jev wasn't asked).
+    pub signals: Value,
+}
+
+/// Jev's reading of one turn for provider routing (see [`Router::provider_want`]).
+/// Jev only reports; mapping a task type to models is the catalog's job.
+#[derive(Debug, Clone)]
+pub struct ProviderWant {
+    pub task: TaskType,
+    /// Jev's confidence in `task`.
+    pub task_confidence: f64,
+    /// P(only the most capable model will do).
+    pub very_hard_p: f64,
+    /// P(the request is about security), independent of keywords.
+    pub security_p: f64,
+    /// P(the request modifies files or runs commands).
+    pub edit_p: f64,
+    /// P(the message continues the task in progress rather than starting a new one).
+    pub continues_p: f64,
+    /// P(the message reacts to the previous answer as wrong); `None` with no previous turn.
+    pub correction_p: Option<f64>,
+    /// What the keyword lists say, kept alongside Jev's judgment.
+    pub security_keywords: Security,
+    /// Every number above plus the task name, for the decision log.
     pub signals: Value,
 }
 
@@ -271,16 +295,7 @@ impl Router {
     /// running commands (vs. only reading code and answering). Changing auth or
     /// session code goes to the strong model; reading it stays on mid.
     pub async fn needs_changes(&self, request: &str, recent_context: &str) -> Result<f64> {
-        self.ts
-            .noul(
-                json!({ "request": request, "recent_context": recent_context }),
-                "Does fulfilling this request require modifying files or running commands in the project?",
-                json!({
-                    "true": "editing, creating, or deleting files; running builds, tests, scripts, git, or other commands",
-                    "false": "only reading or searching code and answering: explaining, locating, reviewing without changes"
-                }),
-            )
-            .await
+        self.ts.noul_question(request_state(request, recent_context), needs_changes_question()).await
     }
 
     /// Code mode: probability that `request` is about security: who can access or
@@ -288,31 +303,13 @@ impl Router {
     /// trust-boundary questions that carry no security keyword, and lets keyword
     /// matches that are about something else (design tokens, React keys) through.
     pub async fn security_review(&self, request: &str, recent_context: &str) -> Result<f64> {
-        self.ts
-            .noul(
-                json!({ "request": request, "recent_context": recent_context }),
-                "Is this request about security: who can access or change what, or whether something is safe against misuse or attack?",
-                json!({
-                    "true": "authorization and access control (can a user, role, or member see or change something they shouldn't), data exposure, trust boundaries, untrusted input (injection, path traversal, SSRF, XSS, unsafe URLs or IPC), secrets and credentials, crypto, signatures, or reviewing code for vulnerabilities",
-                    "false": "ordinary coding, debugging, or design; or security-sounding words that mean something else here: design or CSS tokens, React keys, editor or canvas session state, hashing for ids, caching or dedupe, sandboxed iframe layout"
-                }),
-            )
-            .await
+        self.ts.noul_question(request_state(request, recent_context), security_review_question()).await
     }
 
     /// Probability that `request` is among the hardest work: it needs the most capable
     /// model, not just a strong one. Asked only of turns already headed to Opus.
     pub async fn very_hard(&self, request: &str, recent_context: &str) -> Result<f64> {
-        self.ts
-            .noul(
-                json!({ "request": request, "recent_context": recent_context }),
-                "Is this one of the hardest requests, where only the most capable model will do and a mistake would be costly?",
-                json!({
-                    "true": "designing or untangling a subtle architecture that spans many systems, debugging a deep concurrency, consistency or distributed-state problem, a security-critical design where a flaw would be costly, or reasoning that must stay exact across a very large amount of code",
-                    "false": "a question or explanation, a lookup, a routine feature, bug fix or refactor, reviewing a change, or anything a strong model would handle comfortably"
-                }),
-            )
-            .await
+        self.ts.noul_question(request_state(request, recent_context), very_hard_question()).await
     }
 
     /// Orchestrate mode: probability that `request` is a large task that splits into
@@ -320,32 +317,33 @@ impl Router {
     /// own), so a planner can hand the pieces to cheaper workers. Questions, single
     /// fixes and short follow-ups should score low.
     pub async fn multi_part(&self, request: &str, recent_context: &str) -> Result<f64> {
-        self.ts
-            .noul(
-                json!({ "request": request, "recent_context": recent_context }),
-                "Is this request a large piece of work that splits into several separate steps, each changing a different part of the codebase?",
-                json!({
-                    "true": "building or changing a feature across several files, layers or systems (API, UI, database, tests, docs), a migration or refactor touching many modules, or a list of distinct changes to make; each piece could be done and checked on its own",
-                    "false": "a question or explanation, a lookup, reviewing or investigating without a set of changes, a single bug fix or small edit in one place, a one-line command, or a short reply or follow-up to the conversation"
-                }),
-            )
-            .await
+        self.ts.noul_question(request_state(request, recent_context), multi_part_question()).await
     }
 
     /// Outcome signal: probability that `request` reacts to the previous answer as
     /// wrong, incomplete or not what was wanted (a correction, complaint, retry or
     /// the same question again). Logged for later analysis; never used for routing.
     pub async fn is_correction(&self, request: &str, previous_request: &str, previous_answer: &str) -> Result<f64> {
-        self.ts
-            .noul(
-                json!({ "request": request, "previous_request": previous_request, "previous_answer": previous_answer }),
-                "Is this new message a reaction to the previous answer being wrong, incomplete, or not what the user wanted?",
-                json!({
-                    "true": "a correction, complaint, retry, or the same question asked again; the user is unhappy with or re-asking about what the assistant just did",
-                    "false": "a new task, a follow-up building on a good answer, a clarification the user was asked for, or an acknowledgement"
-                }),
-            )
-            .await
+        let state = json!({ "request": request, "previous_request": previous_request, "previous_answer": previous_answer });
+        self.ts.noul_question(state, is_correction_question()).await
+    }
+
+    /// The whole provider-routing judgment in ONE request: which kind of task this is,
+    /// plus the yes/no signals the router weighs it with. A single round trip (~0.5 s)
+    /// instead of five keeps the added latency off every turn. `previous` is the prior
+    /// (request, answer) pair; without it the correction question is not asked. Bounded
+    /// by `jev_timeout`; `None` on a timeout, any error or an unreadable answer, and the
+    /// caller then stays on its current model.
+    pub async fn provider_want(
+        &self,
+        request: &str,
+        recent_context: &str,
+        previous: Option<(&str, &str)>,
+    ) -> Option<ProviderWant> {
+        let state = provider_state(request, recent_context, previous);
+        let questions = provider_questions(previous.is_some());
+        let answers = tokio::time::timeout(self.jev_timeout, self.ts.ask_many(state, questions)).await.ok()?.ok()?;
+        decode_provider_want(&answers, request, previous.is_some()).ok()
     }
 
     /// Code-mode tier for one turn, before session stickiness: 1 mid or 2 strong.
@@ -459,6 +457,201 @@ impl Router {
             .await?;
         Ok((p >= threshold, p))
     }
+}
+
+// ---- Question definitions -------------------------------------------------------
+// One definition per yes/no question, used by the single-call method AND the batch in
+// `provider_want`, so the two can never drift apart (a change here changes both).
+
+/// The state every code-mode question reads.
+fn request_state(request: &str, recent_context: &str) -> Value {
+    json!({ "request": request, "recent_context": recent_context })
+}
+
+fn needs_changes_question() -> Value {
+    noul_question(
+        "Does fulfilling this request require modifying files or running commands in the project?",
+        json!({
+            "true": "editing, creating, or deleting files; running builds, tests, scripts, git, or other commands",
+            "false": "only reading or searching code and answering: explaining, locating, reviewing without changes"
+        }),
+    )
+}
+
+fn security_review_question() -> Value {
+    noul_question(
+        "Is this request about security: who can access or change what, or whether something is safe against misuse or attack?",
+        json!({
+            "true": "authorization and access control (can a user, role, or member see or change something they shouldn't), data exposure, trust boundaries, untrusted input (injection, path traversal, SSRF, XSS, unsafe URLs or IPC), secrets and credentials, crypto, signatures, or reviewing code for vulnerabilities",
+            "false": "ordinary coding, debugging, or design; or security-sounding words that mean something else here: design or CSS tokens, React keys, editor or canvas session state, hashing for ids, caching or dedupe, sandboxed iframe layout"
+        }),
+    )
+}
+
+fn very_hard_question() -> Value {
+    noul_question(
+        "Is this one of the hardest requests, where only the most capable model will do and a mistake would be costly?",
+        json!({
+            "true": "designing or untangling a subtle architecture that spans many systems, debugging a deep concurrency, consistency or distributed-state problem, a security-critical design where a flaw would be costly, or reasoning that must stay exact across a very large amount of code",
+            "false": "a question or explanation, a lookup, a routine feature, bug fix or refactor, reviewing a change, or anything a strong model would handle comfortably"
+        }),
+    )
+}
+
+fn multi_part_question() -> Value {
+    noul_question(
+        "Is this request a large piece of work that splits into several separate steps, each changing a different part of the codebase?",
+        json!({
+            "true": "building or changing a feature across several files, layers or systems (API, UI, database, tests, docs), a migration or refactor touching many modules, or a list of distinct changes to make; each piece could be done and checked on its own",
+            "false": "a question or explanation, a lookup, reviewing or investigating without a set of changes, a single bug fix or small edit in one place, a one-line command, or a short reply or follow-up to the conversation"
+        }),
+    )
+}
+
+fn is_correction_question() -> Value {
+    noul_question(
+        "Is this new message a reaction to the previous answer being wrong, incomplete, or not what the user wanted?",
+        json!({
+            "true": "a correction, complaint, retry, or the same question asked again; the user is unhappy with or re-asking about what the assistant just did",
+            "false": "a new task, a follow-up building on a good answer, a clarification the user was asked for, or an acknowledgement"
+        }),
+    )
+}
+
+/// Used only by the batch: the task-type judgment has no single-call twin.
+fn continues_question() -> Value {
+    noul_question(
+        "Does this message continue the task already in progress (a follow-up on the same work), rather than start a new task?",
+        json!({
+            "true": "a follow-up on the work just discussed: a tweak, a fix to the last change, 'now do the same for X', 'why did that fail', a short reply that only makes sense given the previous turn",
+            "false": "a new, self-contained task or question about something else, even if it is in the same repository"
+        }),
+    )
+}
+
+/// Which kind of task a coding request is. Each option says what it is FOR and what
+/// it is NOT for, because neighbours overlap (security vs review, feature vs
+/// simple_edit, explain vs docs) and Jev separates them best when told where each
+/// boundary is. Names are `TaskType::as_str`, so the answer parses straight back.
+fn task_type_question() -> Value {
+    choice_question(
+        "What kind of task is this coding request?",
+        json!({
+            "security": {
+                "what": "authorization and access control, injection, secrets and credentials, crypto, handling of untrusted input, or reviewing/fixing code for vulnerabilities",
+                "not_for": "ordinary auth plumbing like adding a login page, or security-sounding words that mean something else (design tokens, React keys)",
+                "examples": ["can a member read another tenant's files", "check this route for path traversal", "how are API keys stored"]
+            },
+            "hard_debug": {
+                "what": "bugs that span files or systems, concurrency, deadlocks, races, performance mysteries, root-causing flaky failures",
+                "not_for": "an error with an obvious local fix, or a bug in one small function given in the message",
+                "examples": ["why does the upload hang on large files", "this test fails one run in ten", "memory grows until the worker is killed"]
+            },
+            "review": {
+                "what": "reviewing a diff, PR or file for bugs and risks and reporting findings",
+                "not_for": "making the changes themselves (feature), or a review that is specifically about vulnerabilities (security)",
+                "examples": ["review this PR", "look over my changes before I merge", "anything wrong with this module?"]
+            },
+            "feature": {
+                "what": "building or extending functionality across one or several files, refactors, migrations, writing tests for new behaviour",
+                "not_for": "a one-line or purely mechanical change (simple_edit), or UI-only work (frontend)",
+                "examples": ["add pagination to the list endpoint", "migrate the store from Redux to Zustand", "implement retry with backoff"]
+            },
+            "frontend": {
+                "what": "UI components, styling, layout, responsive design, accessibility",
+                "not_for": "backend or data logic that merely feeds a UI",
+                "examples": ["make the sidebar collapse on mobile", "fix the button focus ring", "build a settings page layout"]
+            },
+            "docs": {
+                "what": "READMEs, code comments, changelogs, and explanations written for people to read and keep",
+                "not_for": "answering a question about code that nobody will keep (explain)",
+                "examples": ["write a README for this package", "document the public API", "add a changelog entry"]
+            },
+            "explain": {
+                "what": "read-only questions about how existing code works or where something is",
+                "not_for": "anything that changes files, or needs facts from outside the repository",
+                "examples": ["how does the cache invalidation work", "where is the config loaded", "what does this function return"]
+            },
+            "current_info": {
+                "what": "needs recent facts the model may not know: library versions, new APIs, release notes, web search",
+                "not_for": "questions answerable from the code or from long-standing knowledge",
+                "examples": ["what is the latest version of axum", "does the new React compiler change this", "is this API deprecated now"]
+            },
+            "simple_edit": {
+                "what": "rename, tweak a config value, a one-liner, boilerplate, a small mechanical change",
+                "not_for": "anything needing design, several coordinated changes, or debugging",
+                "examples": ["rename usr to user", "bump the timeout to 30s", "add a .gitignore entry"]
+            },
+            "unclear": {
+                "what": "ambiguous, mixed, or too short to tell what kind of task it is, such as a bare acknowledgement"
+            }
+        }),
+    )
+}
+
+/// The questions of one provider judgment, keyed as `decode_provider_want` reads them.
+const Q_TASK: &str = "task_type";
+const Q_CONTINUES: &str = "continues";
+const Q_EDIT: &str = "needs_changes";
+const Q_SECURITY: &str = "security_review";
+const Q_HARD: &str = "very_hard";
+const Q_CORRECTION: &str = "is_correction";
+
+/// Every question of a provider judgment as one `questions` map. The correction
+/// question needs the previous exchange, so it is asked only when there is one.
+fn provider_questions(with_previous: bool) -> Value {
+    let mut q = json!({
+        Q_TASK: task_type_question(),
+        Q_CONTINUES: continues_question(),
+        Q_EDIT: needs_changes_question(),
+        Q_SECURITY: security_review_question(),
+        Q_HARD: very_hard_question(),
+    });
+    if with_previous {
+        q[Q_CORRECTION] = is_correction_question();
+    }
+    q
+}
+
+/// The shared state for the batch: the usual request state, plus the previous exchange
+/// when there is one (the correction question reads it).
+fn provider_state(request: &str, recent_context: &str, previous: Option<(&str, &str)>) -> Value {
+    let mut state = request_state(request, recent_context);
+    if let Some((prev_request, prev_answer)) = previous {
+        state["previous_request"] = json!(prev_request);
+        state["previous_answer"] = json!(prev_answer);
+    }
+    state
+}
+
+/// Turn the batch's `answers` into a [`ProviderWant`]. An unknown task type name is an
+/// error rather than a guess: the caller falls back to its current model.
+fn decode_provider_want(answers: &Value, request: &str, with_previous: bool) -> Result<ProviderWant> {
+    let task_answer = decode_choice(answers, Q_TASK)?;
+    let task: TaskType = task_answer.choice.parse().map_err(|e: String| anyhow::anyhow!(e))?;
+    let very_hard_p = decode_noul(answers, Q_HARD)?;
+    let security_p = decode_noul(answers, Q_SECURITY)?;
+    let edit_p = decode_noul(answers, Q_EDIT)?;
+    let continues_p = decode_noul(answers, Q_CONTINUES)?;
+    let correction_p = if with_previous { Some(decode_noul(answers, Q_CORRECTION)?) } else { None };
+    let security_keywords = security_level(request);
+    let signals = json!({
+        "task": task.as_str(), "task_confidence": task_answer.confidence,
+        "very_hard_p": very_hard_p, "security_p": security_p, "edit_p": edit_p,
+        "continues_p": continues_p, "correction_p": correction_p,
+        "security": format!("{security_keywords:?}").to_lowercase(),
+    });
+    Ok(ProviderWant {
+        task,
+        task_confidence: task_answer.confidence,
+        very_hard_p,
+        security_p,
+        edit_p,
+        continues_p,
+        correction_p,
+        security_keywords,
+        signals,
+    })
 }
 
 /// Strong signals: vulnerability classes, secrets, crypto, auditing. Matched as
@@ -689,5 +882,184 @@ mod tests {
         ] {
             assert_eq!(security_level(r), Security::None, "{r}");
         }
+    }
+
+    // ---- provider_want, against a local fake Jev ----
+
+    use std::sync::{Arc, Mutex};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    /// The bodies of the requests a fake Jev received, in order.
+    type Seen = Arc<Mutex<Vec<Value>>>;
+
+    /// Read one HTTP request off `sock` and return its JSON body.
+    async fn read_json_request(sock: &mut tokio::net::TcpStream) -> Option<Value> {
+        let mut buf = Vec::new();
+        let mut chunk = [0u8; 4096];
+        loop {
+            let n = sock.read(&mut chunk).await.ok()?;
+            if n == 0 {
+                return None;
+            }
+            buf.extend_from_slice(&chunk[..n]);
+            let Some(head_end) = buf.windows(4).position(|w| w == b"\r\n\r\n") else { continue };
+            let head = String::from_utf8_lossy(&buf[..head_end]).to_lowercase();
+            let len = head
+                .lines()
+                .find_map(|l| l.strip_prefix("content-length:"))
+                .and_then(|v| v.trim().parse::<usize>().ok())
+                .unwrap_or(0);
+            if buf.len() >= head_end + 4 + len {
+                return serde_json::from_slice(&buf[head_end + 4..head_end + 4 + len]).ok();
+            }
+        }
+    }
+
+    /// A fake Jev: for each request, `reply` makes (status, body). Returns its URL and
+    /// the request bodies seen so far.
+    async fn fake_jev(reply: fn(&Value) -> (u16, String)) -> (String, Seen) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}/v1/systemone", listener.local_addr().unwrap());
+        let seen: Seen = Arc::default();
+        let log = seen.clone();
+        tokio::spawn(async move {
+            while let Ok((mut sock, _)) = listener.accept().await {
+                let log = log.clone();
+                tokio::spawn(async move {
+                    let Some(req) = read_json_request(&mut sock).await else { return };
+                    let (status, body) = reply(&req);
+                    log.lock().unwrap().push(req);
+                    let resp = format!(
+                        "HTTP/1.1 {status} X\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                        body.len()
+                    );
+                    let _ = sock.write_all(resp.as_bytes()).await;
+                });
+            }
+        });
+        (url, seen)
+    }
+
+    /// Answers every question that was asked: `frontend` at 0.8 for the choice, and a
+    /// distinct probability per noul so a decoding mix-up shows.
+    fn answer_all(req: &Value) -> (u16, String) {
+        let mut answers = serde_json::Map::new();
+        for (name, q) in req["questions"].as_object().unwrap() {
+            let a = if q["type"] == "choice" {
+                json!({ "choice": "frontend", "confidence": 0.8, "probabilities": { "frontend": 0.8, "docs": 0.2 } })
+            } else {
+                let p = match name.as_str() {
+                    "continues" => 0.11,
+                    "needs_changes" => 0.22,
+                    "security_review" => 0.33,
+                    "very_hard" => 0.44,
+                    "is_correction" => 0.55,
+                    _ => 0.99,
+                };
+                json!({ "noul": p })
+            };
+            answers.insert(name.clone(), a);
+        }
+        (200, json!({ "answers": answers }).to_string())
+    }
+
+    fn router_at(url: &str, timeout_ms: u64) -> Router {
+        Router::new(TypeSafe::with_url("test-key", url), 1.0)
+            .with_jev_timeout(std::time::Duration::from_millis(timeout_ms))
+    }
+
+    #[tokio::test]
+    async fn provider_want_decodes_every_answer_from_one_request() {
+        let (url, seen) = fake_jev(answer_all).await;
+        let w = router_at(&url, 2000)
+            .provider_want("make the sidebar collapse", "ctx", Some(("earlier ask", "earlier answer")))
+            .await
+            .expect("answered");
+        assert_eq!(w.task, TaskType::Frontend);
+        assert_eq!(w.task_confidence, 0.8);
+        assert_eq!((w.continues_p, w.edit_p, w.security_p, w.very_hard_p), (0.11, 0.22, 0.33, 0.44));
+        assert_eq!(w.correction_p, Some(0.55));
+        assert_eq!(w.security_keywords, Security::None);
+        assert_eq!(w.signals["task"], "frontend");
+        assert_eq!(w.signals["security_p"], 0.33);
+        // exactly one request carried all six questions and the previous exchange
+        let seen = seen.lock().unwrap();
+        assert_eq!(seen.len(), 1, "one HTTP request, not one per question");
+        assert_eq!(seen[0]["questions"].as_object().unwrap().len(), 6);
+        assert_eq!(seen[0]["state"]["previous_answer"], "earlier answer");
+        assert_eq!(seen[0]["state"]["request"], "make the sidebar collapse");
+    }
+
+    #[tokio::test]
+    async fn provider_want_without_a_previous_turn_omits_the_correction_question() {
+        let (url, seen) = fake_jev(answer_all).await;
+        let w = router_at(&url, 2000).provider_want("rename usr to user", "", None).await.expect("answered");
+        assert_eq!(w.correction_p, None);
+        assert!(w.signals["correction_p"].is_null());
+        let seen = seen.lock().unwrap();
+        let questions = seen[0]["questions"].as_object().unwrap();
+        assert_eq!(questions.len(), 5);
+        assert!(!questions.contains_key("is_correction"));
+        assert!(seen[0]["state"].get("previous_request").is_none());
+    }
+
+    #[test]
+    fn provider_want_task_options_are_exactly_the_ten_task_types() {
+        let q = task_type_question();
+        let mut options: Vec<&str> = q["criteria"].as_object().unwrap().keys().map(String::as_str).collect();
+        let mut expected: Vec<&str> = TaskType::ALL.iter().map(|t| t.as_str()).collect();
+        options.sort_unstable();
+        expected.sort_unstable();
+        assert_eq!(options, expected);
+    }
+
+    #[tokio::test]
+    async fn a_stalled_jev_gives_no_provider_want_within_the_timeout() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}/v1/systemone", listener.local_addr().unwrap());
+        tokio::spawn(async move {
+            let mut held = Vec::new();
+            while let Ok((sock, _)) = listener.accept().await {
+                held.push(sock);
+            }
+        });
+        let started = std::time::Instant::now();
+        let w = router_at(&url, 200).provider_want("why does the upload hang", "", None).await;
+        assert!(w.is_none());
+        assert!(started.elapsed() < std::time::Duration::from_secs(2), "took {:?}", started.elapsed());
+    }
+
+    #[tokio::test]
+    async fn a_jev_error_gives_no_provider_want() {
+        let (url, _) = fake_jev(|_| (500, "boom".into())).await;
+        assert!(router_at(&url, 2000).provider_want("anything", "", None).await.is_none());
+        // a well-formed reply with an unknown task name is no answer either
+        let (url, _) = fake_jev(|_| {
+            (200, json!({ "answers": { "task_type": { "choice": "astrology", "confidence": 1.0 } } }).to_string())
+        })
+        .await;
+        assert!(router_at(&url, 2000).provider_want("anything", "", None).await.is_none());
+    }
+
+    #[tokio::test]
+    async fn the_single_call_method_sends_the_shared_question_text() {
+        let (url, seen) = fake_jev(|_| (200, json!({ "answers": { "q": { "noul": 0.7 } } }).to_string())).await;
+        let p = router_at(&url, 2000).security_review("can a viewer see X?", "").await.unwrap();
+        assert_eq!(p, 0.7);
+        let seen = seen.lock().unwrap();
+        assert_eq!(seen[0]["questions"]["q"], security_review_question());
+        assert_eq!(seen[0]["state"], json!({ "request": "can a viewer see X?", "recent_context": "" }));
+    }
+
+    #[test]
+    fn question_wire_format_is_unchanged() {
+        let q = needs_changes_question();
+        assert_eq!(q["type"], "noul");
+        assert_eq!(
+            q["instructions"],
+            "Does fulfilling this request require modifying files or running commands in the project?"
+        );
+        assert!(q["criteria"]["true"].as_str().unwrap().starts_with("editing, creating"));
+        assert_eq!(choice_question("i", json!({})), json!({ "type": "choice", "instructions": "i", "criteria": {} }));
     }
 }
