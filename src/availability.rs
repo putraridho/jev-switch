@@ -325,24 +325,6 @@ fn codex_plan_from_auth(auth_json: &str) -> Option<String> {
     (!plan.is_empty()).then(|| plan.to_string())
 }
 
-/// The models the Codex login may use, from `~/.codex/models_cache.json`: entries of
-/// `models[]` whose `visibility` is `list`.
-/// NOTE: this duplicates `crate::backend::codex::allowed_models_from_cache`, which
-/// was written in parallel; switch to that function once the two are merged.
-fn codex_models_from_cache(cache_json: &str) -> Vec<String> {
-    let Ok(v) = serde_json::from_str::<Value>(cache_json) else { return Vec::new() };
-    v.get("models")
-        .and_then(Value::as_array)
-        .map(|models| {
-            models
-                .iter()
-                .filter(|m| m.get("visibility").and_then(Value::as_str) == Some("list"))
-                .filter_map(|m| m.get("slug").and_then(Value::as_str).map(str::to_string))
-                .collect()
-        })
-        .unwrap_or_default()
-}
-
 /// `login_ok` is `None` when `codex login status` could not be run or read.
 fn decide_codex(installed: bool, login_ok: Option<bool>, plan: Option<&str>, models: Option<Vec<String>>) -> Availability {
     let id = ProviderId::Codex;
@@ -367,7 +349,7 @@ async fn probe_codex() -> Availability {
     }
     let login_ok = run_capture("codex", &["login", "status"]).await.and_then(|c| parse_codex_login(c.ok, &c.text));
     let plan = read_home_file(".codex/auth.json").and_then(|t| codex_plan_from_auth(&t));
-    let models = read_home_file(".codex/models_cache.json").map(|t| codex_models_from_cache(&t));
+    let models = read_home_file(".codex/models_cache.json").map(|t| crate::backend::codex::allowed_models_from_cache(&t));
     decide_codex(installed, login_ok, plan.as_deref(), models)
 }
 
@@ -598,17 +580,6 @@ mod tests {
         assert_eq!(codex_plan_from_auth("not json"), None);
     }
 
-    #[test]
-    fn codex_models_keep_only_listed_visibility() {
-        let cache = r#"{"models":[
-            {"slug":"hidden-one","visibility":"hide"},
-            {"slug":"model-a","visibility":"list"},
-            {"slug":"model-b","visibility":"list"},
-            {"visibility":"list"}]}"#;
-        assert_eq!(codex_models_from_cache(cache), vec!["model-a", "model-b"]);
-        assert!(codex_models_from_cache("garbage").is_empty());
-        assert!(codex_models_from_cache("{}").is_empty());
-    }
 
     #[test]
     fn codex_decisions() {
