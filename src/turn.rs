@@ -940,14 +940,17 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn auth_failure_cools_the_provider_and_names_the_tool_to_log_in_to() {
+    async fn auth_failure_blocks_the_provider_for_the_session_and_names_the_tool_to_log_in_to() {
         let ready = [Claude, Codex];
         let mut r = rig(&ready);
         let a = first_choice(TaskType::Feature, &ready);
         r.script(a, AUTH);
         let report = r.turn("add a retry to the client", want(TaskType::Feature)).await;
         assert_eq!(report.status, TurnStatus::Answered);
-        assert!(r.engine.runtime.cooldowns.active(a, NOW).is_some());
+        // A login problem is not a usage limit: it is kept out of the persisted cooldowns,
+        // blocked for this session, and cleared by `/providers refresh`.
+        assert!(r.engine.runtime.cooldowns.active(a, NOW).is_none());
+        assert!(r.engine.runtime.auth_failed.contains(&a));
         assert!(r.ui.notes.iter().any(|n| n.contains("log in to") && n.contains(providers::login_target(a))), "{:?}", r.ui.notes);
     }
 
