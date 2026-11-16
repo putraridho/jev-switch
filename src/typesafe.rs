@@ -33,10 +33,7 @@ fn http_client() -> reqwest::Client {
 
 impl TypeSafe {
     pub fn from_env() -> Result<Self> {
-        let key = std::env::var("TYPESAFE_API_KEY")
-            .or_else(|_| std::env::var("JEV_API_KEY"))
-            .ok()
-            .or_else(key_from_env_file)
+        let key = key_lookup()
             .context("Jev key not found: set TYPESAFE_API_KEY or JEV_API_KEY, or put JEV_API_KEY=... in ~/.jev-router.env")?;
         Ok(Self { key, url: TYPESAFE_URL.into(), http: http_client() })
     }
@@ -105,18 +102,11 @@ impl TypeSafe {
     }
 }
 
-/// Read the key from `$JEV_ROUTER_ENV` or `~/.jev-router.env` (KEY=VALUE lines),
-/// so installed binaries work from any directory without sourcing anything.
-fn key_from_env_file() -> Option<String> {
-    let path = std::env::var("JEV_ROUTER_ENV")
-        .ok()
-        .or_else(|| std::env::var("HOME").ok().map(|h| format!("{h}/.jev-router.env")))?;
-    let text = std::fs::read_to_string(path).ok()?;
-    text.lines().find_map(|line| {
-        let line = line.trim().trim_start_matches("export ").trim();
-        let (k, v) = line.split_once('=')?;
-        matches!(k.trim(), "TYPESAFE_API_KEY" | "JEV_API_KEY")
-            .then(|| v.trim().trim_matches(|c| c == '"' || c == '\'').to_string())
-            .filter(|v| !v.is_empty())
-    })
+/// The names a Jev key may be filed under, in order of preference.
+const KEY_NAMES: [&str; 2] = ["TYPESAFE_API_KEY", "JEV_API_KEY"];
+
+/// The environment wins over the key file (so a shell override works); the file is
+/// what lets installed binaries work from any directory without sourcing anything.
+fn key_lookup() -> Option<String> {
+    KEY_NAMES.iter().find_map(|n| crate::envfile::from_env(n)).or_else(|| crate::envfile::from_file_any(&KEY_NAMES))
 }
