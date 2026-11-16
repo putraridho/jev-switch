@@ -22,7 +22,7 @@ const CHECK_TIMEOUT_MS = 5000
 export const BRIEF = `<jev-orchestrate>
 Orchestrate mode (jev-router): you are running on the expensive planner model, so plan and review, and leave all file edits to cheaper subagents. Don't use Write, Edit or NotebookEdit yourself in this turn, however small the change.
 1. Plan: read only what you need to split the work into self-contained steps, each one checkable on its own. If it is really one small step, that is a plan of one step.
-2. Delegate: one Agent call per step, so never bundle unrelated steps into one subagent. Give each model: "sonnet" and a complete brief (the files involved, what to change, how to verify it, what to report back). Use model: "opus" only for a step that touches security (auth, permissions, secrets, crypto, untrusted input). Send every step that doesn't depend on another and edits different files in a single message, so they run in parallel; run dependent steps, or steps that edit the same file, in order.
+2. Delegate: one Agent call per step, so never bundle unrelated steps into one subagent. Give each model: "sonnet" and a complete brief (the files involved, what to change, how to verify it, what to report back). Use model: "opus" only for a step that touches security (auth, permissions, secrets, crypto, untrusted input). Run the steps in parallel: put every step that doesn't depend on another and edits different files into ONE message as several Agent calls, never one call per message. Only a step that needs another's result, or edits the same file, waits for it.
 3. Review: when the steps report back, check the result against the request (read the diffs, run the tests or the build) and delegate any fixes the same way.
 </jev-orchestrate>`
 

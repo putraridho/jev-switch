@@ -129,6 +129,14 @@ def main():
         print(f"{t['prompt_id'][:8]}…{t['session'][:6]:9} {len(k['turns']):5} {act:12,.0f} {sonnet:12,.0f} "
               f"{(1 - act / sonnet) if sonnet else 0:8.0%} {main_cost / act if act else 0:9.0%} {'yes' if d else 'NO ':5}  {ended}")
 
+    print("\nparallelism (Agent calls per planner message):")
+    for k, rows in orch:
+        batches = [sum(1 for x in (r.get("tools_called") or []) if x == "Agent") for r in rows if r["class"] == "main"]
+        batches = [b for b in batches if b]
+        calls = sum(batches)
+        verdict = "parallel" if calls and max(batches) > 1 else ("ONE AT A TIME" if calls > 1 else "single step")
+        print(f"  {k['turn']['prompt_id'][:8]}…: {calls} Agent calls in {len(batches)} message(s), largest batch {max(batches, default=0)} -> {verdict}")
+
     print(f"\ntotal actual {tot_a:,.0f} vs as-Sonnet {tot_s:,.0f}: "
           f"{'saves' if tot_a < tot_s else 'COSTS'} {abs(1 - tot_a / tot_s):.0%} (Sonnet-equivalent units)")
     print(f"planner delegated (Agent call, first turn): {delegated}/{len(orch)}; last turn ended normally: {clean}/{len(orch)}")
