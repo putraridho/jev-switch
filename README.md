@@ -86,10 +86,11 @@ strong model and carried out by Sonnet subagents. Everything else routes as abov
   (2) If not, normal routing picks the model. If so, Jev also picks the planner:
   `very_hard` at `FABLE_THRESHOLD` (0.90) or above gets Fable, otherwise Opus
   (`ORCH_PLANNER` pins it). (3) Each worker's model is chosen by Jev from the worker's own
-  task, as the planner spawns it (`POST /jev/worker`). Opus and Fable are planner models, so
-  workers are Sonnet, or Haiku for a read-only `simple` task only if `WORKER_CHEAP_P` is
-  set (off by default, uncalibrated); a security task still runs on Sonnet and gets the
-  planner's closest review. The planner's own `model` choice stands only if
+  task, as the planner spawns it (`POST /jev/worker`). Fable is never a worker. Opus can be
+  one only when Fable is the planner, for a task Jev judges security-sensitive or hard;
+  under an Opus planner every worker is Sonnet (a security task included, which gets the
+  planner's closest review). Haiku is for a read-only `simple` task, and only if
+  `WORKER_CHEAP_P` is set (off by default, uncalibrated). The planner's own `model` choice stands only if
   Jev can't be reached. (4) The planner reviews the results itself: reads the diffs, runs
   the checks, and sends short steps back out before reporting.
 - **Trigger.** The `jev-orchestrate` mod (`mods/jev-orchestrate`, loaded by

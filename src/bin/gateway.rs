@@ -63,6 +63,9 @@ struct SessionState {
     /// The latest orchestrate check for this session (`multi_part_p`), recorded on the
     /// next turn's decision whether or not it triggered, as a label for tuning.
     orch_check: Option<Value>,
+    /// The planner model of the current turn when it is orchestrated, else `None`: a
+    /// worker may be Opus only when this is Fable.
+    orch_planner: Option<&'static str>,
 }
 
 struct App {
@@ -223,14 +226,17 @@ async fn worker_check(State(app): State<Arc<App>>, Json(c): Json<WorkerCheck>) -
     if !app.orch.enabled {
         return Json(json!({ "model": null }));
     }
-    let judged = tokio::time::timeout(std::time::Duration::from_secs(10), app.router.worker_want(&c.prompt)).await.ok().flatten();
+    // Opus may work under a Fable planner only; the gateway knows which planner this turn has.
+    let planner = app.sessions.lock().await.get(&c.session).and_then(|s| s.orch_planner);
+    let allow_opus = planner == Some(MODEL_TOP);
+    let judged = tokio::time::timeout(std::time::Duration::from_secs(10), app.router.worker_want(&c.prompt, allow_opus)).await.ok().flatten();
     let (model, reason, signals) = match judged {
         Some((m, r, s)) => (Some(m), r, s),
         None => (None, "jev unavailable: planner's choice stands".to_string(), Value::Null),
     };
     if let Some(path) = &app.orch.log_path {
         log::append(path, &json!({
-            "kind": "worker", "ts": log::now_ms() / 1000, "session": c.session, "model": model,
+            "kind": "worker", "ts": log::now_ms() / 1000, "session": c.session, "model": model, "planner": planner,
             "reason": reason, "signals": signals, "prompt": c.prompt.chars().take(200).collect::<String>(),
         }));
     }
@@ -568,6 +574,7 @@ async fn choose_model(app: &App, meta: &Meta, req: &Value) -> Option<Picked> {
             st.sticky.tier = Some(3);
         }
         st.prompt_id = prompt_id.clone();
+        st.orch_planner = Some(planner);
         st.model = Some(planner);
         let decision = json!({ "tier": null, "reason": "orchestrate", "orchestrated": true, "confident": true, "orchestrate": orch_check });
         st.decision = Some(decision.clone());
@@ -585,6 +592,7 @@ async fn choose_model(app: &App, meta: &Meta, req: &Value) -> Option<Picked> {
     let (tier, reason) = st.sticky.decide(&want, app.downgrade_after);
     st.sticky.tier = Some(tier);
     st.prompt_id = prompt_id.clone();
+    st.orch_planner = None;
     st.model = Some(TIERS[tier]);
     let decision = json!({ "tier": tier, "reason": reason, "confident": want.confident, "signals": want.signals, "orchestrate": orch_check });
     st.decision = Some(decision.clone());

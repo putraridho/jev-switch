@@ -199,13 +199,23 @@ test('Jev picks each worker\'s model while orchestrating, and only then', async 
   expect(JSON.parse(asked[0] ?? '{}')).toEqual({ prompt: 'harden the session cookie handling', session: 'sess-1' })
 })
 
-test('a worker is never moved to Opus or Fable, whatever the gateway says', async ($, on) => {
+test('the gateway may give a worker Opus (under a Fable planner), never Fable', async ($, on) => {
   const received: (string | undefined)[] = []
   engine(on, { trigger: true, workerModel: 'opus' })
-  on('agent.spawn', (_, e) => (received.push(e.model), { model: e.model ?? 'sonnet', agentId: 'w1' }))
+  on('agent.spawn', (_, e) => (received.push(e.model), { model: e.model ?? 'sonnet', agentId: `w${received.length}` }))
   await start($)
   await $.prompt.submit(typed(BIG))
   await $.agent.spawn({ prompt: 'harden the session cookie handling', model: 'sonnet' } as never)
+  expect(received).toEqual(['opus'])
+})
+
+test('an answer that is not haiku, sonnet or opus is ignored', async ($, on) => {
+  const received: (string | undefined)[] = []
+  engine(on, { trigger: true, workerModel: 'claude-fable-5-2' })
+  on('agent.spawn', (_, e) => (received.push(e.model), { model: e.model ?? 'sonnet', agentId: 'w1' }))
+  await start($)
+  await $.prompt.submit(typed(BIG))
+  await $.agent.spawn({ prompt: 'redesign the ledger', model: 'sonnet' } as never)
   expect(received).toEqual(['sonnet'])
 })
 

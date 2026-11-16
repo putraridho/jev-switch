@@ -129,12 +129,13 @@ pub struct Router {
     pub worker_cheap: Option<f64>,
 }
 
-/// The model a worker should run on, as the alias `agent.spawn` takes. Workers are
-/// never Opus or Fable: those are planner models. A security or hard task still runs
-/// on Sonnet, and the planner's own review is what checks it.
-pub fn worker_alias(tier: usize, signals: &Value, cheap: Option<f64>) -> &'static str {
+/// The model a worker should run on, as the alias `agent.spawn` takes. Fable is never a
+/// worker. Opus may be one only when Fable is the planner (`allow_opus`), for a task Jev
+/// judges security-sensitive or hard; under an Opus planner it stays on Sonnet and the
+/// planner's own review checks it.
+pub fn worker_alias(tier: usize, signals: &Value, cheap: Option<f64>, allow_opus: bool) -> &'static str {
     if tier >= 2 {
-        return "sonnet";
+        return if allow_opus { "opus" } else { "sonnet" };
     }
     let edit_p = signals["edit_p"].as_f64().unwrap_or(1.0);
     let confidence = signals["confidence"].as_f64().unwrap_or(0.0);
@@ -158,12 +159,12 @@ impl Router {
     /// lookup when enabled), judged by Jev from the worker's own prompt with the same
     /// signals as code mode (security, reasoning, edits).
     /// `None` when Jev is unavailable: the planner's own choice then stands.
-    pub async fn worker_want(&self, task: &str) -> Option<(&'static str, String, Value)> {
+    pub async fn worker_want(&self, task: &str, allow_opus: bool) -> Option<(&'static str, String, Value)> {
         let want = self.code_want_base(task, "", 1).await;
         if want.signals.is_null() {
             return None;
         }
-        let alias = worker_alias(want.tier, &want.signals, self.worker_cheap);
+        let alias = worker_alias(want.tier, &want.signals, self.worker_cheap, allow_opus);
         Some((alias, want.reason, want.signals))
     }
 
@@ -541,16 +542,18 @@ mod tests {
     }
 
     #[test]
-    fn workers_are_sonnet_and_haiku_only_for_read_only_lookups_when_enabled() {
+    fn workers_follow_the_planner_haiku_only_for_read_only_lookups_when_enabled() {
         let lookup = json!({ "choice": "simple", "confidence": 0.95, "edit_p": 0.05 });
         let edit = json!({ "choice": "simple", "confidence": 0.95, "edit_p": 0.7 });
-        assert_eq!(worker_alias(1, &lookup, None), "sonnet", "Haiku is off unless enabled");
-        assert_eq!(worker_alias(1, &lookup, Some(0.9)), "haiku");
-        assert_eq!(worker_alias(1, &edit, Some(0.9)), "sonnet", "anything that edits stays off Haiku");
-        assert_eq!(worker_alias(1, &json!({ "choice": "simple", "confidence": 0.6, "edit_p": 0.05 }), Some(0.9)), "sonnet");
-        assert_eq!(worker_alias(2, &lookup, Some(0.9)), "sonnet", "security or hard reasoning stays off Opus and Fable");
-        assert_eq!(worker_alias(3, &edit, None), "sonnet");
-        assert_eq!(worker_alias(1, &json!({ "security": "strong" }), Some(0.9)), "sonnet");
+        assert_eq!(worker_alias(1, &lookup, None, false), "sonnet", "Haiku is off unless enabled");
+        assert_eq!(worker_alias(1, &lookup, Some(0.9), false), "haiku");
+        assert_eq!(worker_alias(1, &edit, Some(0.9), false), "sonnet", "anything that edits stays off Haiku");
+        assert_eq!(worker_alias(1, &json!({ "choice": "simple", "confidence": 0.6, "edit_p": 0.05 }), Some(0.9), false), "sonnet");
+        // Opus only under a Fable planner, and only for security or hard tasks
+        assert_eq!(worker_alias(2, &lookup, Some(0.9), false), "sonnet", "Opus planner: no Opus workers");
+        assert_eq!(worker_alias(2, &lookup, Some(0.9), true), "opus", "Fable planner: Opus for hard or security tasks");
+        assert_eq!(worker_alias(1, &edit, None, true), "sonnet", "an everyday task is still Sonnet");
+        assert_eq!(worker_alias(3, &edit, None, false), "sonnet");
     }
 
     #[test]
