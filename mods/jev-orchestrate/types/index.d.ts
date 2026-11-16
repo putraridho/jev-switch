@@ -2,6 +2,6 @@ export type Mode = 'on' | 'off'
 
 declare module 'claude-code' {
   interface PluginState {
-    'jev-orchestrate': { enabled: boolean; active: boolean }
+    'jev-orchestrate': { enabled: boolean; active: boolean; workers: { running: string[]; done: number } }
   }
 }

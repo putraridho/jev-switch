@@ -2,7 +2,7 @@ import { expect, test } from 'claude-code/testing'
 import type { On } from 'claude-code'
 
 import { isHarnessPrompt } from './harness'
-import { BRIEF, parseArgs } from './register'
+import { BRIEF, parseArgs, statusText } from './register'
 
 type Setup = {
   model?: string
@@ -10,6 +10,8 @@ type Setup = {
   gatewayDown?: boolean
   /// The gateway never answers; the check's timer fires instead.
   gatewayHangs?: boolean
+  /// Collects every status line the mod sets.
+  statuses?: unknown[]
 }
 
 /// Stand in for the engine and the gateway; returns the requests the mod sent.
@@ -20,7 +22,7 @@ function engine(on: On, s: Setup = {}) {
   on('session.model', () => ({ value: s.model ?? 'jev-code[1m]' }))
   on('session.id', () => ({ value: 'sess-1' }))
   on('env.get', () => ({ value: 'http://127.0.0.1:18780' }))
-  on('ui.status', () => ({ value: undefined }))
+  on('ui.status', (_, e) => (s.statuses?.push(e), { value: undefined }))
   // The check's timeout: never fires unless the gateway hangs.
   on('clock.sleep', () => (s.gatewayHangs ? { value: undefined } : new Promise<never>(() => {})))
   on('http.fetch', (_, e) => {
@@ -119,6 +121,40 @@ test('/orchestrate toggles, and on/off set', async ($, on) => {
   expect((await $.prompt.submit(typed(BIG))).context).toContain(BRIEF)
 
   expect((await run('maybe')).text).toContain('Usage')
+})
+
+test('status line shows planning, running workers, then review', () => {
+  expect(statusText(false, 0, 0)).toBeUndefined()
+  expect(statusText(true, 0, 0)).toBe('orchestrating · planning')
+  expect(statusText(true, 3, 0)).toBe('orchestrating · 3 workers running, 0 done')
+  expect(statusText(true, 1, 2)).toBe('orchestrating · 1 worker running, 2 done')
+  expect(statusText(true, 0, 3)).toBe('orchestrating · 3 done, reviewing')
+  // The turn ended but a background worker is still going.
+  expect(statusText(false, 1, 2)).toBe('orchestrating · 1 worker running, 2 done')
+})
+
+test('workers are counted, and a worker finishing does not end the orchestrated turn', async ($, on) => {
+  const statuses: unknown[] = []
+  engine(on, { trigger: true, statuses })
+  let n = 0
+  on('agent.spawn', () => ({ model: 'sonnet', agentId: `w${++n}` }))
+  on('turn.complete', () => ({ text: '' }))
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+  await $.prompt.submit(typed(BIG))
+  await $.agent.spawn({ prompt: 'step 1' } as never)
+  await $.agent.spawn({ prompt: 'step 2' } as never)
+  const seen = () => JSON.stringify(statuses)
+  expect(seen()).toContain('2 workers running, 0 done')
+
+  await $.turn.complete({ agentId: 'w1', answer: 'ok', durationMs: 1, isAborted: false, turnId: 't1', reason: 'answer' } as never)
+  expect(seen()).toContain('1 worker running, 1 done')
+  expect(JSON.stringify(statuses.at(-1))).not.toContain('orchestrate: on')
+
+  await $.turn.complete({ agentId: 'w2', answer: 'ok', durationMs: 1, isAborted: false, turnId: 't2', reason: 'answer' } as never)
+  expect(seen()).toContain('2 done, reviewing')
+
+  await $.turn.complete({ answer: 'done', durationMs: 1, isAborted: false, turnId: 't0', reason: 'answer' } as never)
+  expect(JSON.stringify(statuses.at(-1))).toContain('orchestrate: on')
 })
 
 test('argument parsing', () => {

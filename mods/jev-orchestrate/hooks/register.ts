@@ -15,6 +15,17 @@ import { isHarnessPrompt } from './harness'
 
 const enabled = atom({ plugin: 'jev-orchestrate', key: 'enabled' } as const, true)
 const active = atom({ plugin: 'jev-orchestrate', key: 'active' } as const, false)
+/// Workers (subagents) the planner started during the orchestrated turn: ids still
+/// running, and how many have finished. Drives the status line.
+const workers = atom({ plugin: 'jev-orchestrate', key: 'workers' } as const, { running: [] as string[], done: 0 })
+const NO_WORKERS = { running: [] as string[], done: 0 }
+
+export function statusText(active: boolean, running: number, done: number): string | undefined {
+  if (!active && running === 0) return undefined
+  if (running === 0 && done === 0) return 'orchestrating · planning'
+  const r = `${running} worker${running === 1 ? '' : 's'} running`
+  return running === 0 ? `orchestrating · ${done} done, reviewing` : `orchestrating · ${r}, ${done} done`
+}
 
 const DEFAULT_GATEWAY = 'http://127.0.0.1:18780'
 const CHECK_TIMEOUT_MS = 5000
@@ -44,8 +55,10 @@ async function showStatus($: EngineInterface): Promise<void> {
     $.ui.status(undefined)
     return
   }
-  if (await read($, active)) {
-    $.ui.status('orchestrating')
+  const w = await read($, workers)
+  const text = statusText(await read($, active), w.running.length, w.done)
+  if (text) {
+    $.ui.status(text)
     return
   }
   $.ui.status((await read($, enabled)) ? 'orchestrate: on' : 'orchestrate: off')
@@ -112,14 +125,46 @@ export const register: Register = on => {
       return next(e)
     }
     await update($, active, () => true)
+    await update($, workers, () => NO_WORKERS)
     await showStatus($)
     return next({ ...e, context: [...(e.context ?? []), BRIEF] })
   }).catch(($, e, next) => next(e))
 
+  // A worker the planner starts while orchestrating: count it as running.
+  on('agent.spawn', async ($, e, next) => {
+    const started = await next(e)
+    try {
+      const id = started && 'agentId' in started ? started.agentId : undefined
+      if (id && (await read($, active))) {
+        await update($, workers, w => ({ ...w, running: [...w.running, id] }))
+        await showStatus($)
+      }
+    } catch {
+      // Bookkeeping only: never fail a spawn over the status line.
+    }
+    return started
+  })
+
+  // A worker's turn carries its agentId; the main loop's carries none. Only the main
+  // turn ending ends the orchestrated turn, so a worker finishing first can't clear it.
   on('turn.complete', async ($, e, next) => {
-    if (await read($, active)) {
-      await update($, active, () => false)
-      await showStatus($)
+    try {
+      if (e.agentId) {
+        if ((await read($, workers)).running.includes(e.agentId)) {
+          await update($, workers, w => ({ running: w.running.filter(x => x !== e.agentId), done: w.done + 1 }))
+          if (!(await read($, active)) && (await read($, workers)).running.length === 0) {
+            await update($, workers, () => NO_WORKERS)
+          }
+          await showStatus($)
+        }
+      } else if (await read($, active)) {
+        await update($, active, () => false)
+        // Background workers can outlive the turn: keep showing them until they finish.
+        if ((await read($, workers)).running.length === 0) await update($, workers, () => NO_WORKERS)
+        await showStatus($)
+      }
+    } catch {
+      // Status only.
     }
     return next(e)
   })
