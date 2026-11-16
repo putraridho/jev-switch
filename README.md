@@ -15,7 +15,7 @@ confidence. It fixes the two things that make routers bad:
 
 - **Judge the task, not the model.** Jev returns a `Choice` over `{simple, standard,
   reasoning, unclear}` with described criteria — never "which model".
-- **Code owns policy.** Three tiers: cheap (`claude-haiku-4-5`) when `simple` AND
+- **Code owns policy.** Three tiers: cheap (`claude-haiku-5-5`) when `simple` AND
   `confidence ≥ CHEAP_THRESHOLD`; strong (`claude-opus-5-5`) when `reasoning` AND
   `confidence ≥ STRONG_THRESHOLD`; mid (`claude-sonnet-5-5`) for everything else
   (`standard`, `unclear`, or a low-confidence judgment). Defaults 0.50 / 0.85 come

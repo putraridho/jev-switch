@@ -8,7 +8,7 @@ use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
 
 /// Cheap model for confidently-simple turns.
-pub const MODEL_CHEAP: &str = "claude-haiku-4-5";
+pub const MODEL_CHEAP: &str = "claude-haiku-5-5";
 /// Mid model for everyday coding, and for anything simple-but-uncertain or unclear.
 pub const MODEL_MID: &str = "claude-sonnet-5-5";
 /// Strong model for planning, tradeoffs, hard debugging, and security-sensitive work.

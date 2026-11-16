@@ -528,9 +528,12 @@ fn recent_context(req: &Value) -> String {
         .unwrap_or_default()
 }
 
-/// A 1M-context session makes Claude Code add settings Haiku 4.5 rejects: the
+/// A 1M-context session makes Claude Code add settings Haiku 4.5 rejected: the
 /// long-context beta, adaptive thinking, effort, and mid-conversation system
-/// messages. Claude Code only finds out by failing, so adapt the request up front.
+/// messages. Haiku 5.5 accepted adaptive thinking, effort and context management
+/// when Claude Code sent them directly (18 logged requests, all 200), but stripping
+/// them from a title or summary request costs nothing, and the Sonnet fallback in
+/// `forward` covers anything it still rejects.
 fn adapt_for_haiku(req: &mut Value) {
     let Some(o) = req.as_object_mut() else { return };
     if let Some(m) = o.get_mut("messages").and_then(Value::as_array_mut) {
