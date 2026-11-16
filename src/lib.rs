@@ -18,6 +18,7 @@ pub mod handoff;
 pub mod log;
 pub mod prefix;
 pub mod router;
+pub mod routing;
 pub mod transcript;
 pub mod turnlog;
 pub mod typesafe;
