@@ -78,7 +78,7 @@ claude.ai / Max login passes through unchanged; plain `claude` is unaffected.
 
 #### Orchestrate mode
 
-On by default in `jev-claude`. A large prompt that splits into separate pieces of
+Off by default; `/orchestrate on` enables it for a session in `jev-claude`. A large prompt that splits into separate pieces of
 work ("add X across the API, the UI and the tests") is planned and reviewed by the
 strong model and carried out by Sonnet subagents. Everything else routes as above.
 
@@ -94,7 +94,7 @@ strong model and carried out by Sonnet subagents. Everything else routes as abov
 - **Cache-safe.** The brief is part of Claude Code's own transcript, so later requests
   carry it unchanged; the gateway never edits a request to orchestrate.
 - **Toggle.** `/orchestrate` toggles it for the current session; `/orchestrate on` and
-  `/orchestrate off` set it. New sessions start on. The status line shows
+  `/orchestrate off` set it. New sessions start off. The status line shows
   `orchestrate: on`, `orchestrate: off`, or `orchestrating` during a triggered turn.
   `JEV_ORCH=off` in the gateway's environment turns it off everywhere.
 - **Failure is a normal prompt.** If the gateway is down, slow (5 s) or Jev fails, the
@@ -104,8 +104,14 @@ strong model and carried out by Sonnet subagents. Everything else routes as abov
   or above, all but one real multi-part work; 0.60-0.70 mixes in follow-ups and single
   asks. The gateway log keeps only 200 characters of a prompt, so long prompts were
   scored on their start.
-- **Cost.** It pays off on large tasks only: on a small three-file task, planning and
-  review on Opus were still 76% of the spend. That is why the cutoff is high.
+- **Cost.** Off by default because it cost more than it saved. The same 5-part task
+  (tests, doc comments and a flag across five files) run three ways: orchestrated 4.9x a
+  Sonnet-only run (Opus planning and review were 67% of it) for 104 s against 117 s;
+  normal routing 0.8x; Sonnet only 1.0x. All three passed their tests. One run per arm,
+  prices assumed (`scripts/orch_report.py`). It should only pay off when the task would
+  otherwise run on Opus, or is large enough for parallel workers to save real time; that
+  is untested. Turn it on per session with `/orchestrate on`; `JEV_ORCH=off` in the
+  gateway's environment disables the check everywhere.
 - **Logs.** `orch.jsonl` (`JEV_ORCH_LOG`): one line per check (`multi_part_p`,
   `trigger`, `cutoff`, `planner`, prompt start). Each turn's `decision.orchestrate`
   in `turns.jsonl`/`usage.jsonl` carries the check, triggered or not, and an

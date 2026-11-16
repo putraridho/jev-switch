@@ -38,11 +38,17 @@ function engine(on: On, s: Setup = {}) {
 /// A prompt as the person types it at an idle session.
 const typed = (text: string) => ({ text, wait: false, origin: { kind: 'user' } }) as never
 
+/// Starts a session and turns orchestrate mode on (it starts off).
+async function start($: Parameters<Parameters<typeof test>[1]>[0]) {
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+  await $.command.run({ command: 'orchestrate', args: 'on', origin: { kind: 'user' }, presentation: 'text' } as never)
+}
+
 const BIG = 'add audit logging across the API, the web app and the tests'
 
 test('a multi-part prompt gets the brief', async ($, on) => {
   const sent = engine(on, { trigger: true })
-  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+  await start($)
   const r = await $.prompt.submit(typed(BIG))
 
   expect(r.context).toContain(BRIEF)
@@ -53,7 +59,7 @@ test('a multi-part prompt gets the brief', async ($, on) => {
 
 test('a prompt the gateway does not flag passes unchanged', async ($, on) => {
   engine(on, { trigger: false })
-  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+  await start($)
   const r = await $.prompt.submit(typed('what does this flag do?'))
 
   expect(r.context ?? []).not.toContain(BRIEF)
@@ -61,7 +67,7 @@ test('a prompt the gateway does not flag passes unchanged', async ($, on) => {
 
 test('other models are never orchestrated or checked', async ($, on) => {
   const sent = engine(on, { trigger: true, model: 'claude-sonnet-5-5' })
-  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+  await start($)
   const r = await $.prompt.submit(typed(BIG))
 
   expect(r.context ?? []).not.toContain(BRIEF)
@@ -70,7 +76,7 @@ test('other models are never orchestrated or checked', async ($, on) => {
 
 test('task notifications and hand-backs are never checked', async ($, on) => {
   const sent = engine(on, { trigger: true })
-  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+  await start($)
   const note = '<task-notification>\n<task-id>a1</task-id>\nadd audit logging across the API, the web app and the tests\n</task-notification>'
   const r = await $.prompt.submit(typed(note))
 
@@ -88,7 +94,7 @@ test('harness prompts are recognised, typed ones are not', () => {
 
 test('a gateway that is down lets the prompt through', async ($, on) => {
   engine(on, { gatewayDown: true })
-  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+  await start($)
   const r = await $.prompt.submit(typed(BIG))
 
   expect(r.text).toBe(BIG)
@@ -97,11 +103,20 @@ test('a gateway that is down lets the prompt through', async ($, on) => {
 
 test('a gateway that hangs times out and lets the prompt through', async ($, on) => {
   engine(on, { trigger: true, gatewayHangs: true })
-  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+  await start($)
   const r = await $.prompt.submit(typed(BIG))
 
   expect(r.text).toBe(BIG)
   expect(r.context ?? []).not.toContain(BRIEF)
+})
+
+test('it starts off: no check, no brief, until /orchestrate on', async ($, on) => {
+  const sent = engine(on, { trigger: true })
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+  const r = await $.prompt.submit(typed(BIG))
+
+  expect(r.context ?? []).not.toContain(BRIEF)
+  expect(sent.length).toBe(0)
 })
 
 test('/orchestrate toggles, and on/off set', async ($, on) => {
@@ -110,12 +125,12 @@ test('/orchestrate toggles, and on/off set', async ($, on) => {
   const run = (args: string) =>
     $.command.run({ command: 'orchestrate', args, origin: { kind: 'user' }, presentation: 'text' } as never)
 
+  expect((await run('')).text).toContain('on')
   expect((await run('')).text).toContain('off')
   expect((await $.prompt.submit(typed(BIG))).context ?? []).not.toContain(BRIEF)
   expect(sent.length).toBe(0)
 
-  expect((await run('off')).text).toContain('off')
-  expect((await run('')).text).toContain('on')
+  expect((await run('on')).text).toContain('on')
   expect((await run('off')).text).toContain('off')
   expect((await run('on')).text).toContain('on')
   expect((await $.prompt.submit(typed(BIG))).context).toContain(BRIEF)
@@ -139,7 +154,7 @@ test('workers are counted, and a worker finishing does not end the orchestrated 
   let n = 0
   on('agent.spawn', () => ({ model: 'sonnet', agentId: `w${++n}` }))
   on('turn.complete', () => ({ text: '' }))
-  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+  await start($)
   await $.prompt.submit(typed(BIG))
   await $.agent.spawn({ prompt: 'step 1' } as never)
   await $.agent.spawn({ prompt: 'step 2' } as never)

@@ -5,15 +5,17 @@
 // doesn't see: plan, delegate each step to a Sonnet subagent, review. The gateway
 // sees the brief's marker and runs the main thread on the planner model.
 //
-// On by default. `/orchestrate` toggles it for this session, `/orchestrate on|off`
-// sets it. New sessions start on. Any failure falls through to a normal prompt.
+// Off by default: in a benchmark it cost ~5x a Sonnet-only run for ~10% less wall time
+// (README, Orchestrate mode). `/orchestrate on` turns it on for this session,
+// `/orchestrate off` back off, `/orchestrate` toggles. Any failure falls through to a
+// normal prompt.
 
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
 import { isHarnessPrompt } from './harness'
 
-const enabled = atom({ plugin: 'jev-orchestrate', key: 'enabled' } as const, true)
+const enabled = atom({ plugin: 'jev-orchestrate', key: 'enabled' } as const, false)
 const active = atom({ plugin: 'jev-orchestrate', key: 'active' } as const, false)
 /// Workers (subagents) the planner started during the orchestrated turn: ids still
 /// running, and how many have finished. Drives the status line.
