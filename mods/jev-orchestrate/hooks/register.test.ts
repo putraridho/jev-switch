@@ -12,6 +12,8 @@ type Setup = {
   gatewayHangs?: boolean
   /// Collects every status line the mod sets.
   statuses?: unknown[]
+  /// The value of JEV_ORCH_DEFAULT in the environment.
+  envDefault?: string
   /// What the gateway's /jev/worker answers (default: no opinion).
   workerModel?: string | null
   workerRequests?: string[]
@@ -24,7 +26,7 @@ function engine(on: On, s: Setup = {}) {
   on('session.start', (_, e) => ({ cwd: e.cwd }))
   on('session.model', () => ({ value: s.model ?? 'jev-code[1m]' }))
   on('session.id', () => ({ value: 'sess-1' }))
-  on('env.get', () => ({ value: 'http://127.0.0.1:18780' }))
+  on('env.get', (_, e) => ({ value: e.name === 'JEV_ORCH_DEFAULT' ? s.envDefault : 'http://127.0.0.1:18780' }))
   on('ui.status', (_, e) => (s.statuses?.push(e), { value: undefined }))
   // The check's timeout: never fires unless the gateway hangs.
   on('clock.sleep', () => (s.gatewayHangs ? { value: undefined } : new Promise<never>(() => {})))
@@ -124,6 +126,12 @@ test('it starts off: no check, no brief, until /orchestrate on', async ($, on) =
 
   expect(r.context ?? []).not.toContain(BRIEF)
   expect(sent.length).toBe(0)
+})
+
+test('JEV_ORCH_DEFAULT=on starts a session with orchestrate mode on', async ($, on) => {
+  engine(on, { trigger: true, envDefault: 'on' })
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+  expect((await $.prompt.submit(typed(BIG))).context).toContain(BRIEF)
 })
 
 test('/orchestrate toggles, and on/off set', async ($, on) => {

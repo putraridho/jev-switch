@@ -7,7 +7,8 @@
 //
 // Off by default: in a benchmark it cost ~5x a Sonnet-only run for ~10% less wall time
 // (README, Orchestrate mode). `/orchestrate on` turns it on for this session,
-// `/orchestrate off` back off, `/orchestrate` toggles. Any failure falls through to a
+// `/orchestrate off` back off, `/orchestrate` toggles; JEV_ORCH_DEFAULT=on starts a
+// session with it on. Any failure falls through to a
 // normal prompt.
 
 import { atom, read, update } from 'claude-code'
@@ -122,6 +123,9 @@ export const register: Register = on => {
       immediate: true,
     })
     const started = await next(e)
+    // JEV_ORCH_DEFAULT=on starts the session with orchestrate mode on (headless runs and
+    // benchmarks can't type /orchestrate on). Anything else leaves the default, off.
+    if ((await $.env.get('JEV_ORCH_DEFAULT')) === 'on') await update($, enabled, () => true)
     await showStatus($)
     return started
   })
