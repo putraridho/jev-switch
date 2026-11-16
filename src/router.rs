@@ -157,10 +157,10 @@ impl Router {
 
     /// Which model an orchestrated worker's task needs (Sonnet, or Haiku for a read-only
     /// lookup when enabled), judged by Jev from the worker's own prompt with the same
-    /// signals as code mode (security, reasoning, edits).
+    /// signals as code mode (security review, reasoning, edits) but not its keyword lists.
     /// `None` when Jev is unavailable: the planner's own choice then stands.
     pub async fn worker_want(&self, task: &str, allow_opus: bool) -> Option<(&'static str, String, Value)> {
-        let want = self.code_want_base(task, "", 1).await;
+        let want = self.code_want_judged(task, "", 1, false).await;
         if want.signals.is_null() {
             return None;
         }
@@ -358,7 +358,16 @@ impl Router {
     }
 
     async fn code_want_base(&self, request: &str, recent_context: &str, fallback: usize) -> CodeWant {
-        let security = security_level(request);
+        self.code_want_judged(request, recent_context, fallback, true).await
+    }
+
+    /// `keywords` false ignores the security keyword lists and relies on Jev's own
+    /// judgments. An orchestrated worker's task is a long brief the planner wrote, full
+    /// of incidental words ("no unsafe code", "don't leak the lock", "audit"): on the
+    /// three workers of a concurrency redesign the keyword rule tagged every one
+    /// security-sensitive, which under a Fable planner means three Opus workers.
+    async fn code_want_judged(&self, request: &str, recent_context: &str, fallback: usize, keywords: bool) -> CodeWant {
+        let security = if keywords { security_level(request) } else { Security::None };
         if security == Security::Strong {
             return CodeWant {
                 tier: 2,
