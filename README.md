@@ -132,7 +132,9 @@ Paths: `JEV_USAGE_LOG`, `JEV_TURNS_LOG`, `JEV_GATEWAY_LOG`. A file over
 `JEV_LOG_MAX_MB` (default 50, 0 = never) is moved to `<name>.1`, replacing the previous
 one.
 
-Failed requests print a `[warn]` line to `gateway.out`. If Haiku rejects a background
+Failed requests print a `[warn]` line to `gateway.out`, with the full cause chain (DNS, refused
+connection, TLS). A connection that can't be established is retried twice (250 ms, then 1 s);
+the usage row records `retries`. Nothing is retried once a request has reached Anthropic. If Haiku rejects a background
 request (400/413/422), the gateway retries it once on Sonnet as the client sent it and
 records `fallback_from` (model, status, error) on the usage row.
 

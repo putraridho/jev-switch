@@ -208,12 +208,17 @@ async fn forward(app: &Arc<App>, req: Request) -> Result<Response<Body>> {
     }
 
     let logged = tap.is_some();
-    let sent = upstream_request(app, &parts, &path_q, bytes, for_haiku, logged).send().await;
+    let (sent, retries) = send_upstream(app, &parts, &path_q, &bytes, for_haiku, logged).await;
+    if let (Some(t), true) = (&mut tap, retries > 0) {
+        t.set("retries", json!(retries));
+    }
     let mut resp = match sent {
         Ok(r) => r,
         Err(e) => {
+            let chain = error_chain(&e);
+            eprintln!("[warn] upstream unreachable after {retries} retries: {chain}");
             if let Some(t) = &mut tap {
-                t.error = Some(json!({ "type": "gateway_upstream", "message": format!("{e:#}") }));
+                t.error = Some(json!({ "type": "gateway_upstream", "message": chain }));
             }
             return Err(anyhow::Error::new(e).context("upstream request failed"));
         }
@@ -230,11 +235,12 @@ async fn forward(app: &Arc<App>, req: Request) -> Result<Response<Body>> {
             t.set("model", json!(MODEL_MID));
             t.set("adapted", json!(false));
         }
-        resp = match upstream_request(app, &parts, &path_q, retry, false, logged).send().await {
+        resp = match send_upstream(app, &parts, &path_q, &retry, false, logged).await.0 {
             Ok(r) => r,
             Err(e) => {
+                let chain = error_chain(&e);
                 if let Some(t) = &mut tap {
-                    t.error = Some(json!({ "type": "gateway_upstream", "message": format!("{e:#}") }));
+                    t.error = Some(json!({ "type": "gateway_upstream", "message": chain }));
                 }
                 return Err(anyhow::Error::new(e).context("upstream request failed"));
             }
@@ -266,6 +272,46 @@ async fn forward(app: &Arc<App>, req: Request) -> Result<Response<Body>> {
         None => Body::from_stream(stream),
     };
     Ok(out.body(body)?)
+}
+
+/// Pauses before each retry of a connection that could not be established.
+const CONNECT_RETRY_DELAYS_MS: [u64; 2] = [250, 1000];
+
+/// Send the request, retrying only when no connection was made. Then nothing reached
+/// Anthropic, so a retry can't repeat work; once bytes are sent, a failure is passed
+/// to Claude Code, which has its own retry. Returns the outcome and the retries used.
+async fn send_upstream(
+    app: &App,
+    parts: &axum::http::request::Parts,
+    path_q: &str,
+    body: &[u8],
+    for_haiku: bool,
+    logged: bool,
+) -> (Result<reqwest::Response, reqwest::Error>, u32) {
+    let mut retries = 0;
+    loop {
+        match upstream_request(app, parts, path_q, body.to_vec(), for_haiku, logged).send().await {
+            Err(e) if e.is_connect() && (retries as usize) < CONNECT_RETRY_DELAYS_MS.len() => {
+                tokio::time::sleep(std::time::Duration::from_millis(CONNECT_RETRY_DELAYS_MS[retries as usize])).await;
+                retries += 1;
+            }
+            other => return (other, retries),
+        }
+    }
+}
+
+/// An error and its causes, e.g. "error sending request: client error (Connect):
+/// dns error: ...". reqwest's own message stops at the first, which hid why 155
+/// requests failed.
+fn error_chain(e: &(dyn std::error::Error + 'static)) -> String {
+    let mut out = e.to_string();
+    let mut source = e.source();
+    while let Some(s) = source {
+        out.push_str(": ");
+        out.push_str(&s.to_string());
+        source = s.source();
+    }
+    out
 }
 
 /// The upstream request: the client's headers, minus hop-by-hop ones. A logged request
@@ -596,6 +642,33 @@ mod tests {
         ] {
             assert!(!is_harness_message(p), "{p}");
         }
+    }
+
+    #[test]
+    fn error_chain_includes_every_cause() {
+        #[derive(Debug)]
+        struct Outer(std::io::Error);
+        impl std::fmt::Display for Outer {
+            fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                write!(f, "error sending request")
+            }
+        }
+        impl std::error::Error for Outer {
+            fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+                Some(&self.0)
+            }
+        }
+        let e = Outer(std::io::Error::new(std::io::ErrorKind::ConnectionRefused, "connection refused"));
+        assert_eq!(error_chain(&e), "error sending request: connection refused");
+    }
+
+    #[tokio::test]
+    async fn refused_connection_is_a_connect_error() {
+        // Nothing listens on port 1, so every attempt fails to connect.
+        let client = reqwest::Client::new();
+        let err = client.get("http://127.0.0.1:1/").send().await.unwrap_err();
+        assert!(err.is_connect(), "a refused connection is a connect error: {err}");
+        assert!(error_chain(&err).contains("onnect"), "{}", error_chain(&err));
     }
 
     #[test]
