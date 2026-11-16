@@ -19,6 +19,7 @@ pub mod log;
 pub mod prefix;
 pub mod providers;
 pub mod router;
+pub mod routing;
 pub mod transcript;
 pub mod turnlog;
 pub mod typesafe;
