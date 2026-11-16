@@ -17,6 +17,7 @@ pub mod envfile;
 pub mod handoff;
 pub mod log;
 pub mod prefix;
+pub mod providers;
 pub mod router;
 pub mod transcript;
 pub mod turnlog;
