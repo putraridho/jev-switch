@@ -96,6 +96,9 @@ def main():
     checks = [c for c in logged if c.get("kind") != "worker"]
     workers = [c for c in logged if c.get("kind") == "worker"]
     cutoff = checks[-1]["cutoff"] if checks else None
+    vetoed = [c for c in checks if c.get("skipped")]
+    if vetoed:
+        print(f"multi-part prompts left on normal routing because it would not use Opus: {len(vetoed)}")
     print(f"orchestrate checks: {len(checks)}, triggered: {sum(1 for c in checks if c.get('trigger'))}"
           + (f" (cutoff {cutoff})" if cutoff else ""))
     if cutoff:

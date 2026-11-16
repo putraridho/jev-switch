@@ -82,9 +82,14 @@ Off by default; `/orchestrate on` enables it for a session in `jev-claude`. A la
 work ("add X across the API, the UI and the tests") is planned and reviewed by the
 strong model and carried out by Sonnet subagents. Everything else routes as above.
 
-- **How Jev decides.** (1) `multi_part` says whether the prompt is orchestrated at all.
-  (2) If not, normal routing picks the model. If so, Jev also picks the planner:
-  `very_hard` at `FABLE_THRESHOLD` (0.90) or above gets Fable, otherwise Opus
+- **How Jev decides.** (1) The prompt is orchestrated only if `multi_part` is at the cutoff
+  or above **and** normal routing would have sent it to Opus anyway
+  (`ORCH_REQUIRE_OPUS`, on by default; `off` restores the multi-part rule alone). In a
+  benchmark, five small edits that Sonnet handles alone cost ~15x more orchestrated, while
+  a hard redesign that routing sent to Opus cost 43% less orchestrated and finished 35%
+  faster. Skipped prompts are logged with `skipped` and `route_tier`.
+  (2) If not, normal routing picks the model. If so, Jev also picks the planner: a turn
+  routing escalates as `very_hard` (`FABLE_THRESHOLD`, 0.90) gets Fable, otherwise Opus
   (`ORCH_PLANNER` pins it). (3) Each worker's model is chosen by Jev from the worker's own
   task, as the planner spawns it (`POST /jev/worker`). Fable is never a worker. Opus can be
   one only when Fable is the planner, for a task Jev judges security-sensitive or hard;

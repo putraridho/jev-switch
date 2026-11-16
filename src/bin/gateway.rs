@@ -17,7 +17,7 @@
 //! Env: JEV_GATEWAY_ADDR (127.0.0.1:18780), JEV_GATEWAY_UPSTREAM
 //! (https://api.anthropic.com), CODE_STRONG_THRESHOLD (0.85), DOWNGRADE_AFTER (2),
 //! JEV_GATEWAY_LOG (~/.local/state/jev-router/gateway.jsonl), JEV_USAGE_LOG
-//! (usage.jsonl), JEV_TURNS_LOG (turns.jsonl). WORKER_CHEAP_P (unset: workers never get Haiku). Fable tier: JEV_FABLE (on; "off" disables),
+//! (usage.jsonl), JEV_TURNS_LOG (turns.jsonl). WORKER_CHEAP_P (unset: workers never get Haiku), ORCH_REQUIRE_OPUS (on). Fable tier: JEV_FABLE (on; "off" disables),
 //! FABLE_THRESHOLD (0.90). Orchestrate mode (README): JEV_ORCH
 //! (on; "off" disables), ORCH_TRIGGER_P (0.70), ORCH_PLANNER (claude-opus-5-5),
 //! JEV_ORCH_LOG (orch.jsonl).
@@ -92,6 +92,10 @@ struct Orch {
     planner: &'static str,
     /// `ORCH_PLANNER` is set: it pins the planner and Jev does not pick it.
     planner_pinned: bool,
+    /// `ORCH_REQUIRE_OPUS` (default on; `0` or `off` disables): orchestrate only a prompt
+    /// that normal routing would have sent to Opus. When Sonnet alone would do the work,
+    /// orchestration only adds an expensive planner (15x a Sonnet run on a small task).
+    require_opus: bool,
     log_path: Option<String>,
 }
 
@@ -141,6 +145,7 @@ async fn main() -> Result<()> {
             // Leaked once at startup: routing hands out &'static model names.
             planner: Box::leak(std::env::var("ORCH_PLANNER").unwrap_or_else(|_| MODEL_STRONG.into()).into_boxed_str()),
             planner_pinned: std::env::var("ORCH_PLANNER").is_ok(),
+            require_opus: std::env::var("ORCH_REQUIRE_OPUS").map_or(true, |v| v != "0" && v != "off"),
             log_path: log::path_from_env("JEV_ORCH_LOG", "orch.jsonl"),
         },
     });
@@ -188,17 +193,26 @@ async fn orchestrate_check(State(app): State<Arc<App>>, Json(c): Json<OrchCheck>
             None
         }
     };
-    let trigger = p.is_some_and(|p| p >= app.orch.cutoff);
-    // Jev picks the planner too: Fable for a very hard task, Opus otherwise, unless
-    // ORCH_PLANNER pins it. If the hardness judgment fails, Opus.
-    let (planner, hard_p) = match (trigger, app.orch.planner_pinned, app.router.top_threshold) {
-        (true, false, Some(cutoff)) => match app.router.very_hard(&c.prompt, &c.context).await {
-            Ok(h) => (if h >= cutoff { MODEL_TOP } else { app.orch.planner }, Some(h)),
-            Err(_) => (app.orch.planner, None),
-        },
-        _ => (app.orch.planner, None),
-    };
-    let record = json!({ "multi_part_p": p, "trigger": trigger, "cutoff": app.orch.cutoff, "planner": planner, "hard_p": hard_p });
+    // A prompt that clears the multi-part cutoff is also routed the normal way, which
+    // tells us whether Opus would have run it anyway, and which planner it needs: Fable
+    // when routing escalates it as very hard (and ORCH_PLANNER doesn't pin one).
+    let mut route_tier = None;
+    let mut hard_p = None;
+    if p.is_some_and(|p| p >= app.orch.cutoff) {
+        let want = app.router.code_want(&c.prompt, &c.context, 1).await;
+        if !want.signals.is_null() {
+            route_tier = Some(want.tier);
+            hard_p = want.signals["hard_p"].as_f64();
+        }
+    }
+    let gate = orch_gate(p, app.orch.cutoff, route_tier, app.orch.require_opus);
+    let trigger = gate == Gate::Trigger;
+    let planner = if trigger && !app.orch.planner_pinned && route_tier.is_some_and(|t| t >= 3) { MODEL_TOP } else { app.orch.planner };
+    let skipped = (gate == Gate::SingleModelRoute).then_some("normal routing would not use Opus");
+    let record = json!({
+        "multi_part_p": p, "trigger": trigger, "cutoff": app.orch.cutoff, "planner": planner, "hard_p": hard_p,
+        "route_tier": route_tier, "skipped": skipped,
+    });
     if !c.session.is_empty() {
         app.sessions.lock().await.entry(c.session.clone()).or_default().orch_check = Some(record.clone());
     }
@@ -209,7 +223,28 @@ async fn orchestrate_check(State(app): State<Arc<App>>, Json(c): Json<OrchCheck>
         line["prompt"] = json!(c.prompt.chars().take(200).collect::<String>());
         log::append(path, &line);
     }
-    Json(json!({ "trigger": trigger, "enabled": true, "multi_part_p": p, "cutoff": app.orch.cutoff, "planner": planner }))
+    Json(json!({ "trigger": trigger, "enabled": true, "multi_part_p": p, "cutoff": app.orch.cutoff, "planner": planner, "skipped": skipped }))
+}
+
+#[derive(Debug, PartialEq)]
+enum Gate {
+    Trigger,
+    BelowCutoff,
+    /// Multi-part enough, but normal routing would not have used Opus.
+    SingleModelRoute,
+}
+
+/// Whether a prompt is orchestrated: `multi_part` at the cutoff or above and, when
+/// `require_opus`, a normal route of Opus (tier 2) or higher. A route Jev couldn't judge
+/// (`None`) doesn't veto.
+fn orch_gate(multi_part: Option<f64>, cutoff: f64, route_tier: Option<usize>, require_opus: bool) -> Gate {
+    if !multi_part.is_some_and(|p| p >= cutoff) {
+        return Gate::BelowCutoff;
+    }
+    match route_tier {
+        Some(t) if require_opus && t < 2 => Gate::SingleModelRoute,
+        _ => Gate::Trigger,
+    }
 }
 
 #[derive(serde::Deserialize)]
@@ -822,6 +857,17 @@ mod tests {
         let prompt = last_user_prompt(&req).expect("hand-back carries text");
         assert!(is_harness_message(&prompt));
         assert!(is_harness_message("  Permission granted for this exact command only, as one whole string: \"git status\""));
+    }
+
+    #[test]
+    fn orchestrate_only_what_normal_routing_would_send_to_opus() {
+        assert_eq!(orch_gate(Some(0.98), 0.7, Some(2), true), Gate::Trigger, "multi-part and Opus-bound");
+        assert_eq!(orch_gate(Some(0.98), 0.7, Some(3), true), Gate::Trigger, "Fable-bound counts");
+        assert_eq!(orch_gate(Some(0.98), 0.7, Some(1), true), Gate::SingleModelRoute, "Sonnet would do it alone");
+        assert_eq!(orch_gate(Some(0.98), 0.7, Some(1), false), Gate::Trigger, "ORCH_REQUIRE_OPUS=off keeps the old rule");
+        assert_eq!(orch_gate(Some(0.98), 0.7, None, true), Gate::Trigger, "no routing judgment: don't veto");
+        assert_eq!(orch_gate(Some(0.5), 0.7, Some(2), true), Gate::BelowCutoff);
+        assert_eq!(orch_gate(None, 0.7, Some(2), true), Gate::BelowCutoff, "Jev failed the multi-part check");
     }
 
     #[test]
