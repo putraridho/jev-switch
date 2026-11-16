@@ -136,7 +136,9 @@ strong model and carried out by Sonnet subagents. Everything else routes as abov
   environment disables the check everywhere.
 - **Logs.** `orch.jsonl` (`JEV_ORCH_LOG`): one line per check (`multi_part_p`,
   `trigger`, `cutoff`, `planner`, `hard_p`, prompt start) and one per worker
-  (`kind: "worker"`, `model`, `reason`, `signals`). Each turn's `decision.orchestrate`
+  (`kind: "worker"`, `model`, `planner`, `prompt_id`, `tool_use_id`, `reason`, `signals`).
+  Every `usage.jsonl` row has `orch_planner`, set while the session's turn is orchestrated
+  (workers' rows included). `scripts/orch_report.py --exclude PREFIX` skips test sessions. Each turn's `decision.orchestrate`
   in `turns.jsonl`/`usage.jsonl` carries the check, triggered or not, and an
   orchestrated turn has `reason: "orchestrate"`. An orchestrated turn with no `Agent`
   call in `tools` is a planner that didn't delegate; an untriggered turn just under the

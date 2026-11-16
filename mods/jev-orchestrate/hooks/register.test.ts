@@ -204,7 +204,7 @@ test('Jev picks each worker\'s model while orchestrating, and only then', async 
   await $.prompt.submit(typed(BIG))
   await $.agent.spawn({ prompt: 'harden the session cookie handling', model: 'sonnet' } as never)
   expect(received.at(-1)).toBe('haiku')
-  expect(JSON.parse(asked[0] ?? '{}')).toEqual({ prompt: 'harden the session cookie handling', session: 'sess-1' })
+  expect(JSON.parse(asked[0] ?? '{}')).toEqual({ prompt: 'harden the session cookie handling', session: 'sess-1', tool_use_id: undefined })
 })
 
 test('the gateway may give a worker Opus (under a Fable planner), never Fable', async ($, on) => {

@@ -252,6 +252,9 @@ struct WorkerCheck {
     prompt: String,
     #[serde(default)]
     session: String,
+    /// The Agent tool call this worker belongs to, as the mod reports it.
+    #[serde(default)]
+    tool_use_id: String,
 }
 
 /// `POST /jev/worker`, called by the mod as the planner spawns a worker: which model
@@ -262,7 +265,11 @@ async fn worker_check(State(app): State<Arc<App>>, Json(c): Json<WorkerCheck>) -
         return Json(json!({ "model": null }));
     }
     // Opus may work under a Fable planner only; the gateway knows which planner this turn has.
-    let planner = app.sessions.lock().await.get(&c.session).and_then(|s| s.orch_planner);
+    let (planner, prompt_id) = {
+        let sessions = app.sessions.lock().await;
+        let st = sessions.get(&c.session);
+        (st.and_then(|s| s.orch_planner), st.and_then(|s| s.prompt_id.clone()))
+    };
     let allow_opus = planner == Some(MODEL_TOP);
     let judged = tokio::time::timeout(std::time::Duration::from_secs(10), app.router.worker_want(&c.prompt, allow_opus)).await.ok().flatten();
     let (model, reason, signals) = match judged {
@@ -272,6 +279,7 @@ async fn worker_check(State(app): State<Arc<App>>, Json(c): Json<WorkerCheck>) -
     if let Some(path) = &app.orch.log_path {
         log::append(path, &json!({
             "kind": "worker", "ts": log::now_ms() / 1000, "session": c.session, "model": model, "planner": planner,
+            "prompt_id": prompt_id, "tool_use_id": c.tool_use_id,
             "reason": reason, "signals": signals, "prompt": c.prompt.chars().take(200).collect::<String>(),
         }));
     }
@@ -327,6 +335,9 @@ async fn forward(app: &Arc<App>, req: Request) -> Result<Response<Body>> {
             }
         }
         let model = picked.as_ref().map(|p| p.model.to_string()).unwrap_or_else(|| requested.clone());
+        // The planner of the session's current turn when it is orchestrated: tags the main
+        // thread's and the workers' rows alike, so a task's cost can be summed from them.
+        let orch_planner = app.sessions.lock().await.get(&meta.session).and_then(|s| s.orch_planner);
         if let Some(p) = &picked {
             if p.model == MODEL_CHEAP {
                 fallback = Some(set_model(&bytes, MODEL_MID));
@@ -349,7 +360,7 @@ async fn forward(app: &Arc<App>, req: Request) -> Result<Response<Body>> {
                 json!({
                     "ts_ms": ts_ms, "session": meta.session, "prompt_id": meta.prompt_id, "class": meta.class,
                     "cwd": cwd, "project": cwd.as_deref().map(project_of),
-                    "requested_model": requested, "model": model, "routed": picked.is_some(),
+                    "requested_model": requested, "model": model, "routed": picked.is_some(), "orch_planner": orch_planner,
                     "new_turn": picked.as_ref().is_some_and(|p| p.new_turn), "adapted": for_haiku,
                     "decision": picked.as_ref().and_then(|p| p.decision.clone()),
                     "stream": j.and_then(|j| j.get("stream")).and_then(Value::as_bool).unwrap_or(false),

@@ -58,13 +58,16 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--state", default=os.path.expanduser("~/.local/state/jev-router"))
     ap.add_argument("--since", default="")
+    ap.add_argument("--exclude", action="append", default=[], metavar="PREFIX",
+                    help="ignore sessions whose id starts with PREFIX (repeatable), e.g. test traffic")
     a = ap.parse_args()
     since_ms = int(datetime.datetime.fromisoformat(a.since).timestamp() * 1000) if a.since else 0
 
-    turns = [t for t in read_jsonl(f"{a.state}/turns.jsonl") if t.get("ts_ms", 0) >= since_ms]
+    keep = lambda s: not any(str(s or "").startswith(x) for x in a.exclude)  # noqa: E731
+    turns = [t for t in read_jsonl(f"{a.state}/turns.jsonl") if t.get("ts_ms", 0) >= since_ms and keep(t.get("session"))]
     by_turn = collections.defaultdict(list)
     for r in list(read_jsonl(f"{a.state}/usage.jsonl.1")) + list(read_jsonl(f"{a.state}/usage.jsonl")):
-        if r.get("usage") and r.get("prompt_id") and r.get("ts_ms", 0) >= since_ms:
+        if r.get("usage") and r.get("prompt_id") and r.get("ts_ms", 0) >= since_ms and keep(r.get("session")):
             by_turn[(r["session"], r["prompt_id"])].append(r)
 
     def cost(rows):
@@ -94,7 +97,7 @@ def main():
         reason = (k["turn"].get("decision") or {}).get("reason")
         (orch if reason == "orchestrate" else other).append((k, rows))
 
-    logged = [c for c in read_jsonl(f"{a.state}/orch.jsonl") if c.get("ts", 0) * 1000 >= since_ms]
+    logged = [c for c in read_jsonl(f"{a.state}/orch.jsonl") if c.get("ts", 0) * 1000 >= since_ms and keep(c.get("session"))]
     checks = [c for c in logged if c.get("kind") != "worker"]
     workers = [c for c in logged if c.get("kind") == "worker"]
     cutoff = checks[-1]["cutoff"] if checks else None

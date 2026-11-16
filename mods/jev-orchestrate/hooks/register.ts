@@ -94,12 +94,12 @@ async function shouldOrchestrate($: EngineInterface, prompt: string): Promise<bo
 
 /// The model Jev picks for a worker's task, as an alias (`haiku`, `sonnet` or, under a Fable planner, `opus`), or
 /// undefined to leave the planner's choice (any error, timeout, or Jev unavailable).
-async function workerModel($: EngineInterface, prompt: string): Promise<string | undefined> {
+async function workerModel($: EngineInterface, prompt: string, toolUseId: string): Promise<string | undefined> {
   const ask = (async () => {
     const res = await $.http.fetch(`${await gatewayUrl($)}/jev/worker`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ prompt, session: await $.session.id() }),
+      body: JSON.stringify({ prompt, session: await $.session.id(), tool_use_id: toolUseId }),
     })
     if (!res.ok) return undefined
     const model = (JSON.parse(res.text) as { model?: unknown }).model
@@ -162,7 +162,7 @@ export const register: Register = on => {
   // (the planner's own choice stands if Jev can't be reached), and it counts as running.
   on('agent.spawn', async ($, e, next) => {
     const orchestrating = await read($, active)
-    const model = orchestrating ? await workerModel($, e.prompt) : undefined
+    const model = orchestrating ? await workerModel($, e.prompt, e.tool_use_id) : undefined
     const started = await next(model ? { ...e, model } : e)
     try {
       const id = started && 'agentId' in started ? started.agentId : undefined
