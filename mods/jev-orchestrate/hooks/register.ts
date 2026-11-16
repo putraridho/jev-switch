@@ -14,7 +14,7 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
-import { isHarnessPrompt } from './harness'
+import { isHarnessPrompt, recentContext } from './harness'
 
 const enabled = atom({ plugin: 'jev-orchestrate', key: 'enabled' } as const, false)
 const active = atom({ plugin: 'jev-orchestrate', key: 'active' } as const, false)
@@ -75,10 +75,12 @@ async function gatewayUrl($: EngineInterface): Promise<string> {
 /// Whether the gateway says to orchestrate this prompt. False on any error or timeout.
 async function shouldOrchestrate($: EngineInterface, prompt: string): Promise<boolean> {
   const check = (async () => {
+    // The last answer rides along: a short prompt can only be judged against what it answers.
+    const context = await $.session.messages({ as: 'api' }).then(recentContext, () => '')
     const res = await $.http.fetch(`${await gatewayUrl($)}/jev/orchestrate`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ prompt, session: await $.session.id() }),
+      body: JSON.stringify({ prompt, context, session: await $.session.id() }),
     })
     if (!res.ok) return false
     const body = JSON.parse(res.text) as { trigger?: unknown }

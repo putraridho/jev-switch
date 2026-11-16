@@ -1,7 +1,7 @@
 import { expect, test } from 'claude-code/testing'
 import type { On } from 'claude-code'
 
-import { isHarnessPrompt } from './harness'
+import { isHarnessPrompt, recentContext } from './harness'
 import { BRIEF, parseArgs, statusText } from './register'
 
 type Setup = {
@@ -12,6 +12,8 @@ type Setup = {
   gatewayHangs?: boolean
   /// Collects every status line the mod sets.
   statuses?: unknown[]
+  /// The conversation `$.session.messages` returns (default: empty).
+  messages?: { role: string; content: { type: string; text?: string }[] }[]
   /// The value of JEV_ORCH_DEFAULT in the environment.
   envDefault?: string
   /// What the gateway's /jev/worker answers (default: no opinion).
@@ -26,6 +28,7 @@ function engine(on: On, s: Setup = {}) {
   on('session.start', (_, e) => ({ cwd: e.cwd }))
   on('session.model', () => ({ value: s.model ?? 'jev-code[1m]' }))
   on('session.id', () => ({ value: 'sess-1' }))
+  on('session.messages', () => ({ value: s.messages ?? [] }) as never)
   on('env.get', (_, e) => ({ value: e.name === 'JEV_ORCH_DEFAULT' ? s.envDefault : 'http://127.0.0.1:18780' }))
   on('ui.status', (_, e) => (s.statuses?.push(e), { value: undefined }))
   // The check's timeout: never fires unless the gateway hangs.
@@ -63,7 +66,31 @@ test('a multi-part prompt gets the brief', async ($, on) => {
   expect(r.context).toContain(BRIEF)
   expect(sent.length).toBe(1)
   expect(sent[0]?.url).toBe('http://127.0.0.1:18780/jev/orchestrate')
-  expect(JSON.parse(sent[0]?.body ?? '{}')).toEqual({ prompt: BIG, session: 'sess-1' })
+  expect(JSON.parse(sent[0]?.body ?? '{}')).toEqual({ prompt: BIG, context: '', session: 'sess-1' })
+})
+
+test('the last answer is sent with the prompt as context', async ($, on) => {
+  const sent = engine(on, {
+    trigger: true,
+    messages: [
+      { role: 'user', content: [{ type: 'text', text: 'what is left?' }] },
+      { role: 'assistant', content: [{ type: 'text', text: 'Three things: 1) the API 2) the UI 3) the tests' }] },
+    ],
+  })
+  await start($)
+  await $.prompt.submit(typed('do 1 and 2'))
+  expect(JSON.parse(sent[0]?.body ?? '{}').context).toBe('assistant: Three things: 1) the API 2) the UI 3) the tests')
+})
+
+test('recent context: last answer only, reminders stripped, clipped, empty when none', () => {
+  const a = (text: string) => ({ role: 'assistant', content: [{ type: 'text', text }] })
+  const u = (text: string) => ({ role: 'user', content: [{ type: 'text', text }] })
+  expect(recentContext([])).toBe('')
+  expect(recentContext([u('hi')])).toBe('')
+  expect(recentContext([a('old'), u('q'), a('new answer')])).toBe('assistant: new answer')
+  expect(recentContext([a('x <system-reminder>secret note</system-reminder> y')])).toBe('assistant: x  y')
+  expect(recentContext([{ role: 'assistant', content: [{ type: 'tool_use' }, { type: 'text', text: 'ok' }] }])).toBe('assistant: ok')
+  expect(recentContext([a('z'.repeat(1000))]).length).toBe('assistant: '.length + 600)
 })
 
 test('a prompt the gateway does not flag passes unchanged', async ($, on) => {

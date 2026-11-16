@@ -209,7 +209,7 @@ one.
 Failed requests print a `[warn]` line to `gateway.out`, with the full cause chain (DNS, refused
 connection, TLS). A connection that can't be established is retried twice (250 ms, then 1 s);
 the usage row records `retries`. Nothing is retried once a request has reached Anthropic. If Haiku rejects a background
-request (400/413/422), the gateway retries it once on Sonnet as the client sent it and
+request (400/413/422) or rate-limits it (429), the gateway retries it once on Sonnet as the client sent it and
 records `fallback_from` (model, status, error) on the usage row.
 
 ### Code mode (`jev-code`)

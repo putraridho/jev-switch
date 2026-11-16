@@ -398,7 +398,7 @@ async fn forward(app: &Arc<App>, req: Request) -> Result<Response<Body>> {
     };
     // Haiku has restrictions that can change without notice. Rather than lose a
     // background request, retry it once as sent by the client, on the main model.
-    if let (Some(retry), true) = (fallback, matches!(resp.status().as_u16(), 400 | 413 | 422)) {
+    if let (Some(retry), true) = (fallback, haiku_declined(resp.status().as_u16())) {
         let status = resp.status().as_u16();
         let body = resp.bytes().await.unwrap_or_default();
         let msg = serde_json::from_slice::<Value>(&body).ok().and_then(|v| v["error"]["message"].as_str().map(str::to_string)).unwrap_or_default();
@@ -485,6 +485,13 @@ fn error_chain(e: &(dyn std::error::Error + 'static)) -> String {
         source = s.source();
     }
     out
+}
+
+/// A Haiku response that means "not this request, not now": the settings or size it
+/// rejects (400, 413, 422) or its own rate limit (429, seen on title and summary requests
+/// while the account still had quota on the other models). The request is retried on Sonnet.
+fn haiku_declined(status: u16) -> bool {
+    matches!(status, 400 | 413 | 422 | 429)
 }
 
 /// The upstream request: the client's headers, minus hop-by-hop ones. A logged request
@@ -879,6 +886,16 @@ mod tests {
         assert_eq!(orch_gate(Some(0.98), 0.7, None, true), Gate::Trigger, "no routing judgment: don't veto");
         assert_eq!(orch_gate(Some(0.5), 0.7, Some(2), true), Gate::BelowCutoff);
         assert_eq!(orch_gate(None, 0.7, Some(2), true), Gate::BelowCutoff, "Jev failed the multi-part check");
+    }
+
+    #[test]
+    fn haiku_rejections_and_rate_limits_fall_back_to_sonnet() {
+        for s in [400, 413, 422, 429] {
+            assert!(haiku_declined(s), "{s}");
+        }
+        for s in [200, 401, 404, 500, 529] {
+            assert!(!haiku_declined(s), "{s}");
+        }
     }
 
     #[test]
