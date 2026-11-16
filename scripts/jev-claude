@@ -20,4 +20,8 @@ export ANTHROPIC_CUSTOM_MODEL_OPTION_DESCRIPTION="Routes each turn: Sonnet, or O
 for a in "$@"; do
   case "$a" in --model|--model=*) exec claude "$@" ;; esac
 done
-exec claude --model 'jev-code[1m]' "$@"
+# Orchestrate mode (on by default; /orchestrate toggles it per session).
+MOD="${XDG_DATA_HOME:-$HOME/.local/share}/jev-router/mods/jev-orchestrate"
+plugin=()
+[ -d "$MOD" ] && plugin=(--plugin-dir "$MOD")
+exec claude --model 'jev-code[1m]' "${plugin[@]}" "$@"

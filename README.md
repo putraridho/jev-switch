@@ -76,6 +76,42 @@ claude.ai / Max login passes through unchanged; plain `claude` is unaffected.
 - Claude Code prints an "unrecognized model" note for `jev-code`; it is harmless.
   The `[1m]` suffix tells Claude Code the context window is 1M, like Sonnet and Opus.
 
+#### Orchestrate mode
+
+On by default in `jev-claude`. A large prompt that splits into separate pieces of
+work ("add X across the API, the UI and the tests") is planned and reviewed by the
+strong model and carried out by Sonnet subagents. Everything else routes as above.
+
+- **Trigger.** The `jev-orchestrate` mod (`mods/jev-orchestrate`, loaded by
+  `jev-claude` with `--plugin-dir`) sends each typed prompt to the gateway's
+  `POST /jev/orchestrate`, which asks Jev a `multi_part` Noul. At `ORCH_TRIGGER_P`
+  (0.70) or above, the mod attaches a brief the user doesn't see: plan, delegate every
+  edit to the Agent tool with `model: "sonnet"` (`"opus"` for security steps), review,
+  and make no edits itself. The gateway sees the brief's `<jev-orchestrate>` marker and
+  runs the turn's main thread on `ORCH_PLANNER` (default `claude-opus-5-5`;
+  `claude-fable-5-2` also works). Subagents name their own model, so they pass through.
+- **Cache-safe.** The brief is part of Claude Code's own transcript, so later requests
+  carry it unchanged; the gateway never edits a request to orchestrate.
+- **Toggle.** `/orchestrate` toggles it for the current session; `/orchestrate on` and
+  `/orchestrate off` set it. New sessions start on. The status line shows
+  `orchestrate: on`, `orchestrate: off`, or `orchestrating` during a triggered turn.
+  `JEV_ORCH=off` in the gateway's environment turns it off everywhere.
+- **Failure is a normal prompt.** If the gateway is down, slow (5 s) or Jev fails, the
+  prompt goes through unchanged. Other models, slash commands and messages delivered
+  into a running turn are never checked.
+- **Cutoff.** `orch_tune` scored 1,551 distinct logged prompts: 12 (0.8%) were at 0.70
+  or above, all but one real multi-part work; 0.60-0.70 mixes in follow-ups and single
+  asks. The gateway log keeps only 200 characters of a prompt, so long prompts were
+  scored on their start.
+- **Cost.** It pays off on large tasks only: on a small three-file task, planning and
+  review on Opus were still 76% of the spend. That is why the cutoff is high.
+- **Logs.** `orch.jsonl` (`JEV_ORCH_LOG`): one line per check (`multi_part_p`,
+  `trigger`, `cutoff`, `planner`, prompt start). Each turn's `decision.orchestrate`
+  in `turns.jsonl`/`usage.jsonl` carries the check, triggered or not, and an
+  orchestrated turn has `reason: "orchestrate"`. An orchestrated turn with no `Agent`
+  call in `tools` is a planner that didn't delegate; an untriggered turn just under the
+  cutoff with many tool calls is a likely miss. Both feed the next retune.
+
 #### Usage log
 
 The gateway writes three JSON-lines files (mode 0600) for later analysis. They cover
@@ -214,6 +250,8 @@ beat any guess. Re-run `tune` when prompts, models, or request mix change.
 - `src/bin/gateway.rs` — local gateway that adds the Jev Code model to Claude Code.
 - `scripts/jev-claude` — launcher: starts the gateway and opens Claude Code on Jev Code.
 - `src/bin/code.rs` — routed coding agent over Claude Code sessions.
+- `src/bin/orch_tune.rs` — scores logged prompts with `multi_part` to pick `ORCH_TRIGGER_P`.
+- `mods/jev-orchestrate/` — Claude Code mod for orchestrate mode (trigger, brief, `/orchestrate`).
 - `src/bin/route.rs` — routing-only dry run over a prompt file (Jev only, no Claude calls);
   `ROUTE_MODE=code ROUTE_SIGNALS=1` also records every Jev judgment per prompt for
   replaying policies offline.

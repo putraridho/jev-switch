@@ -41,6 +41,13 @@ pub const CODE_SECURITY_P: f64 = 0.85;
 /// from 32% to 28% with no fixable miss lost.
 pub const CODE_STRONG_THRESHOLD: f64 = 0.85;
 
+/// Orchestrate mode default for `ORCH_TRIGGER_P`: `multi_part` probability at or above
+/// which a prompt is orchestrated. Scored on 1,551 distinct logged prompts (2026-11-16,
+/// `orch_tune`): 12 (0.8%) scored 0.70 or more, and all but one short follow-up were
+/// real multi-part work (rebuild an app, 14 tickets, 20 page variants, four issues in
+/// one PR). The 0.60-0.70 band starts mixing in follow-ups and single asks.
+pub const ORCH_TRIGGER_P: f64 = 0.70;
+
 /// Most consecutive easier turns (confident or not) a tier is held for. A cache
 /// rebuild costs about one turn's worth of re-reading the context at the new model's
 /// write price; against a ~5x Opus premium that is repaid in ~3 turns, so holding
@@ -215,6 +222,23 @@ impl Router {
                 json!({
                     "true": "authorization and access control (can a user, role, or member see or change something they shouldn't), data exposure, trust boundaries, untrusted input (injection, path traversal, SSRF, XSS, unsafe URLs or IPC), secrets and credentials, crypto, signatures, or reviewing code for vulnerabilities",
                     "false": "ordinary coding, debugging, or design; or security-sounding words that mean something else here: design or CSS tokens, React keys, editor or canvas session state, hashing for ids, caching or dedupe, sandboxed iframe layout"
+                }),
+            )
+            .await
+    }
+
+    /// Orchestrate mode: probability that `request` is a large task that splits into
+    /// separate pieces of work (several files, layers or systems, each a step of its
+    /// own), so a planner can hand the pieces to cheaper workers. Questions, single
+    /// fixes and short follow-ups should score low.
+    pub async fn multi_part(&self, request: &str, recent_context: &str) -> Result<f64> {
+        self.ts
+            .noul(
+                json!({ "request": request, "recent_context": recent_context }),
+                "Is this request a large piece of work that splits into several separate steps, each changing a different part of the codebase?",
+                json!({
+                    "true": "building or changing a feature across several files, layers or systems (API, UI, database, tests, docs), a migration or refactor touching many modules, or a list of distinct changes to make; each piece could be done and checked on its own",
+                    "false": "a question or explanation, a lookup, reviewing or investigating without a set of changes, a single bug fix or small edit in one place, a one-line command, or a short reply or follow-up to the conversation"
                 }),
             )
             .await

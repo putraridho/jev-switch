@@ -17,7 +17,9 @@
 //! Env: JEV_GATEWAY_ADDR (127.0.0.1:18780), JEV_GATEWAY_UPSTREAM
 //! (https://api.anthropic.com), CODE_STRONG_THRESHOLD (0.85), DOWNGRADE_AFTER (2),
 //! JEV_GATEWAY_LOG (~/.local/state/jev-router/gateway.jsonl), JEV_USAGE_LOG
-//! (usage.jsonl), JEV_TURNS_LOG (turns.jsonl).
+//! (usage.jsonl), JEV_TURNS_LOG (turns.jsonl). Orchestrate mode (README): JEV_ORCH
+//! (on; "off" disables), ORCH_TRIGGER_P (0.70), ORCH_PLANNER (claude-opus-5-5),
+//! JEV_ORCH_LOG (orch.jsonl).
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -25,9 +27,9 @@ use std::time::Instant;
 
 use anyhow::{Context, Result};
 use axum::body::{to_bytes, Body};
-use axum::extract::{Request, State};
+use axum::extract::{Json, Request, State};
 use axum::http::{HeaderMap, HeaderName, Method, Response, StatusCode};
-use axum::routing::{any, get};
+use axum::routing::{any, get, post};
 use axum::Router as Http;
 use futures_util::StreamExt as _;
 use serde_json::{json, Value};
@@ -35,12 +37,15 @@ use tokio::sync::Mutex;
 
 use jev_router::anthropic::{MODEL_CHEAP, MODEL_MID, MODEL_STRONG};
 use jev_router::log;
-use jev_router::router::{Router, Sticky, CODE_STRONG_THRESHOLD};
+use jev_router::router::{Router, Sticky, CODE_STRONG_THRESHOLD, ORCH_TRIGGER_P};
 use jev_router::typesafe::TypeSafe;
 use jev_router::prefix::PrefixWatch;
 use jev_router::usage::{find_cwd, project_of, request_params, Turns, UsageTap};
 
 const ALIAS: &str = "jev-code";
+/// Start of the context block the jev-orchestrate mod attaches to a prompt that
+/// triggered orchestration. The gateway only reads it; it never edits the request.
+const ORCH_MARKER: &str = "<jev-orchestrate>";
 const TIERS: [&str; 3] = [MODEL_CHEAP, MODEL_MID, MODEL_STRONG];
 const MAX_BODY: usize = 64 * 1024 * 1024;
 /// Hop-by-hop and recomputed headers that must not be copied across the proxy.
@@ -54,6 +59,9 @@ struct SessionState {
     model: Option<&'static str>,
     /// Routing record of the current turn, attached to the usage rows of its requests.
     decision: Option<Value>,
+    /// The latest orchestrate check for this session (`multi_part_p`), recorded on the
+    /// next turn's decision whether or not it triggered, as a label for tuning.
+    orch_check: Option<Value>,
 }
 
 struct App {
@@ -66,6 +74,18 @@ struct App {
     usage_path: Option<String>,
     turns: Arc<Turns>,
     prefix: PrefixWatch,
+    orch: Orch,
+}
+
+/// Orchestrate mode settings (see README "Orchestrate mode").
+struct Orch {
+    /// `JEV_ORCH=off` turns the trigger off for every session.
+    enabled: bool,
+    /// `ORCH_TRIGGER_P`: `multi_part` probability at or above which a prompt triggers.
+    cutoff: f64,
+    /// `ORCH_PLANNER`: the model the main thread runs on for an orchestrated turn.
+    planner: &'static str,
+    log_path: Option<String>,
 }
 
 fn env_f64(key: &str, default: f64) -> f64 {
@@ -105,15 +125,66 @@ async fn main() -> Result<()> {
         usage_path,
         turns,
         prefix: PrefixWatch::new(),
+        orch: Orch {
+            enabled: std::env::var("JEV_ORCH").map_or(true, |v| v != "off"),
+            cutoff: env_f64("ORCH_TRIGGER_P", ORCH_TRIGGER_P),
+            // Leaked once at startup: routing hands out &'static model names.
+            planner: Box::leak(std::env::var("ORCH_PLANNER").unwrap_or_else(|_| MODEL_STRONG.into()).into_boxed_str()),
+            log_path: log::path_from_env("JEV_ORCH_LOG", "orch.jsonl"),
+        },
     });
     let http = Http::new()
         .route("/healthz", get(|| async { "ok" }))
+        .route("/jev/orchestrate", post(orchestrate_check))
         .fallback(any(proxy))
         .with_state(app);
     let listener = tokio::net::TcpListener::bind(&addr).await.with_context(|| format!("bind {addr}"))?;
     eprintln!("jev-gateway listening on http://{addr}");
     axum::serve(listener, http).await?;
     Ok(())
+}
+
+#[derive(serde::Deserialize)]
+struct OrchCheck {
+    prompt: String,
+    #[serde(default)]
+    context: String,
+    #[serde(default)]
+    session: String,
+}
+
+/// `POST /jev/orchestrate`, called by the jev-orchestrate mod as a prompt is
+/// submitted: should this prompt be orchestrated? Never fails the caller: if Jev is
+/// down the answer is no.
+async fn orchestrate_check(State(app): State<Arc<App>>, Json(c): Json<OrchCheck>) -> Json<Value> {
+    if !app.orch.enabled {
+        return Json(json!({ "trigger": false, "enabled": false }));
+    }
+    let check = app.router.multi_part(&c.prompt, &c.context);
+    let p = match tokio::time::timeout(std::time::Duration::from_secs(10), check).await {
+        Ok(Ok(p)) => Some(p),
+        Ok(Err(e)) => {
+            eprintln!("[warn] orchestrate check: jev failed: {e:#}");
+            None
+        }
+        Err(_) => {
+            eprintln!("[warn] orchestrate check: jev timed out");
+            None
+        }
+    };
+    let trigger = p.is_some_and(|p| p >= app.orch.cutoff);
+    let record = json!({ "multi_part_p": p, "trigger": trigger, "cutoff": app.orch.cutoff, "planner": app.orch.planner });
+    if !c.session.is_empty() {
+        app.sessions.lock().await.entry(c.session.clone()).or_default().orch_check = Some(record.clone());
+    }
+    if let Some(path) = &app.orch.log_path {
+        let mut line = record.clone();
+        line["ts"] = json!(log::now_ms() / 1000);
+        line["session"] = json!(c.session);
+        line["prompt"] = json!(c.prompt.chars().take(200).collect::<String>());
+        log::append(path, &line);
+    }
+    Json(json!({ "trigger": trigger, "enabled": true, "multi_part_p": p, "cutoff": app.orch.cutoff }))
 }
 
 async fn proxy(State(app): State<Arc<App>>, req: Request) -> Response<Body> {
@@ -431,6 +502,23 @@ async fn choose_model(app: &App, meta: &Meta, req: &Value) -> Option<Picked> {
     if is_harness_message(&prompt) {
         return Some(same_turn(st));
     }
+    let orch_check = st.orch_check.take();
+    if is_orchestrated(req) {
+        // The mod attached the orchestration brief: the main thread plans, delegates
+        // and reviews on the planner; the workers it spawns name their own model.
+        let planner = app.orch.planner;
+        if planner == MODEL_STRONG {
+            // The context is now cached on Opus: let the usual step-down rule apply.
+            st.sticky.tier = Some(2);
+        }
+        st.prompt_id = prompt_id.clone();
+        st.model = Some(planner);
+        let decision = json!({ "tier": null, "reason": "orchestrate", "orchestrated": true, "confident": true, "orchestrate": orch_check });
+        st.decision = Some(decision.clone());
+        let prompt = strip_orchestrate_block(&prompt);
+        log_decision(app, &session_id, prompt_id.as_deref(), planner, &decision, &prompt);
+        return Some(Picked { model: planner, new_turn: true, decision: Some(decision) });
+    }
     let context = recent_context(req);
     let fallback = st.sticky.tier.unwrap_or(1);
     drop(sessions); // don't hold the lock across the Jev call
@@ -442,7 +530,7 @@ async fn choose_model(app: &App, meta: &Meta, req: &Value) -> Option<Picked> {
     st.sticky.tier = Some(tier);
     st.prompt_id = prompt_id.clone();
     st.model = Some(TIERS[tier]);
-    let decision = json!({ "tier": tier, "reason": reason, "confident": want.confident, "signals": want.signals });
+    let decision = json!({ "tier": tier, "reason": reason, "confident": want.confident, "signals": want.signals, "orchestrate": orch_check });
     st.decision = Some(decision.clone());
     log_decision(app, &session_id, prompt_id.as_deref(), TIERS[tier], &decision, &prompt);
     Some(Picked { model: TIERS[tier], new_turn: true, decision: Some(decision) })
@@ -460,6 +548,36 @@ fn is_harness_message(prompt: &str) -> bool {
     ];
     let p = prompt.trim_start();
     PREFIXES.iter().any(|x| p.starts_with(x))
+}
+
+/// Whether the turn that this request starts carries the jev-orchestrate brief: the
+/// marker in any user message after the last assistant one, reminders included (the
+/// brief may arrive wrapped in one, or as its own block or message).
+fn is_orchestrated(req: &Value) -> bool {
+    let Some(msgs) = req.get("messages").and_then(Value::as_array) else { return false };
+    msgs.iter()
+        .rev()
+        .take_while(|m| m.get("role").and_then(Value::as_str) != Some("assistant"))
+        .filter(|m| m.get("role").and_then(Value::as_str) == Some("user"))
+        .any(|m| match m.get("content") {
+            Some(Value::String(s)) => s.contains(ORCH_MARKER),
+            Some(Value::Array(blocks)) => blocks
+                .iter()
+                .filter_map(|b| b.get("text").and_then(Value::as_str))
+                .any(|t| t.contains(ORCH_MARKER)),
+            _ => false,
+        })
+}
+
+/// The prompt without the orchestration brief, for the decision log.
+fn strip_orchestrate_block(prompt: &str) -> String {
+    match prompt.find(ORCH_MARKER) {
+        Some(i) => {
+            let end = prompt[i..].find("</jev-orchestrate>").map(|e| i + e + "</jev-orchestrate>".len()).unwrap_or(prompt.len());
+            format!("{}{}", &prompt[..i], &prompt[end..]).trim().to_string()
+        }
+        None => prompt.to_string(),
+    }
 }
 
 /// Text of the newest user message, ignoring tool results and Claude Code's
@@ -672,6 +790,35 @@ mod tests {
         let err = client.get("http://127.0.0.1:1/").send().await.unwrap_err();
         assert!(err.is_connect(), "a refused connection is a connect error: {err}");
         assert!(error_chain(&err).contains("onnect"), "{}", error_chain(&err));
+    }
+
+    #[test]
+    fn orchestration_marker_is_found_wherever_the_brief_lands() {
+        let brief = "<jev-orchestrate>plan, delegate, review</jev-orchestrate>";
+        let before = json!([{"role": "user", "content": "old task"}, {"role": "assistant", "content": "done"}]);
+        let with = |tail: Value| {
+            let mut m = before.as_array().unwrap().clone();
+            m.extend(tail.as_array().unwrap().iter().cloned());
+            json!({ "messages": m })
+        };
+        // As its own text block, wrapped in a reminder, or as a separate user message.
+        assert!(is_orchestrated(&with(json!([{"role": "user", "content": [{"type": "text", "text": "build X"}, {"type": "text", "text": brief}]}]))));
+        assert!(is_orchestrated(&with(json!([{"role": "user", "content": format!("build X\n<system-reminder>{brief}</system-reminder>")}]))));
+        assert!(is_orchestrated(&with(json!([{"role": "user", "content": "build X"}, {"role": "user", "content": brief}]))));
+        // Not triggered, or only an earlier turn was.
+        assert!(!is_orchestrated(&with(json!([{"role": "user", "content": "build X"}]))));
+        let earlier = json!({ "messages": [
+            {"role": "user", "content": format!("old task {brief}")},
+            {"role": "assistant", "content": "done"},
+            {"role": "user", "content": "thanks"},
+        ]});
+        assert!(!is_orchestrated(&earlier));
+    }
+
+    #[test]
+    fn the_brief_is_left_out_of_the_logged_prompt() {
+        assert_eq!(strip_orchestrate_block("build X\n<jev-orchestrate>plan</jev-orchestrate>"), "build X");
+        assert_eq!(strip_orchestrate_block("build X"), "build X");
     }
 
     #[test]

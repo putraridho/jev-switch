@@ -1,0 +1,6 @@
+{
+  "name": "jev-orchestrate",
+  "version": "0.1.0",
+  "description": "jev-router orchestrate mode: multi-part prompts on Jev Code are planned and reviewed by the strong model and carried out by Sonnet subagents",
+  "types": "./types/index.d.ts"
+}
