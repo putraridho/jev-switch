@@ -85,9 +85,9 @@ strong model and carried out by Sonnet subagents. Everything else routes as abov
 - **How Jev decides.** (1) The prompt is orchestrated only if `multi_part` is at the cutoff
   or above **and** normal routing would have sent it to Opus anyway
   (`ORCH_REQUIRE_OPUS`, on by default; `off` restores the multi-part rule alone). In a
-  benchmark, five small edits that Sonnet handles alone cost ~15x more orchestrated, while
-  a hard redesign that routing sent to Opus cost 43% less orchestrated and finished 35%
-  faster. Skipped prompts are logged with `skipped` and `route_tier`.
+  benchmark, five small edits that Sonnet handles alone cost ~8.5x more orchestrated, while
+  a hard redesign that routing sent to Opus cost ~21% less orchestrated and finished 35%
+  faster (Opus priced at 2x Sonnet, Fable 4x). Skipped prompts are logged with `skipped` and `route_tier`.
   (2) If not, normal routing picks the model. If so, Jev also picks the planner: a turn
   routing escalates as `very_hard` (`FABLE_THRESHOLD`, 0.90) gets Fable, otherwise Opus
   (`ORCH_PLANNER` pins it). (3) Each worker's model is chosen by Jev from the worker's own
@@ -123,14 +123,17 @@ strong model and carried out by Sonnet subagents. Everything else routes as abov
   or above, all but one real multi-part work; 0.60-0.70 mixes in follow-ups and single
   asks. The gateway log keeps only 200 characters of a prompt, so long prompts were
   scored on their start.
-- **Cost.** Off by default because it cost more than it saved. The same 5-part task
-  (tests, doc comments and a flag across five files) run three ways: orchestrated 4.9x a
-  Sonnet-only run (Opus planning and review were 67% of it) for 104 s against 117 s;
-  normal routing 0.8x; Sonnet only 1.0x. All three passed their tests. One run per arm,
-  prices assumed (`scripts/orch_report.py`). It should only pay off when the task would
-  otherwise run on Opus, or is large enough for parallel workers to save real time; that
-  is untested. Turn it on per session with `/orchestrate on`; `JEV_ORCH=off` in the
-  gateway's environment disables the check everywhere.
+- **Cost.** Off by default, and gated on normal routing choosing Opus, because on work
+  Sonnet handles alone it only adds an expensive planner. Two benchmarks, one run per arm,
+  all results passing `cargo test`, priced at Claude Code's own estimate (Opus 2x Sonnet,
+  Fable 4x, measured with `claude -p`; an estimate, not a bill):
+  - Five small edits across five files: orchestrated ~2.9x a Sonnet-only run in the first
+    benchmark and ~8.5x in the second (the Sonnet baseline itself varied 2x), and not faster.
+  - A hard gateway-concurrency redesign that normal routing sent to Opus: orchestrated cost
+    ~21% less and finished 35% faster (Opus planner, Sonnet workers).
+  The Fable-planner and Opus-worker path is unmeasured. `scripts/orch_report.py` prices real
+  tasks. Turn it on per session with `/orchestrate on`; `JEV_ORCH=off` in the gateway's
+  environment disables the check everywhere.
 - **Logs.** `orch.jsonl` (`JEV_ORCH_LOG`): one line per check (`multi_part_p`,
   `trigger`, `cutoff`, `planner`, `hard_p`, prompt start) and one per worker
   (`kind: "worker"`, `model`, `reason`, `signals`). Each turn's `decision.orchestrate`

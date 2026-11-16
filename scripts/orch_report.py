@@ -21,9 +21,11 @@ import sys
 
 # Relative price per token type, Anthropic's usual ratios (input = 1).
 IN, CACHE_WRITE, CACHE_READ, OUT = 1.0, 1.25, 0.1, 5.0
-# Relative price per model family, Sonnet = 1. Opus 5x is the README's figure;
-# Haiku is a guess; Fable's price is unknown, so it is priced like Opus.
-FAMILY = {"opus": 5.0, "fable": 5.0, "sonnet": 1.0, "haiku": 1 / 3}
+# Relative price per model family, Sonnet = 1, as Claude Code's own cost estimate
+# (`claude -p` total_cost_usd) prices the same calls: Opus 2.0x, Fable 4.0x (cache write
+# and output; Fable's cache read is ~2x), Haiku ~0.05x. Measured 2026-11-16 with small
+# prompts; an estimate, not a bill.
+FAMILY = {"opus": 2.0, "fable": 4.0, "sonnet": 1.0, "haiku": 0.05}
 MIN_TURNS = 10  # fewer orchestrated turns than this is an anecdote, not a result
 
 
