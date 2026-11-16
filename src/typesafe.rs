@@ -43,6 +43,15 @@ impl TypeSafe {
         Self { key: key.into(), url: url.into(), http: http_client() }
     }
 
+    /// Several judgments in ONE round trip. `questions` is a JSON object keyed by
+    /// name (build each value with [`choice_question`] / [`noul_question`]); the
+    /// result is the `answers` object with the same keys, read with [`decode_choice`]
+    /// and [`decode_noul`]. Every question shares `state`, and the API answers them
+    /// together, so N judgments cost about one request's latency instead of N.
+    pub async fn ask_many(&self, state: Value, questions: Value) -> Result<Value> {
+        self.ask(state, questions).await
+    }
+
     async fn ask(&self, state: Value, questions: Value) -> Result<Value> {
         let req = json!({ "state": state, "model": "jev-latest", "questions": questions });
         let resp = self
@@ -71,14 +80,8 @@ impl TypeSafe {
         instructions: &str,
         criteria: Value,
     ) -> Result<ChoiceAnswer> {
-        let answers = self
-            .ask(
-                state,
-                json!({ "q": { "type": "choice", "instructions": instructions, "criteria": criteria } }),
-            )
-            .await?;
-        let a = answers.get("q").cloned().context("missing choice answer")?;
-        serde_json::from_value(a).context("decode choice answer")
+        let answers = self.ask_one(state, choice_question(instructions, criteria)).await?;
+        decode_choice(&answers, SOLO)
     }
 
     /// One Noul (yes/no) judgment; returns P(true) in 0..=1.
@@ -88,18 +91,49 @@ impl TypeSafe {
         instructions: &str,
         criteria: Value,
     ) -> Result<f64> {
-        let answers = self
-            .ask(
-                state,
-                json!({ "q": { "type": "noul", "instructions": instructions, "criteria": criteria } }),
-            )
-            .await?;
-        answers
-            .get("q")
-            .and_then(|q| q.get("noul"))
-            .and_then(|n| n.as_f64())
-            .context("missing noul value")
+        self.noul_question(state, noul_question(instructions, criteria)).await
     }
+
+    /// One prebuilt Noul question (see [`noul_question`]), asked alone. Lets a
+    /// single-call method send exactly the question definition the batch uses.
+    pub async fn noul_question(&self, state: Value, question: Value) -> Result<f64> {
+        let answers = self.ask_one(state, question).await?;
+        decode_noul(&answers, SOLO)
+    }
+
+    /// One already-built question asked alone, filed under [`SOLO`].
+    async fn ask_one(&self, state: Value, question: Value) -> Result<Value> {
+        self.ask(state, json!({ SOLO: question })).await
+    }
+}
+
+/// The key a single-question call files its question under.
+const SOLO: &str = "q";
+
+/// A Choice question for [`TypeSafe::ask_many`]. Pure, so question text lives in one
+/// place and tests can compare it without a network.
+pub fn choice_question(instructions: &str, criteria: Value) -> Value {
+    json!({ "type": "choice", "instructions": instructions, "criteria": criteria })
+}
+
+/// A Noul (yes/no) question for [`TypeSafe::ask_many`].
+pub fn noul_question(instructions: &str, criteria: Value) -> Value {
+    json!({ "type": "noul", "instructions": instructions, "criteria": criteria })
+}
+
+/// Read the Choice answer filed under `key` in an `answers` object.
+pub fn decode_choice(answers: &Value, key: &str) -> Result<ChoiceAnswer> {
+    let a = answers.get(key).cloned().with_context(|| format!("missing choice answer `{key}`"))?;
+    serde_json::from_value(a).with_context(|| format!("decode choice answer `{key}`"))
+}
+
+/// Read the Noul answer filed under `key`: P(true) in 0..=1.
+pub fn decode_noul(answers: &Value, key: &str) -> Result<f64> {
+    answers
+        .get(key)
+        .and_then(|q| q.get("noul"))
+        .and_then(|n| n.as_f64())
+        .with_context(|| format!("missing noul value `{key}`"))
 }
 
 /// The names a Jev key may be filed under, in order of preference.
@@ -109,4 +143,31 @@ const KEY_NAMES: [&str; 2] = ["TYPESAFE_API_KEY", "JEV_API_KEY"];
 /// what lets installed binaries work from any directory without sourcing anything.
 fn key_lookup() -> Option<String> {
     KEY_NAMES.iter().find_map(|n| crate::envfile::from_env(n)).or_else(|| crate::envfile::from_file_any(&KEY_NAMES))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn decoders_read_each_answer_by_its_key() {
+        let answers = json!({
+            "a": { "choice": "x", "confidence": 0.9, "probabilities": { "x": 0.9 } },
+            "b": { "noul": 0.25 }
+        });
+        let c = decode_choice(&answers, "a").unwrap();
+        assert_eq!((c.choice.as_str(), c.confidence), ("x", 0.9));
+        assert_eq!(decode_noul(&answers, "b").unwrap(), 0.25);
+        assert!(decode_choice(&answers, "missing").is_err());
+        assert!(decode_noul(&answers, "a").is_err(), "a choice is not a noul");
+    }
+
+    #[test]
+    fn question_builders_keep_the_wire_shape() {
+        assert_eq!(
+            noul_question("why", json!({ "true": "t", "false": "f" })),
+            json!({ "type": "noul", "instructions": "why", "criteria": { "true": "t", "false": "f" } })
+        );
+        assert_eq!(choice_question("pick", json!({ "a": "A" }))["type"], "choice");
+    }
 }
