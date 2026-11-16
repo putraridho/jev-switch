@@ -17,7 +17,7 @@
 //! Env: JEV_GATEWAY_ADDR (127.0.0.1:18780), JEV_GATEWAY_UPSTREAM
 //! (https://api.anthropic.com), CODE_STRONG_THRESHOLD (0.85), DOWNGRADE_AFTER (2),
 //! JEV_GATEWAY_LOG (~/.local/state/jev-router/gateway.jsonl), JEV_USAGE_LOG
-//! (usage.jsonl), JEV_TURNS_LOG (turns.jsonl). Fable tier: JEV_FABLE (on; "off" disables),
+//! (usage.jsonl), JEV_TURNS_LOG (turns.jsonl). WORKER_CHEAP_P (unset: workers never get Haiku). Fable tier: JEV_FABLE (on; "off" disables),
 //! FABLE_THRESHOLD (0.90). Orchestrate mode (README): JEV_ORCH
 //! (on; "off" disables), ORCH_TRIGGER_P (0.70), ORCH_PLANNER (claude-opus-5-5),
 //! JEV_ORCH_LOG (orch.jsonl).
@@ -84,8 +84,11 @@ struct Orch {
     enabled: bool,
     /// `ORCH_TRIGGER_P`: `multi_part` probability at or above which a prompt triggers.
     cutoff: f64,
-    /// `ORCH_PLANNER`: the model the main thread runs on for an orchestrated turn.
+    /// The model the main thread runs on for an orchestrated turn when Jev has no say:
+    /// Opus, or `ORCH_PLANNER` if set.
     planner: &'static str,
+    /// `ORCH_PLANNER` is set: it pins the planner and Jev does not pick it.
+    planner_pinned: bool,
     log_path: Option<String>,
 }
 
@@ -114,6 +117,7 @@ async fn main() -> Result<()> {
     let app = Arc::new(App {
         router: Router::new(TypeSafe::from_env()?, 1.0).with_strong_threshold(env_f64("CODE_STRONG_THRESHOLD", CODE_STRONG_THRESHOLD))
             // Fable for the hardest Opus-bound turns; JEV_FABLE=off keeps tiers 0-2.
+            .with_worker_cheap(std::env::var("WORKER_CHEAP_P").ok().and_then(|v| v.parse().ok()))
             .with_top_threshold(std::env::var("JEV_FABLE").map_or(true, |v| v != "off").then(|| env_f64("FABLE_THRESHOLD", TOP_THRESHOLD))),
         http: reqwest::Client::builder()
             .connect_timeout(std::time::Duration::from_secs(30))
@@ -133,12 +137,14 @@ async fn main() -> Result<()> {
             cutoff: env_f64("ORCH_TRIGGER_P", ORCH_TRIGGER_P),
             // Leaked once at startup: routing hands out &'static model names.
             planner: Box::leak(std::env::var("ORCH_PLANNER").unwrap_or_else(|_| MODEL_STRONG.into()).into_boxed_str()),
+            planner_pinned: std::env::var("ORCH_PLANNER").is_ok(),
             log_path: log::path_from_env("JEV_ORCH_LOG", "orch.jsonl"),
         },
     });
     let http = Http::new()
         .route("/healthz", get(|| async { "ok" }))
         .route("/jev/orchestrate", post(orchestrate_check))
+        .route("/jev/worker", post(worker_check))
         .fallback(any(proxy))
         .with_state(app);
     let listener = tokio::net::TcpListener::bind(&addr).await.with_context(|| format!("bind {addr}"))?;
@@ -180,7 +186,16 @@ async fn orchestrate_check(State(app): State<Arc<App>>, Json(c): Json<OrchCheck>
         }
     };
     let trigger = p.is_some_and(|p| p >= app.orch.cutoff);
-    let record = json!({ "multi_part_p": p, "trigger": trigger, "cutoff": app.orch.cutoff, "planner": app.orch.planner });
+    // Jev picks the planner too: Fable for a very hard task, Opus otherwise, unless
+    // ORCH_PLANNER pins it. If the hardness judgment fails, Opus.
+    let (planner, hard_p) = match (trigger, app.orch.planner_pinned, app.router.top_threshold) {
+        (true, false, Some(cutoff)) => match app.router.very_hard(&c.prompt, &c.context).await {
+            Ok(h) => (if h >= cutoff { MODEL_TOP } else { app.orch.planner }, Some(h)),
+            Err(_) => (app.orch.planner, None),
+        },
+        _ => (app.orch.planner, None),
+    };
+    let record = json!({ "multi_part_p": p, "trigger": trigger, "cutoff": app.orch.cutoff, "planner": planner, "hard_p": hard_p });
     if !c.session.is_empty() {
         app.sessions.lock().await.entry(c.session.clone()).or_default().orch_check = Some(record.clone());
     }
@@ -191,7 +206,35 @@ async fn orchestrate_check(State(app): State<Arc<App>>, Json(c): Json<OrchCheck>
         line["prompt"] = json!(c.prompt.chars().take(200).collect::<String>());
         log::append(path, &line);
     }
-    Json(json!({ "trigger": trigger, "enabled": true, "multi_part_p": p, "cutoff": app.orch.cutoff }))
+    Json(json!({ "trigger": trigger, "enabled": true, "multi_part_p": p, "cutoff": app.orch.cutoff, "planner": planner }))
+}
+
+#[derive(serde::Deserialize)]
+struct WorkerCheck {
+    prompt: String,
+    #[serde(default)]
+    session: String,
+}
+
+/// `POST /jev/worker`, called by the mod as the planner spawns a worker: which model
+/// does this worker's task need? `model` is null (leave the planner's choice) when
+/// orchestration is off or Jev is down. Never fails the caller.
+async fn worker_check(State(app): State<Arc<App>>, Json(c): Json<WorkerCheck>) -> Json<Value> {
+    if !app.orch.enabled {
+        return Json(json!({ "model": null }));
+    }
+    let judged = tokio::time::timeout(std::time::Duration::from_secs(10), app.router.worker_want(&c.prompt)).await.ok().flatten();
+    let (model, reason, signals) = match judged {
+        Some((m, r, s)) => (Some(m), r, s),
+        None => (None, "jev unavailable: planner's choice stands".to_string(), Value::Null),
+    };
+    if let Some(path) = &app.orch.log_path {
+        log::append(path, &json!({
+            "kind": "worker", "ts": log::now_ms() / 1000, "session": c.session, "model": model,
+            "reason": reason, "signals": signals, "prompt": c.prompt.chars().take(200).collect::<String>(),
+        }));
+    }
+    Json(json!({ "model": model, "reason": reason }))
 }
 
 async fn proxy(State(app): State<Arc<App>>, req: Request) -> Response<Body> {
@@ -513,10 +556,16 @@ async fn choose_model(app: &App, meta: &Meta, req: &Value) -> Option<Picked> {
     if is_orchestrated(req) {
         // The mod attached the orchestration brief: the main thread plans, delegates
         // and reviews on the planner; the workers it spawns name their own model.
-        let planner = app.orch.planner;
+        let planner = orch_check
+            .as_ref()
+            .and_then(|c| c["planner"].as_str())
+            .map(|p| if p == MODEL_TOP { MODEL_TOP } else { app.orch.planner })
+            .unwrap_or(app.orch.planner);
         if planner == MODEL_STRONG {
             // The context is now cached on Opus: let the usual step-down rule apply.
             st.sticky.tier = Some(2);
+        } else if planner == MODEL_TOP {
+            st.sticky.tier = Some(3);
         }
         st.prompt_id = prompt_id.clone();
         st.model = Some(planner);

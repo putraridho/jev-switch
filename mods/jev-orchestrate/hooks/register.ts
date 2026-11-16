@@ -35,8 +35,8 @@ const CHECK_TIMEOUT_MS = 5000
 export const BRIEF = `<jev-orchestrate>
 Orchestrate mode (jev-router): you are running on the expensive planner model, so plan and review, and leave all file edits to cheaper subagents. Don't use Write, Edit or NotebookEdit yourself in this turn, however small the change.
 1. Plan: read only what you need to split the work into self-contained steps, each one checkable on its own. If it is really one small step, that is a plan of one step.
-2. Delegate: one Agent call per step, so never bundle unrelated steps into one subagent. Give each model: "sonnet" and a complete brief (the files involved, what to change, how to verify it, what to report back). Use model: "opus" only for a step that touches security (auth, permissions, secrets, crypto, untrusted input). Run the steps in parallel: put every step that doesn't depend on another and edits different files into ONE message as several Agent calls, never one call per message. Only a step that needs another's result, or edits the same file, waits for it.
-3. Review: when the steps report back, check the result against the request (read the diffs, run the tests or the build) and delegate any fixes the same way.
+2. Delegate: one Agent call per step, so never bundle unrelated steps into one subagent. Give each a complete brief (the files involved, what to change, how to verify it, what to report back). Don't choose the worker's model: it is picked for you from the task. Run the steps in parallel: put every step that doesn't depend on another and edits different files into ONE message as several Agent calls, never one call per message. Only a step that needs another's result, or edits the same file, waits for it.
+3. Review: don't take a worker's report on trust. When the steps report back, check the result against the request yourself (read the diffs, run the tests or the build), send any step that fell short back out as a new Agent call with what was wrong, and only then report to the user.
 </jev-orchestrate>`
 
 type Mode = 'toggle' | 'on' | 'off' | 'usage'
@@ -91,6 +91,27 @@ async function shouldOrchestrate($: EngineInterface, prompt: string): Promise<bo
   }
 }
 
+/// The model Jev picks for a worker's task, as an alias (`haiku`, `sonnet`, `opus`), or
+/// undefined to leave the planner's choice (any error, timeout, or Jev unavailable).
+async function workerModel($: EngineInterface, prompt: string): Promise<string | undefined> {
+  const ask = (async () => {
+    const res = await $.http.fetch(`${await gatewayUrl($)}/jev/worker`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ prompt, session: await $.session.id() }),
+    })
+    if (!res.ok) return undefined
+    const model = (JSON.parse(res.text) as { model?: unknown }).model
+    return model === 'haiku' || model === 'sonnet' || model === 'opus' ? model : undefined
+  })()
+  const timeout = $.clock.sleep(CHECK_TIMEOUT_MS).then(() => undefined)
+  try {
+    return await Promise.race([ask, timeout])
+  } catch {
+    return undefined
+  }
+}
+
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     await $.command.register({
@@ -132,9 +153,12 @@ export const register: Register = on => {
     return next({ ...e, context: [...(e.context ?? []), BRIEF] })
   }).catch(($, e, next) => next(e))
 
-  // A worker the planner starts while orchestrating: count it as running.
+  // A worker the planner starts while orchestrating: Jev picks its model from its task
+  // (the planner's own choice stands if Jev can't be reached), and it counts as running.
   on('agent.spawn', async ($, e, next) => {
-    const started = await next(e)
+    const orchestrating = await read($, active)
+    const model = orchestrating ? await workerModel($, e.prompt) : undefined
+    const started = await next(model ? { ...e, model } : e)
     try {
       const id = started && 'agentId' in started ? started.agentId : undefined
       if (id && (await read($, active))) {

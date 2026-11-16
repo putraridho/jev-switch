@@ -82,6 +82,15 @@ Off by default; `/orchestrate on` enables it for a session in `jev-claude`. A la
 work ("add X across the API, the UI and the tests") is planned and reviewed by the
 strong model and carried out by Sonnet subagents. Everything else routes as above.
 
+- **How Jev decides.** (1) `multi_part` says whether the prompt is orchestrated at all.
+  (2) If not, normal routing picks the model. If so, Jev also picks the planner:
+  `very_hard` at `FABLE_THRESHOLD` (0.90) or above gets Fable, otherwise Opus
+  (`ORCH_PLANNER` pins it). (3) Each worker's model is chosen by Jev from the worker's own
+  task, as the planner spawns it (`POST /jev/worker`): Opus for security or confident
+  reasoning, Sonnet otherwise; Haiku for a read-only `simple` task only if `WORKER_CHEAP_P`
+  is set (off by default, uncalibrated). The planner's own `model` choice stands only if
+  Jev can't be reached. (4) The planner reviews the results itself: reads the diffs, runs
+  the checks, and sends short steps back out before reporting.
 - **Trigger.** The `jev-orchestrate` mod (`mods/jev-orchestrate`, loaded by
   `jev-claude` with `--plugin-dir`) sends each typed prompt to the gateway's
   `POST /jev/orchestrate`, which asks Jev a `multi_part` Noul. At `ORCH_TRIGGER_P`
@@ -113,7 +122,8 @@ strong model and carried out by Sonnet subagents. Everything else routes as abov
   is untested. Turn it on per session with `/orchestrate on`; `JEV_ORCH=off` in the
   gateway's environment disables the check everywhere.
 - **Logs.** `orch.jsonl` (`JEV_ORCH_LOG`): one line per check (`multi_part_p`,
-  `trigger`, `cutoff`, `planner`, prompt start). Each turn's `decision.orchestrate`
+  `trigger`, `cutoff`, `planner`, `hard_p`, prompt start) and one per worker
+  (`kind: "worker"`, `model`, `reason`, `signals`). Each turn's `decision.orchestrate`
   in `turns.jsonl`/`usage.jsonl` carries the check, triggered or not, and an
   orchestrated turn has `reason: "orchestrate"`. An orchestrated turn with no `Agent`
   call in `tools` is a planner that didn't delegate; an untriggered turn just under the

@@ -12,6 +12,9 @@ type Setup = {
   gatewayHangs?: boolean
   /// Collects every status line the mod sets.
   statuses?: unknown[]
+  /// What the gateway's /jev/worker answers (default: no opinion).
+  workerModel?: string | null
+  workerRequests?: string[]
 }
 
 /// Stand in for the engine and the gateway; returns the requests the mod sent.
@@ -28,6 +31,10 @@ function engine(on: On, s: Setup = {}) {
   on('http.fetch', (_, e) => {
     if (s.gatewayDown) throw new Error('connection refused')
     if (s.gatewayHangs) return new Promise<never>(() => {})
+    if (e.url.endsWith('/jev/worker')) {
+      s.workerRequests?.push(String(e.init?.body ?? ''))
+      return { value: { status: 200, ok: true, headers: {}, text: JSON.stringify({ model: s.workerModel ?? null }) } }
+    }
     sent.push({ url: e.url, body: String(e.init?.body ?? '') })
     return { value: { status: 200, ok: true, headers: {}, text: JSON.stringify({ trigger: s.trigger ?? false }) } }
   })
@@ -170,6 +177,36 @@ test('workers are counted, and a worker finishing does not end the orchestrated 
 
   await $.turn.complete({ answer: 'done', durationMs: 1, isAborted: false, turnId: 't0', reason: 'answer' } as never)
   expect(JSON.stringify(statuses.at(-1))).toContain('orchestrate: on')
+})
+
+test('Jev picks each worker\'s model while orchestrating, and only then', async ($, on) => {
+  const asked: string[] = []
+  engine(on, { trigger: true, workerModel: 'opus', workerRequests: asked })
+  const received: (string | undefined)[] = []
+  on('agent.spawn', (_, e) => (received.push(e.model), { model: e.model ?? 'sonnet', agentId: `w${received.length}` }))
+  on('turn.complete', () => ({ text: '' }))
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+
+  // Orchestration off: the planner's choice is untouched and the gateway is not asked.
+  await $.agent.spawn({ prompt: 'look around', model: 'sonnet' } as never)
+  expect(received).toEqual(['sonnet'])
+  expect(asked.length).toBe(0)
+
+  await start($)
+  await $.prompt.submit(typed(BIG))
+  await $.agent.spawn({ prompt: 'harden the session cookie handling', model: 'sonnet' } as never)
+  expect(received.at(-1)).toBe('opus')
+  expect(JSON.parse(asked[0] ?? '{}')).toEqual({ prompt: 'harden the session cookie handling', session: 'sess-1' })
+})
+
+test('with no answer from Jev the planner\'s model stands', async ($, on) => {
+  const received: (string | undefined)[] = []
+  engine(on, { trigger: true, workerModel: null })
+  on('agent.spawn', (_, e) => (received.push(e.model), { model: e.model ?? 'sonnet', agentId: 'w1' }))
+  await start($)
+  await $.prompt.submit(typed(BIG))
+  await $.agent.spawn({ prompt: 'rename the field', model: 'sonnet' } as never)
+  expect(received).toEqual(['sonnet'])
 })
 
 test('argument parsing', () => {

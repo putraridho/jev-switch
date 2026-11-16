@@ -92,8 +92,9 @@ def main():
         reason = (k["turn"].get("decision") or {}).get("reason")
         (orch if reason == "orchestrate" else other).append((k, rows))
 
-    checks = list(read_jsonl(f"{a.state}/orch.jsonl"))
-    checks = [c for c in checks if c.get("ts", 0) * 1000 >= since_ms]
+    logged = [c for c in read_jsonl(f"{a.state}/orch.jsonl") if c.get("ts", 0) * 1000 >= since_ms]
+    checks = [c for c in logged if c.get("kind") != "worker"]
+    workers = [c for c in logged if c.get("kind") == "worker"]
     cutoff = checks[-1]["cutoff"] if checks else None
     print(f"orchestrate checks: {len(checks)}, triggered: {sum(1 for c in checks if c.get('trigger'))}"
           + (f" (cutoff {cutoff})" if cutoff else ""))
@@ -102,6 +103,13 @@ def main():
         print(f"  just under the cutoff (within 0.15): {len(near)}")
         for c in near[:5]:
             print(f"    p={c['multi_part_p']:.2f}  {c.get('prompt', '')[:80]!r}")
+
+    if workers:
+        picked = collections.Counter(w.get("model") or "planner's choice" for w in workers)
+        print(f"worker models picked by Jev: {dict(picked)}")
+    planners = collections.Counter(c.get("planner") for c in checks if c.get("trigger"))
+    if planners:
+        print(f"planner models picked by Jev: {dict(planners)}")
 
     print(f"\norchestrated tasks with usage: {len(orch)}")
     if not orch:
