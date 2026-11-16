@@ -43,3 +43,7 @@ path = "src/bin/ask.rs"
 [[bin]]
 name = "orch_tune"
 path = "src/bin/orch_tune.rs"
+
+[[bin]]
+name = "delegate_mcp"
+path = "src/bin/delegate_mcp.rs"

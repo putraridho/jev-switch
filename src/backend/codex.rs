@@ -13,7 +13,7 @@ use serde_json::{json, Value};
 use tokio::process::Command;
 
 use super::claude::tool_summary;
-use super::{classify_common, Backend, ErrorKind, Event, Finish, ProviderId, TurnRequest, Usage};
+use super::{classify_common, Backend, ErrorKind, Event, Finish, McpAttachment, ProviderId, TurnRequest, Usage};
 
 /// The only sandboxes this backend will ever pass on. Anything else, in particular
 /// `danger-full-access`, silently becomes [`DEFAULT_SANDBOX`]: a stray env value must
@@ -37,6 +37,8 @@ pub struct CodexBackend {
     /// every `thread.started`, so use one backend per turn: two turns streaming through
     /// the same instance at once would mix their answers.
     state: Mutex<TurnState>,
+    /// The orchestration planner's delegate tool, passed as `-c` overrides.
+    mcp: Option<McpAttachment>,
 }
 
 impl CodexBackend {
@@ -51,7 +53,7 @@ impl CodexBackend {
 
     /// Explicit binary and sandbox, for tests and callers that do not read the env.
     pub fn new(bin: impl Into<String>, sandbox: impl Into<String>) -> Self {
-        Self { bin: bin.into(), sandbox: sandbox.into(), state: Mutex::new(TurnState::default()) }
+        Self { bin: bin.into(), sandbox: sandbox.into(), state: Mutex::new(TurnState::default()), mcp: None }
     }
 
     /// The configured sandbox if it is one of [`SAFE_SANDBOXES`], else the default.
@@ -68,6 +70,26 @@ impl CodexBackend {
     /// New turn: `-C` and `-s` are only accepted by plain `exec`.
     fn fresh_args(&self, cmd: &mut Command, req: &TurnRequest) {
         cmd.args(["exec", "--json", "-C"]).arg(&req.dir).args(["-s", self.sandbox_arg(), "-m", &req.model]);
+        cmd.args(self.mcp_overrides());
+    }
+
+    /// `-c mcp_servers.<name>.command=... -c mcp_servers.<name>.args=[...]`: Codex has
+    /// no per-run config file flag for MCP, but `-c` takes dotted TOML overrides (checked
+    /// against `codex exec --help`). A JSON string is a valid TOML basic string, so
+    /// `serde_json` does the quoting. UNVERIFIED end to end: whether `codex exec` runs
+    /// the server's tools without an approval prompt was not tried (no quota spent).
+    fn mcp_overrides(&self) -> Vec<String> {
+        let Some(m) = &self.mcp else { return vec![] };
+        let quote = |s: &str| serde_json::to_string(s).unwrap_or_default();
+        let args: Vec<String> = m.args.iter().map(|a| quote(a)).collect();
+        let key = format!("mcp_servers.{}", m.name);
+        let command = quote(&m.command.to_string_lossy());
+        vec![
+            "-c".into(),
+            format!("{key}.command={command}"),
+            "-c".into(),
+            format!("{key}.args=[{}]", args.join(",")),
+        ]
     }
 
     /// Continued turn: `exec resume` has neither `-C` nor `-s`, so the directory comes
@@ -75,7 +97,9 @@ impl CodexBackend {
     /// trailing `-` makes codex read the prompt from stdin.
     fn resume_args(&self, cmd: &mut Command, req: &TurnRequest, thread_id: &str) {
         let sandbox = format!("sandbox_mode=\"{}\"", self.sandbox_arg());
-        cmd.args(["exec", "resume", "--json", "-m", &req.model, "-c", &sandbox, thread_id, "-"]);
+        cmd.args(["exec", "resume", "--json", "-m", &req.model, "-c", &sandbox]);
+        cmd.args(self.mcp_overrides());
+        cmd.args([thread_id, "-"]);
     }
 
     /// Messages are remembered (the last one is the answer) and shown; file changes
@@ -163,6 +187,14 @@ impl Backend for CodexBackend {
         }
         cmd.current_dir(&req.dir);
         cmd
+    }
+
+    fn supports_mcp(&self) -> bool {
+        true
+    }
+
+    fn attach_mcp(&mut self, mcp: &McpAttachment) {
+        self.mcp = Some(mcp.clone());
     }
 
     fn parse_line(&self, line: &str) -> Vec<Event> {
@@ -355,6 +387,25 @@ mod tests {
     #[test]
     fn prompt_travels_on_stdin() {
         assert_eq!(backend().stdin_payload(&req(None)).as_deref(), Some("hi"));
+    }
+
+    #[test]
+    fn attached_mcp_server_goes_in_as_config_overrides_before_the_thread_id() {
+        let mut b = CodexBackend::new("codex", "workspace-write");
+        assert!(b.supports_mcp());
+        assert!(!args(&b.command(&req(None))).iter().any(|a| a.contains("mcp_servers")));
+        b.attach_mcp(&McpAttachment {
+            name: "jev".into(),
+            command: "/bin/delegate_mcp".into(),
+            args: vec!["--dir".into(), "/my repo".into()],
+            config_path: "/x.json".into(),
+        });
+        let fresh = args(&b.command(&req(None)));
+        assert!(fresh.contains(&"mcp_servers.jev.command=\"/bin/delegate_mcp\"".to_string()), "{fresh:?}");
+        assert!(fresh.contains(&"mcp_servers.jev.args=[\"--dir\",\"/my repo\"]".to_string()), "{fresh:?}");
+        let resumed = args(&b.command(&req(Some("t1"))));
+        assert_eq!(&resumed[resumed.len() - 2..], ["t1", "-"], "overrides stay before the positionals");
+        assert!(resumed.iter().any(|a| a.starts_with("mcp_servers.jev.command")));
     }
 
     #[test]

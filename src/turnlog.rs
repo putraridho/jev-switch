@@ -6,7 +6,7 @@ use serde_json::{json, Value};
 use crate::backend::{ErrorKind, PlanUsage, ProviderId, TurnError, TurnOutcome, Usage};
 use crate::log::now_ms;
 
-fn error_kind_name(kind: &ErrorKind) -> &'static str {
+pub fn error_kind_name(kind: &ErrorKind) -> &'static str {
     match kind {
         ErrorKind::Quota { .. } => "quota",
         ErrorKind::NotEntitled => "not_entitled",
@@ -17,7 +17,7 @@ fn error_kind_name(kind: &ErrorKind) -> &'static str {
     }
 }
 
-fn usage_json(u: &Usage) -> Value {
+pub fn usage_json(u: &Usage) -> Value {
     json!({
         "input_tokens": u.input_tokens,
         "cached_input_tokens": u.cached_input_tokens,

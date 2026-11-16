@@ -44,6 +44,9 @@ pub struct ProviderWant {
     pub continues_p: f64,
     /// P(the message reacts to the previous answer as wrong); `None` with no previous turn.
     pub correction_p: Option<f64>,
+    /// P(the request is a large task that splits into separate pieces): the signal
+    /// orchestration triggers on (`ORCH_TRIGGER_P`). Asked in the same single batch.
+    pub multi_part_p: f64,
     /// What the keyword lists say, kept alongside Jev's judgment.
     pub security_keywords: Security,
     /// Every number above plus the task name, for the decision log.
@@ -596,6 +599,7 @@ const Q_EDIT: &str = "needs_changes";
 const Q_SECURITY: &str = "security_review";
 const Q_HARD: &str = "very_hard";
 const Q_CORRECTION: &str = "is_correction";
+const Q_MULTI_PART: &str = "multi_part";
 
 /// Every question of a provider judgment as one `questions` map. The correction
 /// question needs the previous exchange, so it is asked only when there is one.
@@ -606,6 +610,7 @@ fn provider_questions(with_previous: bool) -> Value {
         Q_EDIT: needs_changes_question(),
         Q_SECURITY: security_review_question(),
         Q_HARD: very_hard_question(),
+        Q_MULTI_PART: multi_part_question(),
     });
     if with_previous {
         q[Q_CORRECTION] = is_correction_question();
@@ -633,12 +638,13 @@ fn decode_provider_want(answers: &Value, request: &str, with_previous: bool) -> 
     let security_p = decode_noul(answers, Q_SECURITY)?;
     let edit_p = decode_noul(answers, Q_EDIT)?;
     let continues_p = decode_noul(answers, Q_CONTINUES)?;
+    let multi_part_p = decode_noul(answers, Q_MULTI_PART)?;
     let correction_p = if with_previous { Some(decode_noul(answers, Q_CORRECTION)?) } else { None };
     let security_keywords = security_level(request);
     let signals = json!({
         "task": task.as_str(), "task_confidence": task_answer.confidence,
         "very_hard_p": very_hard_p, "security_p": security_p, "edit_p": edit_p,
-        "continues_p": continues_p, "correction_p": correction_p,
+        "continues_p": continues_p, "multi_part_p": multi_part_p, "correction_p": correction_p,
         "security": format!("{security_keywords:?}").to_lowercase(),
     });
     Ok(ProviderWant {
@@ -649,6 +655,7 @@ fn decode_provider_want(answers: &Value, request: &str, with_previous: bool) -> 
         edit_p,
         continues_p,
         correction_p,
+        multi_part_p,
         security_keywords,
         signals,
     })
@@ -954,6 +961,7 @@ mod tests {
                     "security_review" => 0.33,
                     "very_hard" => 0.44,
                     "is_correction" => 0.55,
+                    "multi_part" => 0.66,
                     _ => 0.99,
                 };
                 json!({ "noul": p })
@@ -979,13 +987,14 @@ mod tests {
         assert_eq!(w.task_confidence, 0.8);
         assert_eq!((w.continues_p, w.edit_p, w.security_p, w.very_hard_p), (0.11, 0.22, 0.33, 0.44));
         assert_eq!(w.correction_p, Some(0.55));
+        assert_eq!(w.multi_part_p, 0.66);
         assert_eq!(w.security_keywords, Security::None);
         assert_eq!(w.signals["task"], "frontend");
         assert_eq!(w.signals["security_p"], 0.33);
-        // exactly one request carried all six questions and the previous exchange
+        // exactly one request carried all seven questions and the previous exchange
         let seen = seen.lock().unwrap();
         assert_eq!(seen.len(), 1, "one HTTP request, not one per question");
-        assert_eq!(seen[0]["questions"].as_object().unwrap().len(), 6);
+        assert_eq!(seen[0]["questions"].as_object().unwrap().len(), 7);
         assert_eq!(seen[0]["state"]["previous_answer"], "earlier answer");
         assert_eq!(seen[0]["state"]["request"], "make the sidebar collapse");
     }
@@ -998,7 +1007,8 @@ mod tests {
         assert!(w.signals["correction_p"].is_null());
         let seen = seen.lock().unwrap();
         let questions = seen[0]["questions"].as_object().unwrap();
-        assert_eq!(questions.len(), 5);
+        assert_eq!(questions.len(), 6);
+        assert_eq!(questions["multi_part"], multi_part_question(), "the batch sends the shared definition");
         assert!(!questions.contains_key("is_correction"));
         assert!(seen[0]["state"].get("previous_request").is_none());
     }

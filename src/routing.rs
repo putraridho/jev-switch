@@ -104,6 +104,8 @@ pub struct Signals {
     pub continues_p: f64,
     /// Probability the user is correcting the previous answer, when it was asked.
     pub correction_p: Option<f64>,
+    /// Probability the request splits into separate pieces (orchestration's trigger).
+    pub multi_part_p: f64,
     pub security_keywords: Security,
 }
 
@@ -117,6 +119,7 @@ impl From<&ProviderWant> for Signals {
             edit_p: w.edit_p,
             continues_p: w.continues_p,
             correction_p: w.correction_p,
+            multi_part_p: w.multi_part_p,
             security_keywords: w.security_keywords,
         }
     }
@@ -478,6 +481,7 @@ mod tests {
             edit_p: 0.0,
             continues_p: 0.0,
             correction_p: None,
+            multi_part_p: 0.0,
             security_keywords: Security::None,
         }
     }
@@ -806,6 +810,7 @@ mod tests {
                         edit_p: rng.unit(),
                         continues_p: rng.unit(),
                         correction_p: if rng.next() % 2 == 0 { Some(rng.unit()) } else { None },
+                        multi_part_p: 0.0,
                         security_keywords: rng.pick(&[Security::None, Security::Weak, Security::Strong]),
                     };
                     let signals = (round % 5 != 0).then_some(&s);

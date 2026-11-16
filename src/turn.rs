@@ -19,13 +19,14 @@ use std::time::{Duration, Instant};
 use serde_json::{json, Value};
 
 use crate::anthropic::{MODEL_CHEAP, MODEL_MID, MODEL_STRONG};
-use crate::backend::{self, Backend, ErrorKind, Event, ProviderId, TurnError, TurnOutcome, TurnRequest, Usage};
+use crate::backend::{self, Backend, Event, McpAttachment, ProviderId, TurnError, TurnOutcome, TurnRequest, Usage};
 use crate::catalog::{self, find, ModelSpec};
 use crate::handoff::{Sessions, TurnRecord};
 use crate::log;
+use crate::orchestrate::{self, Outcome, Setup};
 use crate::providers::{self, Runtime};
 use crate::router::{CodeWant, ProviderWant, Router, Sticky};
-use crate::routing::{self, NoRoute, Pin, RouteInput, RoutingState, Signals};
+use crate::routing::{self, NoRoute, Pin, RouteDecision, RouteInput, RoutingState, Signals};
 use crate::turnlog::turn_row;
 
 /// Most models tried for one user turn before giving up.
@@ -135,6 +136,8 @@ struct Chosen {
     state: RoutingState,
     /// Legacy mode only: the tier index, to feed back into [`Sticky`].
     legacy_tier: Option<usize>,
+    /// Orchestration: the delegate tool to attach, when this model is the planner.
+    mcp: Option<McpAttachment>,
 }
 
 /// One started attempt and what came of it.
@@ -165,6 +168,11 @@ pub struct Engine {
     /// Legacy (routing off) stickiness.
     sticky: Sticky,
     downgrade_after: u32,
+    /// `/orchestrate`: off until asked for, because a planner plus workers costs more
+    /// than one model on a small task.
+    orchestrate: bool,
+    /// Where the delegate tool is; `None` means orchestration cannot attach it.
+    orch_setup: Option<Setup>,
 }
 
 impl Engine {
@@ -188,7 +196,21 @@ impl Engine {
             last_context_tokens: 0,
             sticky: Sticky::default(),
             downgrade_after: 2,
+            orchestrate: false,
+            orch_setup: None,
         }
+    }
+
+    /// Start with orchestration on or off (the binary reads `JEV_ORCHESTRATE`).
+    pub fn with_orchestrate(mut self, on: bool) -> Self {
+        self.orchestrate = on;
+        self
+    }
+
+    /// Where the `delegate_mcp` binary and the MCP config directory are.
+    pub fn with_orch_setup(mut self, setup: Option<Setup>) -> Self {
+        self.orch_setup = setup;
+        self
     }
 
     pub fn with_backend_factory(mut self, f: BackendFactory) -> Self {
@@ -245,6 +267,14 @@ impl Engine {
 
     pub fn set_enabled(&mut self, on: bool) {
         self.enabled = on;
+    }
+
+    pub fn orchestrate(&self) -> bool {
+        self.orchestrate
+    }
+
+    pub fn set_orchestrate(&mut self, on: bool) {
+        self.orchestrate = on;
     }
 
     /// `/new`: forget the conversation and every provider session. The pin, the
@@ -333,7 +363,7 @@ impl Engine {
                 Err(err) => err,
             };
             let spec = attempt.chosen.spec;
-            let retry_note = self.react(spec.provider, spec.id, &err, &mut excluded, now);
+            let retry_note = self.runtime.react(spec.provider, spec.id, &err, &mut excluded, now);
             match retry_note {
                 Some(note) if attempts < max_attempts => {
                     ui.note(&note);
@@ -387,7 +417,60 @@ impl Engine {
         };
         let mut state = base.clone();
         let decision = routing::decide(&mut state, &input)?;
-        Ok(Chosen { spec: decision.spec, reason: decision.reason, state, legacy_tier: None })
+        let outcome = self.plan_orchestration(signals, &decision, &input, base);
+        let (spec, reason, mcp) = self.apply_orchestration(outcome, &decision);
+        Ok(Chosen { spec, reason, state, legacy_tier: None, mcp })
+    }
+
+    /// Providers whose CLI can have the delegate tool attached. A backend is cheap to
+    /// build and says it itself, so no list of providers is kept here to drift.
+    fn mcp_providers(&self) -> Vec<ProviderId> {
+        providers::ALL_PROVIDERS.into_iter().filter(|p| (self.backend_factory)(*p).supports_mcp()).collect()
+    }
+
+    /// Should this turn have a planner? The decision is [`orchestrate::choose_planner`];
+    /// this supplies what it reads. The planner is the normal route's model when its CLI
+    /// can take the tool, else the best Top model among the providers that can (the same
+    /// routing, with only those providers usable, so a `/model` pin is still respected).
+    fn plan_orchestration(
+        &self,
+        signals: Option<&Signals>,
+        normal: &RouteDecision,
+        input: &RouteInput,
+        base: &RoutingState,
+    ) -> Outcome {
+        let tool_ready = self.orch_setup.as_ref().is_some_and(|s| s.bin.is_some());
+        let mcp = if self.orchestrate { self.mcp_providers() } else { Vec::new() };
+        orchestrate::choose_planner(
+            self.orchestrate,
+            signals.map(|s| s.multi_part_p),
+            normal.spec,
+            tool_ready,
+            &mcp,
+            |keep| {
+                let restricted = input.usable.only_providers(keep);
+                let mut state = base.clone();
+                routing::decide(&mut state, &RouteInput { usable: &restricted, ..*input }).ok().map(|d| d.spec)
+            },
+        )
+    }
+
+    /// The model, the `[route]` line and the tool to attach once orchestration has had its say.
+    fn apply_orchestration(&self, outcome: Outcome, normal: &RouteDecision) -> (&'static ModelSpec, String, Option<McpAttachment>) {
+        match outcome {
+            Outcome::Normal => (normal.spec, normal.reason.clone(), None),
+            Outcome::Unavailable(why) => (normal.spec, format!("{}; orchestration skipped: {why}", normal.reason), None),
+            Outcome::Planner(spec) => {
+                let mcp = self.orch_setup.as_ref().and_then(|s| s.attachment(&self.dir, spec));
+                let moved = if spec == normal.spec {
+                    String::new()
+                } else {
+                    format!(" ({} cannot take the delegate tool)", normal.spec.provider)
+                };
+                let reason = format!("{}; orchestrating: {} {} plans{moved}, Jev picks the workers", normal.reason, spec.provider, spec.id);
+                (spec, reason, mcp)
+            }
+        }
     }
 
     /// Routing off: Claude only, a `/model` pin of a Claude model or else the
@@ -412,7 +495,7 @@ impl Engine {
             }
         };
         let legacy_tier = LEGACY_TIERS.iter().position(|id| *id == spec.id);
-        Chosen { spec, reason: format!("{} {} — {why}{ignored}", spec.provider, spec.id), state: base.clone(), legacy_tier }
+        Chosen { spec, reason: format!("{} {} — {why}{ignored}", spec.provider, spec.id), state: base.clone(), legacy_tier, mcp: None }
     }
 
     // ------------------------------------------------------------------ running
@@ -434,8 +517,17 @@ impl Engine {
 
     async fn run_attempt(&mut self, chosen: Chosen, prompt: &str, ui: &mut dyn Ui) -> Attempt {
         let provider = chosen.spec.provider;
-        let sent = self.prompt_for(provider, prompt);
-        let backend = (self.backend_factory)(provider);
+        let mut sent = self.prompt_for(provider, prompt);
+        let mut backend = (self.backend_factory)(provider);
+        if let Some(mcp) = chosen.mcp.as_ref().filter(|_| backend.supports_mcp()) {
+            match orchestrate::write_mcp_config(mcp) {
+                Ok(()) => {
+                    backend.attach_mcp(mcp);
+                    sent = format!("{}\n\n{sent}", orchestrate::PLANNER_NOTE);
+                }
+                Err(e) => ui.note(&format!("[orchestrate] could not write {}: {e}; running without workers", mcp.config_path.display())),
+            }
+        }
         let req = TurnRequest {
             dir: self.dir.clone(),
             model: chosen.spec.id.to_string(),
@@ -514,43 +606,6 @@ impl Engine {
         });
     }
 
-    /// Apply what a failure teaches the router and say what happens next. `Some` is
-    /// the note for "try the next model"; `None` means the failure would likely
-    /// recur on every provider, so the turn stops.
-    fn react(
-        &mut self,
-        provider: ProviderId,
-        model: &str,
-        err: &TurnError,
-        excluded: &mut HashSet<(ProviderId, String)>,
-        now: u64,
-    ) -> Option<String> {
-        match &err.kind {
-            ErrorKind::Quota { resets_at } => {
-                self.runtime.cool_down(provider, resets_at.as_deref(), now);
-                let when = resets_at.as_deref().map(|r| format!(" (resets {r})")).unwrap_or_default();
-                Some(format!("{provider} hit its limit{when}: trying the next model"))
-            }
-            ErrorKind::NotEntitled => {
-                self.runtime.mark_unusable(provider, model);
-                Some(format!("{provider}:{model} is not on your plan: trying the next model"))
-            }
-            ErrorKind::Auth => {
-                self.runtime.cool_down(provider, None, now);
-                Some(format!(
-                    "{provider} is not logged in or its login expired (log in to {} again, then /providers refresh): trying the next model",
-                    login_target(provider)
-                ))
-            }
-            ErrorKind::Stalled | ErrorKind::Empty => {
-                excluded.insert((provider, model.to_string()));
-                let what = if err.kind == ErrorKind::Stalled { "stopped answering" } else { "gave an empty answer" };
-                Some(format!("{provider}:{model} {what}: trying the next model"))
-            }
-            ErrorKind::Other => None,
-        }
-    }
-
     fn log_attempt(&self, a: &Attempt, jev: &Value, attempt: u32, notes: &[String]) {
         let Some(path) = &self.turn_log else { return };
         let spec = a.chosen.spec;
@@ -563,6 +618,7 @@ impl Engine {
         let mut row = turn_row(spec.provider, spec.id, session, &a.chosen.reason, jev, &a.result, a.wall_ms);
         if let Value::Object(o) = &mut row {
             o.insert("attempt".into(), json!(attempt));
+            o.insert("orchestrated".into(), json!(a.chosen.mcp.is_some()));
             if !notes.is_empty() {
                 o.insert("failover_notes".into(), json!(notes));
             }
@@ -605,17 +661,6 @@ impl Engine {
     }
 }
 
-/// The tool a user logs in to again for `provider`.
-fn login_target(provider: ProviderId) -> &'static str {
-    match provider {
-        ProviderId::Claude => "claude",
-        ProviderId::Codex => "codex",
-        ProviderId::Gemini => "gemini (or agy)",
-        ProviderId::Grok => "grok",
-        ProviderId::DeepSeek => "DeepSeek: check DEEPSEEK_API_KEY",
-    }
-}
-
 fn legacy_spec(tier: usize) -> &'static ModelSpec {
     let id = LEGACY_TIERS[tier.min(LEGACY_TIERS.len() - 1)];
     find(ProviderId::Claude, id).expect("legacy tiers are catalog models")
@@ -631,7 +676,7 @@ mod tests {
     use tokio::process::Command;
 
     use crate::availability::{Availability, State};
-    use crate::backend::{classify_common, Finish};
+    use crate::backend::{classify_common, ErrorKind, Finish};
     use crate::catalog::{default_chain, pick, Allowances, TaskType, Usable};
     use crate::router::Security;
     use crate::typesafe::TypeSafe;
@@ -651,6 +696,7 @@ mod tests {
         provider: ProviderId,
         script: &'static str,
         started: Arc<Mutex<Vec<Started>>>,
+        attached: Arc<Mutex<Vec<(ProviderId, McpAttachment)>>>,
     }
 
     #[derive(Debug, Clone)]
@@ -693,6 +739,13 @@ mod tests {
         fn classify_error(&self, message: &str) -> ErrorKind {
             classify_common(message).unwrap_or(ErrorKind::Other)
         }
+        /// Like the real CLIs: claude, deepseek (through claude) and codex can; gemini and grok cannot.
+        fn supports_mcp(&self) -> bool {
+            matches!(self.provider, Claude | DeepSeek | Codex)
+        }
+        fn attach_mcp(&mut self, mcp: &McpAttachment) {
+            self.attached.lock().unwrap().push((self.provider, mcp.clone()));
+        }
     }
 
     #[derive(Default)]
@@ -720,6 +773,7 @@ mod tests {
         engine: Engine,
         scripts: Arc<Mutex<HashMap<ProviderId, &'static str>>>,
         started: Arc<Mutex<Vec<Started>>>,
+        attached: Arc<Mutex<Vec<(ProviderId, McpAttachment)>>>,
         factory_calls: Arc<Mutex<Vec<ProviderId>>>,
         clock: Arc<AtomicU64>,
         ui: Recorder,
@@ -736,20 +790,22 @@ mod tests {
             [Claude, Codex, Gemini, Grok, DeepSeek].into_iter().map(|p| (p, script)).collect(),
         ));
         let started = Arc::new(Mutex::new(Vec::new()));
+        let attached = Arc::new(Mutex::new(Vec::new()));
         let factory_calls = Arc::new(Mutex::new(Vec::new()));
         let clock = Arc::new(AtomicU64::new(NOW));
-        let (s, st, fc, ck) = (scripts.clone(), started.clone(), factory_calls.clone(), clock.clone());
+        let (s, st, fc, ck, at) =
+            (scripts.clone(), started.clone(), factory_calls.clone(), clock.clone(), attached.clone());
         let engine = Engine::new(Runtime::for_tests(avail), router, std::env::temp_dir())
             .with_backend_factory(Box::new(move |p| {
                 fc.lock().unwrap().push(p);
                 let script = s.lock().unwrap()[&p];
-                Box::new(Fake { provider: p, script, started: st.clone() })
+                Box::new(Fake { provider: p, script, started: st.clone(), attached: at.clone() })
             }))
             .with_git_status(Box::new(|_| " M src/a.rs\n".to_string()))
             .with_clock(Box::new(move || ck.load(Ordering::SeqCst)))
             .with_idle_timeout(Duration::from_millis(300))
             .with_turn_log(None);
-        Rig { engine, scripts, started, factory_calls, clock, ui: Recorder::default() }
+        Rig { engine, scripts, started, attached, factory_calls, clock, ui: Recorder::default() }
     }
 
     fn rig(ready: &[ProviderId]) -> Rig {
@@ -782,6 +838,7 @@ mod tests {
             edit_p: 0.3,
             continues_p: 0.9,
             correction_p: None,
+            multi_part_p: 0.0,
             security_keywords: Security::None,
             signals: json!({ "task": task.as_str() }),
         }
@@ -891,7 +948,7 @@ mod tests {
         let report = r.turn("add a retry to the client", want(TaskType::Feature)).await;
         assert_eq!(report.status, TurnStatus::Answered);
         assert!(r.engine.runtime.cooldowns.active(a, NOW).is_some());
-        assert!(r.ui.notes.iter().any(|n| n.contains("log in to") && n.contains(login_target(a))), "{:?}", r.ui.notes);
+        assert!(r.ui.notes.iter().any(|n| n.contains("log in to") && n.contains(providers::login_target(a))), "{:?}", r.ui.notes);
     }
 
     #[tokio::test]
@@ -1123,5 +1180,110 @@ mod tests {
     #[test]
     fn git_status_short_is_empty_outside_a_repo() {
         assert_eq!(git_status_short(Path::new("/definitely/not/a/dir")), "");
+    }
+
+    // ------------------------------------------------------------ orchestration
+
+    /// A multi-part request: Jev's `multi_part` is above the cutoff.
+    fn multi(task: TaskType) -> ProviderWant {
+        ProviderWant { multi_part_p: 0.9, continues_p: 0.1, ..want(task) }
+    }
+
+    fn orchestrating(mut r: Rig) -> Rig {
+        let setup = Setup { bin: Some(PathBuf::from("/bin/delegate_mcp")), config_dir: std::env::temp_dir() };
+        r.engine = r.engine.with_orchestrate(true).with_orch_setup(Some(setup));
+        r
+    }
+
+    #[tokio::test]
+    async fn orchestration_is_off_by_default_even_for_a_multi_part_top_route() {
+        let mut r = rig(&[Claude, Codex]);
+        assert!(!r.engine.orchestrate());
+        let report = r.turn("rebuild the whole importer", multi(TaskType::Review)).await;
+        assert_eq!(report.status, TurnStatus::Answered);
+        assert!(r.attached.lock().unwrap().is_empty());
+        assert!(r.ui.routes.iter().all(|l| !l.contains("orchestrat")), "{:?}", r.ui.routes);
+        assert!(!r.started()[0].prompt.contains("orchestration"));
+    }
+
+    #[tokio::test]
+    async fn a_multi_part_top_route_runs_on_a_planner_with_the_delegate_tool() {
+        let mut r = orchestrating(rig(&[Claude, Codex]));
+        let report = r.turn("rebuild the whole importer", multi(TaskType::Review)).await;
+        assert_eq!(report.status, TurnStatus::Answered);
+        let started = r.started();
+        let top = started[0].provider;
+        assert!(matches!(top, Claude | Codex));
+        assert!(find(top, &started[0].model).is_some_and(|m| m.tier == catalog::Tier::Top), "{}", started[0].model);
+        let attached = r.attached.lock().unwrap().clone();
+        assert_eq!(attached.len(), 1);
+        assert_eq!(attached[0].0, top);
+        assert_eq!(attached[0].1.name, "jev");
+        assert!(started[0].prompt.contains("`delegate` tool") && started[0].prompt.contains("rebuild the whole importer"));
+        assert!(r.ui.routes[0].contains("orchestrating") && r.ui.routes[0].contains("Jev picks the workers"), "{:?}", r.ui.routes);
+    }
+
+    #[tokio::test]
+    async fn orchestration_needs_both_multi_part_and_a_top_route() {
+        let mut r = orchestrating(rig(&[Claude, Codex]));
+        // Multi-part, but a Feature turn normally goes to an Everyday model.
+        r.turn("add the endpoint, the page and the docs", multi(TaskType::Feature)).await;
+        // A Top route, but not multi-part.
+        r.turn("why does this deadlock", ProviderWant { continues_p: 0.1, ..want(TaskType::Review) }).await;
+        assert!(r.attached.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_planner_is_never_a_provider_without_mcp_support() {
+        // Review's first choice is Codex, then Gemini; with Codex missing the normal route is Gemini Argon, which cannot take the tool.
+        let mut r = orchestrating(rig(&[Gemini, Claude]));
+        let report = r.turn("rebuild the whole importer", multi(TaskType::Review)).await;
+        assert_eq!(report.status, TurnStatus::Answered);
+        assert_eq!(r.started()[0].provider, Claude, "the planner is the best Top model that can take the tool");
+        assert_eq!(r.attached.lock().unwrap()[0].0, Claude);
+        assert!(r.ui.routes[0].contains("gemini cannot take the delegate tool"), "{:?}", r.ui.routes);
+    }
+
+    #[tokio::test]
+    async fn with_no_planner_available_the_turn_runs_normally_and_says_why() {
+        let mut r = orchestrating(rig(&[Gemini]));
+        let report = r.turn("rebuild the whole importer", multi(TaskType::Review)).await;
+        assert_eq!(report.status, TurnStatus::Answered);
+        assert_eq!(r.started()[0].provider, Gemini);
+        assert!(r.attached.lock().unwrap().is_empty());
+        assert!(r.ui.routes[0].contains("orchestration skipped") && r.ui.routes[0].contains("cannot take the delegate tool"), "{:?}", r.ui.routes);
+    }
+
+    #[tokio::test]
+    async fn a_missing_delegate_binary_skips_orchestration_with_a_reason() {
+        let mut r = rig(&[Claude, Codex]);
+        r.engine = r.engine.with_orchestrate(true).with_orch_setup(None);
+        r.turn("rebuild the whole importer", multi(TaskType::Review)).await;
+        assert!(r.attached.lock().unwrap().is_empty());
+        assert!(r.ui.routes[0].contains("orchestration skipped") && r.ui.routes[0].contains("delegate_mcp"), "{:?}", r.ui.routes);
+    }
+
+    #[tokio::test]
+    async fn a_pinned_provider_without_mcp_support_is_not_overridden_by_orchestration() {
+        let mut r = orchestrating(rig(&[Gemini, Claude]));
+        r.engine.set_pin(Pin::Provider(Gemini));
+        r.turn("rebuild the whole importer", multi(TaskType::Review)).await;
+        assert_eq!(r.started()[0].provider, Gemini, "a pin is never swapped");
+        assert!(r.attached.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn the_mcp_config_file_for_claude_code_is_written_before_the_planner_starts() {
+        let dir = std::env::temp_dir().join(format!("jev-turn-mcp-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut r = rig(&[Claude]);
+        let setup = Setup { bin: Some(PathBuf::from("/bin/delegate_mcp")), config_dir: dir.clone() };
+        r.engine = r.engine.with_orchestrate(true).with_orch_setup(Some(setup));
+        r.turn("rebuild the whole importer", multi(TaskType::Review)).await;
+        let path = r.attached.lock().unwrap()[0].1.config_path.clone();
+        assert!(path.starts_with(&dir));
+        let json: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(json["mcpServers"]["jev"]["command"], "/bin/delegate_mcp");
+        std::fs::remove_dir_all(&dir).ok();
     }
 }

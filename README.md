@@ -296,6 +296,27 @@ that this really bypasses your Claude login and talks to DeepSeek is unverified.
 names, tiers and chains in the catalog come from the vendors' pages as of 2026-11-17;
 the task-to-model chains are defaults, not calibrated on your work.
 
+**Orchestration across providers** (`/orchestrate on|off`, or `JEV_ORCHESTRATE=on`; off by
+default). A request that Jev scores multi-part (`multi_part` at `ORCH_TRIGGER_P`, 0.70) AND
+that normal routing would send to a Top-tier model runs on a PLANNER, which gets a
+`delegate` tool (an MCP server, `delegate_mcp`). The planner hands independent pieces to
+cheaper WORKERS, each in its own git worktree (`<state dir>/worktrees/<id>`, detached at
+`HEAD`, so the planner's uncommitted edits are not visible to workers), reviews the diffs it
+gets back, and `merge`s (a 3-way `git apply`; a conflict changes nothing) or `discard`s
+them. **Jev makes every model decision:** the tool has no model parameter and anything a
+planner says about models is ignored. Code only filters to usable models and applies hard
+rules: workers are never Top tier and never Fable/Astra/Carbon, security briefs never go
+to DeepSeek or Grok, code-writing work never drops below Everyday (a brief the planner calls
+read-only may use Light only if Jev agrees it does not edit), workers are spread across
+providers by plan usage and by workers already running, and a worker that hits a limit,
+a login or an entitlement failure is retried once on the next pick. Planners can be claude,
+deepseek (through claude) and codex: gemini and grok cannot take the tool yet, so they are
+never chosen as planner; with no planner available the turn runs normally and the
+`[route]` line says why. Every worker attempt is a row in `<state dir>/orchestration.jsonl`
+(planner, worker, Jev's signals, ok, wall time, files changed, usage); `scripts/orch_report.py`
+does not read it yet. Codex attaching the tool through `-c mcp_servers...` overrides was
+checked against `codex exec --help` only, not run.
+
 **Routing off** (`/provider off` or `JEV_PROVIDERS=off`) is the earlier Claude-only
 mode: one attempt, no availability check, no failover, two tiers and no Haiku:
 
@@ -353,6 +374,8 @@ beat any guess. Re-run `tune` when prompts, models, or request mix change.
   (Jev, choose, hand off, run, fail over), `src/routing.rs` picks the model, `src/catalog.rs`
   lists the models and chains, `src/providers.rs` and `src/availability.rs` know who is
   usable, `src/handoff.rs` writes the catch-up, `src/backend/` has one adapter per CLI.
+- `src/delegate.rs`, `src/orchestrate.rs`, `src/bin/delegate_mcp.rs` — cross-provider orchestration:
+  worker choice and worktrees, planner choice and tool attachment, the MCP server.
 - `src/bin/orch_tune.rs` — scores logged prompts with `multi_part` to pick `ORCH_TRIGGER_P`.
 - `mods/jev-orchestrate/` — Claude Code mod for orchestrate mode (trigger, brief, `/orchestrate`).
 - `src/bin/route.rs` — routing-only dry run over a prompt file (Jev only, no Claude calls);
