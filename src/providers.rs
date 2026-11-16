@@ -150,6 +150,10 @@ pub struct Runtime {
     pub unusable_models: HashSet<(ProviderId, String)>,
     /// The latest plan utilization each provider reported.
     pub plan: HashMap<ProviderId, PlanUsage>,
+    /// Providers whose login failed this run. Kept out of the persisted cooldowns on
+    /// purpose: a login problem is not a usage limit, and `/providers refresh` (or the
+    /// next start) re-checks it, so an hour-long cooldown would only outlast a re-login.
+    pub auth_failed: HashSet<ProviderId>,
 }
 
 impl Runtime {
@@ -178,6 +182,7 @@ impl Runtime {
             cooldown_path,
             unusable_models: HashSet::new(),
             plan: HashMap::new(),
+            auth_failed: HashSet::new(),
         }
     }
 
@@ -189,7 +194,12 @@ impl Runtime {
 
     /// The (provider, model) pairs routing may pick right now.
     pub fn usable(&self, now_ms: u64) -> Usable {
-        usable_from(&self.avail, &self.cooldowns, &self.unusable_models, now_ms)
+        if self.auth_failed.is_empty() {
+            return usable_from(&self.avail, &self.cooldowns, &self.unusable_models, now_ms);
+        }
+        let logged_in: Vec<Availability> =
+            self.avail.iter().filter(|a| !self.auth_failed.contains(&a.provider)).cloned().collect();
+        usable_from(&logged_in, &self.cooldowns, &self.unusable_models, now_ms)
     }
 
     /// Skip `p` until its limit resets, and remember that across runs. A failed save
@@ -241,7 +251,7 @@ impl Runtime {
                 Some(format!("{provider}:{model} is not on your plan: trying the next model"))
             }
             ErrorKind::Auth => {
-                self.cool_down(provider, None, now);
+                self.auth_failed.insert(provider);
                 Some(format!(
                     "{provider} is not logged in or its login expired (log in to {} again, then /providers refresh): trying the next model",
                     login_target(provider)
@@ -257,11 +267,19 @@ impl Runtime {
     }
 
     /// Probe again (for `/providers refresh`). Cooldowns, unusable models and plan
-    /// readings are kept: a re-login does not end a usage limit. The per-token
+    /// readings are kept: a re-login does not end a usage limit. A provider that failed
+    /// its login is offered again once the probe sees it logged in. The per-token
     /// allowance is recomputed because a key may have been added.
     pub async fn refresh(&mut self) {
-        self.avail = availability::probe_all().await;
+        self.apply_probe(availability::probe_all().await);
+    }
+
+    /// The pure half of [`Runtime::refresh`].
+    fn apply_probe(&mut self, avail: Vec<Availability>) {
+        self.avail = avail;
         self.allow.per_token = deepseek_ready(&self.avail);
+        let avail = &self.avail;
+        self.auth_failed.retain(|p| !avail.iter().any(|a| a.provider == *p && a.state == State::Ready));
     }
 
     /// The text of `/providers`: probe results, then what has changed since.
@@ -474,4 +492,26 @@ mod tests {
         assert_eq!(env.len(), 3);
     }
 
+    #[test]
+    fn a_failed_login_is_session_only_and_clears_when_the_probe_sees_a_login() {
+        let ready = |p| Availability { provider: p, state: State::Ready, plan: None, models: None, detail: String::new(), verified: true };
+        let mut rt = Runtime::for_tests(vec![ready(ProviderId::Claude), ready(ProviderId::Codex)]);
+        let mut excluded = HashSet::new();
+        let err = TurnError { kind: ErrorKind::Auth, message: "401".into() };
+        let note = rt.react(ProviderId::Codex, "gpt-6-luna", &err, &mut excluded, 1_000).unwrap();
+        assert!(note.contains("log in"), "{note}");
+        // not in the persisted cooldowns, but not offered either
+        assert!(rt.cooldowns.active(ProviderId::Codex, 1_000).is_none());
+        assert!(!rt.usable(1_000).contains(catalog::find(ProviderId::Codex, "gpt-6-luna").unwrap()));
+        assert!(rt.usable(1_000).contains(catalog::find(ProviderId::Claude, "claude-sonnet-5-5").unwrap()));
+        // a probe that still says "not logged in" keeps it blocked ...
+        let mut not_logged = ready(ProviderId::Codex);
+        not_logged.state = State::NotLoggedIn;
+        rt.apply_probe(vec![ready(ProviderId::Claude), not_logged]);
+        assert!(rt.auth_failed.contains(&ProviderId::Codex));
+        // ... and one that sees the login again offers it right away
+        rt.apply_probe(vec![ready(ProviderId::Claude), ready(ProviderId::Codex)]);
+        assert!(rt.auth_failed.is_empty());
+        assert!(rt.usable(1_000).contains(catalog::find(ProviderId::Codex, "gpt-6-luna").unwrap()));
+    }
 }
