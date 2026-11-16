@@ -165,7 +165,10 @@ fn path_dirs() -> Vec<PathBuf> {
 
 /// Installed means "found on PATH"; the binary is not run, since some are lazy
 /// wrappers whose first run starts an install.
-fn on_path(name: &str) -> bool {
+pub(crate) fn on_path(name: &str) -> bool {
+    if name.contains('/') {
+        return is_executable_file(Path::new(name));
+    }
     !find_on_path(name, &path_dirs(), &is_executable_file).is_empty()
 }
 

@@ -8,7 +8,7 @@
 //! tested without a CLI, a network or the user's home directory.
 
 use std::collections::{HashMap, HashSet};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use crate::availability::{self, Availability, State};
 use crate::backend::claude::ClaudeBackend;
@@ -81,31 +81,9 @@ fn detect_gemini_flavor() -> Flavor {
         .and_then(|h| std::fs::read_to_string(PathBuf::from(h).join(".gemini/settings.json")).ok());
     let env_has_key = AUTH_ENV_VARS.iter().any(|n| envfile::from_env(n).is_some());
     choose_gemini_flavor(
-        executable_on_path(&GeminiBackend::gemini_cli().bin),
+        crate::availability::on_path(&GeminiBackend::gemini_cli().bin),
         auth_looks_configured(settings.as_deref(), env_has_key),
     )
-}
-
-/// Whether `bin` (a name searched on PATH, or a path) is an executable file. The
-/// binary is not run: some are lazy wrappers whose first run starts an install.
-fn executable_on_path(bin: &str) -> bool {
-    if bin.contains('/') {
-        return is_executable_file(Path::new(bin));
-    }
-    std::env::var_os("PATH").is_some_and(|p| std::env::split_paths(&p).any(|d| is_executable_file(&d.join(bin))))
-}
-
-fn is_executable_file(path: &Path) -> bool {
-    let Ok(meta) = std::fs::metadata(path) else { return false };
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        meta.is_file() && meta.permissions().mode() & 0o111 != 0
-    }
-    #[cfg(not(unix))]
-    {
-        meta.is_file()
-    }
 }
 
 // ------------------------------------------------------------- pure decisions
@@ -434,9 +412,4 @@ mod tests {
         assert_eq!(env.len(), 3);
     }
 
-    #[test]
-    fn executable_on_path_rejects_missing_binaries() {
-        assert!(!executable_on_path("definitely-not-a-real-binary-jev"));
-        assert!(!executable_on_path("/definitely/not/here"));
-    }
 }
