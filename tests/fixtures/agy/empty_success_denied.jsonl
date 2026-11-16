@@ -1,0 +1,1 @@
+{"event":"result","result":{"conversation_id":"c0ffee00-1111-2222-3333-444455556666","status":"SUCCESS","response":"","denied_actions":[{"type":"command","command":"cargo test"}],"duration_seconds":2.0,"num_turns":1,"usage":{"input_tokens":10,"output_tokens":0,"thinking_tokens":0,"cache_read_tokens":0,"total_tokens":10}}}
