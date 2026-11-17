@@ -64,14 +64,30 @@ pub struct Stamp {
     pub mtime_ns: i128,
 }
 
-/// The working tree at one moment; see the module docs.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// The working tree at one moment; see the module docs. Two snapshots are equal when
+/// the working tree is the same (tree and untracked files), whenever they were taken.
+#[derive(Debug, Clone, Eq)]
 pub struct Snapshot {
     /// Tree id of the tracked files, as they are in the working tree.
     pub tree: String,
     /// Untracked, non-ignored files by repository-relative path.
     pub untracked: HashMap<String, Stamp>,
+    /// Wall-clock time the snapshot began (ns since the epoch; 0 = unknown). A file
+    /// that shows up untracked after the turn but is OLDER than this existed before,
+    /// hidden by `.gitignore` (the turn un-ignored it): it is never treated as created
+    /// by the turn, so undo can never delete it.
+    pub taken_ns: i128,
 }
+
+impl PartialEq for Snapshot {
+    fn eq(&self, other: &Self) -> bool {
+        self.tree == other.tree && self.untracked == other.untracked
+    }
+}
+
+/// How much older than the snapshot a "new" file may look before it counts as having
+/// existed already (filesystem timestamp granularity and clock skew).
+const PRE_EXISTING_SLACK_NS: i128 = 2_000_000_000;
 
 /// The difference between two working-tree snapshots. `files` is never empty in a
 /// summary the engine keeps: a turn that changed nothing has no summary.
@@ -208,8 +224,16 @@ fn merge_untracked(tree_files: Vec<FileChange>, before: &Snapshot, after: &Snaps
     modified.sort();
     files.extend(modified.into_iter().map(|p| FileChange::new(p.clone(), ChangeStatus::ModifiedUntracked)));
 
-    let mut added: Vec<(&String, &Stamp)> =
-        after.untracked.iter().filter(|(p, _)| !before.untracked.contains_key(*p) && !deleted.contains(*p)).collect();
+    let (mut added, revealed): (Vec<(&String, &Stamp)>, Vec<(&String, &Stamp)>) = after
+        .untracked
+        .iter()
+        .filter(|(p, _)| !before.untracked.contains_key(*p) && !deleted.contains(*p))
+        .partition(|(_, st)| before.taken_ns == 0 || st.mtime_ns >= before.taken_ns - PRE_EXISTING_SLACK_NS);
+    // Older than the turn: it was there all along, hidden by .gitignore. Report it like
+    // a changed untracked file, so undo refuses rather than deleting the user's file.
+    let mut revealed: Vec<&String> = revealed.into_iter().map(|(p, _)| p).collect();
+    revealed.sort();
+    files.extend(revealed.into_iter().map(|p| FileChange::new(p.clone(), ChangeStatus::ModifiedUntracked)));
     added.sort_by(|a, b| a.0.cmp(b.0));
     files.extend(added.iter().map(|(p, _)| FileChange::new((*p).clone(), ChangeStatus::Added)));
     Merged { files, added: added.into_iter().map(|(p, s)| (p.clone(), *s)).collect() }
@@ -288,6 +312,10 @@ fn untracked_manifest(root: &Path) -> Option<HashMap<String, Stamp>> {
 /// real one), and only stats the untracked ones. Blocking: call it from `spawn_blocking`,
 /// or use [`snapshot_until`].
 pub fn snapshot(dir: &Path) -> Option<Snapshot> {
+    let taken_ns = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos() as i128)
+        .unwrap_or(0);
     let (root, real) = repo_paths(dir)?;
     let tmp = temp_index_path();
     // Starting from a copy of the real index keeps git's stat cache, so only files that
@@ -300,7 +328,7 @@ pub fn snapshot(dir: &Path) -> Option<Snapshot> {
         .map(|t| t.trim().to_string())
         .filter(|t| is_object_id(t));
     remove_temp_index(tmp);
-    Some(Snapshot { tree: tree?, untracked: untracked_manifest(&root)? })
+    Some(Snapshot { tree: tree?, untracked: untracked_manifest(&root)?, taken_ns })
 }
 
 /// What changed between two snapshots. `Some` with no files when nothing did.
@@ -1093,7 +1121,7 @@ mod tests {
         s.write("f.txt", "x");
         assert_eq!(snapshot(s.path()), None);
         let t = "0".repeat(40);
-        let snap = |tree: String| Snapshot { tree, untracked: HashMap::new() };
+        let snap = |tree: String| Snapshot { tree, untracked: HashMap::new(), taken_ns: 0 };
         assert_eq!(summarize(s.path(), &snap(t.clone()), &snap("1".repeat(40))), None);
         let sum = ChangeSummary {
             files: vec![FileChange { path: "f.txt".into(), status: ChangeStatus::Added, added: 1, removed: 0, old_path: None }],
@@ -1122,18 +1150,15 @@ mod tests {
     // ------------------------------------------------------------ untracked files
 
     /// `git hash-object` WITHOUT `-w`: the id a blob with this content would have.
+    /// The blob id git would give `content`, computed WITHOUT writing it (`hash-object`
+    /// with no `-w`) from a temp file outside the repo, via the shared `run_git` helper,
+    /// which fails with git's own message if anything goes wrong.
     fn blob_id(dir: &Path, content: &str) -> String {
-        use std::io::Write;
-        let mut child = Command::new("git")
-            .arg("-C")
-            .arg(dir)
-            .args(["hash-object", "--stdin"])
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .spawn()
-            .unwrap();
-        child.stdin.take().unwrap().write_all(content.as_bytes()).unwrap();
-        String::from_utf8(child.wait_with_output().unwrap().stdout).unwrap().trim().to_string()
+        let tmp = std::env::temp_dir().join(format!("jev-blob-{}-{:x}", std::process::id(), content.len() as u64 ^ 0x9e37_79b9));
+        std::fs::write(&tmp, content).unwrap();
+        let id = run_git(dir, &["hash-object", "--no-filters", tmp.to_str().unwrap()]).trim().to_string();
+        let _ = std::fs::remove_file(&tmp);
+        id
     }
 
     fn object_exists(dir: &Path, id: &str) -> bool {
@@ -1164,7 +1189,11 @@ mod tests {
     fn write_at(s: &Scratch, rel: &str, text: &str, secs: u64) {
         s.write(rel, text);
         let f = std::fs::OpenOptions::new().write(true).open(s.path().join(rel)).unwrap();
-        f.set_modified(UNIX_EPOCH + std::time::Duration::from_secs(1_700_000_000 + secs)).unwrap();
+        // A fixed base taken once per test process, just before any snapshot a test
+        // takes: deterministic stamps that still count as "made during the turn".
+        static BASE: std::sync::OnceLock<std::time::SystemTime> = std::sync::OnceLock::new();
+        let base = *BASE.get_or_init(std::time::SystemTime::now);
+        f.set_modified(base + std::time::Duration::from_secs(secs)).unwrap();
     }
 
     #[test]
@@ -1253,7 +1282,7 @@ mod tests {
     #[test]
     fn untracked_changes_merge_into_the_file_list() {
         let st = |size| Stamp { size, mtime_ns: 1 };
-        let snap = |tree: &str, files: &[(&str, u64)]| Snapshot { tree: tree.into(), untracked: files.iter().map(|(p, n)| (p.to_string(), st(*n))).collect() };
+        let snap = |tree: &str, files: &[(&str, u64)]| Snapshot { tree: tree.into(), untracked: files.iter().map(|(p, n)| (p.to_string(), st(*n))).collect(), taken_ns: 0 };
         let fc = |p: &str, status| FileChange::new(p.into(), status);
         let before = snap("t1", &[("keep", 1), ("edit", 1), ("gone", 1), ("staged", 1), ("moved", 1)]);
         let after = snap("t2", &[("keep", 1), ("edit", 2), ("new", 3), ("zz", 1), ("untracked-now", 1)]);
@@ -1436,5 +1465,27 @@ mod tests {
         let again = snapshot_until(s.path().to_path_buf(), std::future::pending()).await.unwrap();
         let sum = summarize_until(s.path().to_path_buf(), snap, again, std::future::pending()).await.unwrap();
         assert!(sum.is_empty());
+    }
+
+    #[test]
+    fn a_hidden_file_revealed_by_a_gitignore_edit_is_never_deleted_by_undo() {
+        let s = repo();
+        // An ignored file the user had long before the turn (say a secret).
+        s.write("secret.log", "TOKEN=abc\n");
+        let old = std::time::SystemTime::now() - std::time::Duration::from_secs(600);
+        std::fs::File::options().write(true).open(s.path().join("secret.log")).unwrap().set_modified(old).unwrap();
+        let before = snapshot(s.path()).unwrap();
+        // The turn un-ignores it by rewriting .gitignore, and adds a genuinely new file.
+        s.write(".gitignore", "# nothing ignored now\n");
+        s.write("made.txt", "new\n");
+        let after = snapshot(s.path()).unwrap();
+        let sum = summarize(s.path(), &before, &after).unwrap();
+        let by = files_by_path(&sum);
+        assert_eq!(by["secret.log"].status, ChangeStatus::ModifiedUntracked, "it existed before: not 'added'");
+        assert!(!sum.added_stamps.contains_key("secret.log"));
+        assert_eq!(by["made.txt"].status, ChangeStatus::Added);
+        // Undo refuses as a whole rather than deleting the user's file.
+        assert!(matches!(undo(s.path(), &sum), Err(UndoError::UntrackedModified(_))));
+        assert_eq!(std::fs::read_to_string(s.path().join("secret.log")).unwrap(), "TOKEN=abc\n");
     }
 }
