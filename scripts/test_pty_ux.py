@@ -870,26 +870,34 @@ def arguments_help_version_and_errors_never_panic(w):
 
 @scenario
 def continue_resumes_the_saved_session(w):
+    # Session 1 has two turns. Session 2 starts, is offered session 1, ignores the offer and
+    # types a prompt: that must NOT destroy session 1 (each session has its own file).
     p = Pty(w, [w.repo], "continue-1")
     try:
         prompt_ready(p)
         ask(p, "explain quick")
+        ask(p, "explain again")
         quit_with_ctrl_d(p)
     finally:
         p.close()
     q = Pty(w, [w.repo], "continue-2")
     try:
         prompt_ready(q)
-        if "previous session: 1 turn" not in q.visible() or "/resume" not in q.visible():
+        if "previous session: 2 turns" not in q.visible() or "/resume" not in q.visible():
             raise Fail(f"a saved session should be offered at start:\n{q.tail()}")
+        ask(q, "a different topic")
         quit_with_ctrl_d(q)
     finally:
         q.close()
+    # -c loads the MOST RECENT session (session 2: one turn), and continues it in place.
     c = Pty(w, ["-c", w.repo], "continue-3")
     try:
         prompt_ready(c)
         if "resumed 1 turn" not in c.visible():
-            raise Fail(f"-c should resume the saved session:\n{c.tail()}")
+            raise Fail(f"-c should resume the most recent saved session:\n{c.tail()}")
+        # /resume again steps back to the one before: the original two turns are still there.
+        c.send("/resume\r")
+        c.expect("resumed 2 turns", 10, "the original session survived the newer one")
         quit_with_ctrl_d(c)
     finally:
         c.close()

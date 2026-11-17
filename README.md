@@ -267,8 +267,8 @@ When files changed, `/diff` shows them and `/undo` puts them back.
 | `/model [target]` | pin a model or provider, or `auto` to let the router choose. `target` is `auto`, `<provider>`, `<provider>:<model>` or `sonnet`/`opus`/`haiku`; with no argument, show the pin. Pins are never silently overridden |
 | `/provider auto\|off` | route across providers (default), or Claude only |
 | `/orchestrate [on\|off]` | let a planner split a big task across cheaper workers (below) |
-| `/new` | start a fresh session on every provider (and forget the saved one) |
-| `/resume` | pick up the saved session of this folder |
+| `/new` | start a fresh session on every provider; the saved ones stay and can be resumed |
+| `/resume` | pick up the most recent saved session of this folder other than the running one; again, the one before |
 | `/diff [file]` | show what the last turn changed, coloured, through `$PAGER` (default `less -R`) when it is long and you are on a terminal |
 | `/undo` | revert the last turn's file changes; lists the files and asks `Revert N files? [y/N]` first; refuses without a terminal, and refuses if you edited those files since |
 | `/quit` | exit (also `/exit`) |
@@ -294,14 +294,16 @@ message, no prompt, no colours, no live line.
 only the answer on stdout; the route, tool calls and summary go to stderr. `jev-code -p -`
 reads the prompt from stdin. Exit code 0 answered, 1 failed, 130 stopped with Ctrl-C (2 for a
 bad command line). A one-shot starts a fresh conversation and leaves your saved session alone.
-`-c` / `--continue` resumes the saved session of the folder (in a session, or with `-p`).
+`-c` / `--continue` resumes the most recent saved session of the folder (in a session, or with `-p`).
 `--no-color` or `NO_COLOR=1` turns colours and the live line off. `jev-code doctor` exits 1 when
 something is a Problem.
 
-**Saved sessions.** The session is saved after every turn under `<state dir>/sessions/`
-(`~/.local/state/jev-router`, or `$XDG_STATE_HOME/jev-router`), kept 14 days. On start, an
-earlier session of the folder is offered with a dim line (`previous session: 12 turns, 2h ago ·
-/resume`); `/new` deletes it.
+**Saved sessions.** Every session has its own file under `<state dir>/sessions/<project>/`
+(`~/.local/state/jev-router`, or `$XDG_STATE_HOME/jev-router`), written after every turn. A new
+session never touches an older one: the last 10 per folder are kept, for 14 days. On start, the
+most recent earlier session of the folder is offered with a dim line (`previous session: 12
+turns, 2h ago · /resume`); `-c` or `/resume` loads it and carries on in the same file, and
+`/resume` again steps back to the one before. `/new` starts a new file and leaves the old ones.
 
 **Settings.** Everything configurable is a `KEY=VALUE` line in `~/.jev-router.env` (or the
 file named by `JEV_ROUTER_ENV`) or an environment variable, which wins. The example file
