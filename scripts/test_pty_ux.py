@@ -124,6 +124,21 @@ case "$last" in
       answer="FAKE DENIED headless"
     fi
     ;;
+  *subagent*|*broadread*)
+    # A sub-agent call whose prompt is the part that matters, or a read of a system folder
+    # that must never be remembered for good.
+    case "$last" in
+      *subagent*) req='{"subtype":"can_use_tool","tool_name":"Task","input":{"description":"tidy up","subagent_type":"general-purpose","prompt":"Read the code.\nThen delete the build folder and push to main."}}' ;;
+      *) req='{"subtype":"can_use_tool","tool_name":"Read","input":{"file_path":"/etc/ssh/sshd_config"}}' ;;
+    esac
+    emit "{\"type\":\"control_request\",\"request_id\":\"req-1\",\"request\":$req}"
+    IFS= read -r reply
+    printf '%s\n' "$reply" > "$FAKE_PIDS/reply.json"
+    case "$reply" in
+      *'"behavior":"allow"'*) answer="FAKE ALLOWED" ;;
+      *) answer="FAKE DENIED" ;;
+    esac
+    ;;
   *withdraw*)
     # Asks, then takes the question back a second later (a hook settled it, say) and goes on
     # without waiting for any reply: the person never got to answer.
@@ -1146,6 +1161,51 @@ def always_saves_a_private_rule_and_the_next_turn_does_not_ask_again(w):
         p.expect("› ", 10, "the next prompt")
         p.send("/permissions\r")
         p.expect("Bash(cargo test:*)", 10, "the rule in /permissions")
+        quit_with_ctrl_d(p)
+    finally:
+        p.close()
+
+
+@scenario
+def a_sub_agent_question_shows_the_whole_prompt_before_the_key(w):
+    p = Pty(w, [w.repo], "approve-subagent")
+    try:
+        prompt_ready(p)
+        p.send("subagent please\r")
+        shown = p.expect("[y]es", 15, "the sub-agent question")
+        for part in ("Allow Task:", "description=tidy up", "subagent_type=general-purpose", "prompt=Read the code.",
+                     "Then delete the build folder and push to main."):
+            if part not in shown:
+                raise Fail(f"the question should show {part!r}:\n{p.tail()}")
+        p.send("n")
+        p.expect("✗ denied", 10, "the denied line")
+        p.expect("› ", 10, "the next prompt")
+        quit_with_ctrl_d(p)
+    finally:
+        p.close()
+
+
+@scenario
+def a_read_of_a_system_folder_is_never_offered_always(w):
+    p = Pty(w, [w.repo], "approve-broad")
+    try:
+        prompt_ready(p)
+        p.send("broadread please\r")
+        shown = p.expect("[y]es", 15, "the read question")
+        question = shown.split("Allow Read:")[-1]
+        if "[a]lways" in question:
+            raise Fail(f"a read in /etc/ssh must not offer always:\n{p.tail()}")
+        p.expect("too broad or too sensitive to allow for good", 10, "the reason always is missing")
+        p.send("a")
+        time.sleep(0.5)
+        if "✓" in p.visible().split("Allow Read:")[-1]:
+            raise Fail(f"`a` must not answer a question that does not offer it:\n{p.tail()}")
+        p.send("y")
+        p.expect("✓ allowed", 10, "the allowed line")
+        p.expect("FAKE ALLOWED", 10, "the answer")
+        p.expect("› ", 10, "the next prompt")
+        if settings_rules(w) is not None:
+            raise Fail(f"nothing may be saved: {settings_rules(w)}")
         quit_with_ctrl_d(p)
     finally:
         p.close()

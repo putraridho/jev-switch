@@ -581,7 +581,7 @@ mod tests {
             edit_p: 0.5,
             continues_p: 0.5,
             correction_p: None,
-            multi_part_p: 0.0,
+            orchestration: crate::router::Orchestration::default(),
             security_keywords: crate::router::Security::None,
             signals: serde_json::json!({}),
         };

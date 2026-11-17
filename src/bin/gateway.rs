@@ -61,7 +61,7 @@ struct SessionState {
     model: Option<&'static str>,
     /// Routing record of the current turn, attached to the usage rows of its requests.
     decision: Option<Value>,
-    /// The latest orchestrate check for this session (`orch_score`, the raw `multi_part_p`,
+    /// The latest orchestrate check for this session (the raw `multi_part_p`,
     /// `sequential_p`, `vetoed`), recorded on the next turn's decision whether or not it
     /// triggered, as a label for tuning.
     orch_check: Option<Value>,
@@ -200,17 +200,16 @@ async fn orchestrate_check(State(app): State<Arc<App>>, Json(c): Json<OrchCheck>
     // A prompt that clears the multi-part cutoff is also routed the normal way, which
     // tells us whether Opus would have run it anyway, and which planner it needs: Fable
     // when routing escalates it as very hard (and ORCH_PLANNER doesn't pin one).
-    let p = judgment.map(|j| j.score);
     let mut route_tier = None;
     let mut hard_p = None;
-    if p.is_some_and(|p| p >= app.orch.cutoff) {
+    if judgment.as_ref().is_some_and(|j| !j.vetoed && j.multi_part_p >= app.orch.cutoff) {
         let want = app.router.code_want(&words, &c.context, 1).await;
         if !want.signals.is_null() {
             route_tier = Some(want.tier);
             hard_p = want.signals["hard_p"].as_f64();
         }
     }
-    let gate = orch_gate(p, app.orch.cutoff, route_tier, app.orch.require_opus);
+    let gate = orch_gate(judgment.as_ref(), app.orch.cutoff, route_tier, app.orch.require_opus);
     let trigger = gate == Gate::Trigger;
     let planner = if trigger && !app.orch.planner_pinned && route_tier.is_some_and(|t| t >= 3) { MODEL_TOP } else { app.orch.planner };
     let skipped = (gate == Gate::SingleModelRoute).then_some("normal routing would not use Opus");
@@ -236,7 +235,7 @@ async fn orchestrate_check(State(app): State<Arc<App>>, Json(c): Json<OrchCheck>
 
 /// An orchestrate check's log row and response: Jev's judgment (score, the raw
 /// `multi_part_p`, `sequential_p`, `vetoed`; `orch_report` and `orch_tune` read the raw
-/// value to see what the sequence veto held back) beside the gateway's own `rest`.
+/// values to see what the sequence veto held back) beside the gateway's own `rest`.
 fn check_record(judgment: Option<&Orchestration>, rest: Value) -> Value {
     let mut record = Orchestration::fields(judgment);
     if let (Some(fields), Value::Object(rest)) = (record.as_object_mut(), rest) {
@@ -1015,7 +1014,7 @@ mod tests {
         let vetoed = Orchestration::new(0.95, 0.9);
         let record = check_record(Some(&vetoed), json!({ "trigger": false, "cutoff": 0.7 }));
         assert_eq!(record["multi_part_p"], 0.95);
-        assert_eq!(record["orch_score"], 0.3);
+        assert!(record.get("orch_score").is_none(), "no capped score is logged any more");
         assert_eq!(record["sequential_p"], 0.9);
         assert_eq!(record["vetoed"], true);
         assert_eq!((record["trigger"].clone(), record["cutoff"].clone()), (json!(false), json!(0.7)));

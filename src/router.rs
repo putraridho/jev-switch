@@ -44,9 +44,10 @@ pub struct ProviderWant {
     pub continues_p: f64,
     /// P(the message reacts to the previous answer as wrong); `None` with no previous turn.
     pub correction_p: Option<f64>,
-    /// P(the request is a large task that splits into separate pieces): the signal
-    /// orchestration triggers on (`ORCH_TRIGGER_P`). Asked in the same single batch.
-    pub multi_part_p: f64,
+    /// Jev's orchestration judgment: P(the request is a large task that splits into separate
+    /// pieces), the signal orchestration triggers on (`ORCH_TRIGGER_P`), and the sequence
+    /// veto. Asked in the same single batch.
+    pub orchestration: Orchestration,
     /// What the keyword lists say, kept alongside Jev's judgment.
     pub security_keywords: Security,
     /// Every number above plus the task name, for the decision log.
@@ -81,49 +82,34 @@ pub const ORCH_TRIGGER_P: f64 = 0.70;
 /// the calibrated `multi_part` scores of genuinely parallel work are untouched.
 pub const SEQUENTIAL_VETO_P: f64 = 0.70;
 
-/// What a vetoed request's orchestration score is capped at: clearly below any cutoff.
-const VETOED_SCORE: f64 = 0.30;
-
-/// The score orchestration triggers on: `multi_part`, unless the request is a sequence.
-pub fn orchestration_score(multi_part_p: f64, sequential_p: f64) -> f64 {
-    if sequential_p >= SEQUENTIAL_VETO_P {
-        multi_part_p.min(VETOED_SCORE)
-    } else {
-        multi_part_p
-    }
-}
-
-/// Jev's judgment of whether a request should be orchestrated: the two raw answers and
-/// the score derived from them. Keeping the raw `multi_part_p` next to the score is what
-/// lets a log show a 0.95 multi-part prompt that the sequence veto held back.
-#[derive(Debug, Clone, Copy, PartialEq)]
+/// Jev's judgment of whether a request should be orchestrated: the two raw answers and the
+/// veto they imply. The veto is a decision of its own, not a lowered score: a cutoff set
+/// at or under any cap would let a sequence through, so the gate ([`crate::orchestrate::orch_gate`])
+/// refuses a vetoed request whatever the cutoff is.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct Orchestration {
-    /// What the trigger compares to the cutoff (see [`orchestration_score`]).
-    pub score: f64,
-    /// Jev's `multi_part` answer, before any veto.
+    /// Jev's `multi_part` answer: what the cutoff is compared with.
     pub multi_part_p: f64,
     /// Jev's `sequential` answer.
     pub sequential_p: f64,
+    /// The request is a sequence of dependent steps (`sequential_p` at [`SEQUENTIAL_VETO_P`]
+    /// or more): parallel workers gain nothing, so it is never orchestrated.
+    pub vetoed: bool,
 }
 
 impl Orchestration {
     pub fn new(multi_part_p: f64, sequential_p: f64) -> Self {
-        Self { score: orchestration_score(multi_part_p, sequential_p), multi_part_p, sequential_p }
-    }
-
-    /// The sequence veto lowered the score: a multi-part request left on one thread.
-    pub fn vetoed(&self) -> bool {
-        self.score < self.multi_part_p
+        Self { multi_part_p, sequential_p, vetoed: sequential_p >= SEQUENTIAL_VETO_P }
     }
 
     /// The fields of an orchestrate check's log row and response; all null when Jev gave
-    /// no answer (`None`).
+    /// no answer (`None`). The raw probabilities and the veto are all logged, so a report can
+    /// say what a cutoff would have triggered and what the veto held back.
     pub fn fields(judgment: Option<&Self>) -> Value {
         json!({
-            "orch_score": judgment.map(|j| j.score),
             "multi_part_p": judgment.map(|j| j.multi_part_p),
             "sequential_p": judgment.map(|j| j.sequential_p),
-            "vetoed": judgment.map(Self::vetoed),
+            "vetoed": judgment.map(|j| j.vetoed),
         })
     }
 }
@@ -373,7 +359,7 @@ impl Router {
     /// Orchestrate mode's judgment, from ONE Jev request asking both `multi_part` (is
     /// `request` a large task that splits into separate pieces of work, so a planner can
     /// hand them to cheaper workers; questions, single fixes and short follow-ups score
-    /// low) and `sequential` (see [`orchestration_score`]). The only way to ask
+    /// low) and `sequential` (see [`SEQUENTIAL_VETO_P`]). The only way to ask
     /// `multi_part` for orchestration, so no caller can skip the sequence veto.
     pub async fn orchestration_p(&self, request: &str, recent_context: &str) -> Result<Orchestration> {
         let questions = json!({ Q_MULTI_PART: multi_part_question(), Q_SEQUENTIAL: sequential_question() });
@@ -709,14 +695,13 @@ fn decode_provider_want(answers: &Value, request: &str, with_previous: bool) -> 
     let edit_p = decode_noul(answers, Q_EDIT)?;
     let continues_p = decode_noul(answers, Q_CONTINUES)?;
     let orchestration = Orchestration::new(decode_noul(answers, Q_MULTI_PART)?, decode_noul(answers, Q_SEQUENTIAL)?);
-    let multi_part_p = orchestration.score;
     let correction_p = if with_previous { Some(decode_noul(answers, Q_CORRECTION)?) } else { None };
     let security_keywords = security_level(request);
     let signals = json!({
         "task": task.as_str(), "task_confidence": task_answer.confidence,
         "very_hard_p": very_hard_p, "security_p": security_p, "edit_p": edit_p,
-        "continues_p": continues_p, "multi_part_p": multi_part_p, "multi_part_raw_p": orchestration.multi_part_p,
-        "sequential_p": orchestration.sequential_p, "correction_p": correction_p,
+        "continues_p": continues_p, "multi_part_p": orchestration.multi_part_p,
+        "sequential_p": orchestration.sequential_p, "orch_vetoed": orchestration.vetoed, "correction_p": correction_p,
         "security": format!("{security_keywords:?}").to_lowercase(),
     });
     Ok(ProviderWant {
@@ -727,7 +712,7 @@ fn decode_provider_want(answers: &Value, request: &str, with_previous: bool) -> 
         edit_p,
         continues_p,
         correction_p,
-        multi_part_p,
+        orchestration,
         security_keywords,
         signals,
     })
@@ -1060,7 +1045,7 @@ mod tests {
         assert_eq!(w.task_confidence, 0.8);
         assert_eq!((w.continues_p, w.edit_p, w.security_p, w.very_hard_p), (0.11, 0.22, 0.33, 0.44));
         assert_eq!(w.correction_p, Some(0.55));
-        assert_eq!(w.multi_part_p, 0.66);
+        assert_eq!(w.orchestration.multi_part_p, 0.66);
         assert_eq!(w.security_keywords, Security::None);
         assert_eq!(w.signals["task"], "frontend");
         assert_eq!(w.signals["security_p"], 0.33);
@@ -1101,15 +1086,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn orchestration_p_keeps_the_raw_multi_part_judgment_beside_the_vetoed_score() {
+    async fn orchestration_p_keeps_the_raw_judgment_and_the_veto() {
         let (url, seen) = fake_jev(multi_part_but_sequential).await;
         let j = router_at(&url, 2000).orchestration_p("do 1, then 2, then 3", "").await.expect("answered");
-        assert_eq!((j.multi_part_p, j.sequential_p), (0.95, 0.9));
-        assert_eq!(j.score, VETOED_SCORE, "the score is what the veto left");
-        assert!(j.vetoed());
+        assert_eq!((j.multi_part_p, j.sequential_p, j.vetoed), (0.95, 0.9, true));
         let fields = Orchestration::fields(Some(&j));
-        assert_eq!(fields["multi_part_p"], 0.95, "the log keeps the raw judgment, not the vetoed score");
-        assert_eq!(fields["orch_score"], VETOED_SCORE);
+        assert_eq!(fields["multi_part_p"], 0.95, "the log keeps the raw judgment");
         assert_eq!((fields["sequential_p"].clone(), fields["vetoed"].clone()), (json!(0.9), json!(true)));
         assert_eq!(seen.lock().unwrap().len(), 1, "one request carries both questions");
     }
@@ -1117,12 +1099,10 @@ mod tests {
     #[test]
     fn a_parallel_request_is_not_vetoed_and_no_answer_logs_nulls() {
         let j = Orchestration::new(0.9, 0.2);
-        assert_eq!((j.score, j.vetoed()), (0.9, false));
+        assert_eq!((j.multi_part_p, j.vetoed), (0.9, false));
         assert_eq!(Orchestration::fields(Some(&j))["vetoed"], false);
-        // A multi-part score already below the veto cap is not "vetoed": nothing was lowered.
-        assert!(!Orchestration::new(0.1, 0.99).vetoed());
         let none = Orchestration::fields(None);
-        for key in ["orch_score", "multi_part_p", "sequential_p", "vetoed"] {
+        for key in ["multi_part_p", "sequential_p", "vetoed"] {
             assert!(none[key].is_null(), "{key}");
         }
     }
@@ -1188,10 +1168,10 @@ mod tests {
     }
 
     #[test]
-    fn a_sequence_vetoes_orchestration_but_parallel_work_keeps_its_score() {
-        assert_eq!(orchestration_score(0.89, 0.10), 0.89, "independent pieces: unchanged");
-        assert_eq!(orchestration_score(0.89, 0.69), 0.89, "below the veto: unchanged");
-        assert!(orchestration_score(0.89, 0.90) < ORCH_TRIGGER_P, "do 1 -> 2 -> 3 is not orchestrated");
-        assert_eq!(orchestration_score(0.10, 0.95), 0.10, "a veto never raises a score");
+    fn a_sequence_is_vetoed_and_parallel_work_is_not() {
+        assert!(!Orchestration::new(0.89, 0.10).vetoed, "independent pieces");
+        assert!(!Orchestration::new(0.89, 0.69).vetoed, "below the veto");
+        assert!(Orchestration::new(0.89, 0.90).vetoed, "do 1 -> 2 -> 3 is not orchestrated");
+        assert_eq!(Orchestration::new(0.89, 0.90).multi_part_p, 0.89, "the raw answer is never rewritten");
     }
 }

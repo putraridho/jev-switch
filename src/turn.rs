@@ -30,7 +30,7 @@ use crate::changes::{self, ChangeSummary, Snapshot, UndoError, UndoReport};
 use crate::handoff::{self, ResumeError, SavedSession, Sessions, TurnRecord};
 use crate::log;
 use crate::orchestrate::{self, Outcome, Setup};
-use crate::permissions;
+use crate::permissions::{self, Offer, Places, Settled};
 use crate::providers::{self, Runtime};
 use crate::router::{CodeWant, ProviderWant, Router, Sticky};
 use crate::routing::{self, NoRoute, Pin, RouteDecision, RouteInput, RoutingState, Signals};
@@ -79,16 +79,26 @@ pub trait Ui: Send {
         self.note(text);
     }
 
-    /// A tool call waits for the person's answer. `always` is the allow rule that
-    /// [`Decision::AllowAlways`] would save, when there is one. The question is put on
-    /// screen by this call; the returned [`Answer`] resolves with what the person said
+    /// A tool call waits for the person's answer. `offer` is what [`Decision::AllowAlways`]
+    /// would save, or why "always" is not offered: the engine decided it, the UI only shows it
+    /// (and offers the choice only when it is `Ok`). The question is put on screen by this call; the returned [`Answer`] resolves with what the person said
     /// (`None` means they interrupted with Ctrl-C, which stops the turn). Dropping the
     /// answer before it resolves abandons the question (the CLI withdrew it): the UI stops
     /// listening for a key at once, and [`Ui::permission_withdrawn`] follows. A UI that
     /// cannot ask keeps this default, so a run with no terminal denies at once and never
     /// waits for an answer nobody gives.
-    fn ask_permission(&mut self, _req: &PermissionRequest, _always: Option<&str>) -> Answer {
+    fn ask_permission(&mut self, _req: &PermissionRequest, _offer: &Offer) -> Answer {
         Box::pin(std::future::ready(Some(Decision::Deny { reason: backend::NO_ONE_TO_ASK.to_string() })))
+    }
+
+    /// How the question for `req` ended, once the engine has saved what "always" saves (or
+    /// failed to): the answer line. Called once per answered question, after the save, so
+    /// the screen only ever says what is true. A UI without an answer line still hears about
+    /// a save that failed.
+    fn permission_settled(&mut self, _req: &PermissionRequest, settled: &Settled) {
+        if let Settled::NotSaved(e) = settled {
+            self.note(&format!("[permissions] {e}; allowed this once, nothing was saved"));
+        }
     }
 
     /// The question asked for `req` was dropped unanswered: take it off the screen. Called
@@ -107,8 +117,37 @@ fn lock_ui<'g, 'a>(ui: &'g SharedUi<'a>) -> std::sync::MutexGuard<'g, &'a mut (d
     ui.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
-/// Answers a running turn's tool approvals through the [`Ui`]: asks, saves the rule when
-/// the person says "always", and stops the turn when they interrupt the question.
+/// Settle a question's answer: the one place "always" is saved. The offer is what was shown;
+/// "always" saves exactly that (rule and folder in one write) or, when the file cannot be
+/// written, allows once and says so. An "always" with nothing on offer is a plain yes.
+pub fn settle(answer: Option<Decision>, offer: &Offer, project: &Path) -> Settled {
+    match answer {
+        None => Settled::Stopped,
+        Some(Decision::Allow) => Settled::Allowed,
+        Some(Decision::AllowAlways) => match offer {
+            Ok(always) => match permissions::save_always(project, always) {
+                Ok(_) => Settled::Remembered(always.clone()),
+                Err(e) => Settled::NotSaved(e),
+            },
+            Err(_) => Settled::Allowed,
+        },
+        Some(Decision::Deny { reason }) => Settled::Denied(reason),
+    }
+}
+
+/// What the CLI is told for a settled question; `None` when the person stopped the turn.
+pub fn settled_decision(settled: &Settled) -> Option<Decision> {
+    match settled {
+        Settled::Allowed | Settled::NotSaved(_) => Some(Decision::Allow),
+        Settled::Remembered(_) => Some(Decision::AllowAlways),
+        Settled::Denied(reason) => Some(Decision::Deny { reason: reason.clone() }),
+        Settled::Stopped => None,
+    }
+}
+
+/// Answers a running turn's tool approvals through the [`Ui`]: decides what "always" would
+/// save, asks, saves it when the person says "always", tells the UI how it ended, and stops
+/// the turn when they interrupt the question.
 struct EngineApprover<'a> {
     ui: &'a SharedUi<'a>,
     cancel: &'a Cancel,
@@ -118,32 +157,24 @@ struct EngineApprover<'a> {
 
 impl EngineApprover<'_> {
     async fn answer(&self, req: &PermissionRequest) -> Decision {
-        let rule = permissions::allow_rule(&req.tool, &req.input, req.blocked_path.as_deref(), self.dir);
+        let offer = permissions::always_plan(&req.tool, &req.input, req.blocked_path.as_deref(), &Places::from_env(self.dir));
         // The question goes up under the lock; the wait for the person does not hold it, so
         // the turn's own events can still be shown, and dropping this future ends the wait.
-        let question = lock_ui(self.ui).ask_permission(req, rule.as_deref());
+        let question = lock_ui(self.ui).ask_permission(req, &offer);
         let asked = question.await;
-        match asked {
-            None => {
-                self.cancel.cancel();
-                Decision::Deny { reason: "the user interrupted the turn".into() }
-            }
-            Some(Decision::AllowAlways) => match rule {
-                Some(rule) => match permissions::add_allow_rule(self.dir, &rule) {
-                    Ok(_) => Decision::AllowAlways,
-                    Err(e) => {
-                        lock_ui(self.ui).note(&format!("[permissions] {e}; allowed this once, the rule was not saved"));
-                        Decision::Allow
-                    }
-                },
-                None => Decision::Allow,
-            },
-            Some(Decision::Deny { reason }) if reason == backend::NO_ONE_TO_ASK => {
+        // A UI that cannot ask: nothing was answered, so there is nothing to settle.
+        if let Some(Decision::Deny { reason }) = &asked {
+            if reason == backend::NO_ONE_TO_ASK {
                 lock_ui(self.ui).event(&Event::Text(uifmt::denied_without_asking(&req.tool)));
-                Decision::Deny { reason }
+                return Decision::Deny { reason: reason.clone() };
             }
-            Some(decision) => decision,
         }
+        let settled = settle(asked, &offer, self.dir);
+        lock_ui(self.ui).permission_settled(req, &settled);
+        settled_decision(&settled).unwrap_or_else(|| {
+            self.cancel.cancel();
+            Decision::Deny { reason: "the user interrupted the turn".into() }
+        })
     }
 }
 
@@ -868,7 +899,7 @@ impl Engine {
         let mcp = if self.orchestrate { self.mcp_providers() } else { Vec::new() };
         orchestrate::choose_planner(
             self.orchestrate,
-            signals.map(|s| s.multi_part_p),
+            signals.map(|s| &s.orchestration),
             normal.spec,
             tool_ready,
             &mcp,
@@ -1373,7 +1404,7 @@ mod tests {
             edit_p: 0.3,
             continues_p: 0.9,
             correction_p: None,
-            multi_part_p: 0.0,
+            orchestration: crate::router::Orchestration::default(),
             security_keywords: Security::None,
             signals: json!({ "task": task.as_str() }),
         }
@@ -1854,7 +1885,7 @@ mod tests {
 
     /// A multi-part request: Jev's `multi_part` is above the cutoff.
     fn multi(task: TaskType) -> ProviderWant {
-        ProviderWant { multi_part_p: 0.9, continues_p: 0.1, ..want(task) }
+        ProviderWant { orchestration: crate::router::Orchestration::new(0.9, 0.1), continues_p: 0.1, ..want(task) }
     }
 
     fn orchestrating(mut r: Rig) -> Rig {
@@ -2623,6 +2654,7 @@ mod tests {
     struct Asked {
         answers: std::collections::VecDeque<Option<Decision>>,
         questions: Vec<(String, String, Option<String>)>,
+        settled: Vec<Settled>,
         texts: Vec<String>,
         notes: Vec<String>,
     }
@@ -2637,10 +2669,17 @@ mod tests {
         fn note(&mut self, line: &str) {
             self.notes.push(line.into());
         }
-        fn ask_permission(&mut self, req: &PermissionRequest, always: Option<&str>) -> Answer {
-            self.questions.push((req.tool.clone(), req.summary.clone(), always.map(String::from)));
+        fn ask_permission(&mut self, req: &PermissionRequest, offer: &Offer) -> Answer {
+            let rule = offer.as_ref().ok().and_then(|a| a.rule.clone());
+            self.questions.push((req.tool.clone(), req.summary.clone(), rule));
             let answer = self.answers.pop_front().expect("an answer was planned");
             Box::pin(std::future::ready(answer))
+        }
+        fn permission_settled(&mut self, req: &PermissionRequest, settled: &Settled) {
+            self.settled.push(settled.clone());
+            if let Settled::NotSaved(e) = settled {
+                self.note(&format!("[permissions] {e}; allowed this once, nothing was saved ({})", req.tool));
+            }
         }
     }
 
@@ -2702,6 +2741,8 @@ mod tests {
         let saved = permissions::load(&permissions::local_settings_path(&dir)).unwrap();
         assert_eq!(saved.list(permissions::List::Allow), ["Bash(cargo test:*)"]);
         assert!(ui.notes.is_empty(), "{:?}", ui.notes);
+        let always = permissions::Always { rule: Some("Bash(cargo test:*)".into()), folder: None };
+        assert_eq!(ui.settled, [Settled::Remembered(always)], "the UI hears what was saved, after the save");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -2713,7 +2754,8 @@ mod tests {
         let mut ui = Asked { answers: [Some(Decision::AllowAlways)].into(), ..Asked::default() };
         let report = ask_turn(&mut engine, &mut ui).await;
         assert_eq!(report.text, "ran");
-        assert!(ui.notes.iter().any(|n| n.contains("[permissions]") && n.contains("not saved")), "{:?}", ui.notes);
+        assert!(ui.notes.iter().any(|n| n.contains("[permissions]") && n.contains("nothing was saved")), "{:?}", ui.notes);
+        assert!(matches!(ui.settled.as_slice(), [Settled::NotSaved(_)]), "never told 'always' when nothing was saved: {:?}", ui.settled);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -2789,7 +2831,7 @@ mod tests {
         fn route(&mut self, _: &str) {}
         fn event(&mut self, _: &Event) {}
         fn note(&mut self, _: &str) {}
-        fn ask_permission(&mut self, _: &PermissionRequest, _: Option<&str>) -> Answer {
+        fn ask_permission(&mut self, _: &PermissionRequest, _: &Offer) -> Answer {
             self.asked += 1;
             if self.asked > 1 {
                 return Box::pin(std::future::ready(Some(Decision::Allow)));

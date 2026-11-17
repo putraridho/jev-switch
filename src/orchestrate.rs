@@ -20,7 +20,7 @@ use std::path::{Path, PathBuf};
 
 use crate::backend::{McpAttachment, ProviderId};
 use crate::catalog::{ModelSpec, Tier};
-use crate::router::ORCH_TRIGGER_P;
+use crate::router::{Orchestration, ORCH_TRIGGER_P};
 
 /// The MCP server name; the tools reach the planner as `mcp__jev__delegate` etc.
 pub const MCP_NAME: &str = "jev";
@@ -34,17 +34,22 @@ pub const DELEGATE_BIN_INSTALLED: &str = "jev-delegate-mcp";
 pub enum Gate {
     Trigger,
     BelowCutoff,
+    /// Multi-part enough, but a sequence of dependent steps (the veto): refused whatever the
+    /// cutoff is.
+    Vetoed,
     /// Multi-part enough, but normal routing would not have used a top model.
     SingleModelRoute,
 }
 
-/// Whether a prompt is orchestrated: `multi_part` at the cutoff or above and, when
-/// `require_opus`, a normal route of Opus (tier 2) or higher. A route Jev couldn't judge
-/// (`None`) doesn't veto. Lives here (not in the gateway binary) so the gateway and
-/// the multi-provider engine apply literally the same rule.
-pub fn orch_gate(multi_part: Option<f64>, cutoff: f64, route_tier: Option<usize>, require_opus: bool) -> Gate {
-    if !multi_part.is_some_and(|p| p >= cutoff) {
-        return Gate::BelowCutoff;
+/// Whether a prompt is orchestrated: `multi_part` at the cutoff or above, not a sequence
+/// (the veto holds for every cutoff) and, when `require_opus`, a normal route of Opus
+/// (tier 2) or higher. A route Jev couldn't judge (`None`) doesn't veto. Lives here (not in
+/// the gateway binary) so the gateway and the multi-provider engine apply literally the
+/// same rule.
+pub fn orch_gate(judgment: Option<&Orchestration>, cutoff: f64, route_tier: Option<usize>, require_opus: bool) -> Gate {
+    let Some(j) = judgment.filter(|j| j.multi_part_p >= cutoff) else { return Gate::BelowCutoff };
+    if j.vetoed {
+        return Gate::Vetoed;
     }
     match route_tier {
         Some(t) if require_opus && t < 2 => Gate::SingleModelRoute,
@@ -81,14 +86,14 @@ pub enum Outcome {
 /// its model (injected because it needs the engine's state).
 pub fn choose_planner(
     enabled: bool,
-    multi_part_p: Option<f64>,
+    judgment: Option<&Orchestration>,
     normal: &'static ModelSpec,
     tool_ready: bool,
     mcp_providers: &[ProviderId],
     restricted_route: impl FnOnce(&[ProviderId]) -> Option<&'static ModelSpec>,
 ) -> Outcome {
     if !enabled
-        || orch_gate(multi_part_p, ORCH_TRIGGER_P, Some(route_tier_of(normal)), true) != Gate::Trigger
+        || orch_gate(judgment, ORCH_TRIGGER_P, Some(route_tier_of(normal)), true) != Gate::Trigger
     {
         return Outcome::Normal;
     }
@@ -194,15 +199,34 @@ mod tests {
         find(p, id).unwrap()
     }
 
+    /// A parallel request Jev scored `p` on `multi_part`.
+    fn parallel(p: f64) -> Orchestration {
+        Orchestration::new(p, 0.1)
+    }
+
     #[test]
     fn orchestrate_only_what_normal_routing_would_send_to_opus() {
-        assert_eq!(orch_gate(Some(0.98), 0.7, Some(2), true), Gate::Trigger, "multi-part and Opus-bound");
-        assert_eq!(orch_gate(Some(0.98), 0.7, Some(3), true), Gate::Trigger, "Fable-bound counts");
-        assert_eq!(orch_gate(Some(0.98), 0.7, Some(1), true), Gate::SingleModelRoute, "Sonnet would do it alone");
-        assert_eq!(orch_gate(Some(0.98), 0.7, Some(1), false), Gate::Trigger, "ORCH_REQUIRE_OPUS=off keeps the old rule");
-        assert_eq!(orch_gate(Some(0.98), 0.7, None, true), Gate::Trigger, "no routing judgment: don't veto");
-        assert_eq!(orch_gate(Some(0.5), 0.7, Some(2), true), Gate::BelowCutoff);
+        let hot = parallel(0.98);
+        assert_eq!(orch_gate(Some(&hot), 0.7, Some(2), true), Gate::Trigger, "multi-part and Opus-bound");
+        assert_eq!(orch_gate(Some(&hot), 0.7, Some(3), true), Gate::Trigger, "Fable-bound counts");
+        assert_eq!(orch_gate(Some(&hot), 0.7, Some(1), true), Gate::SingleModelRoute, "Sonnet would do it alone");
+        assert_eq!(orch_gate(Some(&hot), 0.7, Some(1), false), Gate::Trigger, "ORCH_REQUIRE_OPUS=off keeps the old rule");
+        assert_eq!(orch_gate(Some(&hot), 0.7, None, true), Gate::Trigger, "no routing judgment: don't veto");
+        assert_eq!(orch_gate(Some(&parallel(0.5)), 0.7, Some(2), true), Gate::BelowCutoff);
         assert_eq!(orch_gate(None, 0.7, Some(2), true), Gate::BelowCutoff, "Jev failed the multi-part check");
+    }
+
+    #[test]
+    fn the_sequence_veto_holds_whatever_the_cutoff_is() {
+        let sequence = Orchestration::new(0.95, 0.9);
+        assert!(sequence.vetoed);
+        // A cutoff the old 0.30 cap could not stay under: the veto used to silently fail here.
+        for cutoff in [0.7, 0.3, 0.2, 0.05, 0.0] {
+            assert_eq!(orch_gate(Some(&sequence), cutoff, Some(2), true), Gate::Vetoed, "cutoff {cutoff}");
+            assert_eq!(orch_gate(Some(&sequence), cutoff, Some(2), false), Gate::Vetoed, "cutoff {cutoff}, any route");
+        }
+        // Below the cutoff it is just below the cutoff, as it would be without a veto.
+        assert_eq!(orch_gate(Some(&Orchestration::new(0.1, 0.9)), 0.7, Some(2), true), Gate::BelowCutoff);
     }
 
     #[test]
@@ -227,7 +251,7 @@ mod tests {
     const MCP: [ProviderId; 3] = [Claude, DeepSeek, Codex];
 
     fn choose(enabled: bool, p: f64, normal: &'static ModelSpec, ready: bool, alt: Option<&'static ModelSpec>) -> Outcome {
-        choose_planner(enabled, Some(p), normal, ready, &MCP, |keep| {
+        choose_planner(enabled, Some(&parallel(p)), normal, ready, &MCP, |keep| {
             assert_eq!(keep, MCP, "the restricted route only sees MCP-capable providers");
             alt
         })
@@ -241,6 +265,8 @@ mod tests {
         assert_eq!(choose(true, 0.5, opus, true, None), Outcome::Normal, "not multi-part");
         let sonnet = spec(Claude, "claude-sonnet-5-5");
         assert_eq!(choose(true, 0.9, sonnet, true, None), Outcome::Normal, "normal route would not use a top model");
+        let sequence = Orchestration::new(0.95, 0.9);
+        assert_eq!(choose_planner(true, Some(&sequence), opus, true, &MCP, |_| None), Outcome::Normal, "a sequence is never orchestrated");
     }
 
     #[test]
