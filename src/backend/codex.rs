@@ -230,6 +230,8 @@ impl Backend for CodexBackend {
             ErrorKind::NotEntitled
         } else if lower.contains("401") || lower.contains("missing bearer") {
             ErrorKind::Auth
+        } else if ["not inside a git", "not a git repo", "requires a git repo"].iter().any(|p| lower.contains(p)) {
+            ErrorKind::UnusableHere
         } else {
             ErrorKind::Other
         }
@@ -434,6 +436,9 @@ mod tests {
         assert_eq!(b.classify_error("unexpected status 401 Unauthorized: Missing bearer or basic authentication"), ErrorKind::Auth);
         assert_eq!(b.classify_error("Missing bearer token"), ErrorKind::Auth);
         assert_eq!(b.classify_error("weird"), ErrorKind::Other);
+        let outside_git = "Not inside a trusted directory and --skip-git-repo-check was not specified.";
+        assert_eq!(b.classify_error(outside_git), ErrorKind::UnusableHere);
+        assert_eq!(b.classify_error("fatal: not a git repository"), ErrorKind::UnusableHere);
     }
 
     #[test]
