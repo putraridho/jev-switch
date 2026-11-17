@@ -19,7 +19,7 @@ use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command};
 use tokio::task::JoinHandle;
 
-use crate::anthropic::is_limit_message;
+use crate::anthropic::{is_limit_message, is_limit_phrase};
 
 /// Which service answers a turn. Several ids can share one CLI (DeepSeek is
 /// `claude` pointed at another API), so this is not the same as the binary.
@@ -223,8 +223,9 @@ pub(crate) fn has_token(hay: &str, needle: &str) -> bool {
     })
 }
 
-/// The "resets ..." tail of a limit message, or the epoch in the older
-/// "usage limit reached|<epoch>" form. Kept as the CLI's own wording.
+/// The "resets ..." tail of a limit message ("resets 3pm", "resets Nov 24", "resets 5pm
+/// (Asia/Jakarta)"), or the epoch in the older "... limit reached|<epoch>" form. Kept
+/// as the CLI's own wording.
 fn resets_tail(message: &str) -> Option<String> {
     // ASCII lowercasing keeps byte offsets identical to the original.
     let lower = message.to_ascii_lowercase();
@@ -233,12 +234,13 @@ fn resets_tail(message: &str) -> Option<String> {
         let tail = tail.trim().trim_start_matches([':', '-']).trim();
         return (!tail.is_empty()).then(|| tail.chars().take(80).collect());
     }
-    let (_, epoch) = lower.split_once("usage limit reached|")?;
+    let (_, epoch) = lower.split_once("limit reached|")?;
     let digits: String = epoch.chars().take_while(char::is_ascii_digit).collect();
     (!digits.is_empty()).then_some(digits)
 }
 
-fn has_any(lower: &str, phrases: &[&str]) -> bool {
+/// True when `lower` contains any of `phrases`.
+pub(crate) fn has_any(lower: &str, phrases: &[&str]) -> bool {
     phrases.iter().any(|p| lower.contains(p))
 }
 
@@ -246,8 +248,8 @@ fn has_any(lower: &str, phrases: &[&str]) -> bool {
 /// text routinely mentions "quota", "upgrade" or "expired" in other senses, and a
 /// wrong match would mark a provider unusable or stop failover.
 fn is_quota_text(lower: &str) -> bool {
-    (lower.contains("hit your") && lower.contains("limit"))
-        || has_any(lower, &["usage limit", "resource_exhausted", "too many requests"])
+    is_limit_phrase(lower)
+        || has_any(lower, &["resource_exhausted", "too many requests"])
         || (lower.contains("rate limit")
             && (has_any(lower, &["exceed", "reached", "too many"]) || has_token(lower, "hit")))
         || (lower.contains("quota") && has_any(lower, &["exceed", "exhaust", "reached", "insufficient"]))
@@ -257,14 +259,14 @@ fn is_quota_text(lower: &str) -> bool {
 fn is_entitlement_text(lower: &str) -> bool {
     let about_the_plan = has_any(lower, &["plan", "subscription", "tier", "account"]);
     has_any(lower, &["not supported when using", "not available on your plan"])
-        || (about_the_plan && has_any(lower, &["upgrade", "not included"]))
+        || (about_the_plan && has_any(lower, &["upgrade your", "upgrade to a", "not included in your"]))
 }
 
 fn is_auth_text(lower: &str) -> bool {
     has_token(lower, "401")
         || has_token(lower, "unauthorized")
         || has_any(lower, &["not logged in", "please log in", "invalid api key", "login expired", "session expired"])
-        || (lower.contains("authentication") && has_any(lower, &["failed", "required", "error"]))
+        || has_any(lower, &["authentication failed", "authentication required", "authentication error"])
         || (lower.contains("token") && lower.contains("expired"))
 }
 
@@ -766,6 +768,27 @@ mod tests {
     }
 
     #[test]
+    fn real_claude_limit_notices_are_quota_with_their_reset_time() {
+        let quota = |resets: Option<&str>| Some(ErrorKind::Quota { resets_at: resets.map(String::from) });
+        for (text, resets) in [
+            ("5-hour limit reached \u{2219} resets 3pm", Some("3pm")),
+            ("Weekly limit reached \u{2219} resets Nov 24", Some("Nov 24")),
+            ("Opus weekly limit reached", None),
+            ("You've hit your session limit \u{b7} resets 5pm (Asia/Jakarta)", Some("5pm (Asia/Jakarta)")),
+            ("You\u{2019}ve hit your session limit \u{b7} resets 5pm (Asia/Jakarta)", Some("5pm (Asia/Jakarta)")),
+            ("Claude AI usage limit reached|1794853451", Some("1794853451")),
+            ("5-hour limit reached|1794853451", Some("1794853451")),
+            ("Approaching usage limit", None),
+            ("limit reached", None),
+            ("You have reached your weekly limit", None),
+            ("You've reached your usage limit \u{b7} resets 9am", Some("9am")),
+            ("monthly limit \u{2219} resets Dec 1", Some("Dec 1")),
+        ] {
+            assert_eq!(classify_common(text), quota(resets), "{text:?}");
+        }
+    }
+
+    #[test]
     fn common_entitlement_and_auth_phrases() {
         assert_eq!(classify_common("model is not supported when using ChatGPT"), Some(ErrorKind::NotEntitled));
         assert_eq!(classify_common("Not available on your plan"), Some(ErrorKind::NotEntitled));
@@ -947,6 +970,9 @@ mod tests {
             "rate limit handling for the client",
             "when the timer resets the counter goes to zero",
             "resets the state of the form",
+            "the resets handler",
+            "limit the query to 10 rows",
+            "reached your destination in 10 minutes",
             "file not included in the build",
             "error 4010 in module",
             "request id 14290",

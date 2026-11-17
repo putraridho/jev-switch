@@ -359,12 +359,11 @@ pub fn is_configured(gemini_settings_json: Option<&str>, env_set: impl Fn(&str) 
     auth_looks_configured(gemini_settings_json, AUTH_ENV_VARS.iter().any(|n| env_set(n)))
 }
 
-/// The settings-or-flag half of [`is_configured`], kept public only so the factory
-/// keeps compiling until it calls [`is_configured`] directly.
+/// The settings-or-flag half of [`is_configured`]; private, callers go through that.
 ///
 /// Gemini CLI accepts comments in `settings.json`, so whole-line `//` comments are
 /// dropped before parsing. Unreadable JSON counts as not configured.
-pub fn auth_looks_configured(gemini_settings_json: Option<&str>, env_has_key: bool) -> bool {
+fn auth_looks_configured(gemini_settings_json: Option<&str>, env_has_key: bool) -> bool {
     env_has_key || gemini_settings_json.is_some_and(names_auth_type)
 }
 

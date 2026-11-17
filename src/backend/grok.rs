@@ -17,7 +17,7 @@ use tokio::process::Command;
 
 use super::claude::tool_summary;
 use super::{
-    classify_common, Backend, ErrorKind, Event, Finish, PromptArg, PromptFiles, ProviderId, TurnRequest, Usage,
+    classify_common, has_any, Backend, ErrorKind, Event, Finish, PromptArg, PromptFiles, ProviderId, TurnRequest, Usage,
 };
 
 /// Permission mode for headless turns. Never `bypassPermissions` or
@@ -111,24 +111,31 @@ fn result_event(ev: &Value) -> Event {
     })
 }
 
-/// The plan gate shows up as a refusal that names the plan or subscription, not as a
-/// limit. A bare mention of "subscription" or "premium" is not enough: those words
-/// appear in ordinary answers about billing code.
+/// The plan gate shows up as a refusal that names Grok's plan, not as a limit. Phrases
+/// only: "subscription", "premium" and "required" appear together in ordinary billing
+/// code ("error: subscription id is required"). Wording that is only a gate in a Grok
+/// context ("subscription is required", "not included in your") needs Grok or X Premium
+/// named as well.
 fn is_entitlement_text(lower: &str) -> bool {
-    let names_plan = ["supergrok", "premium", "subscription", "your plan"].iter().any(|p| lower.contains(p));
-    let says_gate = ["not included", "required", "upgrade", "only available", "not available", "need a", "no active"]
-        .iter()
-        .any(|p| lower.contains(p));
-    names_plan && says_gate
+    const ALWAYS: [&str; 4] = ["requires a supergrok", "supergrok subscription", "upgrade to supergrok", "x premium+"];
+    const NEEDS_GROK: [&str; 6] = [
+        "not included in your",
+        "subscription is required",
+        "subscription required",
+        "no active subscription",
+        "upgrade to",
+        "only available to",
+    ];
+    has_any(lower, &ALWAYS) || (has_any(lower, &["grok", "x premium"]) && has_any(lower, &NEEDS_GROK))
 }
 
-/// Grok's own login wording; the shared rules only know "authenticate". An API key or
-/// "authentication" counts only next to a word that says it is missing or wrong.
+/// Grok's own login wording; the shared rules cover "not logged in", "invalid api key"
+/// and "authentication failed|required". "xai_api_key" counts only next to a word that
+/// says it is missing or wrong, never on its own (docs and config mention it freely).
 fn is_auth_text(lower: &str) -> bool {
-    let broken = ["missing", "invalid", "not set", "not found", "required", "failed", "error", "expired"]
-        .iter()
-        .any(|p| lower.contains(p));
-    lower.contains("grok login") || lower.contains("xai_api_key") || ((lower.contains("authentication") || lower.contains("api key")) && broken)
+    let key_broken = has_any(lower, &["missing", "not set", "invalid", "not found", "is required"]);
+    has_any(lower, &["grok login", "not authenticated", "api key is missing", "api key is invalid", "api key not set"])
+        || (lower.contains("xai_api_key") && key_broken)
 }
 
 impl Backend for GrokBackend {
@@ -250,7 +257,7 @@ mod tests {
         let [Event::Failed { message }] = &events[..] else { panic!("{events:?}") };
         assert!(message.contains("SuperGrok"));
         assert_eq!(backend().classify_error(message), ErrorKind::NotEntitled);
-        assert_eq!(backend().classify_error("A subscription is required"), ErrorKind::NotEntitled);
+        assert_eq!(backend().classify_error("A SuperGrok subscription is required"), ErrorKind::NotEntitled);
     }
 
     #[test]
@@ -348,8 +355,54 @@ mod tests {
     #[test]
     fn billing_words_alone_do_not_mean_the_plan_gate_or_a_login_problem() {
         assert!(!is_entitlement_text("update the subscription handler to apply premium pricing"));
-        assert!(is_entitlement_text("grok build is not included in your x premium plan"));
         assert!(!is_auth_text("the api key field is rendered in the settings form"));
-        assert!(is_auth_text("api key missing: run grok login"));
+    }
+
+    #[test]
+    fn entitlement_needs_a_plan_phrase_not_common_word_pairs() {
+        for text in [
+            "error: subscription id is required",
+            "premium pricing handler",
+            "the node version is old and a subscription is required by the billing api",
+            "the file is not included in your tsconfig",
+            "your plan is to upgrade the subscription module",
+        ] {
+            assert!(!is_entitlement_text(&text.to_lowercase()), "{text:?}");
+            assert_eq!(backend().classify_error(text), ErrorKind::Other, "{text:?}");
+        }
+        for text in [
+            "Grok Build is not included in your X Premium plan. A SuperGrok or X Premium+ subscription is required.",
+            "Grok requires a SuperGrok plan",
+            "Upgrade to SuperGrok to use grok build",
+            "A SuperGrok subscription is required",
+            "grok: subscription required",
+            "No active subscription for Grok",
+        ] {
+            assert!(is_entitlement_text(&text.to_lowercase()), "{text:?}");
+            assert_eq!(backend().classify_error(text), ErrorKind::NotEntitled, "{text:?}");
+        }
+    }
+
+    #[test]
+    fn auth_needs_a_login_phrase_not_common_word_pairs() {
+        for text in [
+            "api key validation error",
+            "the xai_api_key variable is documented in the readme",
+            "authentication module has an error",
+            "api key rotation failed in the billing job",
+        ] {
+            assert!(!is_auth_text(&text.to_lowercase()), "{text:?}");
+            assert_eq!(backend().classify_error(text), ErrorKind::Other, "{text:?}");
+        }
+        for text in [
+            "Couldn't start session: not authenticated. Run `grok login` or set XAI_API_KEY.",
+            "api key missing: run grok login",
+            "XAI_API_KEY is not set",
+            "XAI_API_KEY invalid",
+            "the Grok API key is missing",
+        ] {
+            assert!(is_auth_text(&text.to_lowercase()) || classify_common(text).is_some(), "{text:?}");
+            assert_eq!(backend().classify_error(text), ErrorKind::Auth, "{text:?}");
+        }
     }
 }
