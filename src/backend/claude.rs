@@ -6,8 +6,11 @@
 //! `--input-format stream-json --permission-prompt-tool stdio`: instead of denying a tool
 //! call that needs approval it sends a `control_request` (`can_use_tool`) on stdout and
 //! waits for a `control_response` on stdin, so `jev-code` can ask the person. Recorded
-//! lines are in `tests/fixtures/claude/`. Headless uses (the gateway, workers, `ask`) keep
-//! plain `-p`, where the CLI itself denies what is not allowed.
+//! lines are in `tests/fixtures/claude/`. The CLI can withdraw a question it asked
+//! (`{"type":"control_cancel_request","request_id":...}`, from the protocol schema) when the
+//! turn is interrupted or something else settled it; no answer is sent for it then.
+//! Headless uses (the gateway, workers, `ask`) keep plain `-p`, where the CLI itself denies
+//! what is not allowed.
 
 use std::path::PathBuf;
 
@@ -118,6 +121,14 @@ fn permission_request(ev: &Value) -> Option<PermissionRequest> {
         blocked_path: request["blocked_path"].as_str().map(String::from),
         input,
     })
+}
+
+/// A `control_cancel_request`: the CLI no longer needs the answer to `request_id`. Its shape is
+/// `{"type":"control_cancel_request","request_id":"..."}` (Claude Agent SDK control protocol;
+/// the schema is in the CLI binary). It may name any control request, not only a permission
+/// question; the runner ignores an id that is not waiting.
+fn withdrawn_request(ev: &Value) -> Option<Event> {
+    Some(Event::PermissionWithdrawn { id: ev["request_id"].as_str()?.to_string() })
 }
 
 fn count(v: &Value, key: &str) -> u64 {
@@ -248,6 +259,7 @@ impl Backend for ClaudeBackend {
             ))],
             Some("result") => vec![result_event(&ev)],
             Some("control_request") => permission_request(&ev).map(Event::PermissionRequest).into_iter().collect(),
+            Some("control_cancel_request") => withdrawn_request(&ev).into_iter().collect(),
             Some("rate_limit_event") => plan_of(&ev).map(Event::Plan).into_iter().collect(),
             _ => vec![],
         }
@@ -479,7 +491,17 @@ mod tests {
     fn other_control_requests_and_malformed_ones_are_not_questions() {
         assert!(backend().parse_line(r#"{"type":"control_request","request_id":"x","request":{"subtype":"hook_callback"}}"#).is_empty());
         assert!(backend().parse_line(r#"{"type":"control_request","request":{"subtype":"can_use_tool","tool_name":"Bash"}}"#).is_empty());
-        assert!(backend().parse_line(r#"{"type":"control_cancel_request","request_id":"x"}"#).is_empty());
+        assert!(backend().parse_line(r#"{"type":"control_cancel_request"}"#).is_empty(), "no id, nothing to withdraw");
+    }
+
+    #[test]
+    fn a_cancel_request_withdraws_its_request_id() {
+        // The shape the SDK control protocol documents; the CLI does not send it in the recorded turns.
+        let line = json!({"type":"control_cancel_request","request_id":"2f318992-1d40-4a9f-afab-303ef045d9d6"}).to_string();
+        assert_eq!(
+            backend().parse_line(&line),
+            vec![Event::PermissionWithdrawn { id: "2f318992-1d40-4a9f-afab-303ef045d9d6".into() }]
+        );
     }
 
     #[test]
