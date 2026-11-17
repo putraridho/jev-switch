@@ -401,6 +401,7 @@ mod tests {
                 before: "b".into(),
                 after: "a".into(),
                 added_stamps: Default::default(),
+                ..ChangeSummary::default()
             }),
         };
         let f = summary_facts(&report, 14_000, &rt);
@@ -425,6 +426,7 @@ mod tests {
             before: String::new(),
             after: String::new(),
             added_stamps: Default::default(),
+            ..ChangeSummary::default()
         };
         assert_eq!(file_changes(&s).iter().map(|f| f.status).collect::<String>(), "AMDR");
     }

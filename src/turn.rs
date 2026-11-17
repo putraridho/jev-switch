@@ -26,7 +26,7 @@ use crate::backend::{
     TurnRequest, Usage,
 };
 use crate::catalog::{self, find, ModelSpec};
-use crate::changes::{self, ChangeSummary, Snapshot, UndoError, UndoReport};
+use crate::changes::{self, ChangeSummary, Snapshot, TurnActivity, UndoError, UndoReport};
 use crate::handoff::{self, ResumeError, SavedSession, Sessions, TurnRecord};
 use crate::log;
 use crate::orchestrate::{self, Outcome, Setup};
@@ -411,6 +411,9 @@ pub struct Engine {
     track_changes: bool,
     /// What the last turn that started a model changed; consumed by an undo.
     last_changes: Option<ChangeSummary>,
+    /// What the tools of the turn in progress did (all attempts), to tell its changes from
+    /// other processes'.
+    turn_activity: TurnActivity,
     /// Where saved sessions live (the state directory); `None` means nothing is saved.
     persist: Option<PathBuf>,
     /// The file this session saves to: chosen at its first save, or the one `/resume` took
@@ -443,6 +446,7 @@ impl Engine {
             orch_setup: None,
             track_changes: true,
             last_changes: None,
+            turn_activity: TurnActivity::default(),
             persist: None,
             session_file: None,
         }
@@ -697,11 +701,12 @@ impl Engine {
     /// the working-tree snapshots (for [`TurnReport::changes`]) and saves the session.
     pub async fn run_judged_cancellable(&mut self, prompt: &str, judged: Judged, ui: &mut dyn Ui, cancel: &Cancel) -> TurnReport {
         let mut before: Option<Snapshot> = None;
+        self.turn_activity = TurnActivity::default();
         let mut report = self.run_attempts(prompt, judged, ui, cancel, &mut before).await;
         if report.attempts > 0 {
             // A turn the user cancelled has spent its signal, so its summary is not raced
             // against it; a Ctrl-C while summarising a finished turn still returns at once.
-            report.changes = self.changes_since(before, cancel, report.status != TurnStatus::Cancelled).await;
+            report.changes = self.changes_since(before, self.turn_activity.clone(), cancel, report.status != TurnStatus::Cancelled).await;
             self.last_changes = report.changes.clone();
             self.save_quietly();
         }
@@ -719,10 +724,10 @@ impl Engine {
 
     /// What differs from the `before` snapshot now; `None` if there is no `before`, git
     /// fails, or nothing changed.
-    async fn changes_since(&self, before: Option<Snapshot>, cancel: &Cancel, honor_cancel: bool) -> Option<ChangeSummary> {
+    async fn changes_since(&self, before: Option<Snapshot>, activity: TurnActivity, cancel: &Cancel, honor_cancel: bool) -> Option<ChangeSummary> {
         let before = before?;
         let after = self.snapshot_tree(cancel, honor_cancel).await?;
-        let summary = changes::summarize_until(self.dir.clone(), before, after, stop_signal(cancel, honor_cancel)).await?;
+        let summary = changes::summarize_until(self.dir.clone(), before, after, activity, stop_signal(cancel, honor_cancel)).await?;
         (!summary.is_empty()).then_some(summary)
     }
 
@@ -778,6 +783,7 @@ impl Engine {
             }
             ui.route_facts(&chosen.facts);
             let attempt = self.run_attempt(chosen, prompt, ui, cancel).await;
+            self.turn_activity.add_tools(&attempt.tools);
             self.log_attempt(&attempt, &jev, attempts, &notes);
             if attempt.cancelled {
                 return self.cancelled_report(prompt, Some(&attempt), attempts, ui);
@@ -1030,7 +1036,19 @@ impl Engine {
         let result = result.unwrap_or_else(|| Err(TurnError::new(ErrorKind::Other, "cancelled by the user")));
         let discarded = result.is_err() && !held.is_empty();
         if let Ok(out) = &result {
-            let streamed = |t: &str| held.iter().any(|e| matches!(e, Event::Text(s) if s.trim() == t));
+            let streamed = |t: &str| {
+                if held.iter().any(|e| matches!(e, Event::Text(s) if s.trim() == t)) {
+                    return true;
+                }
+                let mut remaining = t;
+                for e in &held {
+                    if let Event::Text(s) = e {
+                        let Some(rest) = remaining.trim_start().strip_prefix(s.trim()) else { return false };
+                        remaining = rest;
+                    }
+                }
+                !held.is_empty() && remaining.trim().is_empty()
+            };
             // Some CLIs deliver the answer only in the final event; show it unless it was already among the texts.
             let answer = out.text.trim();
             let missing = !answer.is_empty() && !streamed(answer);
@@ -1596,6 +1614,11 @@ mod tests {
         r.ui = Recorder::default();
         r.turn("and add a test", want(TaskType::Feature)).await;
         assert_eq!(r.ui.texts, ["thinking", "done"]);
+
+        r.script(Claude, "printf 'TEXT:first\\nTEXT:second\\nFIN:first second\\n'");
+        r.ui = Recorder::default();
+        r.turn("and explain", want(TaskType::Explain)).await;
+        assert_eq!(r.ui.texts, ["first", "second"]);
     }
 
     #[tokio::test]

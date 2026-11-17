@@ -77,6 +77,78 @@ pub struct Snapshot {
     /// hidden by `.gitignore` (the turn un-ignored it): it is never treated as created
     /// by the turn, so undo can never delete it.
     pub taken_ns: i128,
+    /// HEAD commit and branch when the snapshot was taken: if either differs between the
+    /// two snapshots of a turn, somebody else moved the repository during it.
+    pub repo: RepoState,
+}
+
+/// Where the repository's HEAD pointed: the commit (`None` before the first commit) and
+/// the branch (`None` when detached).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RepoState {
+    pub head: Option<String>,
+    pub branch: Option<String>,
+}
+
+impl RepoState {
+    fn label(&self) -> String {
+        match (&self.branch, &self.head) {
+            (Some(b), _) => b.clone(),
+            (None, Some(h)) => format!("detached at {}", &h[..h.len().min(8)]),
+            (None, None) => "no commits".to_string(),
+        }
+    }
+}
+
+/// HEAD (or its branch) moved while the turn ran.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RepoMove {
+    pub from: RepoState,
+    pub to: RepoState,
+}
+
+impl RepoMove {
+    /// `branch switched dashboard → master`, `branch dashboard moved to another commit`.
+    pub fn describe(&self) -> String {
+        if self.from.branch != self.to.branch {
+            format!("branch switched {} → {}", self.from.label(), self.to.label())
+        } else if self.from.branch.is_some() {
+            format!("branch {} moved to another commit", self.from.label())
+        } else {
+            format!("HEAD moved: {} → {}", self.from.label(), self.to.label())
+        }
+    }
+}
+
+/// Changes the working tree went through during the turn that the turn did not make
+/// (as far as can be told). Shown as a warning, never undone.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct OutsideChanges {
+    pub files: Vec<FileChange>,
+    /// Set when HEAD or the branch moved during the turn.
+    pub moved: Option<RepoMove>,
+    /// A shell command (or a write to an unknown path) ran, so files in `ChangeSummary::files`
+    /// that the turn's own edit tools did not name may still be someone else's.
+    pub uncertain: bool,
+}
+
+impl OutsideChanges {
+    pub fn is_empty(&self) -> bool {
+        self.files.is_empty() && self.moved.is_none() && !self.uncertain
+    }
+
+    /// The one warning line for the end of a turn; `None` when there is nothing to warn about.
+    pub fn warning(&self) -> Option<String> {
+        let n = self.files.len();
+        let files = if n == 1 { "1 file".to_string() } else { format!("{n} files") };
+        match (&self.moved, n) {
+            (Some(m), 1..) => Some(format!("{files} changed outside this turn ({}); not included, /undo won't touch them", m.describe())),
+            (Some(m), 0) => Some(format!("{}; /undo is disabled for this turn", m.describe())),
+            (None, 1..) => Some(format!("{files} changed outside this turn (another process); not included, /undo won't touch them")),
+            (None, 0) if self.uncertain => Some("a shell command ran, so the files listed may include changes from other processes".to_string()),
+            (None, 0) => None,
+        }
+    }
 }
 
 impl PartialEq for Snapshot {
@@ -91,7 +163,7 @@ const PRE_EXISTING_SLACK_NS: i128 = 2_000_000_000;
 
 /// The difference between two working-tree snapshots. `files` is never empty in a
 /// summary the engine keeps: a turn that changed nothing has no summary.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ChangeSummary {
     pub files: Vec<FileChange>,
     /// Tree ids of the tracked files before and after the turn.
@@ -100,11 +172,16 @@ pub struct ChangeSummary {
     /// The untracked files the turn added, as they were when it ended: undo deletes one
     /// only while it still looks like this.
     pub added_stamps: HashMap<String, Stamp>,
+    /// HEAD and branch when the turn ended; `/undo` refuses if they are different later.
+    pub repo_after: RepoState,
+    /// What changed that this turn did not do; see [`OutsideChanges`].
+    pub outside: OutsideChanges,
 }
 
 impl ChangeSummary {
+    /// Nothing to show: no attributable file and nothing to warn about.
     pub fn is_empty(&self) -> bool {
-        self.files.is_empty()
+        self.files.is_empty() && self.outside.is_empty()
     }
 
     /// Total lines (added, removed) over all files.
@@ -408,7 +485,13 @@ fn snapshot_with(dir: &Path, copy: impl FnOnce(&Path, &Path) -> std::io::Result<
         .map(|t| t.trim().to_string())
         .filter(|t| is_object_id(t));
     remove_temp_index(tmp);
-    Some(Snapshot { tree: tree?, untracked: untracked_manifest(&root)?, taken_ns })
+    Some(Snapshot { tree: tree?, untracked: untracked_manifest(&root)?, taken_ns, repo: repo_state(&root) })
+}
+
+/// HEAD commit and branch now. Missing pieces (no commit yet, detached) are `None`.
+fn repo_state(root: &Path) -> RepoState {
+    let one = |args: &[&str]| git_text(root, None, args).map(|t| t.trim().to_string()).filter(|t| !t.is_empty());
+    RepoState { head: one(&["rev-parse", "-q", "--verify", "HEAD"]), branch: one(&["symbolic-ref", "-q", "--short", "HEAD"]) }
 }
 
 /// What changed between two snapshots. `Some` with no files when nothing did.
@@ -424,7 +507,124 @@ pub fn summarize(dir: &Path, before: &Snapshot, after: &Snapshot) -> Option<Chan
     for f in files.iter_mut().filter(|f| f.status == ChangeStatus::Added && added.contains_key(&f.path)) {
         f.added = new_file_lines(&root, &f.path);
     }
-    Some(ChangeSummary { files, before: before.tree.clone(), after: after.tree.clone(), added_stamps: added })
+    Some(ChangeSummary {
+        files,
+        before: before.tree.clone(),
+        after: after.tree.clone(),
+        added_stamps: added,
+        repo_after: after.repo.clone(),
+        outside: OutsideChanges::default(),
+    })
+}
+
+// ------------------------------------------------------- what the turn itself did (pure)
+
+/// What a turn's own tools did, from the tool lines the backends report: the paths its
+/// edit tools wrote, and whether anything ran that could write anywhere.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct TurnActivity {
+    /// Paths named by edit/write tools, as reported (absolute or relative to the turn's folder).
+    pub written: Vec<String>,
+    /// A shell command, a sub-agent, an unknown tool, or a write tool without a usable
+    /// path ran: it may have changed any file.
+    pub opaque: bool,
+    /// At least one tool line was reported. A turn that reported none may still have changed
+    /// files (some CLIs report no tool events), so nothing can be told apart then.
+    pub reported: bool,
+}
+
+/// Tools that write the one file their line names.
+const WRITE_TOOLS: &[&str] = &["Edit", "Write", "MultiEdit", "edit", "write_file", "replace", "edit_file", "write", "apply_patch", "create_file"];
+/// Tools known not to change files.
+const READ_TOOLS: &[&str] = &[
+    "Read", "Grep", "Glob", "LS", "WebFetch", "WebSearch", "TodoWrite", "ExitPlanMode", "read_file", "list_directory", "glob", "grep",
+    "search_file_content", "read_many_files", "web_fetch", "google_web_search", "web_search",
+];
+/// `tool_summary` cuts the telling field at this many characters; a path that long is cut.
+const TOOL_FIELD_LIMIT: usize = 100;
+
+impl TurnActivity {
+    /// Classify tool lines such as `Edit /p/a.rs`, `edit /p/b.rs`, `Bash cargo test`, `Grep foo`.
+    pub fn from_tools(tools: &[String]) -> Self {
+        let mut a = Self::default();
+        a.add_tools(tools);
+        a
+    }
+
+    pub fn add_tools(&mut self, tools: &[String]) {
+        for line in tools {
+            self.reported = true;
+            let (name, rest) = line.split_once(' ').map_or((line.as_str(), ""), |(n, r)| (n, r.trim()));
+            if READ_TOOLS.contains(&name) {
+                continue;
+            }
+            if WRITE_TOOLS.contains(&name) && !rest.is_empty() && rest.chars().count() < TOOL_FIELD_LIMIT {
+                self.written.push(rest.to_string());
+            } else {
+                self.opaque = true;
+            }
+        }
+    }
+}
+
+fn normalize_lexically(p: &Path) -> PathBuf {
+    let mut out = PathBuf::new();
+    for c in p.components() {
+        match c {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                out.pop();
+            }
+            other => out.push(other),
+        }
+    }
+    out
+}
+
+/// A written path as repository-relative text, or `None` when it is outside the repository.
+fn relative_to_root(root: &Path, dir: &Path, raw: &str) -> Option<String> {
+    let path = Path::new(raw);
+    let abs = normalize_lexically(&if path.is_absolute() { path.to_path_buf() } else { dir.join(path) });
+    let canon_root = std::fs::canonicalize(root).ok();
+    // The folder may be reached through a link: resolve the parent, keep the file name.
+    let via_parent = abs.parent().and_then(|p| std::fs::canonicalize(p).ok()).zip(abs.file_name()).map(|(p, n)| p.join(n));
+    [Some(abs), via_parent].into_iter().flatten().find_map(|candidate| {
+        let bases = std::iter::once(root).chain(canon_root.as_deref());
+        bases.into_iter().find_map(|b| candidate.strip_prefix(b).ok().map(|r| r.to_string_lossy().into_owned()))
+    })
+}
+
+/// Split `files` (everything that differs between the two snapshots) into what this turn
+/// did and what somebody else did, given what the turn's tools reported.
+///
+/// * HEAD or the branch moved: the diff is untrustworthy. Only files the edit tools named
+///   stay (and none at all if something opaque ran); `/undo` is refused separately.
+/// * a shell command ran: every file stays, marked uncertain unless the tools named them all;
+/// * otherwise only the files the edit tools named stay.
+fn attribute(files: Vec<FileChange>, written: &HashSet<String>, opaque: bool, moved: Option<RepoMove>) -> (Vec<FileChange>, OutsideChanges) {
+    let named = |f: &FileChange| written.contains(&f.path) || f.old_path.as_ref().is_some_and(|o| written.contains(o));
+    if opaque && moved.is_none() {
+        let uncertain = files.iter().any(|f| !named(f));
+        return (files, OutsideChanges { files: Vec::new(), moved: None, uncertain });
+    }
+    let (mine, outside): (Vec<FileChange>, Vec<FileChange>) = if opaque { (Vec::new(), files) } else { files.into_iter().partition(named) };
+    (mine, OutsideChanges { files: outside, moved, uncertain: false })
+}
+
+/// [`summarize`], then drop what other processes changed during the turn (see [`attribute`]).
+pub fn summarize_turn(dir: &Path, before: &Snapshot, after: &Snapshot, activity: &TurnActivity) -> Option<ChangeSummary> {
+    let mut summary = summarize(dir, before, after)?;
+    let root = toplevel(dir)?;
+    // A write outside the repository cannot be among the changed files: it is dropped.
+    let written: HashSet<String> = activity.written.iter().filter_map(|w| relative_to_root(&root, dir, w)).collect();
+    let moved = (before.repo != after.repo).then(|| RepoMove { from: before.repo.clone(), to: after.repo.clone() });
+    // No tool lines at all: the turn's edits (if any) went unreported, so treat it as opaque.
+    let opaque = activity.opaque || !activity.reported;
+    let (files, outside) = attribute(std::mem::take(&mut summary.files), &written, opaque, moved);
+    summary.added_stamps.retain(|p, _| files.iter().any(|f| &f.path == p));
+    summary.files = files;
+    summary.outside = outside;
+    Some(summary)
 }
 
 /// `git diff before after [-- path]` as plain text (no colour; the UI colours it), with
@@ -434,10 +634,16 @@ pub fn diff_text(dir: &Path, summary: &ChangeSummary, path: Option<&str>) -> Opt
     // folder the session was started in.
     let root = toplevel(dir)?;
     let mut args = vec!["--literal-pathspecs", "diff", "--no-color", "--no-ext-diff", "-M", &summary.before, &summary.after];
-    if let Some(p) = path {
-        args.extend(["--", p]);
-    }
-    let mut text = git_text(&root, None, &args)?;
+    // Only what the turn is credited with: the trees also hold other processes' changes.
+    let mut mine: Vec<&str> = summary.files.iter().flat_map(|f| std::iter::once(f.path.as_str()).chain(f.old_path.as_deref())).collect();
+    mine.retain(|p| path.is_none_or(|want| want == *p));
+    let mut text = if mine.is_empty() {
+        String::new()
+    } else {
+        args.push("--");
+        args.extend(mine);
+        git_text(&root, None, &args)?
+    };
     let mut added: Vec<&String> = summary.added_stamps.keys().filter(|p| path.is_none_or(|want| want == p.as_str())).collect();
     added.sort();
     for p in added {
@@ -541,8 +747,14 @@ pub async fn snapshot_until(dir: PathBuf, cancel: impl Future<Output = ()>) -> O
 }
 
 /// [`summarize`] that returns `None` promptly once `cancel` resolves.
-pub async fn summarize_until(dir: PathBuf, before: Snapshot, after: Snapshot, cancel: impl Future<Output = ()>) -> Option<ChangeSummary> {
-    until(cancel, move || summarize(&dir, &before, &after)).await
+pub async fn summarize_until(
+    dir: PathBuf,
+    before: Snapshot,
+    after: Snapshot,
+    activity: TurnActivity,
+    cancel: impl Future<Output = ()>,
+) -> Option<ChangeSummary> {
+    until(cancel, move || summarize_turn(&dir, &before, &after, &activity)).await
 }
 
 // ---------------------------------------------------------------------- undo
@@ -568,6 +780,9 @@ pub enum UndoError {
     /// The turn changed these untracked files that already existed. There is no earlier
     /// copy to put back, so nothing was touched.
     UntrackedModified(Vec<String>),
+    /// HEAD or the branch moved (during the turn, or since): the turn's changes cannot be
+    /// told apart from someone else's, so nothing was touched.
+    RepoMoved(String),
     /// git named a path an undo must not touch (outside the repository, or `.git`).
     UnsafePath(String),
     /// git or the file system failed.
@@ -591,6 +806,11 @@ impl fmt::Display for UndoError {
                 if files.len() == 1 { "a file that is" } else { "files that are" },
                 files.join(", "),
                 if files.len() == 1 { "it" } else { "them" }
+            ),
+            Self::RepoMoved(what) => write!(
+                f,
+                "not undone: {what}, so this turn's changes cannot be told apart from changes made by others. Nothing was touched; \
+                 revert by hand if you need to"
             ),
             Self::UnsafePath(p) => write!(f, "not undone: refusing to touch `{p}`"),
             Self::Failed(m) => write!(f, "undo failed: {m}"),
@@ -740,6 +960,9 @@ fn folder_in_the_way(root: &Path, rel: &str, deleting: &HashSet<&str>) -> bool {
 /// changed is an untracked file that existed before, and all old contents are known to be
 /// in the old tree. Only the paths in the summary are written.
 pub fn undo(dir: &Path, summary: &ChangeSummary) -> Result<UndoReport, UndoError> {
+    if let Some(m) = &summary.outside.moved {
+        return Err(UndoError::RepoMoved(format!("the repository moved during the turn ({})", m.describe())));
+    }
     let steps = plan_undo(&summary.files)?;
     let root = toplevel(dir).ok_or_else(|| UndoError::Failed("not inside a git repository".into()))?;
     let root_canon = std::fs::canonicalize(&root).map_err(|e| io_err("cannot resolve", &root.to_string_lossy(), e))?;
@@ -747,6 +970,10 @@ pub fn undo(dir: &Path, summary: &ChangeSummary) -> Result<UndoReport, UndoError
     // 1. Has anything the turn touched been edited since? Compare against the state the
     // turn left, not against `before`: only a difference from `after` is someone's edit.
     let now = snapshot(dir).ok_or_else(|| UndoError::Failed("could not read the working tree".into()))?;
+    if now.repo != summary.repo_after {
+        let m = RepoMove { from: summary.repo_after.clone(), to: now.repo.clone() };
+        return Err(UndoError::RepoMoved(format!("the repository moved since the turn ({})", m.describe())));
+    }
     let differing = git_text(&root, None, &["diff", "--name-only", "-z", "--no-renames", &summary.after, &now.tree])
         .ok_or_else(|| UndoError::Failed("could not compare the working tree".into()))?;
     let differing: HashSet<&str> = differing.split('\0').filter(|s| !s.is_empty()).collect();
@@ -1249,6 +1476,7 @@ mod tests {
             before: t.tree.clone(),
             after: t.tree,
             added_stamps: HashMap::new(),
+            ..ChangeSummary::default()
         };
         std::fs::write(s.path().parent().unwrap().join("escape.txt"), "mine").ok();
         assert!(matches!(undo(s.path(), &evil), Err(UndoError::UnsafePath(_))));
@@ -1274,13 +1502,14 @@ mod tests {
         s.write("f.txt", "x");
         assert_eq!(snapshot(s.path()), None);
         let t = "0".repeat(40);
-        let snap = |tree: String| Snapshot { tree, untracked: HashMap::new(), taken_ns: 0 };
+        let snap = |tree: String| Snapshot { tree, untracked: HashMap::new(), taken_ns: 0, repo: RepoState::default() };
         assert_eq!(summarize(s.path(), &snap(t.clone()), &snap("1".repeat(40))), None);
         let sum = ChangeSummary {
             files: vec![FileChange { path: "f.txt".into(), status: ChangeStatus::Added, added: 1, removed: 0, old_path: None }],
             before: t.clone(),
             after: t,
             added_stamps: HashMap::new(),
+            ..ChangeSummary::default()
         };
         assert_eq!(diff_text(s.path(), &sum, None), None);
         assert!(matches!(undo(s.path(), &sum), Err(UndoError::Failed(_))));
@@ -1435,7 +1664,7 @@ mod tests {
     #[test]
     fn untracked_changes_merge_into_the_file_list() {
         let st = |size| Stamp { size, mtime_ns: 1 };
-        let snap = |tree: &str, files: &[(&str, u64)]| Snapshot { tree: tree.into(), untracked: files.iter().map(|(p, n)| (p.to_string(), st(*n))).collect(), taken_ns: 0 };
+        let snap = |tree: &str, files: &[(&str, u64)]| Snapshot { tree: tree.into(), untracked: files.iter().map(|(p, n)| (p.to_string(), st(*n))).collect(), taken_ns: 0, repo: RepoState::default() };
         let fc = |p: &str, status| FileChange::new(p.into(), status);
         let before = snap("t1", &[("keep", 1), ("edit", 1), ("gone", 1), ("staged", 1), ("moved", 1)]);
         let after = snap("t2", &[("keep", 1), ("edit", 2), ("new", 3), ("zz", 1), ("untracked-now", 1)]);
@@ -1616,7 +1845,7 @@ mod tests {
         let s = repo();
         let snap = snapshot_until(s.path().to_path_buf(), std::future::pending()).await.expect("a snapshot");
         let again = snapshot_until(s.path().to_path_buf(), std::future::pending()).await.unwrap();
-        let sum = summarize_until(s.path().to_path_buf(), snap, again, std::future::pending()).await.unwrap();
+        let sum = summarize_until(s.path().to_path_buf(), snap, again, TurnActivity::default(), std::future::pending()).await.unwrap();
         assert!(sum.is_empty());
     }
 
@@ -1657,5 +1886,148 @@ mod tests {
             undo(s.path(), &sum).unwrap();
             assert_eq!(std::fs::read_to_string(s.path().join("a.txt")).unwrap(), "one\ntwo\nthree\n");
         }
+    }
+
+    // ------------------------------------------------ changes by other processes
+
+    fn tools(lines: &[&str]) -> TurnActivity {
+        TurnActivity::from_tools(&lines.iter().map(|l| l.to_string()).collect::<Vec<_>>())
+    }
+
+    #[test]
+    fn tool_lines_are_classified_into_written_paths_and_opaque_runs() {
+        let read_only = tools(&["Grep foo", "Read /r/a.rs", "Glob *.md"]);
+        assert!(read_only.written.is_empty() && !read_only.opaque && read_only.reported);
+        assert!(!TurnActivity::default().reported);
+        let a = tools(&["Edit /r/a.rs", "edit /r/b c.rs", "MultiEdit src/x.rs"]);
+        assert_eq!(a.written, ["/r/a.rs", "/r/b c.rs", "src/x.rs"]);
+        assert!(!a.opaque);
+        for opaque in ["Bash cargo test", "shell ls", "Task", "NotebookEdit", "Edit", "mcp__jev__delegate x"] {
+            assert!(tools(&[opaque]).opaque, "{opaque}");
+        }
+        assert!(tools(&[&format!("Edit /{}", "x".repeat(150))]).opaque, "a cut-off path cannot be matched");
+    }
+
+    #[test]
+    fn a_branch_switched_by_someone_else_during_a_read_only_turn_is_not_the_turns() {
+        let s = repo();
+        let before = snapshot(s.path()).unwrap();
+        // another process: new branch with a commit that touches several files, checked out
+        run_git(s.path(), &["checkout", "-q", "-b", "other"]);
+        s.write("a.txt", "merged\n");
+        s.write("docs/new.md", "doc\n");
+        run_git(s.path(), &["add", "-A"]);
+        run_git(s.path(), &["commit", "-q", "-m", "other"]);
+        let after = snapshot(s.path()).unwrap();
+        let raw = summarize(s.path(), &before, &after).unwrap();
+        assert_eq!(raw.files.len(), 2, "the plain diff blames the turn for both");
+
+        let sum = summarize_turn(s.path(), &before, &after, &tools(&["Grep foo"])).unwrap();
+        assert!(sum.files.is_empty(), "{:?}", sum.files);
+        assert_eq!(sum.outside.files.len(), 2);
+        let moved = sum.outside.moved.as_ref().expect("the move is reported");
+        assert!(moved.describe().contains("→ other"), "{}", moved.describe());
+        let warning = sum.outside.warning().unwrap();
+        assert!(warning.contains("2 files changed outside this turn") && warning.contains("not included"), "{warning}");
+        assert!(!sum.is_empty(), "the warning must survive to the end of the turn");
+        assert!(matches!(undo(s.path(), &sum), Err(UndoError::RepoMoved(_))));
+        assert_eq!(s.read("a.txt"), "merged\n", "nothing was reverted");
+        assert_eq!(diff_text(s.path(), &sum, None).as_deref(), Some(""), "/diff shows none of it");
+    }
+
+    #[test]
+    fn a_moved_head_refuses_undo_even_for_files_the_turn_wrote() {
+        let s = repo();
+        let before = snapshot(s.path()).unwrap();
+        s.write("a.txt", "mine\n");
+        run_git(s.path(), &["commit", "-q", "-am", "someone commits"]);
+        let after = snapshot(s.path()).unwrap();
+        let abs = s.path().join("a.txt");
+        let sum = summarize_turn(s.path(), &before, &after, &tools(&[&format!("Edit {}", abs.display())])).unwrap();
+        assert_eq!(sum.files.len(), 1, "the edit is still shown");
+        assert!(matches!(undo(s.path(), &sum), Err(UndoError::RepoMoved(_))));
+        assert_eq!(s.read("a.txt"), "mine\n");
+    }
+
+    #[test]
+    fn a_doc_written_by_someone_else_during_a_read_only_turn_is_outside() {
+        let s = repo();
+        let before = snapshot(s.path()).unwrap();
+        s.write("docs/notes.md", "from another session\n");
+        let after = snapshot(s.path()).unwrap();
+        let sum = summarize_turn(s.path(), &before, &after, &tools(&["Grep todo", "Read a.txt"])).unwrap();
+        assert!(sum.files.is_empty());
+        assert_eq!(sum.outside.files.iter().map(|f| f.path.as_str()).collect::<Vec<_>>(), ["docs/notes.md"]);
+        assert!(sum.outside.moved.is_none() && !sum.outside.uncertain);
+        assert!(sum.outside.warning().unwrap().contains("1 file changed outside this turn"));
+        assert!(matches!(undo(s.path(), &sum), Err(UndoError::NothingToUndo)));
+        assert_eq!(s.read("docs/notes.md"), "from another session\n");
+    }
+
+    #[test]
+    fn only_the_files_the_edit_tools_named_are_attributed_and_undone() {
+        let s = repo();
+        let before = snapshot(s.path()).unwrap();
+        s.write("a.txt", "one\nTWO\nthree\n");
+        s.write("theirs.txt", "not mine\n");
+        std::fs::write(s.path().join("b.txt"), "someone else edits b\n").unwrap();
+        let after = snapshot(s.path()).unwrap();
+        let abs = s.path().join("a.txt");
+        let sum = summarize_turn(s.path(), &before, &after, &tools(&[&format!("Edit {}", abs.display()), "Read b.txt"])).unwrap();
+        assert_eq!(sum.files.iter().map(|f| f.path.as_str()).collect::<Vec<_>>(), ["a.txt"]);
+        let mut outside: Vec<&str> = sum.outside.files.iter().map(|f| f.path.as_str()).collect();
+        outside.sort();
+        assert_eq!(outside, ["b.txt", "theirs.txt"]);
+        let diff = diff_text(s.path(), &sum, None).unwrap();
+        assert!(diff.contains("a.txt") && !diff.contains("b.txt"), "{diff}");
+        undo(s.path(), &sum).unwrap();
+        assert_eq!(s.read("a.txt"), "one\ntwo\nthree\n");
+        assert_eq!(s.read("b.txt"), "someone else edits b\n");
+        assert_eq!(s.read("theirs.txt"), "not mine\n");
+        // a relative path from the turn's own folder matches the same way
+        let rel = summarize_turn(s.path(), &before, &after, &tools(&["Edit a.txt"])).unwrap();
+        assert_eq!(rel.files.len(), 1);
+    }
+
+    #[test]
+    fn a_turn_that_reported_no_tools_keeps_its_changes_marked_uncertain() {
+        let s = repo();
+        let before = snapshot(s.path()).unwrap();
+        s.write("a.txt", "edited without a tool line\n");
+        let after = snapshot(s.path()).unwrap();
+        let sum = summarize_turn(s.path(), &before, &after, &TurnActivity::default()).unwrap();
+        assert_eq!(sum.files.len(), 1, "unreported edits are not hidden");
+        assert!(sum.outside.files.is_empty() && sum.outside.uncertain);
+    }
+
+    #[test]
+    fn after_a_shell_command_every_change_is_kept_but_marked_uncertain() {
+        let s = repo();
+        let before = snapshot(s.path()).unwrap();
+        s.write("generated.txt", "by a script\n");
+        let after = snapshot(s.path()).unwrap();
+        let sum = summarize_turn(s.path(), &before, &after, &tools(&["Bash ./gen.sh"])).unwrap();
+        assert_eq!(sum.files.len(), 1);
+        assert!(sum.outside.files.is_empty() && sum.outside.uncertain);
+        assert!(sum.outside.warning().unwrap().contains("shell command ran"));
+        // every file named by an edit tool: nothing to doubt
+        let abs = s.path().join("generated.txt");
+        let named = summarize_turn(s.path(), &before, &after, &tools(&["Bash ls", &format!("Write {}", abs.display())])).unwrap();
+        assert!(!named.outside.uncertain);
+    }
+
+    #[test]
+    fn undo_refuses_when_the_branch_changed_after_the_turn() {
+        let s = repo();
+        let before = snapshot(s.path()).unwrap();
+        s.write("a.txt", "one\nTWO\nthree\n");
+        let after = snapshot(s.path()).unwrap();
+        let abs = s.path().join("a.txt");
+        let sum = summarize_turn(s.path(), &before, &after, &tools(&[&format!("Edit {}", abs.display())])).unwrap();
+        run_git(s.path(), &["checkout", "-q", "-b", "later"]);
+        assert!(matches!(undo(s.path(), &sum), Err(UndoError::RepoMoved(_))));
+        assert_eq!(s.read("a.txt"), "one\nTWO\nthree\n");
+        run_git(s.path(), &["checkout", "-q", "-"]);
+        undo(s.path(), &sum).unwrap();
     }
 }

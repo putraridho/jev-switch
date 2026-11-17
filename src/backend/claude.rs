@@ -155,11 +155,12 @@ fn usage_of(result: &Value) -> Usage {
 }
 
 fn assistant_events(ev: &Value) -> Vec<Event> {
+    let nested = !ev["parent_tool_use_id"].is_null();
     let blocks = ev["message"]["content"].as_array().into_iter().flatten();
     blocks
         .filter_map(|b| match b["type"].as_str() {
             Some("tool_use") => Some(Event::Tool(tool_summary(b["name"].as_str().unwrap_or("?"), &b["input"]))),
-            Some("text") => {
+            Some("text") if !nested => {
                 let t = b["text"].as_str().unwrap_or("").trim();
                 // The limit notice is reported as an error by the runner, not shown as an answer.
                 (!t.is_empty() && !is_limit_message(t)).then(|| Event::Text(t.to_string()))
@@ -324,6 +325,16 @@ mod tests {
             f.usage,
             Usage { input_tokens: 49728, cached_input_tokens: 35536, output_tokens: 85, context_tokens: Some(24914) }
         );
+    }
+
+    #[test]
+    fn subagent_text_is_never_answer_text() {
+        let line = json!({"type":"assistant","parent_tool_use_id":"agent-1","message":{"content":[
+            {"type":"text","text":"subagent report"}, {"type":"tool_use","name":"Read","input":{"file_path":"a"}}
+        ]}});
+        assert_eq!(backend().parse_line(&line.to_string()), vec![Event::Tool("Read a".into())]);
+        let result = json!({"type":"user","parent_tool_use_id":null,"message":{"content":[{"type":"tool_result","content":"subagent report"}]}});
+        assert!(backend().parse_line(&result.to_string()).is_empty());
     }
 
     #[test]

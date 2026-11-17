@@ -185,7 +185,9 @@ case "$last" in
     emit '{"type":"result","subtype":"error","is_error":true,"result":"segmentation fault"}'
     exit 0
     ;;
-  *edit*) echo hi > new.txt ;;
+  *edit*)
+    emit '{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t3","name":"Write","input":{"file_path":"new.txt"}}]}}'
+    echo hi > new.txt ;;
 esac
 emit "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"$answer\"}]}}"
 emit "{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"result\":\"$answer\",\"session_id\":\"sess-1\",\"usage\":{\"input_tokens\":10,\"cache_read_input_tokens\":5,\"cache_creation_input_tokens\":0,\"output_tokens\":3}}"

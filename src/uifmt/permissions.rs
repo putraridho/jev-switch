@@ -145,7 +145,7 @@ pub fn permissions_text(l: &crate::permissions::Listing, style: Style, project_d
     let show = |path: &Path| relativize_paths(&path.display().to_string(), project_dir);
     let mut lines = vec![style.bold("Permissions"), format!("  {}", style.dim(&format!("project rules ({})", show(&l.local_path))))];
     if l.allow.is_empty() {
-        lines.push(format!("    {}", style.dim("none yet: answer `a` at a question, or /permissions allow <rule>")));
+        lines.push(format!("    {}", style.dim("none yet: answer `a` at a question, or use /permissions allow <rule> (e.g. /permissions allow Bash(cargo test:*))")));
     }
     lines.extend(l.allow.iter().map(|r| format!("    {}", one_line(r))));
     if !l.directories.is_empty() {

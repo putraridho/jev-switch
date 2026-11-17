@@ -254,6 +254,11 @@ impl Repl {
         let facts = views::summary_facts(report, elapsed.as_millis() as u64, &self.engine.runtime);
         let files = report.changes.as_ref().map(views::file_changes).unwrap_or_default();
         self.console.turn_end(&facts, &files);
+        // Changes other processes made during the turn: said apart from the turn's own files.
+        let warning = report.changes.as_ref().and_then(|c| c.outside.warning());
+        if let Some(w) = warning {
+            self.console.err(&format!("  {} {}\n", self.console.err_style().yellow("⚠"), w));
+        }
         self.last_summary = Some(facts);
     }
 
@@ -368,6 +373,19 @@ impl Repl {
             self.console.out(&format!("  {}", style.dim("Nothing to undo: the last turn changed no files.")));
             return;
         };
+        if let Some(m) = &summary.outside.moved {
+            // The repository moved during the turn: refuse before listing anything to revert.
+            let e = UndoError::RepoMoved(format!("the repository moved during the turn ({})", m.describe()));
+            self.console.out(&uifmt::problem_block("Not undone", &[e.to_string()], &[], style));
+            return;
+        }
+        if summary.files.is_empty() {
+            self.console.out(&format!("  {}", style.dim("Nothing to undo: the last turn's own tools changed no files.")));
+            return;
+        }
+        if let Some(w) = summary.outside.warning() {
+            self.console.out(&format!("  {} {}", style.yellow("⚠"), w));
+        }
         let files = views::file_changes(&summary);
         let noun = if files.len() == 1 { "file" } else { "files" };
         self.console.out(&format!("  Would revert {} {noun}:", files.len()));

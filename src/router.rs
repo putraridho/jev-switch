@@ -639,11 +639,11 @@ fn task_type_question() -> Value {
             "explain": {
                 "what": "read-only questions about how existing code works or where something is",
                 "not_for": "anything that changes files, or needs facts from outside the repository",
-                "examples": ["how does the cache invalidation work", "where is the config loaded", "what does this function return"]
+                "examples": ["how does the cache invalidation work", "where is the config loaded", "does jev-code has plan mode?", "does this repo support X", "is there a /foo command in jev-code"]
             },
             "current_info": {
                 "what": "needs recent facts the model may not know: library versions, new APIs, release notes, web search",
-                "not_for": "questions answerable from the code or from long-standing knowledge",
+                "not_for": "questions about the current repository, codebase, or jev-code and its commands or features, which are explain; or questions answerable from long-standing knowledge",
                 "examples": ["what is the latest version of axum", "does the new React compiler change this", "is this API deprecated now"]
             },
             "simple_edit": {
@@ -708,6 +708,7 @@ fn provider_state(request: &str, recent_context: &str, previous: Option<(&str, &
 fn decode_provider_want(answers: &Value, request: &str, with_previous: bool, with_sequence: bool) -> Result<ProviderWant> {
     let task_answer = decode_choice(answers, Q_TASK)?;
     let task: TaskType = task_answer.choice.parse().map_err(|e: String| anyhow::anyhow!(e))?;
+    let task = repo_question_task(request, task);
     let very_hard_p = decode_noul(answers, Q_HARD)?;
     let security_p = decode_noul(answers, Q_SECURITY)?;
     let edit_p = decode_noul(answers, Q_EDIT)?;
@@ -739,6 +740,15 @@ fn decode_provider_want(answers: &Value, request: &str, with_previous: bool, wit
         security_keywords,
         signals,
     })
+}
+
+/// Correct a current-info judgment for explicit questions about this local tool or repository.
+fn repo_question_task(request: &str, task: TaskType) -> TaskType {
+    let lower = request.to_ascii_lowercase();
+    let question = ["does ", "do ", "is ", "are ", "can ", "how ", "where ", "what "].iter().any(|prefix| lower.trim_start().starts_with(prefix));
+    let local = ["jev-code", "this repo", "this codebase", "this repository"].iter().any(|s| lower.contains(s));
+    let external = ["latest", "today", "news", "release notes"].iter().any(|s| lower.contains(s));
+    if task == TaskType::CurrentInfo && question && local && !external { TaskType::Explain } else { task }
 }
 
 /// Strong signals: vulnerability classes, secrets, crypto, auditing. Matched as
@@ -1163,6 +1173,16 @@ mod tests {
         let none = Orchestration::fields(None);
         for key in ["multi_part_p", "sequential_p", "vetoed"] {
             assert!(none[key].is_null(), "{key}");
+        }
+    }
+
+    #[test]
+    fn local_questions_are_not_current_info() {
+        for prompt in ["does jev-code has plan mode?", "does this repo support X", "is there a /foo command in jev-code"] {
+            assert_eq!(repo_question_task(prompt, TaskType::CurrentInfo), TaskType::Explain, "{prompt}");
+        }
+        for prompt in ["what's the latest rust version", "today's news about X", "what is the latest release of jev-code"] {
+            assert_eq!(repo_question_task(prompt, TaskType::CurrentInfo), TaskType::CurrentInfo, "{prompt}");
         }
     }
 

@@ -1171,7 +1171,9 @@ pub fn parse_args(rest: &str) -> Result<PermissionsCmd, String> {
         ("allow" | "add", rule) if !rule.is_empty() => validate_rule(rule).map(PermissionsCmd::Allow),
         ("remove" | "rm" | "delete", rule) if !rule.is_empty() => Ok(PermissionsCmd::Remove(rule.to_string())),
         ("dir", path) if !path.is_empty() => Ok(PermissionsCmd::Dir(path.to_string())),
-        _ => Err(USAGE.to_string()),
+        ("allow" | "add", "") => Err(format!("{USAGE}. A rule is a tool name, optionally followed by a pattern in parentheses. Examples: Bash(cargo test:*), Read(//tmp/**), WebSearch")),
+        ("remove" | "rm" | "delete" | "dir" | "list", _) => Err(USAGE.to_string()),
+        _ => Err(format!("unknown permissions subcommand `{head}`; {USAGE}. Example: /permissions allow Bash(cargo test:*)")),
     }
 }
 
@@ -1954,6 +1956,8 @@ mod tests {
         for bad in ["allow", "remove", "dir", "nope", "list extra", "allow Bash("] {
             assert!(parse_args(bad).is_err(), "{bad}");
         }
-        assert_eq!(parse_args("nope"), Err(USAGE.to_string()));
+        assert!(parse_args("nope").unwrap_err().contains("unknown permissions subcommand `nope`"));
+        let help = parse_args("allow").unwrap_err();
+        assert!(help.contains("Bash(cargo test:*)") && help.contains("Read(//tmp/**)") && help.contains("WebSearch"));
     }
 }
