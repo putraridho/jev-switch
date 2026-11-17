@@ -65,12 +65,14 @@ These answer the open questions and override any earlier default in this documen
   `#![forbid(unsafe_code)]` in all three crates, strict clippy in CI. Sections 7.3, 7.4, 10
   and 11.1 specify it; T00 and T12 enforce it.
 - **WebDriver end-to-end tests:** the user installs the driver themselves
-  (`sudo pacman -S webkitgtk-6.0`; that Arch package ships `/usr/bin/WebKitWebDriver`,
-  verified against the package file list; `webkit2gtk-4.1` ships no binary). The real-app
+  (`sudo pacman -S webkitgtk-6.0`; that Arch package ships `/usr/bin/WebKitWebDriver`;
+  `webkit2gtk-4.1` ships no binary). **Done**: `/usr/bin/WebKitWebDriver` is present and
+  owned by `webkitgtk-6.0 2.54.1-1` (verified with `pacman -Qo`, 3.4). The real-app
   WebDriver stage is therefore **in scope and required**: it must pass in `ci.sh --release`.
-  Until the driver is installed the stage reports **NOT RUN**, which is never a pass and
+  On a machine without the driver the stage reports **NOT RUN**, which is never a pass and
   never satisfies the definition of done (11.4, 11.5).
-- **Screen-reader pass:** the user installs Orca (`sudo pacman -S orca`) and takes part in
+- **Screen-reader pass:** the user installs Orca (`sudo pacman -S orca`; **done**:
+  `orca 51.1-1` is installed, 3.4) and takes part in
   the manual pass: the lead writes the script of checks per screen and state, the user
   confirms what Orca announces. That pass is part of the definition of done (11.5).
 - **Process rule:** every task is validated by the lead with its own tests and reviews, and review rounds repeat until a full round finds nothing. A task is not done while any review finding is open.
@@ -152,12 +154,28 @@ These answer the open questions and override any earlier default in this documen
   system mise configuration declares both tools `lazy = true, auto_update = "4h"` and routes
   them through `omarchy-agent-account-exec`, which picks the active subscription's home
   (`CODEX_HOME`, `CLAUDE_CONFIG_DIR`) and then starts the real binary under
-  `~/.local/share/mise/installs/<tool>/<version>/`. So **running either name can start a
+  `~/.local/share/mise/installs/<tool>/<version>/` (`claude/<version>/claude`,
+  `codex/<version>/bin/codex`; names only were listed). So **running either name can start a
   download** (first-run install, or the four-hourly self-update), and bypassing the wrapper
   could read the wrong account. Section 8.6 handles both. mise maps settings to environment
   variables (verified: `MISE_OFFLINE=1`, `MISE_AUTO_INSTALL=false`,
   `MISE_EXEC_AUTO_INSTALL=false`, `MISE_NOT_FOUND_AUTO_INSTALL=false` are reported back by
-  `mise settings get`, mise 2026.11.8).
+  `mise settings get`, mise 2026.11.8). mise's documentation (read 2026-11-17, not run):
+  `offline` "blocks every HTTP request, so mise uses only installed tools and cached data";
+  the per-tool `auto_update` runs `mise upgrade` for that tool **before** the tool starts
+  when a check is due, and "no updates run offline"; `auto_install = false` already implies
+  the other two auto-install switches (they are set anyway: harmless and explicit).
+- **The account wrapper has its own, explicit install path** (read from
+  `/usr/share/omarchy/bin/omarchy-agent-account-exec`, 56 lines; not run): mise removes its
+  dispatch directories from `PATH` and calls the script; when `type -P <tool>` then finds no
+  real binary, the script runs `mise install --quiet <tool>`, or `mise use -g --quiet <tool>`
+  when the tool is not one Omarchy declares, **which rewrites the user's global mise
+  configuration**. Neither is an "auto install", so the three auto-install switches do not
+  stop them; only `MISE_OFFLINE=1` blocks their download, and nothing blocks the
+  configuration write of `mise use -g`. The script also calls `omarchy-agent-account-home`
+  (found through `PATH`; reads `XDG_STATE_HOME`/`HOME`) and ends in `exec`, so the real tool
+  stays in the caller's process group. Consequence for 8.6: a tool counts as installed only
+  when its **executable** is on disk, which is what keeps this fallback unreachable.
 - `account/usage/read` returns `{"summary":{"lifetimeTokens":0,"peakDailyTokens":0,
   "longestRunningTurnSec":null,"currentStreakDays":0,"longestStreakDays":0},
   "dailyUsageBuckets":[],"threadUsage":null}`. Not needed for v1.
@@ -241,10 +259,11 @@ github.com/steipete/CodexBar docs/xai.md.
   Playwright does not support Arch for WebKit.
 - NOT installed, installable without root by `scripts/ci.sh --bootstrap`: `cargo-deny`,
   `cargo-audit`, `cargo-llvm-cov`, `cargo-fuzz` (plus a nightly toolchain), `tauri-driver`.
-- NOT installed and needing `pacman` (root; the user installs both, 1a): `WebKitWebDriver`
-  (shipped by Arch's `webkitgtk-6.0`, not by `webkit2gtk-4.1`; both packages are WebKitGTK
-  2.54.1) and the `orca` screen reader. `dbus-run-session` and `desktop-file-validate` are
-  installed. Section 11 handles each.
+- Installed by the user since the first spike (verified 2026-11-17 with `pacman -Qo`):
+  `/usr/bin/WebKitWebDriver` (`webkitgtk-6.0 2.54.1-1`; `webkit2gtk-4.1` ships none; both
+  packages are WebKitGTK 2.54.1) and `/usr/bin/orca` (`orca 51.1-1`). `dbus-run-session`
+  and `desktop-file-validate` are installed. Still missing for stage 13: `tauri-driver`
+  (no root needed, `--bootstrap`). Section 11 handles each.
 
 ### 3.5 Incident during the spike (disclosed)
 Running `agy --help` under a 15 s timeout started a mise download of `antigravity-cli@1.5.9`
@@ -309,8 +328,9 @@ impl ProviderKey { pub const ALL: [Self; 6]; pub const fn as_str(self) -> &'stat
 tests): `claude`, `codex`, `deepseek`, `gemini`, `antigravity`, `grok` (explicit
 `#[serde(rename)]`, because `snake_case` would give `deep_seek`).
 `ProviderKey` is the dashboard's own list (Antigravity is separate from Gemini for billing).
-The mapping to the engine's `ProviderId` lives in `jev-usage-io::engine_bridge`, so core does
-not depend on the engine.
+The mapping to the engine's `ProviderId` lives in `jev-usage-io::engine_bridge`
+(`engine_bridge::login_command(ProviderKey)`, the one v1 use: the engine's login command
+takes a `ProviderId`), so core does not depend on the engine.
 
 ### 4.2 Meters and readings
 ```rust
@@ -448,8 +468,10 @@ pub trait HistoryStore: Send + Sync {
     fn record(&self, provider: ProviderKey, reading: &Reading) -> Result<(), StoreError>;
     /// Many readings in one transaction (the first-run backfill). Returns samples stored.
     fn record_all(&self, provider: ProviderKey, readings: &[Reading]) -> Result<u64, StoreError>;
+    /// Points, reset marks, bucket width. A span (`to - from`) longer than
+    /// `history::RAW_RETENTION` is a rollup query (7.5); the store is not told the range name.
     fn series(&self, provider: ProviderKey, meter: &MeterId, from: UnixSeconds, to: UnixSeconds,
-              max_points: u16) -> Result<SeriesData, StoreError>;   // points, reset marks, bucket width
+              max_points: u16) -> Result<SeriesData, StoreError>;
     fn load_alerts(&self) -> Result<AlertMemory, StoreError>;
     fn save_alerts(&self, memory: &AlertMemory) -> Result<(), StoreError>;
     fn prune(&self, now: UnixSeconds) -> Result<(), StoreError>;
@@ -525,8 +547,15 @@ inherits = "release"
 lto = "thin"
 codegen-units = 1
 strip = true
-panic = "abort"
+# panic stays "unwind": see below
 ```
+`panic = "abort"` is deliberately **not** set. The app is resident and nothing restarts it
+(the autostart entry runs once per login), so a panic in one fetch task must end that task,
+not the tray: with unwinding the runtime turns it into a failed join, which the service
+reports as `Unavailable(Internal)` (the T08 test "a panicking source cannot stall the loop"
+is only true this way). The panic hook (8.4) prints the same base name and line either way.
+Honest limit: a panic on the GTK main thread, or one that crosses a C callback, still ends
+the process.
 
 Why a workspace member and not a sibling repository or a separate nested workspace:
 - **DRY, one lockfile**: engine and app resolve the same `tokio`, `serde`, `reqwest`; one
@@ -563,10 +592,13 @@ dashboard/
   src/                             web UI (Svelte + TypeScript)
   fixtures/                        shared fixtures (codex-app-server/, claude-gateway/, deepseek/, format-vectors.json, ipc-allowlist.txt)
   packaging/                       dev.jev.flashboard.desktop
-  fuzz/                            cargo-fuzz targets (optional stage; excluded from the workspace)
-  e2e/                             Playwright (mock IPC), the real-binary smoke test, and optional WebDriver tests
+  clippy.toml                      disallowed types/macros and the in-test switches (11.1); here, not at the root,
+                                   so it applies to the three app crates and never to the engine
+  fuzz/                            cargo-fuzz targets (stage 12, needs nightly; excluded from the workspace)
+  e2e/                             Playwright (mock IPC), the real-binary smoke test, and the required WebDriver tests
   scripts/                         install.sh, measure-idle.sh, check-types.ts
-  package.json, pnpm-lock.yaml, .npmrc, vite.config.ts, vitest.config.ts, playwright.config.ts, tsconfig.json
+  package.json, pnpm-lock.yaml, .npmrc, vite.config.ts, vitest.config.ts, playwright.config.ts, tsconfig.json,
+  eslint.config.ts, .stylelintrc.json, .prettierrc.json   (no svelte.config file: section 10)
 ```
 
 ### 5.1 Engine facade: `jev_router::embed`
@@ -579,8 +611,11 @@ pub use crate::backend::ProviderId;
 pub use crate::log::state_dir;
 pub use crate::envfile::{env_file_path, parse as parse_env};
 pub use crate::availability::parse_codex_login;      // pure: (exit ok, text) -> Option<bool>
-pub use crate::doctor::login_command;                // the one source of "codex login" etc.
+pub use crate::doctor::login_command;                // fn(ProviderId) -> Option<&'static str>: the one source of "codex login" etc.
 ```
+(All five items are already `pub` in `pub` modules except `parse_codex_login`; checked in
+`src/`. `state_dir()` and `env_file_path(jev_router_env, home)` take or read the environment
+as the engine does; `ProviderId` is exported because `login_command` takes it.)
 The dashboard crates MUST import engine items only through `jev_router::embed` (enforced by
 an architecture test). The only other change to engine code is the word `pub` on
 `availability::parse_codex_login` (a pure function that keeps nothing); behaviour and tests
@@ -677,6 +712,10 @@ jev-usage-core            jev-usage-io                     jev-dashboard (shell)
   `anthropic-ratelimit-unified-`, (b) converts each accepted value to a number or a closed
   enum immediately, (c) keeps no string except a window name that passes `Label::parse`.
   All other keys are skipped by serde without being materialised into owned values.
+  `parse_line` first applies the byte pre-filter `might_have_sample` (the bytes
+  `"ratelimit":{"`) and returns `None` when it fails: the gateway writes compact JSON
+  (`serde_json::Value::to_string` in `src/log.rs`, verified), so a row with other spacing
+  is not a gateway row.
 - **Key rule** (exact): strip the prefix, then split the rest at its **last** `-` into
   `(window, attribute)`. Only the attributes `utilization`, `reset` and `status` are read.
   A key with no `-` (`status`, `reset`) has no window and is ignored. So
@@ -715,6 +754,9 @@ Spawn `codex app-server` (section 8.6 rules), write the three request lines of
 `dashboard/fixtures/codex-app-server/requests.jsonl` (without `account/usage/read` and
 without `account/read`), read lines until the response with the `rateLimits/read` id, close
 stdin, wait for exit (kill after the 15 s deadline). Line cap 1 MiB, total cap 4 MiB.
+The three lines are written at once, without waiting for the `initialize` response; that
+the server accepts this (the spike sent them one by one) is **assumed** and is part of
+T04's one real run; the fallback is a `ProcSpec` whose `on_line` releases the next request.
 `parse::codex::parse_rate_limits_response(line, id)` (signature in T01) reads `rateLimits`
 only: one window meter per non-null `primary`/`secondary`
 (`WindowKind::from_minutes(windowDurationMins)`, absent duration →
@@ -753,8 +795,11 @@ interface yet" (section 9.3). Later, without touching the service or the UI:
 ## 7. Runtime architecture
 
 ### 7.1 The service loop
-`jev-usage-io::service::UsageService` is one task that owns all mutable state. No locks, no
-shared mutable state, no other task mutates anything. **Everything it touches is injected**,
+`jev-usage-io::service::UsageService` is one task that owns all mutable state. No lock
+guards service state and no other task mutates it. Two things are shared on purpose and
+written only by this task: the snapshot and settings `watch` channels, and `FactsCell`
+(the login facts the sources read; the service **merges** a probe's answer into it for the
+providers that were probed and leaves the others as they were). **Everything it touches is injected**,
 so every behaviour is testable with fakes:
 ```rust
 pub struct ServiceDeps {
@@ -828,7 +873,8 @@ Fetch timeouts stay on tokio's monotonic timer, which is the right clock for a d
 - **Intervals** only for sources with no push channel (Codex, DeepSeek), longer while the
   window is hidden. A refresh also runs when the window becomes visible if the reading is
   older than the visible interval.
-- **Backoff**: on failure the next attempt is `min(60 min, 1 min x 2^failures)` with ±10 %
+- **Backoff**: after the n-th consecutive failure (n ≥ 1) the next attempt is
+  `min(60 min, 1 min x 2^(n-1))` (1, 2, 4 … 60 min) with ±10 %
   jitter from the injected `Jitter`; success resets it. `RateLimited` and `Unauthorized`
   start at 15 min. `NotConfigured` and `Unsupported` are not failures: they are re-checked at
   the source's normal interval and never count towards backoff.
@@ -899,10 +945,15 @@ That `WebviewUrl::App` keeps a fragment is **assumed** (checked in T11); the fal
 initialisation script that sets one frozen global from the same closed vocabulary.
 
 ### 7.4 IPC types: exactly what crosses the boundary
-Defined in `jev-usage-core::ipc`, `#[serde(rename_all = "snake_case")]`, tagged enums with
-`#[serde(tag = "state")]`/`"kind"`. TypeScript is generated by `ts-rs` into
+Defined in `jev-usage-core::ipc`, `#[serde(rename_all = "snake_case")]`, internally tagged
+enums whose tag is the one shown in the block below (`state` for `UsageView`, `kind` for
+`MeterView`, `WindowKind`, `StaleCause` and `RefreshTarget`, `name` for `Route`, `status` for
+`Outcome`, `code` for `CommandError`). TypeScript is generated by `ts-rs` into
 `dashboard/src/lib/ipc/bindings/` and checked for drift in CI. `u64`/`i64` fields carry
-`#[ts(type = "number")]` (all values are far below 2^53). The block below shows the shapes;
+`#[ts(type = "number")]` (all values are far below 2^53; `ts-rs` would print `bigint`), and
+`MeterId`/`Label` fields carry `#[ts(type = "string")]` (their serde impls are hand-written).
+No IPC type is a unit struct, an empty tuple struct or an empty enum: `ts-rs` 10 prints
+those as `Record<string, never>`, `never[]` and `never` (read in its source), which 1a bans. The block below shows the shapes;
 where `ts-rs` prints an equivalent type differently, the generated files are authoritative.
 The generator is `ts-rs` (verified on a scratch crate with these shapes, version 10: tagged
 enums, struct variants, `Option`, `Vec`, the generic `Outcome<T>`, `()` as `null`, optional
@@ -1008,7 +1059,9 @@ The data is tiny but long-lived and must survive crashes and upgrades. The cost 
   mode of the main database file, so the store creates the main file 0600 itself (open with
   mode 0600 before SQLite touches it) and does not rely on the process umask; a test asserts
   all three modes with a umask of 022. `journal_mode=WAL`, `synchronous=NORMAL`,
-  `auto_vacuum=INCREMENTAL`, `foreign_keys=ON`, `secure_delete=ON`, `busy_timeout=2000`.
+  `auto_vacuum=INCREMENTAL`, `foreign_keys=ON`, `secure_delete=ON`, `busy_timeout=2000`,
+  `temp_store=MEMORY` (a large `GROUP BY` never spills into a temporary file outside the
+  state directory).
 - Schema v1 (numbers and closed-vocabulary keys only):
   ```sql
   CREATE TABLE meter (id INTEGER PRIMARY KEY, provider TEXT NOT NULL, meter_key TEXT NOT NULL,
@@ -1032,14 +1085,14 @@ The data is tiny but long-lived and must survive crashes and upgrades. The cost 
   from the last stored sample, or when 15 minutes have passed since it (a heartbeat, so the
   chart can tell "flat" from "no data").
 - `series`: aggregation to at most `max_points` buckets is done **in SQL** (`GROUP BY` bucket
-  with min, max and last), so a query never loads the raw rows of a range into memory. Day,
-  week and month are served from `sample` alone (all inside raw retention); quarter is
-  `rollup_hour` for the part older than raw retention plus `sample` for the rest, without
-  overlap. It returns the points, the bucket width, and the reset marks. Marks are also
+  with min, max and last), so a query never loads the raw rows of a range into memory. The
+  store sees only `from` and `to`: a span of at most `RAW_RETENTION` (day, week, month) is
+  served from `sample` alone; a longer span (quarter) is a **rollup query**: `rollup_hour`
+  for hours before the oldest raw sample plus `sample` for the rest, without overlap. It returns the points, the bucket width, and the reset marks. Marks are also
   bounded in SQL: the `resets_at_s` of raw samples in range are grouped into buckets of half
   the window length (1 hour when the length is unknown) and at most 130 groups are read;
-  `history::reset_marks` then collapses neighbours. `resets` is **empty** for the quarter
-  range (rollups carry no reset time) and whenever more than 64 marks would result (a 5-hour
+  `history::reset_marks` then collapses neighbours. `resets` is **empty** for a rollup
+  query (the quarter range: rollups carry no reset time) and whenever more than 64 marks would result (a 5-hour
   window over a month): a partial set of marks would mislead.
 - Rollups are written only by the prune: raw samples older than raw retention are folded
   into `rollup_hour` (`lo/hi/last` per hour) and deleted in the same transaction.
@@ -1133,7 +1186,13 @@ screen-reader user hears what a sighted user sees change, once. No extra IPC is 
 ### 8.3 What is never read
 - `gateway.jsonl`, `turns.jsonl`, `code-turns.jsonl`, `orch*.jsonl`, `history`, `sessions/`,
   `gateway.out`: **never opened**. An architecture test fails if any of these file names
-  appears in dashboard source outside the deny-list test itself.
+  appears in dashboard source outside the deny-list test itself. The rule is really an
+  allow-list: in the gateway's state directory the dashboard opens `usage.jsonl`,
+  `usage.jsonl.1` and its own `dashboard/` subdirectory, and nothing else (`archive/`,
+  `orch/`, `cooldowns.json`, `mcp-delegate-*.json` and whatever is added later included).
+  Honest limit: the directory watch (7.2) delivers the **names** of top-level entries that
+  are created, moved or deleted there; they are compared with the log's name and dropped,
+  never stored or logged.
 - In `usage.jsonl`: only `ts_ms` and `ratelimit` keys beginning
   `anthropic-ratelimit-unified-`. Honest limit: reading a file necessarily brings its bytes
   through a private read buffer and the JSON tokenizer. Those buffers are reused, never
@@ -1179,9 +1238,11 @@ screen-reader user hears what a sighted user sees change, once. No extra IPC is 
   these lines (numbers and enum names) do end up on disk there; and GTK and WebKit print
   their own warnings to the same stderr, which the app does not control.
 - **Errors**: every error type is a field-less or numeric enum. No `anyhow`, no
-  `Box<dyn Error>`, no `to_string()` of a foreign error crosses a module boundary
-  (foreign errors are classified at the adapter and dropped).
-- **Panics**: `panic = "abort"` in `dist`; the panic hook prints only the source file's
+  `Box<dyn Error>`, no foreign error type (`std::io::Error`, `rusqlite::Error`,
+  `reqwest::Error`, `zbus::Error`) and no `to_string()` of one in any `pub` signature:
+  foreign errors are classified where they occur and dropped (file helpers return the
+  field-less `io::fsutil::FsError`, not `std::io::Result`).
+- **Panics**: unwinding (5); the panic hook prints only the source file's
   **base name** and the line, never the payload and never the directory (a dependency's
   location is an absolute path under `~/.cargo`, which contains the user name). No crash
   reporter, no upload. Core dumps disabled.
@@ -1210,7 +1271,8 @@ impl<T: Zeroize> Drop for Secret<T> { /* zeroize */ }
 ```
 - The key is read at fetch time, used for one request, and dropped (zeroized) when the fetch
   ends. It is not cached between fetches and never placed in a struct that outlives the call.
-- It is read by `io::secrets::deepseek_key(&KeySources) -> Option<Secret<String>>` (the
+- It is read by `io::secrets::deepseek_key(KeySources) -> Option<Secret<String>>` (taken by
+  value: a `Secret` cannot be cloned out of a borrow; the
   sources are injected, so tests never touch the real environment or home): process environment
   first, else the env file through `io::envfile` (a `Zeroizing<String>` parsed with the
   engine's pure `embed::parse_env`; DRY: same parsing rules as the engine).
@@ -1229,19 +1291,31 @@ One module, `io::proc`, is the only place `std::process`/`tokio::process` may be
 - **Resolution, without running anything** (`proc::resolve(Program) -> Resolved`): take the
   first executable file of that name on the app's `PATH`. If it is a mise launcher (its
   path has a `command-wrappers` or `shims` component, or it resolves through symbolic links
-  to a file named `mise`), the tool counts as installed only when
-  `<mise data>/installs/<tool>/` contains at least one version directory that has entries
-  (`<mise data>` is `$MISE_DATA_DIR`, else `$XDG_DATA_HOME/mise`, else
-  `~/.local/share/mise`). No hit, or a launcher with no install on disk, is `NotInstalled`
-  and **no process is started**, so a first-run installer can never be triggered.
+  to a file named `mise`), the tool counts as installed only when some version directory
+  under `<mise data>/installs/<tool>/` holds the tool's **executable**: a regular file
+  with an execute bit named `<tool>`, directly in the version directory or in its `bin/`
+  (the two layouts seen, 3.1; `<mise data>` is `$MISE_DATA_DIR`, else `$XDG_DATA_HOME/mise`,
+  else `~/.local/share/mise`). A directory that merely has entries (an interrupted
+  download) does not count. No hit, or a launcher with no executable on disk, is
+  `NotInstalled` and **no process is started**, so neither mise's first-run installer nor
+  the account wrapper's explicit `mise install`/`mise use -g` fallback (3.1) can be reached
+  through a missing tool. Erring towards `NotInstalled` on an unknown layout is the safe
+  side: the card says the tool was not found.
 - The program is then started **by the name `PATH` gave**, wrapper included, because on this
   machine the wrapper is what selects the active account (3.1). The four-hourly self-update
   and any other install are switched off for the child with the constants
   `MISE_OFFLINE=1`, `MISE_AUTO_INSTALL=false`, `MISE_EXEC_AUTO_INSTALL=false` and
-  `MISE_NOT_FOUND_AUTO_INSTALL=false` (that mise maps them to its settings is verified, 3.1;
-  that a wrapper run then never downloads is **assumed** and checked in T04 by comparing
-  mise's `installs/` and `downloads/` listings before and after a real status run). The
-  process-group kill below is the backstop if that assumption is false.
+  `MISE_NOT_FOUND_AUTO_INSTALL=false` (these are mise's real variable names and it maps
+  them to its settings: verified, 3.1; its documentation says offline blocks every HTTP
+  request and that no update runs offline; that a wrapper run on this machine then never
+  downloads and never rewrites mise's configuration is still **assumed** and checked in T04
+  by comparing mise's `installs/`, `downloads/` and `incomplete-installs/` listings and a
+  hash of `~/.config/mise/config.toml` before and after a real status run). The
+  process-group kill below is the backstop for a download; nothing in the app can undo a
+  configuration write, which is why the executable check above comes first. Honest limits:
+  the switches are inherited by the real tool and anything it starts through mise; and a
+  CLI's **own** updater (not mise's) is outside the app's control: the same before/after
+  listing shows whether a status run triggers one.
 - Arguments are constant arrays. No shell, no string interpolation.
 - Environment: `env_clear()` then exactly these, each only if set in the parent: `HOME`,
   `USER`, `LOGNAME`, `PATH`, `LANG`, `LC_ALL`, `XDG_CONFIG_HOME`, `XDG_DATA_HOME`,
@@ -1262,7 +1336,9 @@ One module, `io::proc`, is the only place `std::process`/`tokio::process` may be
   alone would leave the real tool running behind its launcher (`codex` and `claude` are
   wrappers here). If the app itself is killed, a `codex app-server` child ends on its own
   when its stdin closes (3.1).
-- Child output is parsed by an allow-list parser and never logged or stored raw.
+- Child output is parsed by an allow-list parser and never logged or stored raw. Every
+  buffer `proc` reads child output into is zeroized when the run ends (the status output
+  contains the e-mail, 3.1), not only the probe's own buffer.
 - **The login probe** (`io::probe::CliProbe`, the only `LoginProbe` used in production),
   for Codex and Claude only, and only for a provider that is not hidden:
   1. `proc::resolve`; `NotInstalled` ends here with nothing run.
@@ -1354,9 +1430,14 @@ One module, `io::proc`, is the only place `std::process`/`tokio::process` may be
 - At start (`hardening::apply`), before any thread or child exists: `umask(0o077)`, core
   dumps off (`RLIMIT_CORE = 0`), `PR_SET_DUMPABLE=0`, the panic hook. Uses safe wrappers from
   `rustix`; `unsafe` is forbidden (`#![forbid(unsafe_code)]`) in all three app crates (1a).
-  That Tauri's `generate_context!`/`generate_handler!` expansions and the `rustix` calls
-  compile under it is **assumed** and confirmed by T00 on the scaffold; if one does not, the
-  lead brings it to the user instead of relaxing the rule. Children inherit
+  That Tauri's `generate_context!`, `generate_handler!` and `#[tauri::command]` expansions
+  compile under it **and** pass the `disallowed_types` lint (they handle JSON values
+  internally), and that the `rustix` calls exist as safe functions (`umask`, `setrlimit`,
+  `set_dumpable_behavior`, `kill_process_group`, the timerfd calls: present in rustix 1.1,
+  read in its source), is **assumed** and confirmed by T00 on the scaffold; if one does not,
+  the lead brings it to the user instead of relaxing the rule. `RLIMIT_CORE = 0` is
+  inherited by every child, WebKit's helpers included; the dumpable flag is not (it resets
+  on `exec`). Children inherit
   the umask (their files become private, which is harmless). `PR_SET_DUMPABLE=0` makes
   `/proc/<pid>` owned by root; if the T11 manual check finds that this breaks a portal
   lookup, WebKit's sandbox helper or its accessibility bridge on this machine, it is dropped
@@ -1372,21 +1453,31 @@ One module, `io::proc`, is the only place `std::process`/`tokio::process` may be
   `cargo audit` as a second advisory source.
 - Direct Rust dependencies, complete list (additions need lead approval):
   core: `serde`, `serde_json`, `zeroize`, `ts-rs` (dev/bindings feature); dev: `proptest`,
-  `static_assertions`, `syn` (feature `full`, for the type-file test). io: `tokio`, `inotify`
-  (feature `stream`), `rusqlite` (bundled), `reqwest` (rustls),
+  `static_assertions`, `syn` (feature `full`, for the type-file test). io: `jev-usage-core`,
+  `tokio`, `inotify` (default features off: its descriptor is driven by tokio's `AsyncFd`
+  like the timerfd, so no stream adapter crate is needed), `rusqlite` (bundled), `reqwest`
+  (the engine's line: no default features, `rustls-tls`; never `native-tls`),
   `rustix`, `zeroize`, `serde_json`, `jev-router`; dev: `tempfile`, `proptest`. shell:
+  `jev-usage-core`, `jev-usage-io`, `tokio` (signals, the 30 s timer, channel types),
   `tauri` (feature `tray-icon` added to the defaults; dev: feature `test`), `tauri-build`,
   `tauri-plugin-single-instance`, `notify-rust` (default features off, `z` only: the zbus
-  backend, no image support), `zbus` (the version `notify-rust` already resolves, so no
-  second copy), `chrono` (no default features, `clock`), `rustix`.
+  backend, no image support), `zbus` (the version `notify-rust` already resolves; T00
+  reports if the single-instance plugin pulls a second major version), `chrono` (no default
+  features, `clock`), `rustix`; dev: `tempfile`, `serde_json`. There is no `rand`:
+  `SystemJitter` takes its bits from `std::collections::hash_map::RandomState`.
 - JavaScript: `pnpm-lock.yaml` committed, `--frozen-lockfile`; exact versions
   (`save-exact=true`); `.npmrc`/workspace settings: dependency build scripts blocked except an
   explicit allow-list (`esbuild`), `minimumReleaseAge` of 7 days for new versions;
   `pnpm audit --prod` must be clean. Runtime dependencies: `svelte`, `@tauri-apps/api`, two
-  font packages (assets only). Everything else is a dev dependency (Vite, `svelte-check`,
-  Vitest, Testing Library, `axe-core`, `@axe-core/playwright`, `@playwright/test`, ESLint with
-  `typescript-eslint` and `eslint-plugin-svelte`, `typescript`,
-  stylelint, Prettier, `@tauri-apps/cli`).
+  font packages (assets only). Everything else is a dev dependency: `vite`,
+  `@sveltejs/vite-plugin-svelte`, `svelte-check`, `typescript`, `vitest`,
+  `@vitest/coverage-v8`, `jsdom`, `@testing-library/svelte`, `@testing-library/user-event`,
+  `axe-core`, `@axe-core/playwright`, `@playwright/test`, `eslint`, `typescript-eslint`,
+  `eslint-plugin-svelte`, `jiti` (ESLint needs it to load a TypeScript config), `stylelint`,
+  `stylelint-declaration-strict-value` and `postcss-html` (the token rule inside `.svelte`
+  files), `prettier`, `prettier-plugin-svelte`, `@tauri-apps/cli`. T00 may swap one of these
+  for an equivalent only with lead approval and reports the final list; a tool missing from
+  this list is a contract change, not a worker's choice.
 - No CDN, no remote font, no remote script: everything is bundled and served from the app.
 - Build tools fetched at install time (`@tauri-apps/cli`) are pinned in the lockfile.
 
@@ -1429,7 +1520,9 @@ is a rule the reviewers check.
     the source, the live check; Settings holds diagnostics.
   Nothing at level 1 or 2 is pointer-only or sight-only. A level-1 disclosure opens on focus
   as well as hover, stays open while the pointer is over it, closes on `Esc` without moving
-  focus (WCAG 1.4.13), and never covers the control that opened it. Its complete content is
+  focus (WCAG 1.4.13), and never covers the control that opened it. `Esc` has one order of
+  precedence everywhere: it closes an open dialog, else an open level-1 disclosure, else it
+  goes back one view; one press does one of these. Its complete content is
   **always** in the row's accessible text (`aria-valuetext`), so a screen-reader user gets
   the detail without opening anything, and a keyboard user reaches it with Tab alone.
 - **Beautiful.** Considered typography (two families, a seven-step scale, tabular numerals
@@ -1451,8 +1544,11 @@ Tray icon + menu (always)        Notifications (threshold crossings only)
 Three views, an in-memory router (no URL bar, no history plugin), `Esc` goes back.
 
 ### 9.3 Overview
-One card per configured provider, ordered by severity (critical, warn, ok) then by fixed
-provider order; ties never reorder on their own. Providers without a usage interface are one
+One card per configured provider, ordered by severity (critical, warn, ok, unknown) then by
+fixed provider order; ties never reorder on their own. A reorder never takes the keyboard
+focus away: when a card moves while an element inside it has focus, that same element has
+focus afterwards (moving a DOM node drops focus in WebKit, so the screen restores it), and
+the level change that caused the move is what the live region announces (9.10). Providers without a usage interface are one
 quiet line at the bottom.
 
 ```
@@ -1679,9 +1775,18 @@ extended to 32.
 | `text-2` | `oklch(44% 0.012 250)` | `oklch(74% 0.008 250)` | secondary (AA) |
 | `accent` | `oklch(52% 0.16 255)` | `oklch(74% 0.13 255)` | focus, links, selected |
 | `ok` | = `accent` | = `accent` | below warn. An alias of the accent, not a fourth hue: a healthy screen shows neutrals and one blue |
-| `warn` | `oklch(56% 0.13 70)` | `oklch(80% 0.13 80)` | warn level (amber) |
+| `warn` | `oklch(54% 0.11 70)` | `oklch(80% 0.13 80)` | warn level (amber) |
 | `critical` | `oklch(52% 0.19 30)` | `oklch(72% 0.17 32)` | critical level (vermilion) |
-| `unknown` | `oklch(58% 0.006 250)` | `oklch(62% 0.006 250)` | no data |
+| `unknown` | `oklch(58% 0.006 250)` | `oklch(62% 0.006 250)` | no data (glyph and outline only, never a text colour) |
+
+Computed for this review from the table (OKLCH → sRGB → WCAG contrast): every text colour
+(`text`, `text-2`, `accent`, `warn`, `critical`) is ≥ 4.5:1 on `bg`, `surface` **and**
+`surface-2` in both themes (lowest: light `warn` 4.69 on `surface-2`), `border-strong` and
+`unknown` are ≥ 3:1, and every value is inside the sRGB gamut. The earlier light `warn`
+(`56% 0.13 70`) was outside the gamut and 4.32:1 on `surface-2`; it is replaced above.
+`border` (about 1.3:1) is decoration only: nothing that must be seen to operate or
+understand the UI relies on it. Status words are set in `text`/`text-2` or their level's
+hue, never in `unknown`.
 
 Status is **never colour alone**: each level also has a shape and a word.
 
@@ -1698,9 +1803,15 @@ token file: text ≥ 4.5:1 (target 7:1 for `text`), large numerals ≥ 4.5:1, UI
 status glyphs ≥ 3:1, in both themes.
 
 **Theme** follows the OS (`prefers-color-scheme`) with a Settings override applied as
-`data-theme` on `<html>` before first paint (no flash): the shell puts the saved theme in the
-URL fragment when it creates the window (7.3), and a small bundled script, loaded first in
-`<head>` (not inline: the CSP forbids that), sets the attribute synchronously. `color-scheme` is set so native
+`data-theme` on `<html>` before the app renders anything: the shell puts the saved theme in
+the URL fragment when it creates the window (7.3), and `boot.ts`, the **first import of the
+entry module**, sets the attribute. It cannot be an inline script (the CSP forbids that) or
+a classic blocking script (Vite bundles TypeScript only as modules, and a hand-written
+`.js` file is banned by 1a). A module runs before `DOMContentLoaded`, and `<body>` is empty
+until the app mounts, so the only thing that could be painted earlier is the page
+background. That WebKitGTK paints nothing before the module runs is **assumed** (T11's
+manual list: a dark override on a light desktop shows no light flash); the fallback is the
+shell giving the window the theme's `bg` as its native background colour. `color-scheme` is set so native
 controls match. `forced-colors: active` is supported (system colours, borders instead of
 fills).
 
@@ -1750,8 +1861,10 @@ contrast. Each line below is checked by a named test or by the manual pass, and 
 blocks the task.
 
 - **Contrast** (1.4.3, 1.4.11): text ≥ 4.5:1 (primary text ≥ 7:1), large numerals ≥ 4.5:1,
-  control boundaries, focus ring, bar fill against track, and status glyphs ≥ 3:1, in both
-  themes; computed from the token file by a test.
+  control boundaries, focus ring, bar fill against track, status glyphs, and the chart's
+  line and threshold lines against the plot background ≥ 3:1, in both themes, on every
+  surface a colour is used on (`bg`, `surface`, `surface-2`); computed from the token file
+  by a test.
 - **Not colour alone** (1.4.1): every level has a glyph shape, a bar pattern and a word (9.7).
 - **Keyboard** (2.1.1, 2.1.2): every function, no trap. Tab order equals reading order
   (2.4.3). Shortcuts: `R` refresh, `,` settings, `Esc` back, `1`–`6` open provider, `?`
@@ -1778,15 +1891,29 @@ blocks the task.
 - **Reflow and zoom** (1.4.4, 1.4.10, 1.4.12): a desktop web view has no browser zoom of its
   own, so the app provides it: `settings.zoom_pct` (100 to 200 % in steps of 25; Settings,
   and Ctrl + plus / minus / zero in the UI, which only call `update_settings`), applied by
-  the shell to the whole web view (8.8) and remembered. Usable at 200 % and at a 320 px wide
-  window with no horizontal scroll and no clipped text; sizes are in `rem`; user text
-  spacing is respected.
+  the shell to the whole web view (8.8) and remembered. The requirement, stated in CSS
+  pixels so it can be tested: no horizontal scroll and no clipped or overlapping text at a
+  viewport of **320 CSS px** wide, which is a 320 px window at 100 % and a 640 px window at
+  200 % (the two cases the tests run; Playwright emulates the second as a 320 CSS px
+  viewport at device pixel ratio 2). Below 320 CSS px (a 320 px window at 200 %) the page
+  may scroll horizontally but nothing is clipped. Sizes are in `rem`; the four text-spacing
+  values of 1.4.12 (line height 1.5, paragraph 2 em, letter 0.12 em, word 0.16 em) applied
+  by a test lose no content.
+- **Forms** (3.3.1, 3.3.2, 3.3.3, 1.3.1): every control has a visible label that is its
+  accessible name; a threshold error is text next to the field, tied to it with
+  `aria-describedby` and `aria-invalid`, and says what is allowed ("Warn must be below
+  critical (95)"); nothing is reported by colour or by an automatic correction alone.
+- **Updating content** (2.2.2): numbers update in place because that is the app's
+  function; nothing moves, scrolls or blinks, and no message disappears on a timer except
+  the "Copied" and "Saved" confirmations, which are also announced.
 - **Page** (2.4.2, 3.1.1): `<html lang="en">`; the document title names the view
   ("Flashboard: Overview", "Flashboard: Codex", "Flashboard: Settings").
 - **Motion** (2.3.3): everything in 9.7 stops under `prefers-reduced-motion`; nothing
   flashes; nothing loops.
 - **Forced colours**: usable under `forced-colors: active`.
 - **Disclosure** (1.4.13): the level-1 detail follows the rules in 9.1.
+- **Focus kept** (2.4.3, 2.1.1): a live update never moves or drops the keyboard focus,
+  including when cards reorder (9.3).
 
 Automated, in CI: axe (`axe-core`) with **zero violations of any impact** on every component
 test and on every screen x state x theme in Playwright; the contrast test; keyboard-path
@@ -1883,7 +2010,7 @@ hidden element referenced by `aria-describedby`.
 | choice | decision | why |
 |---|---|---|
 | Framework | **Svelte 5** (runes) + TypeScript at the strictness of 1a (every component `lang="ts"`, typed `$props()`) | Compiles to small direct DOM code, about a third of a React bundle here; fine-grained updates suit a few live numbers; scoped styles; no runtime CSP issues. |
-| Build | Vite, static output (no SSR, no router package), `build.assetsInlineLimit: 0` | Tauri serves static files; nothing is inlined as `data:` (8.8). |
+| Build | Vite, static output (no SSR, no router package), `build.assetsInlineLimit: 0`. Svelte's options are passed inline to the plugin in `vite.config.ts` with `configFile: false`; there is **no `svelte.config.js`** (1a bans `.js`). That `svelte-check` and the ESLint plugin need no config file is **assumed**; T00 checks it, and reports to the lead if one of them insists on the file | Tauri serves static files; nothing is inlined as `data:` (8.8). |
 | State | One `usage` store (a rune-based class) fed by `get_snapshot` + the `snapshot` event; `settings` store; a tiny in-memory router. Files that use runes outside a component are named `*.svelte.ts` (Svelte 5 compiles runes only there) | The backend owns the state; the UI holds a read model. No state library. |
 | IPC | `@tauri-apps/api` `invoke`/`listen`, wrapped once in `src/lib/ipc/client.ts` behind an `IpcClient` interface (every method returns `Promise<Outcome<T>>`) with a mock implementation for tests | One seam; components never import Tauri and never see a rejection. |
 | Chart | Hand-written SVG component (`Chart.svelte`, about 250 lines) | Full control of accessibility, theming, step rendering and gaps; no dependency. |
@@ -1895,7 +2022,10 @@ hidden element referenced by `aria-describedby`.
 1. *Compiler*: `tsconfig.json` has `strict`, `noUncheckedIndexedAccess`,
    `exactOptionalPropertyTypes`, `noImplicitOverride`, `noPropertyAccessFromIndexSignature`,
    `noImplicitReturns`, `noFallthroughCasesInSwitch`, `noUnusedLocals`, `noUnusedParameters`,
-   `allowUnreachableCode: false`, `verbatimModuleSyntax`, `allowJs: false`.
+   `allowUnreachableCode: false`, `verbatimModuleSyntax`, `allowJs: false`,
+   `erasableSyntaxOnly` (so Node runs `check-types.ts` directly, no loader dependency) and
+   `resolveJsonModule` (tests import `format-vectors.json` as a typed module; that is the
+   only way JSON enters TypeScript).
    `useUnknownInCatchVariables` stays on as part of `strict`, and can never matter because
    catch bindings are banned (below).
 2. *Lint* (`typescript-eslint` `strictTypeChecked` and `stylisticTypeChecked`, with type
@@ -1906,14 +2036,33 @@ hidden element referenced by `aria-describedby`.
    `no-restricted-types` for `Function`, `Object` and `{}`, `switch-exhaustiveness-check`,
    `explicit-module-boundary-types`, and `no-restricted-syntax` for the AST nodes
    `TSAnyKeyword`, `TSUnknownKeyword`, `TSNeverKeyword`, `TSTypeAssertion`, `TSAsExpression`
-   (except `as const`), `TSNonNullExpression` and `CatchClause[param]`.
+   (except `as const`), `TSNonNullExpression` and `CatchClause[param]`, plus the
+   **assertions in disguise**: `TSTypePredicate` (`x is T` and `asserts x`: an unchecked
+   claim), every `declare` of a value, function, module or global (the one ambient file
+   `src/env.d.ts`, which only references Vite's and Svelte's types, is the exception), the
+   definite-assignment `!` (`let x!: T`), explicit type arguments on `querySelector`,
+   `querySelectorAll`, `closest` and `getElementById` (narrow with `instanceof`), calls of
+   `JSON.parse` and `.json()`, and a parameter on any rejection callback (`.catch(e => …)`,
+   the second argument of `.then`): a rejection value is `any`, so the callback takes none.
 3. *Independent check* (`dashboard/scripts/check-types.ts`, TypeScript compiler API, no
    ESLint involved): walks every source file, the generated bindings, the tests, the e2e
-   specs and the config files (all TypeScript), plus the script blocks of every `.svelte`
-   file, and fails on any `any`/`unknown`/`never` keyword node, any assertion, any non-null
-   `!`, any `@ts-` directive comment, any `<script>` without `lang="ts"`, and any `.js` file
-   outside `node_modules`. It is syntax-tree based, so the word "never" in a sentence of
-   `copy.ts` is not a finding.
+   specs and the config files, plus every `.svelte` file **whole** (parsed with
+   `svelte/compiler`'s `parse`, so expressions in the markup are covered as well as the
+   script blocks: Svelte 5 accepts `as` inside `{…}`), and fails on every construct the
+   lint layer bans (the keyword nodes, assertions, non-null and definite `!`, type
+   predicates, `declare`, `JSON.parse`), any `@ts-` directive comment, any `<script>`
+   without `lang="ts"`, any `svelte-ignore` comment other than the one of 9.3, and any
+   **tracked** `.js`, `.mjs` or `.cjs` file (`git ls-files`; build output is not source).
+   It is syntax-tree based, so the word "never" in a sentence of `copy.ts` is not a finding.
+   It also closes the hole syntax cannot see, an **inferred** `any`: over the `.ts` and
+   `.svelte.ts` files it asks the type checker for the type of every expression and
+   declaration and fails when one is `any` or `unknown` (this is how a third-party
+   signature that returns `any`, such as `CustomEvent.detail` or `Object.fromEntries`, is
+   caught without anyone writing the keyword); inside `.svelte` files the same job is done
+   by the lint layer's `no-unsafe-*` rules.
+   Configuration files are TypeScript where the tool loads TypeScript (`vite`, `vitest`,
+   `playwright`, `eslint`) and JSON where it does not (`.stylelintrc.json`,
+   `.prettierrc.json`: data, not code).
 
 Patterns that make this workable:
 - **No value of unknown type is ever created.** IPC results are `Outcome<T>` (7.3);
@@ -1927,7 +2076,11 @@ Patterns that make this workable:
   switch-exhaustiveness lint for tagged unions.
 - **Narrowing instead of asserting**: DOM values are narrowed with `instanceof`; optional
   values with explicit checks; array reads go through `noUncheckedIndexedAccess`.
-- Third-party declaration files in `node_modules` are not source and are outside the rule.
+- Third-party declaration files in `node_modules` are not source and are outside the rule,
+  but a value they type as `any` may not enter our code (the inferred-`any` check above).
+- Explicit type arguments on `invoke` and `listen` are written only in `ipc/tauri.ts`; they
+  are the one place the UI states a type the compiler cannot check, and the Rust command
+  tests cover it from the other side.
 
 Budgets: JavaScript ≤ 70 KB gzip, CSS ≤ 12 KB gzip, fonts ≤ 120 KB (checked in CI from the
 build output); no request other than the app origin and IPC at run time (Playwright); first
@@ -1944,7 +2097,11 @@ Frontend tests:
   with the production CSP header): each screen x state x theme x width (360, 720, 1200)
   screenshot compared to a committed baseline; axe on each; keyboard-path and live-region
   tests (9.10); reduced-motion and forced-colors runs; one run at device pixel ratio 2
-  (hairlines, the chart); a 200 % zoom run at 640 px; "no network" assertion. Browser:
+  (hairlines, the chart); the 320 CSS px reflow runs of 9.10 (320 px at 100 %, and 640 px
+  at 200 % emulated as 320 CSS px at ratio 2); a text-spacing run (the 1.4.12 values
+  injected as a style sheet, in a browser context with `bypassCSP` for that run only);
+  a focus-kept run (a snapshot that reorders cards while a meter row has focus); "no
+  network" assertion. Browser:
   **Chromium** (present on this machine; Playwright's WebKit does not run on Arch). These
   baselines guard against regressions; they do not prove WebKitGTK renders the same, which
   is what the manual check list of T11 and T13 covers.
@@ -1963,8 +2120,23 @@ and that nothing merges without the gates below and a lead review.
   `unwrap_used`, `expect_used`, `panic`, `indexing_slicing`, `arithmetic_side_effects`,
   `as_conversions`, `print_stdout`, `print_stderr`, `dbg_macro`, `todo`, `unimplemented`
   denied outside tests; `unsafe_code` **forbidden in all three crates**; no
-  `serde_json::Value` or `json!` outside tests (`clippy::disallowed_types`/`disallowed_macros`
-  and the architecture test); `missing_docs` warned on public items.
+  `serde_json::Value` or `json!` outside tests (`clippy::disallowed_types`/`disallowed_macros`,
+  configured in `dashboard/clippy.toml`, which clippy finds from each app crate's manifest
+  directory upwards and which therefore never applies to the engine, and the architecture
+  test); `missing_docs` warned on public items.
+  **Exceptions written here once, so no worker has to ask** (the architecture test fails on
+  any other `allow`): (1) *tests*: clippy's in-test switches cover only `#[test]` functions,
+  not helpers, and `disallowed_types` has no such switch, so every file under `tests/` and
+  every `#[cfg(test)] mod` starts with one fixed header,
+  `allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing,
+  clippy::arithmetic_side_effects, clippy::as_conversions, clippy::disallowed_types,
+  clippy::disallowed_macros)`, character for character; (2) *one cast*: Rust has no checked
+  conversion from a float to an integer, so `quantity.rs` has exactly one private function
+  with `allow(clippy::as_conversions, clippy::cast_possible_truncation,
+  clippy::cast_sign_loss)` that turns a finite, range-checked `f64` into `u32`;
+  `Percent::from_fraction` is its only caller, and nothing else in the three crates
+  converts a float to an integer (the tray rasteriser uses integer arithmetic, durations
+  use `Duration::mul_f64` and `try_from`).
 - TypeScript: the three layers of section 10 ("Type discipline"): `tsc --noEmit` and
   `svelte-check` with zero errors and zero warnings, ESLint (type-checked strict rules plus
   the security rules of 8.10, no inline configuration), `check-types.ts`; stylelint (token
@@ -1981,7 +2153,7 @@ and that nothing merges without the gates below and a lead review.
 | adapter | each source against recorded fixtures and failure cases (timeout, garbage, truncated, huge line, non-zero exit, 401, 429, 500, offline) using a stub program and a local stub HTTP server | `cargo test` |
 | integration | service loop with fake clock, fake timer and fake sources: scheduling, backoff, visibility, suspend jump, clock set, alerts once, canary end to end | `cargo test` with `FakeClock`/`FakeTimer` (and tokio paused time for fetch timeouts) |
 | component / screen / visual / a11y | section 10 | Vitest, Playwright, axe |
-| real binary | smoke test without a driver; WebDriver e2e (required; NOT RUN until the user has installed the driver, 1a) | 11.4 |
+| real binary | smoke test without a driver; WebDriver e2e (required; the driver is installed here, 3.4; NOT RUN without it is never a pass, 1a) | 11.4 |
 | security | section 8.10 | all of the above |
 
 ### 11.3 Coverage and budgets
@@ -1994,9 +2166,13 @@ and that nothing merges without the gates below and a lead review.
   Summed over the **whole process tree** (the app and any WebKit helper that is still alive)
   and over all threads (`/proc/<pid>/task/*/`): CPU time < 0.5 s, average wakeups (voluntary
   context switches) < 2 per minute, RSS ≤ 60 MB; binary ≤ 15 MB. The script also reports,
-  without a budget, the CPU time and context switches of one stub Codex poll. That
-  destroying the window really ends WebKit's helper processes is assumed (16) and this
-  measurement is what checks it.
+  without a budget, the CPU time and context switches of one stub Codex poll, and the same
+  three figures for T00's empty scaffold started the same way (the floor that Tauri, GTK
+  and the tray library cost before any of our code runs). That destroying the window really
+  ends WebKit's helper processes is assumed (16) and this measurement is what checks it.
+  There is no code fallback for either case: if the helpers stay, or the scaffold's floor
+  alone is above a budget, the lead reports the measured numbers and the user decides
+  whether the budget is restated; a budget is never met by changing how it is measured.
 
 ### 11.4 `scripts/ci.sh`
 One script, fail-fast, prints a table of stages. Stages: (1) engine: `cargo build
@@ -2012,7 +2188,9 @@ Wayland display but isolated from the user's session: under `dbus-run-session` (
 a synthetic `usage.jsonl`, `WAYLAND_DISPLAY` set to the **absolute path** of the real socket
 (it is otherwise looked up in `XDG_RUNTIME_DIR`), and a `PATH` that contains only stub
 `codex` and `claude` programs; read its stderr `diag` lines and assert `Started`, a
-successful Claude-log and Codex fetch, `WindowReady` within budget, a new sample within 3 s
+successful Claude-log and Codex fetch, `WindowReady` within budget (taken from the **second**
+launch in the same temp tree: the first one builds the font and shader caches of an empty
+home and is not what the user experiences), a new sample within 3 s
 of an appended row, rows in `history.db`, no canary anywhere in the temp tree or on stderr,
 no new file under the real state, config and data directories, and a clean exit on SIGTERM
 with no child left; (11) coverage thresholds; (12) fuzz (60 s per
@@ -2029,9 +2207,11 @@ because that one tool needs root. `scripts/ci.sh --release` treats SKIPPED **and
 as failures: per 1a the WebDriver stage is required, and NOT RUN is never a pass. Stages 10
 and 13 need a graphical session. Stage 13 runs the same isolated launch as stage 10 through
 `tauri-driver`; that the 2.54.1 driver from `webkitgtk-6.0` drives a `webkit2gtk-4.1` app of
-the same version, and that automation works with the incognito web view, are **assumed**
+the same version, that automation works with the incognito web view, and that the driver
+can inject axe into a page under the production CSP, are **assumed**
 and checked the first time the stage runs (the fallback for the second is a non-incognito
-web view in the WebDriver run only, with its data directory inside the temp tree).
+web view in the WebDriver run only, with its data directory inside the temp tree; for the
+third, the real view keeps its keyboard and content assertions and axe stays in stage 8).
 
 ### 11.5 Definition of done (per task and for v1)
 1. The task's acceptance tests exist and pass; `scripts/ci.sh` is green (no new SKIPPED).
@@ -2047,8 +2227,13 @@ web view in the WebDriver run only, with its data directory inside the temp tree
 7. Lead review passed against the task's checklist, and review rounds repeated until a full
    round finds nothing (1a). A task with an open finding is not done.
 For v1 as a whole, additionally: `ci.sh --release` green on this machine **with stage 13
-passing** (NOT RUN is not green, 1a), the idle budgets measured, a manual run beside a live
-`jev-claude` session for one day with no gateway interference, the manual check lists of
+passing** (NOT RUN is not green, 1a), the idle budgets **met** (or restated by the user,
+11.3), a manual run beside a live `jev-claude` session for one day with no gateway
+interference, which means all of: the app's only open descriptor in the gateway's state
+directory outside `dashboard/` is `usage.jsonl`, read-only (`/proc/<pid>/fdinfo`, sampled
+at start and end); owner and mode of every entry there are unchanged; `gateway.out` has
+not grown an error the day before did not have (line counts by the lead's script, which
+prints counts only); the user reports no failed turn; then the manual check lists of
 T04, T11 and T13, and the **manual screen-reader pass with Orca** over every screen and
 state: the lead supplies the written script (what must be heard, in order), the user runs
 Orca and confirms each line or reports what was said instead; every difference is a finding
@@ -2105,7 +2290,10 @@ and v1 is not done while one is open (1a).
 | Claude usage outside the gateway makes the number low | certain | honest "as of" labelling, `Elapsed` state, optional live check |
 | Tray host behaviour differs between shells | medium | menu-only interaction model; no-tray fallback decided when the window closes; tested on this machine's host (quickshell) |
 | WebKitGTK quirks (clipboard, fonts, compositing on Wayland, `prefers-color-scheme` not following the desktop) | medium | Copy falls back to selecting the text; fonts bundled; the Theme setting overrides the OS; manual check list in T11/T13 on the real web view, because the visual tests run in Chromium |
-| `WebKitWebDriver` is not in Arch's `webkit2gtk-4.1` | certain here | the user installs `webkitgtk-6.0`, which ships it (1a); until then stage 13 is NOT RUN and v1 is not done; if that driver cannot drive the 4.1 app the lead reports it and the user decides |
+| `WebKitWebDriver` is not in Arch's `webkit2gtk-4.1` | resolved here | the user has installed `webkitgtk-6.0`, which ships it (1a, 3.4); if that driver cannot drive the 4.1 app the lead reports it and the user decides |
+| The account wrapper runs an explicit `mise install` or `mise use -g` (a write to the user's mise configuration) when it finds no real binary (3.1) | low | 8.6: a tool counts as installed only with its executable on disk, so the fallback is not reached; `MISE_OFFLINE=1` blocks a download; T04 compares a hash of the mise configuration before and after |
+| The hidden app's floor (Tauri, GTK, tray library) is above the idle budget before our code runs | unknown | `measure-idle.sh` reports the empty scaffold's figures beside the app's; the user decides on a restated budget (11.3) |
+| A panic in a dependency ends the resident app until the next login | low | unwinding kept in `dist` so a task panic is contained (5); own code cannot panic by lint; main-thread panics remain fatal and are stated |
 | `PR_SET_DUMPABLE=0` upsets a portal, WebKit's sandbox helper or its accessibility bridge | low | checked by hand in T11; fallback is `RLIMIT_CORE=0` only (8.8) |
 | A session `PATH` without `codex`/`claude` (autostart on another setup) | low here (verified, 3.4) | exact copy on the card, README section, never guess directories |
 | A mise wrapper starts an install or the four-hourly self-update when we run `codex`/`claude` (both are `lazy`, `auto_update = "4h"` here) | medium | 8.6: install-on-disk check before any start; `MISE_OFFLINE=1` and the three auto-install switches in the child environment; process-group kill as backstop; before/after listing check in T04 |
@@ -2156,19 +2344,27 @@ destroying the window ends WebKit's helper processes; `incognito(true)` leaves n
 directory on disk; WebKitGTK follows the desktop's light/dark preference here;
 `PR_SET_DUMPABLE=0` does not disturb portals or WebKit; `WebKitWebDriver` from Arch's
 `webkitgtk-6.0` package can drive a `webkit2gtk-4.1` app, also with an incognito web view;
-the four `MISE_*` switches stop every download when a wrapper runs; `WebviewUrl::App` keeps a
+the four `MISE_*` switches stop every download **and every configuration write** when a
+wrapper runs here (documentation says offline stops downloads and updates; the wrapper
+script's `mise use -g` is kept unreachable by the executable check); `codex app-server`
+accepts its three request lines at once; `WebviewUrl::App` keeps a
 URL fragment; Svelte 5 runs under `freezePrototype`; Tauri's macros compile under
-`#![forbid(unsafe_code)]`; WebKitGTK exposes `role="meter"` with
+`#![forbid(unsafe_code)]` and pass `disallowed_types`; `svelte-check` and the ESLint Svelte
+plugin work without a `svelte.config.js`; WebKitGTK paints nothing before the entry module
+has set the theme; the WebDriver session can inject axe under the CSP; the scaffold's idle
+floor is inside the budgets; WebKitGTK exposes `role="meter"` with
 `aria-valuetext` to Orca. Each of these has a named check in
-the task that depends on it, and none blocks the design if it turns out false (the fallback
-is written where the assumption is used).
+the task that depends on it, and none blocks the design if it turns out false: the fallback
+is written where the assumption is used, or, for the two idle-budget assumptions and the
+`forbid`/lint ones, the stated outcome is a report to the user and not a silent relaxation.
 
 ## 17. Open questions
 Answered by the user on 2026-11-17 (section 1a): the name, the Claude live check, start at
 login, the account e-mail, what comes after v1, and the UI quality bar.
 
 Also answered on 2026-11-17 (1a): the user installs `WebKitWebDriver` (`webkitgtk-6.0`) and
-Orca, the WebDriver stage is required, and the user takes part in the screen-reader pass.
+Orca (both now installed, 3.4), the WebDriver stage is required, and the user takes part in
+the screen-reader pass.
 The interrupted `antigravity-cli` directory has been removed by the lead.
 
 Still for the user: none.

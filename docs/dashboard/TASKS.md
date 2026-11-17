@@ -35,10 +35,15 @@ everything, including this file.
 6. Lints are `-D warnings`. No `unwrap`/`expect`/`panic!`/indexing/`as` outside tests, no
    `println!`/`eprintln!`/`dbg!`, no `unsafe`, no error type that carries a string, no
    `TODO`, no `serde_json::Value` or `json!` outside tests, `#![forbid(unsafe_code)]` in all
-   three crates. A lint `allow` needs a one-line reason and lead approval.
+   three crates. A lint `allow` needs a one-line reason and lead approval; the only two
+   approved in advance are the fixed test header and the one float cast of D11.1, used
+   exactly as written there. No `pub` signature carries a foreign error type
+   (`std::io::Error` included, D8.4).
    **TypeScript (D1a, D10 "Type discipline")**: no `any`, `unknown` or `never`, no type
    assertion (`as const` and `satisfies` are fine), no non-null `!`, no `@ts-` directive, no
-   `Function`/`Object`/`{}` type, no `catch` binding, no `.js` file, every component
+   `Function`/`Object`/`{}` type, no `catch` binding and no parameter on a rejection
+   callback, no type predicate (`x is T`, `asserts`), no `declare`, no definite `!`, no
+   `JSON.parse`, no value whose inferred type is `any`, no `.js` file, every component
    `lang="ts"` with typed props, exhaustiveness by `satisfies Record<…>` tables. This holds
    for tests, e2e specs and config files too. There is no approved exception and inline
    ESLint configuration is ignored; if you believe you need one, stop and ask the lead.
@@ -59,6 +64,12 @@ everything, including this file.
 11. This machine's `codex` and `claude` are self-updating mise wrappers (D3.1). Never run
     either outside the rules of D8.6, and never start the installed Flashboard's session
     name: every launch of the real binary in a test goes through `dbus-run-session` (D8.8).
+    The account wrapper behind them can run `mise install` or rewrite the user's mise
+    configuration (D3.1). So **a worker never starts the app against the real `PATH`**:
+    `pnpm dev` and every hand launch use the stub `codex`/`claude` directory and a temp
+    `HOME` (the script `dev` sets both; T00 ships two minimal stubs, T12 replaces them with
+    the smoke test's). The real-`PATH` launch (`pnpm dev:real`) is for the lead, and only
+    after T04's manual check has confirmed the D8.6 assumptions on this machine.
 
 ## 1. DAG and waves
 
@@ -109,7 +120,8 @@ first `scripts/ci.sh`, so that everything compiles and every later task only fil
 **Owns (creates).**
 - Root: the `[workspace]` (with `exclude = [".claude", "dashboard/fuzz"]`, D5),
   `[workspace.lints]`, `[profile.dist]` tables in `Cargo.toml` (nothing else in that file
-  changes), `Cargo.lock`, `deny.toml`, `src/embed.rs`, one line `pub mod embed;` in
+  changes; no `panic = "abort"`, D5), `Cargo.lock`, `deny.toml`, `dashboard/clippy.toml`
+  (D11.1; not at the root), `src/embed.rs`, one line `pub mod embed;` in
   `src/lib.rs`, the word `pub` on `parse_codex_login` in `src/availability.rs`,
   `scripts/ci.sh` (stages 1–9 of D11.4 working, so every wave-1 to wave-3 task, the UI tasks'
   Playwright specs included, is gated from its first merge; stages 10–13 present and
@@ -131,21 +143,26 @@ first `scripts/ci.sh`, so that everything compiles and every later task only fil
   `main` window in code and shows it empty, stub modules `commands events tray tray_icon
   notifier window autostart hardening localtime bus cli`, and a placeholder `icons/` set
   (T13 replaces it).
-- `dashboard/` UI: `package.json` (exact versions, scripts `dev build check lint test
-  test:screens tauri`; `dev` passes the identifier `dev.jev.flashboard.dev`, D8.8),
+- `dashboard/` UI: `package.json` (exact versions, scripts `dev dev:real build check lint
+  test test:screens tauri`; `dev` passes the identifier `dev.jev.flashboard.dev`, D8.8, and
+  runs against stub CLIs and a temp home, rule 11; two stub programs under
+  `dashboard/e2e/smoke/stubs/`, later T12's),
   `pnpm-lock.yaml`, `.npmrc`, `tsconfig.json`, `vite.config.ts`
   (`build.assetsInlineLimit: 0`), `vitest.config.ts`, `playwright.config.ts` (Chromium
   project; the static server sends the CSP of `tauri.conf.json` as a header),
   ESLint/stylelint/Prettier configs with the rules of D8.10 (raw-HTML sinks, web storage,
   `style=` attributes), D9.7 and the complete **type discipline of D10** (`tsconfig.json`
   flags, the type-checked ESLint rule set run with `--no-inline-config --max-warnings 0`,
-  and `dashboard/scripts/check-types.ts`, all frozen; every config file is TypeScript), `index.html` (`lang="en"`), `src/main.ts`, stub
+  and `dashboard/scripts/check-types.ts`, all frozen; config files are TypeScript, or JSON
+  for stylelint and Prettier; no `svelte.config.js`, D10), `src/env.d.ts`, `index.html` (`lang="en"`), `src/main.ts`, stub
   `src/App.svelte`, stub screens `src/screens/{Overview,ProviderDetail,Settings}.svelte`,
   `src/lib/design/tokens.css` with the token **names** of D9.7 (values are T07's),
   `src/lib/ipc/bindings/*` (generated), `src/lib/ipc/client.ts` (the complete `IpcClient`
   interface of T07, types only), and stubs with the final exported signatures of T07 for
-  `src/lib/format/index.ts`, `src/lib/copy.ts`, `src/lib/stores/*.svelte.ts` and
-  `src/lib/router.svelte.ts` (so T14, T09 and T10 compile against them).
+  `src/lib/format/index.ts`, `src/lib/copy.ts`, `src/lib/stores/*.svelte.ts`,
+  `src/lib/router.svelte.ts`, `src/lib/boot.ts`, `src/lib/ipc/{tauri,mock,fixtures}.ts` and
+  the Playwright harness `e2e/screens/_harness/index.ts` (so T14, T09 and T10 compile
+  against them from the first day; without the harness stub T14's spec would not).
 - `dashboard/fixtures/`: keep `codex-app-server/` (already recorded), add
   `claude-gateway/{sample.jsonl,canary.jsonl,rotation/…}` (synthetic rows shaped like D3.2,
   both canaries of D8.10), `claude-auth/{logged_in.json,logged_out.json,text_form.txt}`
@@ -199,7 +216,9 @@ first `scripts/ci.sh`, so that everything compiles and every later task only fil
   /// ones to probe (not hidden, with a `needs_login` source); the others stay `Unknown`.
   pub trait LoginProbe: Send + Sync { fn probe(&self, providers: Vec<ProviderKey>) -> ProbeFuture<'_>; }
   pub struct CliProbe;  impl CliProbe { pub fn new(runner: Arc<ProcRunner>) -> Self; }  impl LoginProbe for CliProbe   // D8.6
-  pub struct FixedProbe(pub LoginFacts);  impl LoginProbe for FixedProbe   // feature "test-support"
+  /// feature "test-support": answers in order, repeating the last one, and counts calls.
+  pub struct ScriptedProbe;  impl ScriptedProbe { pub fn new(answers: Vec<LoginFacts>) -> Arc<Self>; pub fn calls(&self) -> u32; }
+  impl LoginProbe for ScriptedProbe
   pub struct FactsCell(/* RwLock<LoginFacts> */);                      // shared read handle
   impl FactsCell { pub fn new(f: LoginFacts) -> Arc<Self>; pub fn get(&self) -> LoginFacts; pub fn set(&self, f: LoginFacts); }
   // io::envfile (complete here): the only reader of ~/.jev-router.env
@@ -211,6 +230,8 @@ first `scripts/ci.sh`, so that everything compiles and every later task only fil
   pub fn usage_log_path() -> Option<PathBuf>;                           // the above over the real environment
   pub fn dashboard_dir() -> Option<PathBuf>;                            // <state_dir>/dashboard (debug builds: dashboard-dev, D8.8)
   pub fn env_file() -> Option<PathBuf>;                                 // embed::env_file_path(...)
+  /// The engine's login command for a dashboard provider (D4.1); None where the engine has none.
+  pub fn login_command(p: ProviderKey) -> Option<&'static str>;
   // io::clock
   pub struct SystemClock;  impl Clock for SystemClock
   pub struct FakeClock;    impl FakeClock { pub fn at(ms: u64) -> Arc<Self>; pub fn advance(&self, d: Duration); pub fn set(&self, ms: u64); }   // feature "test-support"
@@ -219,6 +240,12 @@ first `scripts/ci.sh`, so that everything compiles and every later task only fil
                        StoreFailed { error: StoreError }, LogRotated, WatchLost, WatchArmed, ClockChanged,
                        ProbeDone { took_ms: u32 }, BackfillDone { samples: u32 }, WindowReady { took_ms: u32 },
                        NotifyFailed, AutostartFailed, Started, Stopping }
+  pub fn emit(e: DiagEvent);                                            // stderr, one line, numbers and enum names only
+  /// feature "test-support": collect instead of print. Process-wide; the guard holds a
+  /// mutex, so tests that capture run one at a time and never see each other's events.
+  pub fn capture() -> CaptureGuard;
+  // io::fsutil (type only; T06 writes the bodies): the error of every file helper (D8.4)
+  #[derive(Copy, Clone, Eq, PartialEq, Debug)] pub enum FsError { Denied, Missing, Invalid, Other }
   // io::timer (D7.1)
   pub enum Wake { Due, ClockChanged }
   pub trait WallTimer: Send + Sync { fn sleep_until(&self, deadline: UnixMillis) -> TimerFuture<'_>; }
@@ -230,12 +257,10 @@ first `scripts/ci.sh`, so that everything compiles and every later task only fil
   pub struct ShellFacts { pub app_version: &'static str, pub tray_available: bool }
   // io::store (types only; T06 writes the bodies)
   pub enum MetaKey { BackfillDone, LastPruneAt, WindowWidth, WindowHeight }
-  pub fn emit(e: DiagEvent);                                            // stderr, one line, numbers and enum names only
-  pub fn capture() -> CaptureGuard;                                     // feature "test-support": collect instead of print
   ```
 - Every type shown under a later task's "Exposes" is declared by T00 in that task's stub
   file, exactly as written there; the block above lists only what no later task shows.
-- `usage-io` has a Cargo feature `test-support` (FakeClock, FakeTimer, FixedProbe, diag
+- `usage-io` has a Cargo feature `test-support` (FakeClock, FakeTimer, ScriptedProbe, diag
   capture, proc/http test constructors) enabled only by dev-dependencies and tests.
 - IPC names: `ProviderKey` serialises exactly as `as_str()` (`deepseek`, not `deep_seek`);
   `Setup` has two variants (`use_gateway`, `add_deepseek_key`), D4.3. `MeterId` and `Label`
@@ -274,9 +299,15 @@ first `scripts/ci.sh`, so that everything compiles and every later task only fil
   roots and the Tauri scaffold compiles under it (report if a Tauri macro does not);
   `check-types.ts` passes over the stubs, the configs and the generated bindings, and a
   self-test feeds it one file per banned construct (`any`, `unknown`, `never`, `x as T`,
-  `<T>x`, `x!`, `// @ts-ignore`, `catch (e)`, a `<script>` without `lang="ts"`, a `.js` file)
+  `<T>x`, `x!`, `let x!: T`, `// @ts-ignore`, `catch (e)`, `.catch((e) => …)`, a type
+  predicate, a `declare const`, `JSON.parse`, `querySelector<T>`, a value inferred as `any`
+  from a third-party type, an `as` inside the markup of a `.svelte` file, a second
+  `svelte-ignore`, a `<script>` without `lang="ts"`, a tracked `.js` file)
   and sees each one reported, while `as const`, `satisfies` and the word "never" in a string
   pass; ESLint reports the same constructs.
+- Lints (D11.1): `dashboard/clippy.toml` is picked up by the three app crates and not by
+  the engine (a `serde_json::Value` in a stub fails clippy; the engine's own use does not);
+  the fixed test header and the single float cast are the only `allow`s in the tree.
 - `scripts/ci.sh` runs and prints the stage table.
 - Workspace: `cargo metadata` succeeds from inside a pre-existing agent worktree under
   `.claude/worktrees/` (the `exclude` works), and `cargo build` at the root builds only the
@@ -285,7 +316,11 @@ first `scripts/ci.sh`, so that everything compiles and every later task only fil
   build -- --profile dist` lands in `target/dist/`; whether `tauri-plugin-notification` has an
   urgency setting (if it does, tell the lead before using `notify-rust`); that the scaffold
   window renders a Svelte component with `freezePrototype: true`; that `tauri.conf.json`
-  needs the placeholder icons or not.
+  needs the placeholder icons or not; that Tauri's macros pass `forbid(unsafe_code)` and
+  `disallowed_types`; that `svelte-check` and ESLint work with no `svelte.config.js`; the
+  final npm dev-dependency list against D8.9; whether two major versions of `zbus` resolve.
+- Idle floor: the empty scaffold, started hidden under `dbus-run-session` for the D11.3
+  window, has its CPU time, wakeups and RSS reported (by hand here; T12 scripts it).
 
 **Security rules.** D8.4 (no string in errors, `diag` typed), D8.5, D8.8 (capabilities, CSP,
 plugin list exactly as designed), D8.9 (exact pins, lockfiles, `deny.toml`, npm script
@@ -380,7 +415,8 @@ when the bytes are not that JSON, the text rule of D8.6 on bytes; anything else 
 - Property: a generated valid sample serialised to a log row with random extra keys parses
   back to the same sample.
 - `might_have_sample` has no false negatives (property: `parse_line(l).is_some()` implies
-  `might_have_sample(l)`).
+  `might_have_sample(l)`; true by construction, because `parse_line` applies the filter
+  first, D6.1: a pretty-printed row is `None`, and one test documents that).
 
 **Security rules.** D8.3 (allow-list visitor; no `serde_json::Value` of a whole row; no
 `deny_unknown_fields`; no string retained except through `Label::parse`), D8.4.
@@ -520,7 +556,8 @@ pub fn for_each_line(path: &Path, on_line: &mut dyn FnMut(&[u8])) -> Result<u64,
 pub const BLOCK: usize = 256 * 1024; pub const MAX_LINE: usize = 1024 * 1024;
 // watch
 pub struct WatchGuard;   // dropping it stops the watch and its re-arm timer
-/// inotify (`inotify` crate, on `rt`'s reactor, no thread): MODIFY on the file, and
+/// inotify (`inotify` crate, its descriptor in tokio's `AsyncFd` on `rt`'s reactor, no thread
+/// and no stream adapter, D8.9): MODIFY on the file, and
 /// CREATE | MOVED_TO | MOVED_FROM | DELETE on the parent directory filtered to the file name.
 /// Throttled: the first event arms `coalesce`, the signal is sent when it fires (D7.2).
 /// Never fails: when the directory is missing or the watch is lost it re-arms itself at
@@ -530,7 +567,9 @@ pub fn watch_file(path: &Path, id: SourceId, tx: mpsc::Sender<SourceId>, opts: W
                   rt: &tokio::runtime::Handle) -> WatchGuard;
 // sources::claude_log
 pub struct ClaudeGatewayLogSource;
-impl ClaudeGatewayLogSource { pub fn new(path: PathBuf, facts: Arc<FactsCell>) -> Self; }
+/// `path` None (no home, no state directory) answers `NotConfigured(UseGateway)`. The clock
+/// decides when a carried window has expired (D6.1).
+impl ClaudeGatewayLogSource { pub fn new(path: Option<PathBuf>, clock: Arc<dyn Clock>, facts: Arc<FactsCell>) -> Self; }
 impl UsageSource for ClaudeGatewayLogSource   // Trigger::OnSignal, Cost::Free, timeout 5 s, runs IO in spawn_blocking
 /// First-run history backfill: `<path>.1` then `<path>`, in batches of 512 readings through
 /// `HistoryStore::record_all` (which applies the write rule). Returns samples stored.
@@ -564,7 +603,8 @@ missing → the same. Permission or read error → `Err(Unavailable(Io))`.
   produce a signal about every `coalesce` (no starvation); a rename-rotation produces a
   signal and later appends to the **new** file still signal; delete-and-recreate produces a
   signal; writes to a sibling file produce none **and wake nothing** (an event counter in
-  `test-support` stays at zero); no
+  `test-support` stays at zero); creating or deleting a sibling wakes the task once and
+  produces no signal (the directory watch reports it, the name filter drops it); no
   signal with no writes for 2 s; a watch on a directory that does not exist yet arms itself
   after the directory appears (short `WatchOptions` re-arm times) and signals once; dropping the
   guard stops signals. (Real inotify in a temp dir, bounded waits.)
@@ -611,7 +651,8 @@ pub enum Flow { Continue, Done }      // Done: close stdin and wait for exit
 pub struct Exit { pub success: bool }
 #[derive(Copy, Clone, Eq, PartialEq, Debug)] pub enum Resolved { Installed, NotInstalled }
 /// D8.6 resolution, pure over injected directory reads: first PATH hit; a mise launcher
-/// counts only with a non-empty version directory under `<mise data>/installs/<tool>/`.
+/// counts only when a version directory under `<mise data>/installs/<tool>/` holds the
+/// executable `<tool>` or `bin/<tool>`.
 pub fn resolve_in(name: &str, path_dirs: &[PathBuf], mise_data: Option<&Path>) -> Resolved;
 pub struct ProcRunner;
 impl ProcRunner {
@@ -663,8 +704,10 @@ is not part of this task.
   (snapshot test).
 - **Resolution** (temp dirs, nothing run): a plain executable → `Installed`; no hit →
   `NotInstalled`; a hit under `…/command-wrappers/bin/`, under `…/shims/`, or a symlink to a
-  file named `mise` → `Installed` only with a non-empty `installs/<tool>/<version>/`, and
-  `NotInstalled` with none or with an empty version directory; the mise data directory
+  file named `mise` → `Installed` only when `installs/<tool>/<version>/<tool>` or
+  `…/<version>/bin/<tool>` is an executable regular file, and `NotInstalled` with no
+  version directory, an empty one, one that holds only other files (an interrupted
+  download) or a non-executable file of that name; the mise data directory
   follows `MISE_DATA_DIR`, then `XDG_DATA_HOME`, then the home. With `NotInstalled` the
   stub's marker file is never written by the probe or by either source.
 - **Login probe** (stubs): `codex` stub that prints `Logged in using ChatGPT` on **stderr**
@@ -676,6 +719,8 @@ is not part of this task.
   (wrapper type that records it).
 - Readiness `Unknown` → `Unavailable(Timeout)` and no process started.
 - stderr of the child containing the canary never reaches `diag` capture or the result.
+  `proc`'s own read buffers are zeroized when a run ends (same recording wrapper as the
+  probe's buffer).
 - Working directory of the child is the given workdir. No shell is involved (`ps` of the
   stub shows the program itself as argv0).
 - Readiness `NotLoggedIn`/`NotInstalled` → no process started (stub writes a marker file
@@ -684,9 +729,13 @@ is not part of this task.
 - **Manual check, recorded in the report** (free, no prompt, allowed by D3.1): through
   `ProcRunner::system` with the scrubbed environment, the `MISE_*` switches and the empty
   working directory, on this machine: both login-status commands give `Ready` with the
-  right plan, and one real `codex app-server` run returns a reading. List mise's
-  `installs/`, `downloads/` and `incomplete-installs/` directories before and after: no
-  entry may appear or change (the D8.6 assumption that nothing is downloaded). If a run
+  right plan, and one real `codex app-server` run returns a reading with the three request
+  lines written at once (D6.3). List mise's
+  `installs/`, `downloads/` and `incomplete-installs/` directories and hash
+  `~/.config/mise/config.toml` before and after: no
+  entry may appear or change and the hash must be equal (the D8.6 assumptions that nothing
+  is downloaded, by mise or by a CLI's own updater, and that the account wrapper's
+  `mise use -g` fallback is not reached). If a run
   fails, report which variable was missing or which switch mise refused; do not widen
   `ENV_ALLOW` or drop a switch without the lead.
 
@@ -729,7 +778,8 @@ impl HttpClient {
 pub struct KeySources { pub env: Option<Secret<String>>, pub env_file: Option<PathBuf> }
 impl KeySources { pub fn system() -> Self; }                           // process env + engine_bridge::env_file()
 /// Environment first, else the env file through `io::envfile::read_value` (T00; zeroizing, embed::parse_env).
-pub fn deepseek_key(sources: &KeySources) -> Option<Secret<String>>;
+/// By value: `Secret` is not `Clone`, so the environment's key is moved out, never copied.
+pub fn deepseek_key(sources: KeySources) -> Option<Secret<String>>;
 // sources::deepseek
 pub struct DeepSeekBalanceSource;
 impl DeepSeekBalanceSource { pub fn new(http: Arc<HttpClient>, clock: Arc<dyn Clock>, keys: Arc<dyn Fn() -> KeySources + Send + Sync>) -> Self; }
@@ -783,8 +833,10 @@ proxy, body cap), D8.4 (reqwest errors classified and dropped; never `to_string(
 **Exposes.**
 ```rust
 // fsutil
-pub fn ensure_private_dir(path: &Path) -> std::io::Result<()>;                 // create 0700, tighten if looser
-pub fn write_private_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()>; // tmp 0600 + fsync + rename + dir fsync
+// `FsError` is T00's field-less enum; `std::io::Error` is classified here and dropped (D8.4)
+pub fn ensure_private_dir(path: &Path) -> Result<(), FsError>;                 // create 0700, tighten if looser
+pub fn write_private_atomic(path: &Path, bytes: &[u8]) -> Result<(), FsError>; // tmp 0600 + fsync + rename + dir fsync
+pub fn remove_file(path: &Path) -> Result<(), FsError>;                        // a missing file is Ok
 // store
 pub struct SqliteStore;
 impl SqliteStore {
@@ -806,8 +858,9 @@ Schema, pragmas, retention and migration rules: D7.5. `series` returns `SeriesDa
 with `lo/hi` (equal to `value` for raw samples), never more than `max_points`, aggregated by
 SQL `GROUP BY` so the raw rows of a range are never loaded; the bucket width; and the reset
 marks, read as at most 130 grouped rows and collapsed by `history::reset_marks`, empty for
-the quarter range and when more than 64 would result (D7.5). Day, week and month come from
-`sample`; quarter from `rollup_hour` plus `sample`. `stats` is the trait method (`StoreStats`
+a rollup query and when more than 64 would result (D7.5). The store is given only `from`
+and `to`: a span up to `RAW_RETENTION` (day, week, month) comes from `sample`; a longer one
+(quarter) is a rollup query, from `rollup_hour` plus `sample`. `stats` is the trait method (`StoreStats`
 is a core type).
 The database file is created 0600 by the store before SQLite opens it (D7.5). All text written to the
 database comes from `ProviderKey::as_str()` and `MeterId::key()`; all SQL uses bound
@@ -871,8 +924,9 @@ harness, so the primitives and screen tasks only compose.
 `dashboard/src/lib/ipc/{tauri.ts,mock.ts,fixtures.ts}` (`client.ts` is T00's and frozen),
 `dashboard/src/lib/stores/**` (rune files are `*.svelte.ts`: `usage.svelte.ts`,
 `settings.svelte.ts`, `clock.svelte.ts`, `announce.svelte.ts`),
-`dashboard/src/lib/router.svelte.ts`, `dashboard/src/lib/boot.ts` (the theme-before-paint
-script, D9.7), `dashboard/src/App.svelte`, `dashboard/src/main.ts`, `dashboard/index.html`,
+`dashboard/src/lib/router.svelte.ts`, `dashboard/src/lib/boot.ts` (sets the theme; the
+first import of the entry module, D9.7), `dashboard/src/lib/components/shell/**` (the one
+header and the one live region; T14 has neither), `dashboard/src/App.svelte`, `dashboard/src/main.ts`, `dashboard/index.html`,
 their unit/component tests, `dashboard/e2e/screens/_harness/**` (Playwright helpers: theme/
 width matrix, axe runner, no-network guard, CSP-violation guard) and
 `dashboard/e2e/screens/shell.spec.ts` with its baselines.
@@ -927,8 +981,12 @@ export function levelChange(provider: ProviderKey, meter: MeterView, nowMs: numb
 T09/T10), the single live region (fed by `announce`), global shortcuts (off when
 `settings.shortcuts` is false or a text field has focus), the zoom keys (Ctrl + plus, minus,
 zero call `settings.update({ zoom_pct })`, D9.10; they are not single-key shortcuts and stay
-on) and the document title per view. The app shell uses plain elements until T14's
-primitives are merged; T09/T10 compose the real ones. `main.ts` suppresses the web
+on) and the document title per view. The header (back control, view title, freshness,
+refresh, settings) and the live region are T07's own components in
+`lib/components/shell/`, built to the same rules as T14's primitives (32 px targets, text
+names, tokens only), so nothing has to be swapped after T14 merges; the screens of T09/T10
+render below the header and bring no header of their own. `Esc` follows the one order of
+D9.1 (dialog, then disclosure, then back). `main.ts` suppresses the web
 view's context menu in production builds (D8.8). The live region announces level changes by
 comparing consecutive snapshots: a meter whose `severity` changed, or a provider whose state
 changed, produces one sentence; a changed number alone produces none.
@@ -937,8 +995,9 @@ changed, produces one sentence; a changed number alone produces none.
 - `format` passes every vector in `format-vectors.json`; property tests with fast-check are
   not required, the vectors are.
 - Contrast test computed from `tokens.css` for both themes meets D9.10 (text ≥ 4.5,
-  primary ≥ 7, large numerals ≥ 4.5, control boundaries, focus ring, bar fill on track and
-  status glyphs ≥ 3).
+  primary ≥ 7, large numerals ≥ 4.5, control boundaries, focus ring, bar fill on track,
+  status glyphs and chart lines ≥ 3), for every text colour on each of `bg`, `surface` and
+  `surface-2`; every token is inside the sRGB gamut (D9.7).
 - Palette test: the token file defines the neutrals, one accent, warn, critical and unknown
   and nothing else; `ok` is an alias of `accent` (D9.7).
 - App shell (`shell.spec.ts`): header, empty outlet and live region in both themes at the
@@ -953,7 +1012,8 @@ changed, produces one sentence; a changed number alone produces none.
   arrives before `getSnapshot` resolves is not overwritten by the older reply; `refreshing`
   follows `in_flight`; `Busy` is a no-op; `clock` stops ticking when `document.hidden`;
   router back/escape; the fragment `#view=settings&theme=dark` opens Settings with
-  `data-theme="dark"` set before first paint (no flash test); a fragment with unknown keys
+  `data-theme="dark"` already set at `DOMContentLoaded`, while `<body>` is still empty
+  (D9.7; the real web view's flash check is in T11's manual list); a fragment with unknown keys
   or values falls back to the overview and the system theme. `tauri.ts`: an `ok` and an `error` outcome pass through unchanged; a rejected `invoke`
   (Tauri's own argument error) becomes the `invalid_argument` outcome and its value is never
   bound to a name.
@@ -996,7 +1056,8 @@ event-driven task of D7.1–D7.2.
 ```rust
 // registry
 pub struct RegistryInputs { pub usage_log: Option<PathBuf>, pub facts: Arc<FactsCell>, pub clock: Arc<dyn Clock>,
-                            pub runner: Arc<ProcRunner>, pub http: Arc<HttpClient> }
+                            pub runner: Arc<ProcRunner>, pub http: Arc<HttpClient>,
+                            pub keys: Arc<dyn Fn() -> KeySources + Send + Sync> }   // production: KeySources::system
 /// The one list of sources. Adding a provider is one line here. The live-check source is
 /// always in the list; whether it may run is the setting, checked by the service at call time.
 pub fn build(i: &RegistryInputs) -> Vec<Arc<dyn UsageSource>>;
@@ -1005,7 +1066,7 @@ pub fn build(i: &RegistryInputs) -> Vec<Arc<dyn UsageSource>>;
 pub fn backfill_job(usage_log: Option<PathBuf>, store: Arc<SqliteStore>) -> Option<Backfill>;
 // service
 pub struct Backoff;   // pure: next_delay(failures, kind, jitter: f64) -> Duration   (D7.2)
-pub struct SystemJitter;  impl Jitter for SystemJitter   // `Jitter`, `Backfill`, `ShellFacts` are T00's types
+pub struct SystemJitter;  impl Jitter for SystemJitter   // std RandomState, no `rand` (D8.9); `Jitter`, `Backfill`, `ShellFacts` are T00's types
 // timer (D7.1): bodies of SystemTimer (timerfd, CLOCK_REALTIME, absolute, cancel-on-set) and FakeTimer
 ```
 Behaviour to implement: D7.1 loop with **one** `WallTimer` wait (never
@@ -1016,7 +1077,8 @@ allowed only when the setting is on and the source's cost is `SpendsQuota`), and
 probe schedule (start; before a fetch of a `needs_login` source when not `Ready` and older
 than 60 s, also while hidden; manual at most once per 60 s; 6-hourly piggy-back) through the
 injected `LoginProbe`, called with the providers that are not hidden and have a
-`needs_login` source, writing the result to `FactsCell`; freshness from each descriptor's
+`needs_login` source, merging the result into `FactsCell` for the providers probed (the
+others keep what they had, D7.1); freshness from each descriptor's
 `fresh_for`; only `SourceError::Unavailable` is a failure, and a `Manual` source's failure
 goes to `RefreshView.live_check_error` when the provider holds a reading (D4.3); merge of several sources per provider by
 greatest `observed_at` (an older reading is dropped; a future `observed_at` is clamped to
@@ -1036,7 +1098,7 @@ fetches and ends the task within 2 s; dropping all handles does the same.
   more fetch after it; becoming visible fetches a signal source once.
 - Interval source: fetched at the visible interval when visible, hidden interval when
   hidden; becoming visible with an old reading triggers one fetch; never two in flight.
-- Backoff sequence 1, 2, 4 … 60 min with injected jitter; reset on success; `RateLimited`
+- Backoff sequence 1, 2, 4 … 60 min (first failure → 1 min, D7.2) with injected jitter; reset on success; `RateLimited`
   starts at 15 min; `NotConfigured` never backs off; manual refresh bypasses it.
 - Manual refresh: returns before the fetch completes; `all` twice within 10 s starts each
   source once; `provider` while its source is in flight → `Busy`; `all` never returns `Busy`.
@@ -1046,7 +1108,7 @@ fetches and ends the task within 2 s; dropping all handles does the same.
 - **Clock set**: `Wake::ClockChanged` with the clock moved back 1 h and forward 1 h: no
   panic, no negative age, deadlines recomputed, no fetch storm.
 - A reading stamped 5 minutes in the future is stored and shown with `observed_at = now`.
-- **Probe**: with a `FixedProbe` that first answers `Unknown` and then `Ready` for Codex,
+- **Probe**: with a `ScriptedProbe` that first answers `Unknown` and then `Ready` for Codex,
   while hidden: the first gated fetch yields `Unavailable(Timeout)`, the retry re-probes and
   the source is fetched; the probe is called at most once per 60 s under 100 manual
   refreshes; a 6-hour-old `Ready` is re-probed on the next due fetch, with no extra wake.
@@ -1077,8 +1139,10 @@ fetches and ends the task within 2 s; dropping all handles does the same.
 - History is recorded under the write rule; `history()` maps range → bounds → store.
 - Liskov suite: the same behavioural tests run with each real adapter constructed over
   stubs/fixtures (uses `test-support` constructors).
-- A panicking or hanging fake source cannot stall the loop (timeout → `Timeout`, others
-  continue).
+- A panicking or hanging fake source cannot stall the loop (a hang → `Timeout`, a panic →
+  `Unavailable(Internal)`, others continue). This holds in the shipped binary too, because
+  `dist` keeps unwinding (D5); a manifest test asserts that no profile sets `panic`.
+- A probe answer for Codex only leaves Claude's cached facts untouched.
 
 **Security rules.** D8.4 (`diag` only; no reading content logged), D6.2 (spending source
 manual only), D7.4 (snapshot built only by `view::snapshot`).
@@ -1139,7 +1203,7 @@ or focus of a row. Whitespace per D9.1. Nothing decorative.
 - **Progressive disclosure**: at rest the row shows no absolute time; focusing the row with
   Tab shows the level-1 detail, hovering shows the same text, `Esc` closes it and focus
   stays; the row's `aria-valuetext` contains the same detail with nothing opened; the
-  detail never overlaps its row at 320 px or 200 % zoom.
+  detail never overlaps its row at 320 CSS px (both cases of D9.10).
 - **Announcements**: the mixed fixture going ok → warn announces one sentence in the live
   region; twenty number-only updates announce nothing.
 - Ordering unit tests (severity, then fixed order; no reorder on equal severity).
@@ -1156,7 +1220,13 @@ or focus of a row. Whitespace per D9.1. Nothing decorative.
   `settings.update({autostart})`, rolls back and says why on an `io` error); Continue sets
   `first_run_seen`, moves focus to the overview heading, and the view never returns.
 - `not_installed` copy names the PATH ("Flashboard can't find `codex` on its PATH").
-- 200 % zoom and 320 px width: no clipped text, no horizontal scroll.
+- Reflow (D9.10): at 320 CSS px (a 320 px window at 100 %, and a 640 px window at 200 %)
+  no clipped text and no horizontal scroll; the text-spacing run loses no content.
+- **Focus kept**: with focus on a meter row of the second card, a snapshot that raises that
+  card's severity reorders the cards and the same row still has focus; the same for a
+  focused Copy button.
+- `Esc` with a level-1 detail open closes it and stays on the overview; a second `Esc` does
+  nothing there (the overview has no "back").
 - Rapid snapshot updates (20 per second from the mock) cause no layout shift (CLS measured
   in Playwright = 0).
 
@@ -1210,7 +1280,7 @@ export const history: { load(q: HistoryQuery): Promise<void>; readonly state: "i
   constant of its own); band for rollups; empty series → empty state ("No history yet. It
   builds up as you use the provider."); single point renders a dot; values above 100 %
   extend the axis; reset hairlines from `series.resets`, and the summary omits the reset
-  count when `resets` is empty (month, quarter).
+  count when `resets` is empty (the quarter range; a 5-hour window over a month).
 - Chart a11y: `role="img"` label from `summarize`; hidden data table has one row per point
   (capped at 600); the crosshair is a separate `role="slider"` control (D9.4): Left/Right,
   Home and End move it, `aria-valuenow` is the index and `aria-valuetext` is `pointText`;
@@ -1230,7 +1300,9 @@ export const history: { load(q: HistoryQuery): Promise<void>; readonly state: "i
   at login" **on by default**, rolling back with a reason on an `io` error; the single-key
   shortcuts switch; the "Size" radio group (`zoom_pct`, five steps); "About and diagnostics" showing the name Flashboard and the version.
 - Settings: every control reads and writes through `settings.update`; thresholds validate
-  on blur (warn < critical, 50..100) with a specific message; sliders and number fields stay
+  on blur (warn < critical, 50..100) with a specific message tied to the field by
+  `aria-describedby` and `aria-invalid` (D9.10 Forms); every control has a visible label
+  that is its accessible name; sliders and number fields stay
   in sync; bar tick marks elsewhere move live; "Saved" tick announced; a failed save rolls
   the control back and says so; enabling the live check opens the confirmation dialog
   (focus trapped, Esc cancels, focus returns); tray toggle disabled with a reason when
@@ -1304,7 +1376,8 @@ after plugin initialisation, so a second process never gets here): build `Servic
 (engine_bridge paths, `SqliteStore`, `JsonSettingsStore`, `ProcRunner::system`,
 `registry::build`, `registry::backfill_job`, `watch_file`, `CliProbe`, `SystemTimer`,
 `SystemJitter`, `DesktopNotifier`) → `spawn(deps, rt)` and `watch_file(.., rt)` with Tauri's
-runtime handle (`tauri::async_runtime::handle()`; `setup` is not inside a runtime) →
+runtime handle (`tauri::async_runtime::handle().inner()`, the tokio handle inside Tauri's
+wrapper; `setup` is not inside a runtime) →
 `autostart::reconcile` from the loaded settings (release builds only; on failure set
 `autostart` off through the service and emit `DiagEvent::AutostartFailed`, never fatal) →
 tray → a signal listener for `SIGTERM`, `SIGINT` and `SIGHUP` (shutdown, then exit, D8.8) →
@@ -1319,7 +1392,10 @@ reconciles the entry; on failure it restores the previous value through the serv
 returns the `io` error outcome. The tray's Notifications checkbox writes
 `settings.notifications`; the shell re-applies the tray model when settings change
 (`subscribe_settings`). `DiagEvent::WindowReady` is emitted when the first `get_snapshot`
-of a newly created web view returns.
+of a newly created web view returns; the commands may take further `State<'_, …>`
+parameters for shell state such as that window-creation instant (the six names and their
+IPC arguments and results are what is fixed). `autostart::reconcile` returns T15's
+field-less `AutostartError`, which the command maps to the `io` outcome.
 
 **Acceptance tests.**
 - `update_settings` with a failing reconcile returns `io` and the stored setting is the old
@@ -1336,7 +1412,9 @@ of a newly created web view returns.
 - Snapshot tests: capability file, CSP, plugin list, absence of the `devtools` feature,
   `withGlobalTauri: false`, exactly six commands registered.
 - Window lifecycle with the mock runtime and a fake `TrayHost` (the test sets Tauri's async
-  runtime to a paused tokio runtime with `tauri::async_runtime::set`): close → hidden →
+  runtime to a paused tokio runtime with `tauri::async_runtime::set`; that call panics the
+  second time in one process, so each test binary that needs paused time has **one**
+  `#[test]` that builds the runtime once and runs its cases in sequence): close → hidden →
   destroyed after 30 s (paused time); open recreates with the route and theme in the fragment; open
   on an existing window emits `navigate`; the zoom factor follows `zoom_pct`; `--hidden` creates no window; no tray host at
   close time → close quits; `--hidden` with no tray host stays resident; a host that appears
@@ -1351,7 +1429,8 @@ of a newly created web view returns.
   rebuilt while only refresh bookkeeping changes; a warn and a critical notification
   appear once each with the right urgency; a second launch opens the window; the size is
   remembered; light and dark follow the OS in the real WebKitGTK view and the Theme setting
-  overrides it; **log out and in: the app is running hidden, with Claude and Codex found**
+  overrides it, with no flash of the other theme when the window opens (D9.7, else the
+  native background fallback); **log out and in: the app is running hidden, with Claude and Codex found**
   (autostart and its `PATH`); with `PR_SET_DUMPABLE=0` the window, clipboard copy and theme
   still work, and Orca (once the user has installed it) still reads the window (else fall
   back per D8.8 and report); after closing the window for 30 s no
@@ -1431,7 +1510,9 @@ programs), `dashboard/e2e/webdriver/**`, `dashboard/e2e/screens/security.spec.ts
   tree, measures the fetch-free window from 60 s to 660 s after launch (D11.3) and
   reports CPU time, wakeups (voluntary context switches) and RSS, each **summed over the
   process tree and all threads** (`/proc/<pid>/task/*/status`), and the binary size, against
-  the D11.3 budgets.
+  the D11.3 budgets; the same run on T00's empty scaffold gives the floor, printed beside
+  the app's figures. `WindowReady` in the smoke test is taken from the second launch in the
+  same temp tree (D11.4).
 - `ci.sh`: all thirteen stages of D11.4, `--bootstrap` (no root: cargo tools, pinned
   nightly, `tauri-driver`, Playwright Chromium), `--release`, a final table with
   PASS/FAIL/SKIPPED/NOT RUN per stage and total time; non-zero exit on any FAIL (and on
@@ -1445,7 +1526,9 @@ programs), `dashboard/e2e/webdriver/**`, `dashboard/e2e/screens/security.spec.ts
 extra capability permission, a remote `<img>`, a `style=""` attribute, a `localStorage`
 call, a low-contrast token, an unnamed icon button, and for the type discipline of D1a: an `any`,
 an `unknown`, a `never`, an `as` assertion, a non-null `!`, a `@ts-expect-error`, a
-`catch (e)`, an `eslint-disable` comment, a `serde_json::Value`, an `unwrap()` and an
+`catch (e)`, a type predicate, a `JSON.parse`, an inferred `any`, an `as` in Svelte markup,
+an `eslint-disable` comment, a `serde_json::Value`, an `unwrap()`, a second float cast, an
+`allow` outside the two of D11.1, a `std::io::Result` in a `pub` signature and an
 `unsafe` block) makes the matching stage fail
 (demonstrated in the report, not committed); coverage thresholds met or the gap reported per
 file.
@@ -1453,7 +1536,7 @@ file.
 **Security rules.** All of D8. This task may not weaken a rule to make a test pass; a rule
 that cannot be met is escalated to the lead.
 
-**Depends on.** T01–T11; final run after T13 is merged (section 1).
+**Depends on.** T01–T11, T14, T15; final run after T13 is merged (section 1).
 
 **Review checklist.**
 - [ ] Each row of D8.10 and each bullet of D9.10 maps to a named, passing test or a named
@@ -1539,8 +1622,8 @@ screens only compose.
 **Owns.** `dashboard/src/lib/components/primitives/**`, their component tests,
 `dashboard/e2e/screens/primitives.spec.ts` with its baselines.
 
-**Consumes.** T07's tokens, `format`, `clock` and the Playwright harness (T00's stubs until
-T07 is merged; final test run after it, section 1). No IPC, no stores other than `clock`.
+**Consumes.** T07's tokens, `format`, `clock` and the Playwright harness (T00's stubs,
+the harness stub included, until T07 is merged; final test run after it, section 1). No IPC, no stores other than `clock`.
 
 **Exposes.** Each with documented props: `Meter` (bar + thresholds + hatch for critical +
 `role="meter"`, a required accessible name, `tabindex="0"` with the approved `svelte-ignore`
@@ -1549,8 +1632,9 @@ of D9.3, `aria-valuenow` clamped to 0..100, the full level-1 text as `aria-value
 opens on hover **and** focus, hoverable, `Esc` closes without moving focus, never covers its
 trigger), `StatusGlyph`, `Card`, `Button`, `IconButton`, `CopyCommand`, `Countdown`
 (re-renders from `clock`), `Freshness`, `Skeleton`, `RadioGroup`, `Switch`, `Slider`,
-`NumberField`, `Dialog`, `Icon` (inline SVG), `LiveRegion`, `ViewHeader`. No primitive nests
-one interactive element in another.
+`NumberField` (with an error slot wired to `aria-describedby`/`aria-invalid`), `Dialog`,
+`Icon` (inline SVG). The header and the live region are T07's (`components/shell/`), not
+primitives. No primitive nests one interactive element in another.
 
 **Acceptance tests.**
 - Every primitive: Testing Library tests for each state and keyboard behaviour; **zero axe
@@ -1558,7 +1642,8 @@ one interactive element in another.
   forced-colors runs.
 - `Detail`: opens on focus and on hover with the same content; stays while hovered; `Esc`
   closes and focus stays on the trigger; its text equals the trigger's `aria-valuetext`
-  detail; it does not overlap the trigger at 320 px or at 200 % zoom.
+  detail; it does not overlap the trigger at 320 CSS px (both cases of D9.10); `Esc` on an
+  open `Detail` is consumed (the view does not go back, D9.1).
 - `Meter`: value 104 % gives `aria-valuenow="100"` and the real figure in the text; no
   number → no `role="meter"`.
 - Target size: every interactive primitive measures ≥ 32 x 32 px hit area (Playwright
@@ -1596,19 +1681,22 @@ hardening_*,notifier_*,localtime_*,cli_*}.rs`.
 // tray_icon.rs (pure)
 #[derive(Copy, Clone, Eq, PartialEq, Debug)]
 pub struct IconSpec { pub used_step: u8 /* 0..=20, 5 % steps */, pub level: Severity }
-pub fn render(spec: IconSpec, size: u32) -> Vec<u8>;                        // RGBA, D9.11 shapes
+pub fn render(spec: IconSpec, size: u32) -> Vec<u8>;                        // RGBA, D9.11 shapes; integer arithmetic only (no float cast, D11.1)
 // bus.rs — the only module that uses zbus
 pub trait TrayHost: Send + Sync { fn present(&self) -> bool; }              // injected, so window tests need no bus
 pub struct SessionBusTrayHost; impl TrayHost for SessionBusTrayHost        // org.kde.StatusNotifierWatcher owned and IsStatusNotifierHostRegistered; asked each time, never cached
 // notifier.rs — the only module that uses notify_rust
 pub trait NotificationSink: Send + Sync { fn deliver(&self, title: &str, body: &str, critical: bool) -> bool; }   // the seam to notify_rust
+pub struct NotifyRustSink; impl NotificationSink for NotifyRustSink         // production sink: app name Flashboard, desktop-entry hint, urgency (D9.12)
 pub struct DesktopNotifier; impl DesktopNotifier { pub fn new(local: Arc<dyn LocalTime>, clock: Arc<dyn Clock>, sink: Arc<dyn NotificationSink>) -> Self; }
 impl Notifier for DesktopNotifier   // title/body from core::text::notification(alert, now, local, hour); urgency by level; hands the alert to its own worker thread and returns
 // autostart.rs
 pub fn desktop_entry(exec: &str) -> String;                                 // pure; Name=Flashboard, Exec=<quoted exec> --hidden (D9.13 quoting)
 /// Makes <config_home>/autostart/dev.jev.flashboard.desktop match `enabled` (atomic, 0600; rewrites when Exec differs).
-/// `exec` must be valid UTF-8 and an existing file, else `InvalidInput` and nothing is written.
-pub fn reconcile(enabled: bool, exec: &Path, config_home: &Path) -> std::io::Result<()>;
+/// `exec` must be valid UTF-8 and an existing file, else `InvalidExec` and nothing is written.
+/// File work goes through `io::fsutil` (D8.4: no `std::io::Error` in a signature).
+#[derive(Copy, Clone, Eq, PartialEq, Debug)] pub enum AutostartError { InvalidExec, Write }
+pub fn reconcile(enabled: bool, exec: &Path, config_home: &Path) -> Result<(), AutostartError>;
 // hardening.rs
 pub fn apply();                                                             // umask 077, RLIMIT_CORE 0, PR_SET_DUMPABLE 0, panic hook (base name and line only)
 // localtime.rs
@@ -1624,10 +1712,11 @@ pub struct Args { pub hidden: bool }  pub fn parse<I: IntoIterator<Item = String
 - `autostart::desktop_entry` golden text (validated with `desktop-file-validate`); a path
   with a space, a `"`, a `$` and a `%` round-trips through the Desktop Entry quoting rules;
   `reconcile` in a temp config home: on creates the file 0600, off removes it, a changed
-  `exec` rewrites it, repeated calls change nothing, an unwritable directory returns an
-  error and leaves no partial file, a path ending in " (deleted)" or missing writes nothing.
-- `hardening::apply`: after the call, a created file is 0600 and `/proc/self/status` shows
-  the process is not dumpable (test in a child process); panic hook output contains a base
+  `exec` rewrites it, repeated calls change nothing, an unwritable directory returns
+  `Write` and leaves no partial file, a path ending in " (deleted)" or missing writes nothing.
+- `hardening::apply`: after the call, a created file is 0600, the core limit is 0 and the
+  process is not dumpable, read back with `rustix::process::dumpable_behavior()`
+  (`/proc/self/status` has no such field) (test in a child process); panic hook output contains a base
   name and a line, no `/`, and not the payload (child process with a canary payload).
 - `DesktopNotifier` with an injected sender that blocks: `notify` returns immediately; the
   sender receives the title and body of `core::text::notification` for the given hour
@@ -1657,7 +1746,7 @@ directory). `zbus` only in `bus.rs`, `notify_rust` only in `notifier.rs`; no `un
    fail if the rule were broken.
 3. Search the diff for: new dependencies, `allow(` attributes, `String` in error or IPC
    types, `unwrap`/`expect`, `Value`, `unsafe`, and in TypeScript `any`, `unknown`, `never`,
-   ` as `, `!.`, `@ts-`, `catch (`, `eslint-disable`, `svelte-ignore` (one approved, D9.3), new file names read from disk, new network hosts, new commands
+   ` as `, `!.`, `@ts-`, `catch (`, ` is ` in a return type, `declare`, `JSON.parse`, `eslint-disable`, `svelte-ignore` (one approved, D9.3), `io::Result` in a `pub` signature, new file names read from disk, new network hosts, new commands
    or permissions, timers and loops.
 4. For UI tasks: review every baseline screenshot in both themes at 360 and 1200 px, tab
    through the screen, read the copy aloud; check the four words of D1a (minimal, detailed,
