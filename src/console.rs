@@ -53,7 +53,8 @@ struct Pending {
     discarded: bool,
 }
 
-/// One key still to come. Dropping it stops the wait and leaves the terminal as it was.
+/// One key still to come. Dropping it stops the wait at once, without blocking; the terminal
+/// is put back as it was by the reader itself (see [`terminal_keys`]).
 pub type KeyWait = Pin<Box<dyn Future<Output = AnswerKey> + Send>>;
 
 /// Starts waiting for one key at an approval question; `true` says "always" can be answered.
