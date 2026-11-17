@@ -66,8 +66,8 @@ pub fn backend_for(provider: ProviderId) -> Box<dyn Backend> {
         ProviderId::Codex => Box::new(CodexBackend::codex()),
         ProviderId::Grok => Box::new(GrokBackend::grok()),
         ProviderId::Gemini => Box::new(match detect_gemini_flavor() {
-            Flavor::GeminiCli => GeminiBackend::gemini_cli(),
-            Flavor::Antigravity => GeminiBackend::antigravity(),
+            Flavor::GeminiCli => GeminiBackend::gemini_cli().with_env(gemini_env(&envfile::lookup)),
+            Flavor::Antigravity => GeminiBackend::antigravity().with_env(gemini_env(&envfile::lookup)),
         }),
         // No key means the caller never routes here; an empty key just fails the turn.
         ProviderId::DeepSeek => {
@@ -78,11 +78,20 @@ pub fn backend_for(provider: ProviderId) -> Box<dyn Backend> {
 }
 
 /// Gathers the two facts [`choose_gemini_flavor`] needs from the real machine.
+/// The Gemini auth variables that are set in the environment OR in `~/.jev-router.env`,
+/// so a key kept only in that file still reaches the CLI (and the probe agrees).
+pub fn gemini_env(lookup: &dyn Fn(&str) -> Option<String>) -> Vec<(String, String)> {
+    crate::backend::gemini::AUTH_ENV_VARS
+        .iter()
+        .filter_map(|n| lookup(n).map(|v| (n.to_string(), v)))
+        .collect()
+}
+
 fn detect_gemini_flavor() -> Flavor {
     let settings = std::env::var_os("HOME")
         .and_then(|h| std::fs::read_to_string(PathBuf::from(h).join(".gemini/settings.json")).ok());
     // The same rule the availability probe uses, so "ready" and "which CLI" agree.
-    let configured = crate::backend::gemini::is_configured(settings.as_deref(), |n| envfile::from_env(n).is_some());
+    let configured = crate::backend::gemini::is_configured(settings.as_deref(), |n| envfile::lookup(n).is_some());
     choose_gemini_flavor(crate::availability::on_path(&GeminiBackend::gemini_cli().bin), configured)
 }
 
@@ -678,5 +687,12 @@ mod tests {
         rt.apply_probe(vec![ready(ProviderId::Claude), ready(ProviderId::Codex)]);
         assert!(rt.blocked.is_empty());
         assert!(rt.usable(1_000).contains(catalog::find(ProviderId::Codex, "gpt-6-luna").unwrap()));
+    }
+
+    #[test]
+    fn gemini_env_picks_up_keys_from_either_source() {
+        let lookup = |n: &str| (n == "GEMINI_API_KEY").then(|| "from-file".to_string());
+        assert_eq!(gemini_env(&lookup), vec![("GEMINI_API_KEY".to_string(), "from-file".to_string())]);
+        assert!(gemini_env(&|_| None).is_empty());
     }
 }

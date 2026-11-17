@@ -416,7 +416,7 @@ fn dir_has_entries(path: &Path) -> bool {
 
 async fn probe_gemini() -> Availability {
     let settings = read_home_file(".gemini/settings.json");
-    let (api_key_env, settings_auth) = gemini_login_facts(settings.as_deref(), |n| envfile::from_env(n).is_some());
+    let (api_key_env, settings_auth) = gemini_login_facts(settings.as_deref(), |n| envfile::lookup(n).is_some());
     decide_gemini(GeminiFacts {
         gemini_installed: on_path("gemini"),
         agy_installed: on_path("agy"),

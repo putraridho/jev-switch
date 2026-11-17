@@ -64,11 +64,26 @@ pub struct GeminiBackend {
     pending: Mutex<Pending>,
     /// Antigravity takes the prompt as an argument, so a long one goes to a file.
     prompts: PromptFiles,
+    /// Variables the child needs that may live only in `~/.jev-router.env` (an API key),
+    /// which the child process would not otherwise see.
+    extra_env: Vec<(String, String)>,
 }
 
 impl GeminiBackend {
     pub fn new(flavor: Flavor, bin: impl Into<String>) -> Self {
-        Self { flavor, bin: bin.into(), pending: Mutex::new(Pending::default()), prompts: PromptFiles::default() }
+        Self {
+            flavor,
+            bin: bin.into(),
+            pending: Mutex::new(Pending::default()),
+            prompts: PromptFiles::default(),
+            extra_env: Vec::new(),
+        }
+    }
+
+    /// Pass these variables to the CLI (see `extra_env`).
+    pub fn with_env(mut self, env: Vec<(String, String)>) -> Self {
+        self.extra_env = env;
+        self
     }
 
     /// Gemini CLI; the binary is `GEMINI_BIN` else `gemini`.
@@ -318,6 +333,7 @@ impl Backend for GeminiBackend {
     fn command(&self, req: &TurnRequest) -> Command {
         let mut cmd = Command::new(&self.bin);
         cmd.args(self.args(req)).current_dir(&req.dir);
+        cmd.envs(self.extra_env.iter().map(|(k, v)| (k.as_str(), v.as_str())));
         cmd
     }
 
@@ -627,6 +643,13 @@ mod tests {
         let cmd = b.command(&req(None));
         assert_eq!(cmd.as_std().get_program(), "/opt/gemini");
         assert_eq!(cmd.as_std().get_current_dir(), Some(std::path::Path::new("/tmp")));
+    }
+
+    #[test]
+    fn extra_env_reaches_the_child_so_a_key_kept_in_the_env_file_works() {
+        let b = GeminiBackend::new(Flavor::GeminiCli, "gemini").with_env(vec![("GEMINI_API_KEY".into(), "k".into())]);
+        let cmd = b.command(&req(None));
+        assert!(cmd.as_std().get_envs().any(|(k, v)| k == "GEMINI_API_KEY" && v == Some(std::ffi::OsStr::new("k"))));
     }
 
     #[test]
