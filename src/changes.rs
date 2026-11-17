@@ -269,6 +269,30 @@ fn temp_index_path() -> PathBuf {
     std::env::temp_dir().join(format!("jev-index-{}-{}-{nanos}", std::process::id(), N.fetch_add(1, Ordering::Relaxed)))
 }
 
+/// Copy the real index to `tmp` AND give the copy the original's modification time.
+/// Git's "racily clean" protection re-reads any file whose mtime is not older than the
+/// index file's own mtime; a plain copy gets a fresh mtime, which disables that
+/// protection, so a same-size edit made within the same second as the last index write
+/// (e.g. "two" -> "TWO") would be trusted from the stat cache and missed by the
+/// snapshot. Keeping the original mtime keeps git's check intact.
+fn copy_index_keeping_mtime(real: &Path, tmp: &Path) {
+    if std::fs::copy(real, tmp).is_err() {
+        return;
+    }
+    let mtime = std::fs::metadata(real).and_then(|m| m.modified());
+    let file = std::fs::OpenOptions::new().write(true).open(tmp);
+    if let (Ok(mtime), Ok(file)) = (mtime, file) {
+        if file.set_modified(mtime).is_err() {
+            // Without the original mtime the stat cache cannot be trusted: drop the copy,
+            // git then builds a fresh index and hashes every tracked file (slower, correct).
+            drop(file);
+            let _ = std::fs::remove_file(tmp);
+        }
+    } else {
+        let _ = std::fs::remove_file(tmp);
+    }
+}
+
 fn remove_temp_index(tmp: PathBuf) {
     let _ = std::fs::remove_file(&tmp);
     let mut lock = tmp.into_os_string();
@@ -321,7 +345,7 @@ pub fn snapshot(dir: &Path) -> Option<Snapshot> {
     // Starting from a copy of the real index keeps git's stat cache, so only files that
     // really changed are hashed again; without one it still works, just slower.
     if real.is_file() {
-        let _ = std::fs::copy(&real, &tmp);
+        copy_index_keeping_mtime(&real, &tmp);
     }
     let tree = git(&root, Some(&tmp), &["add", "-u"])
         .and_then(|_| git_text(&root, Some(&tmp), &["write-tree"]))
@@ -1487,5 +1511,22 @@ mod tests {
         // Undo refuses as a whole rather than deleting the user's file.
         assert!(matches!(undo(s.path(), &sum), Err(UndoError::UntrackedModified(_))));
         assert_eq!(std::fs::read_to_string(s.path().join("secret.log")).unwrap(), "TOKEN=abc\n");
+    }
+
+    #[test]
+    fn a_same_size_edit_in_the_same_second_as_the_commit_is_never_missed() {
+        // The racy-git case behind a once-in-40-runs failure: rewrite a committed file
+        // with the same length immediately after the commit, many times over.
+        for _ in 0..30 {
+            let s = repo();
+            let before = snapshot(s.path()).unwrap();
+            s.write("a.txt", "ONE\ntwo\nthree\n"); // same size as "one\ntwo\nthree\n"
+            let after = snapshot(s.path()).unwrap();
+            assert_ne!(before.tree, after.tree, "the edit must be seen");
+            let sum = summarize(s.path(), &before, &after).unwrap();
+            assert_eq!(sum.files.len(), 1);
+            undo(s.path(), &sum).unwrap();
+            assert_eq!(std::fs::read_to_string(s.path().join("a.txt")).unwrap(), "one\ntwo\nthree\n");
+        }
     }
 }
