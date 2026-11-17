@@ -238,21 +238,34 @@ fn resets_tail(message: &str) -> Option<String> {
     (!digits.is_empty()).then_some(digits)
 }
 
+fn has_any(lower: &str, phrases: &[&str]) -> bool {
+    phrases.iter().any(|p| lower.contains(p))
+}
+
+/// Matches only PHRASES a CLI uses for these failures, never a bare word: error
+/// text routinely mentions "quota", "upgrade" or "expired" in other senses, and a
+/// wrong match would mark a provider unusable or stop failover.
 fn is_quota_text(lower: &str) -> bool {
     (lower.contains("hit your") && lower.contains("limit"))
-        || ["usage limit", "rate limit", "quota", "resets"].iter().any(|p| lower.contains(p))
+        || has_any(lower, &["usage limit", "resource_exhausted", "too many requests"])
+        || (lower.contains("rate limit")
+            && (has_any(lower, &["exceed", "reached", "too many"]) || has_token(lower, "hit")))
+        || (lower.contains("quota") && has_any(lower, &["exceed", "exhaust", "reached", "insufficient"]))
         || has_token(lower, "429")
 }
 
 fn is_entitlement_text(lower: &str) -> bool {
-    ["not supported when using", "not available on your plan", "upgrade"].iter().any(|p| lower.contains(p))
+    let about_the_plan = has_any(lower, &["plan", "subscription", "tier", "account"]);
+    has_any(lower, &["not supported when using", "not available on your plan"])
+        || (about_the_plan && has_any(lower, &["upgrade", "not included"]))
 }
 
 fn is_auth_text(lower: &str) -> bool {
     has_token(lower, "401")
-        || ["unauthorized", "not logged in", "expired", "authenticate", "please log in"]
-            .iter()
-            .any(|p| lower.contains(p))
+        || has_token(lower, "unauthorized")
+        || has_any(lower, &["not logged in", "please log in", "invalid api key", "login expired", "session expired"])
+        || (lower.contains("authentication") && has_any(lower, &["failed", "required", "error"]))
+        || (lower.contains("token") && lower.contains("expired"))
 }
 
 /// "I will not run here": a workspace-trust or git-repository check. Codex says
@@ -756,7 +769,7 @@ mod tests {
     fn common_entitlement_and_auth_phrases() {
         assert_eq!(classify_common("model is not supported when using ChatGPT"), Some(ErrorKind::NotEntitled));
         assert_eq!(classify_common("Not available on your plan"), Some(ErrorKind::NotEntitled));
-        assert_eq!(classify_common("Please upgrade to continue"), Some(ErrorKind::NotEntitled));
+        assert_eq!(classify_common("Please upgrade your plan to continue"), Some(ErrorKind::NotEntitled));
         assert_eq!(classify_common("401 Unauthorized"), Some(ErrorKind::Auth));
         assert_eq!(classify_common("Not logged in"), Some(ErrorKind::Auth));
         assert_eq!(classify_common("token expired"), Some(ErrorKind::Auth));
@@ -880,5 +893,66 @@ mod tests {
         assert_eq!(classify_common("segmentation fault"), None);
         assert_eq!(classify_common("read 14291 bytes"), None);
         assert_eq!(classify_common(""), None);
+    }
+
+    #[test]
+    fn common_matches_phrases_and_never_bare_words() {
+        use ErrorKind::{Auth, NotEntitled};
+        let kind = |m: &str| classify_common(m).map(|k| match k {
+            ErrorKind::Quota { .. } => "quota",
+            NotEntitled => "entitled",
+            Auth => "auth",
+            ErrorKind::UnusableHere => "here",
+            _ => "other",
+        });
+        let should_match = [
+            ("quota", "You have hit your usage limit"),
+            ("quota", "You've hit your session limit"),
+            ("quota", "rate limit exceeded"),
+            ("quota", "Rate limit reached for requests"),
+            ("quota", "we hit the rate limit"),
+            ("quota", "quota exceeded"),
+            ("quota", "you have exhausted your quota"),
+            ("quota", "insufficient quota"),
+            ("quota", "RESOURCE_EXHAUSTED: try later"),
+            ("quota", "Too Many Requests"),
+            ("quota", "status 429"),
+            ("entitled", "model is not supported when using ChatGPT"),
+            ("entitled", "Not available on your plan"),
+            ("entitled", "Upgrade your subscription to use this model"),
+            ("entitled", "upgrade to a paid tier"),
+            ("entitled", "Grok Build is not included in your X Premium plan"),
+            ("auth", "HTTP 401"),
+            ("auth", "Unauthorized"),
+            ("auth", "Not logged in"),
+            ("auth", "Please log in again"),
+            ("auth", "Invalid API key"),
+            ("auth", "authentication failed or timed out"),
+            ("auth", "Authentication required"),
+            ("auth", "the OAuth token has expired"),
+            ("auth", "login expired"),
+            ("auth", "Your session expired"),
+        ];
+        for (want, text) in should_match {
+            assert_eq!(kind(text), Some(want), "{text:?}");
+        }
+        let must_not_match = [
+            "the upgrade guide is in docs/upgrading.md",
+            "upgrade the dependency to 2.0",
+            "expired cache entries were removed",
+            "quota calculation function",
+            "authenticate the user in the handler",
+            "authentication module not found",
+            "the rate limit middleware is missing",
+            "rate limit handling for the client",
+            "when the timer resets the counter goes to zero",
+            "resets the state of the form",
+            "file not included in the build",
+            "error 4010 in module",
+            "request id 14290",
+        ];
+        for text in must_not_match {
+            assert_eq!(kind(text), None, "{text:?}");
+        }
     }
 }

@@ -509,15 +509,16 @@ impl Engine {
     // ------------------------------------------------------------------ running
 
     /// The prompt for `provider`: with the catch-up in front when its own session
-    /// missed turns that ran elsewhere.
-    fn prompt_for(&mut self, provider: ProviderId, model: &str, prompt: &str) -> String {
+    /// missed turns that ran elsewhere. This does not mark anything as delivered: the
+    /// provider has only seen the catch-up once an attempt ends successfully
+    /// ([`Engine::finish`] records the turn, which marks it caught up). An attempt
+    /// that fails first leaves the turns missed, so the next one sends them again.
+    fn prompt_for(&self, provider: ProviderId, model: &str, prompt: &str) -> String {
         if self.sessions.missed_turns(provider) == 0 {
             return prompt.to_string();
         }
         let git = (self.git_status)(&self.dir);
-        let catch_up = self.sessions.catch_up_for(provider, model, &git, CATCH_UP_TOKENS);
-        self.sessions.mark_seen(provider);
-        match catch_up {
+        match self.sessions.catch_up_for(provider, model, &git, CATCH_UP_TOKENS) {
             Some(text) => format!("{text}{prompt}"),
             None => prompt.to_string(),
         }
@@ -1108,6 +1109,41 @@ mod tests {
 
         r.turn("third request", want(TaskType::Feature)).await;
         assert_eq!(r.started().last().unwrap().prompt, "third request", "B is up to date: no catch-up");
+    }
+
+    #[tokio::test]
+    async fn a_failed_attempt_leaves_the_catch_up_owed_and_a_success_settles_it() {
+        let ready = [Claude, Codex];
+        let mut r = rig(&ready);
+        let a = first_choice(TaskType::Feature, &ready);
+        let b = if a == Claude { Codex } else { Claude };
+        r.turn("first request", new_task(TaskType::Feature)).await;
+        assert_eq!(r.started().last().unwrap().provider, a);
+
+        // A stalls on the second turn, so B answers it: A has now missed that turn.
+        r.script(a, STALL);
+        r.turn("second request", new_task(TaskType::Feature)).await;
+        assert_eq!(r.started().last().unwrap().provider, b);
+
+        // A is tried again and stalls again. It was handed the catch-up, but never
+        // answered, so it is still owed it.
+        r.turn("third request", new_task(TaskType::Feature)).await;
+        let failed_try = r.started().into_iter().filter(|s| s.provider == a).last().unwrap();
+        assert!(failed_try.prompt.contains("second request"), "{}", failed_try.prompt);
+        assert_eq!(r.engine.sessions.missed_turns(a), 2, "the stalled attempt did not count as delivery");
+
+        // Routing stays with B for a while after a switch, so take B out of the turn.
+        r.script(a, OK);
+        r.script(b, STALL);
+        r.turn("fourth request", new_task(TaskType::Feature)).await;
+        let on_a = r.started().last().unwrap().clone();
+        assert_eq!(on_a.provider, a);
+        assert!(on_a.prompt.contains("second request") && on_a.prompt.contains("third request"), "{}", on_a.prompt);
+        assert!(on_a.prompt.ends_with("Now the user says:\nfourth request"), "{}", on_a.prompt);
+
+        r.turn("fifth request", new_task(TaskType::Feature)).await;
+        let again = r.started().last().unwrap().clone();
+        assert_eq!((again.provider, again.prompt.as_str()), (a, "fifth request"), "delivered once, not repeated");
     }
 
     #[tokio::test]

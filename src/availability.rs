@@ -18,7 +18,7 @@ use std::time::Duration;
 
 use serde_json::Value;
 
-use crate::backend::ProviderId;
+use crate::backend::{gemini, grok, ProviderId};
 use crate::envfile;
 
 /// Each probe gets this long; a slower one is reported as [`State::Unknown`] rather
@@ -370,7 +370,7 @@ async fn probe_codex() -> Availability {
 struct GeminiFacts {
     gemini_installed: bool,
     agy_installed: bool,
-    /// `GEMINI_API_KEY` or `GOOGLE_API_KEY` in the environment.
+    /// An API-key or Vertex/Code Assist variable in the environment (`gemini::AUTH_ENV_VARS`).
     api_key_env: bool,
     /// `~/.gemini/settings.json` names an auth type.
     settings_auth: bool,
@@ -380,20 +380,11 @@ struct GeminiFacts {
     agy_creds: bool,
 }
 
-/// True when the settings JSON picks an auth type: `security.auth.selectedType`, or
-/// the older top-level `selectedAuthType`. Any nesting is accepted since the layout
-/// has moved between releases.
-fn settings_names_auth_type(settings_json: &str) -> bool {
-    fn walk(v: &Value) -> bool {
-        match v {
-            Value::Object(map) => map.iter().any(|(k, child)| match (k.as_str(), child) {
-                ("selectedType" | "selectedAuthType", Value::String(s)) => !s.is_empty(),
-                _ => walk(child),
-            }),
-            _ => false,
-        }
-    }
-    serde_json::from_str::<Value>(settings_json).is_ok_and(|v| walk(&v))
+/// The two Gemini facts that come from the settings file and the environment,
+/// both decided by [`gemini::is_configured`], the rule the provider factory uses
+/// too. Returns `(api_key_env, settings_auth)`.
+fn gemini_login_facts(settings: Option<&str>, env_set: impl Fn(&str) -> bool) -> (bool, bool) {
+    (gemini::is_configured(None, env_set), gemini::is_configured(settings, |_| false))
 }
 
 /// Which sign-in was found, for the detail line.
@@ -424,12 +415,13 @@ fn dir_has_entries(path: &Path) -> bool {
 }
 
 async fn probe_gemini() -> Availability {
-    let api_key_env = ["GEMINI_API_KEY", "GOOGLE_API_KEY"].iter().any(|n| envfile::from_env(n).is_some());
+    let settings = read_home_file(".gemini/settings.json");
+    let (api_key_env, settings_auth) = gemini_login_facts(settings.as_deref(), |n| envfile::from_env(n).is_some());
     decide_gemini(GeminiFacts {
         gemini_installed: on_path("gemini"),
         agy_installed: on_path("agy"),
         api_key_env,
-        settings_auth: read_home_file(".gemini/settings.json").is_some_and(|t| settings_names_auth_type(&t)),
+        settings_auth,
         oauth_creds: home_path_exists(".gemini/oauth_creds.json"),
         agy_creds: home().is_some_and(|h| dir_has_entries(&h.join(".gemini/antigravity-cli"))),
     })
@@ -481,7 +473,7 @@ async fn probe_grok() -> Availability {
     let on_path_real = find_on_path("grok", &path_dirs(), &is_executable_file).iter().any(|p| !is_mise_wrapper(p));
     decide_grok(GrokFacts {
         real_binary: on_path_real || data.is_some_and(|d| mise_has_grok_install(&d)),
-        home_dir: home_path_exists(".grok"),
+        home_dir: home().is_some_and(|h| grok::session_dir_exists(&h)),
     })
 }
 
@@ -603,12 +595,15 @@ mod tests {
     // ---- Gemini
 
     #[test]
-    fn gemini_settings_auth_type_detection() {
-        assert!(settings_names_auth_type(r#"{"security":{"auth":{"selectedType":"oauth-personal"}}}"#));
-        assert!(settings_names_auth_type(r#"{"selectedAuthType":"gemini-api-key"}"#));
-        assert!(!settings_names_auth_type(r#"{"security":{"auth":{"selectedType":""}}}"#));
-        assert!(!settings_names_auth_type(r#"{"theme":"dark"}"#));
-        assert!(!settings_names_auth_type("nope"));
+    fn gemini_login_facts_follow_the_factory_rule() {
+        let commented = "{\n  // login\n  \"security\": {\"auth\": {\"selectedType\": \"oauth-personal\"}}\n}";
+        let no_env = |_: &str| false;
+        assert_eq!(gemini_login_facts(Some(commented), no_env), (false, true), "comments in settings.json are fine");
+        assert_eq!(gemini_login_facts(None, |n| n == "GOOGLE_GENAI_USE_VERTEXAI"), (true, false), "Vertex env only");
+        assert_eq!(gemini_login_facts(None, |n| n == "GOOGLE_GENAI_USE_GCA"), (true, false));
+        assert_eq!(gemini_login_facts(Some(r#"{"theme":"dark"}"#), no_env), (false, false));
+        assert_eq!(gemini_login_facts(Some("nope"), no_env), (false, false));
+        assert_eq!(gemini_login_facts(None, no_env), (false, false));
     }
 
     #[test]

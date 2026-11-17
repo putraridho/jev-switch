@@ -35,8 +35,7 @@ const AGY_MODE: &str = "accept-edits";
 const EMPTY_ANSWER: &str = "the CLI returned an empty response";
 
 /// Environment variables that make Gemini CLI authenticate without `settings.json`
-/// (read from its `getAuthTypeFromEnv`). Callers turn these into the
-/// `env_has_key` argument of [`auth_looks_configured`].
+/// (read from its `getAuthTypeFromEnv`). Only [`is_configured`] reads this list.
 pub const AUTH_ENV_VARS: [&str; 4] =
     ["GEMINI_API_KEY", "GOOGLE_API_KEY", "GOOGLE_GENAI_USE_VERTEXAI", "GOOGLE_GENAI_USE_GCA"];
 
@@ -340,11 +339,18 @@ impl Backend for GeminiBackend {
     }
 }
 
-/// Whether the Gemini CLI looks set up, for the availability probe: an API-key or
-/// Vertex/Code Assist environment variable (see [`AUTH_ENV_VARS`]; the caller
-/// reads the environment) or a `settings.json` that names an auth type. Pure so it
-/// can be tested without touching real files. Antigravity keeps no such setting
-/// here, so this says nothing about `agy`.
+/// THE answer to "is the Gemini CLI set up": an API-key or Vertex/Code Assist
+/// environment variable (see [`AUTH_ENV_VARS`]; `env_set` says whether a variable
+/// is set) or a `settings.json` that names an auth type. The availability probe and
+/// the provider factory both ask this, so they cannot disagree. Pure so it can be
+/// tested without touching real files or the environment. Antigravity keeps no such
+/// setting here, so this says nothing about `agy`.
+pub fn is_configured(gemini_settings_json: Option<&str>, env_set: impl Fn(&str) -> bool) -> bool {
+    auth_looks_configured(gemini_settings_json, AUTH_ENV_VARS.iter().any(|n| env_set(n)))
+}
+
+/// The settings-or-flag half of [`is_configured`], kept public only so the factory
+/// keeps compiling until it calls [`is_configured`] directly.
 ///
 /// Gemini CLI accepts comments in `settings.json`, so whole-line `//` comments are
 /// dropped before parsing. Unreadable JSON counts as not configured.
@@ -654,5 +660,19 @@ mod tests {
         assert!(!auth_looks_configured(Some(""), false));
         let commented = "{\n  // how to log in\n  \"security\": {\"auth\": {\"selectedType\": \"vertex-ai\"}}\n}";
         assert!(auth_looks_configured(Some(commented), false));
+    }
+
+    #[test]
+    fn is_configured_is_the_one_rule_for_settings_and_environment() {
+        let commented = "{\n  // how to log in\n  \"security\": {\"auth\": {\"selectedType\": \"vertex-ai\"}}\n}";
+        let none = |_: &str| false;
+        assert!(is_configured(Some(commented), none), "a commented settings.json that names an auth type");
+        for var in AUTH_ENV_VARS {
+            assert!(is_configured(None, |n| n == var), "{var} alone is enough");
+        }
+        assert!(is_configured(None, |n| n == "GOOGLE_GENAI_USE_VERTEXAI"), "Vertex env only");
+        assert!(!is_configured(None, none));
+        assert!(!is_configured(Some("{}"), none));
+        assert!(!is_configured(Some(r#"{"theme":"dark"}"#), |n| n == "SOMETHING_ELSE"));
     }
 }
