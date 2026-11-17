@@ -296,24 +296,52 @@ fn copy_index_with(real: &Path, tmp: &Path, copy: impl FnOnce(&Path, &Path) -> s
 /// copied. It carries no stat cache, so git hashes every tracked file: slower, correct.
 /// An absent index is NOT the same: git would see no tracked files and the snapshot would
 /// be the empty tree, so a failure here means no snapshot at all.
+///
+/// `--index-info` takes no flags, so the skip-worktree bit (a sparse checkout, or
+/// `update-index --skip-worktree`) is put back from `ls-files -t` (tag `S`): without it
+/// `add -u` would record every file that is not checked out as deleted. If that cannot be
+/// done there is no snapshot ("changes not tracked this turn"), never a wrong tree. An
+/// intent-to-add entry needs nothing: `add -u` stages its content either way.
 fn seed_index_from_entries(root: &Path, tmp: &Path) -> Option<()> {
-    use std::io::Write;
     let entries = git(root, None, &["ls-files", "--stage", "-z"])?;
+    git_with_input(root, tmp, &["update-index", "-z", "--index-info"], &entries)?;
+    let tagged = git(root, None, &["ls-files", "-t", "-z"])?;
+    let skipped = skip_worktree_paths(&tagged);
+    if skipped.is_empty() {
+        return Some(());
+    }
+    git_with_input(root, tmp, &["update-index", "-z", "--skip-worktree", "--stdin"], &skipped)
+}
+
+/// The NUL-separated paths `ls-files -t -z` tags `S` (skip-worktree), each NUL-terminated.
+fn skip_worktree_paths(tagged: &[u8]) -> Vec<u8> {
+    let mut paths = Vec::new();
+    for path in tagged.split(|b| *b == 0).filter_map(|entry| entry.strip_prefix(b"S ")) {
+        paths.extend_from_slice(path);
+        paths.push(0);
+    }
+    paths
+}
+
+/// Run `git -C root args...` on the index `index`, with `input` on stdin; `Some` when it succeeded.
+fn git_with_input(root: &Path, index: &Path, args: &[&str], input: &[u8]) -> Option<()> {
+    use std::io::Write;
     let mut child = Command::new("git")
         .arg("-C")
         .arg(root)
-        .args(["update-index", "-z", "--index-info"])
+        .args(args)
         .env("GIT_OPTIONAL_LOCKS", "0")
         .env_remove("GIT_DIR")
         .env_remove("GIT_WORK_TREE")
-        .env("GIT_INDEX_FILE", tmp)
+        .env("GIT_INDEX_FILE", index)
         .stdin(Stdio::piped())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()
         .ok()?;
-    child.stdin.take()?.write_all(&entries).ok()?;
-    child.wait().ok()?.success().then_some(())
+    let written = child.stdin.take().map(|mut stdin| stdin.write_all(input).is_ok());
+    let succeeded = child.wait().ok()?.success();
+    (written == Some(true) && succeeded).then_some(())
 }
 
 fn remove_temp_index(tmp: PathBuf) {
@@ -978,6 +1006,53 @@ mod tests {
         let after_failure = snapshot_with(s.path(), copy_that_fails_halfway).expect("a failed copy must not break the snapshot");
         assert_eq!(after_failure.tree, good.tree, "the fallback sees the same tracked files");
         assert_eq!(after_failure.untracked.keys().collect::<Vec<_>>(), good.untracked.keys().collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn the_fallback_keeps_skip_worktree_entries_of_a_sparse_checkout() {
+        let s = repo();
+        run_git(s.path(), &["sparse-checkout", "set", "--no-cone", "/a.txt", "/.gitignore", "/src/"]);
+        assert!(!s.exists("b.txt"), "b.txt is not checked out");
+        let head = run_git(s.path(), &["rev-parse", "HEAD^{tree}"]).trim().to_string();
+        let good = snapshot(s.path()).expect("snapshot");
+        assert_eq!(good.tree, head, "a file that is not checked out is not a deletion");
+        let after_failure = snapshot_with(s.path(), copy_that_fails_halfway).expect("the fallback still snapshots");
+        assert_eq!(after_failure.tree, head, "the rebuilt index must keep skip-worktree, or `add -u` records b.txt as deleted");
+        s.write("a.txt", "edited\n");
+        let edited = snapshot_with(s.path(), copy_that_fails_halfway).expect("snapshot");
+        assert_eq!(edited.tree, snapshot(s.path()).unwrap().tree, "and a real edit is still seen");
+    }
+
+    #[test]
+    fn only_paths_tagged_skip_worktree_are_picked() {
+        let tagged = b"H a.txt\0S b.txt\0S dir/with space\0h assumed\0s both\0";
+        assert_eq!(skip_worktree_paths(tagged), b"b.txt\0dir/with space\0");
+        assert!(skip_worktree_paths(b"").is_empty());
+    }
+
+    #[test]
+    fn the_fallback_keeps_a_skip_worktree_bit_set_by_hand() {
+        // No sparse-checkout patterns for `git add` to fall back on: only the bit says b.txt
+        // is not checked out (or edited locally on purpose).
+        let s = repo();
+        run_git(s.path(), &["update-index", "--skip-worktree", "b.txt"]);
+        std::fs::remove_file(s.path().join("b.txt")).unwrap();
+        s.write("src/c.txt", "local only\n");
+        run_git(s.path(), &["update-index", "--skip-worktree", "src/c.txt"]);
+        let good = snapshot(s.path()).expect("snapshot");
+        assert_eq!(good.tree, run_git(s.path(), &["rev-parse", "HEAD^{tree}"]).trim());
+        let after_failure = snapshot_with(s.path(), copy_that_fails_halfway).expect("the fallback still snapshots");
+        assert_eq!(after_failure.tree, good.tree, "b.txt is not deleted and src/c.txt not changed in the snapshot");
+    }
+
+    #[test]
+    fn the_fallback_matches_a_good_copy_for_an_intent_to_add_file() {
+        let s = repo();
+        s.write("planned.txt", "later\n");
+        run_git(s.path(), &["add", "-N", "planned.txt"]);
+        let good = snapshot(s.path()).expect("snapshot");
+        let after_failure = snapshot_with(s.path(), copy_that_fails_halfway).expect("snapshot");
+        assert_eq!(after_failure.tree, good.tree);
     }
 
     #[test]
