@@ -53,7 +53,7 @@ pub use permissions::{auto_allowed, denied_without_asking, remembered_allowed, p
 pub use provider_view::{provider_glyphs, providers_table, AvailRow, ProviderStatus};
 pub use route::{route_line, short_reason, RouteFacts};
 pub use screens::{doctor_report, doctor_summary, help_text, status_text, DoctorItem, ReadyProvider, Severity, StatusFacts};
-pub use session::{config_text, context_text, cost_text, terminal_setup_text, why_text, ConfigRow, ContextFacts, CostRow, TerminalSetupFacts, COMPACT_SUGGEST_AT};
+pub use session::{config_text, context_text, cost_text, mcp_text, terminal_setup_text, why_text, ConfigRow, ContextFacts, CostRow, TerminalSetupFacts, COMPACT_SUGGEST_AT};
 pub use status::{input_row, status_line, Spinner, SPINNER_FRAMES, SPINNER_FRAME_MS};
 pub use style::{stderr_is_tty, stdout_is_tty, Style, Theme};
 pub use summary::{turn_summary, SummaryFacts};

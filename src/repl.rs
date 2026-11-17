@@ -263,6 +263,7 @@ impl Repl {
                 self.page_out(&uifmt::status_text(&facts, style));
             }
             Command::Providers { refresh } => self.providers(refresh).await,
+            Command::Mcp(cmd) => self.mcp(cmd),
             Command::Doctor => {
                 self.console.out(&style.dim("  checking the setup..."));
                 let text = self.doctor_text().await;
@@ -1024,6 +1025,9 @@ mod tests {
         r.out.clear();
         run(&mut r, "/terminal-setup").await;
         assert!(r.out.text().contains("Shift-Enter for a new line"), "{}", r.out.text());
+        r.out.clear();
+        run(&mut r, "/mcp").await;
+        assert!(r.out.text().contains("MCP servers"), "{}", r.out.text());
     }
 
     #[tokio::test]

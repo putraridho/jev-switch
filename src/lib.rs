@@ -27,6 +27,7 @@ pub mod host;
 pub mod lineedit;
 pub mod log;
 pub mod mode;
+pub mod mcp;
 pub mod orchestrate;
 pub mod prefs;
 pub mod permissions;

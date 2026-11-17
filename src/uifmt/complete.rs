@@ -43,6 +43,7 @@ fn arg_choices(command: &str, ctx: &CompleteCtx) -> Vec<String> {
         "/orchestrate" => vec!["on", "off"],
         "/mode" => vec!["ask", "edit", "plan", "auto"],
         "/providers" => vec!["refresh"],
+        "/mcp" => vec!["list", "login"],
         "/terminal-setup" => vec!["install"],
         "/permissions" => vec!["allow", "remove", "dir", "list"],
         "/model" => ["auto"]
@@ -139,11 +140,12 @@ mod tests {
         assert_eq!(
             replacements("/"),
             vec![
-                "/clear", "/compact", "/config", "/context", "/copy", "/cost", "/diff", "/doctor", "/edit", "/export", "/help", "/init", "/memory", "/mode",
+                "/clear", "/compact", "/config", "/context", "/copy", "/cost", "/diff", "/doctor", "/edit", "/export", "/help", "/init", "/mcp", "/memory", "/mode",
                 "/model", "/new", "/orchestrate", "/permissions", "/provider", "/providers", "/quit", "/resume", "/review", "/status", "/terminal-setup",
                 "/undo", "/why"
             ]
         );
+        assert_eq!(replacements("/mcp "), vec!["list", "login"]);
         assert_eq!(replacements("/terminal-setup "), vec!["install"]);
         assert_eq!(replacements("/mo"), vec!["/mode", "/model"]);
         assert_eq!(replacements("/model"), vec!["/model"]);

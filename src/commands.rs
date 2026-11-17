@@ -8,6 +8,12 @@ use crate::permissions::{self, PermissionsCmd};
 use crate::routing::Pin;
 use crate::uifmt;
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum McpCmd {
+    List,
+    Login(String),
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum Command {
     /// A blank line.
@@ -32,6 +38,8 @@ pub enum Command {
     SetMode(Mode),
     /// `/providers [refresh]`.
     Providers { refresh: bool },
+    /// `/mcp [list | login <server>]`.
+    Mcp(McpCmd),
     /// A command that was recognised but whose argument was not; the text says what is accepted.
     Invalid(String),
     /// `/help`.
@@ -208,6 +216,19 @@ pub fn parse(line: &str) -> Command {
             (Some("refresh"), false) => Command::Providers { refresh: true },
             _ => invalid("usage: /providers [refresh]"),
         },
+        "/mcp" => match (arg, extra) {
+            (None, _) | (Some("list"), false) => Command::Mcp(McpCmd::List),
+            (Some("login" | "auth"), false) => invalid("usage: /mcp [list | login <server>]"),
+            (Some("login" | "auth"), true) => {
+                let rest_words: Vec<&str> = line[head.len()..].split_whitespace().collect();
+                if rest_words.len() == 2 {
+                    Command::Mcp(McpCmd::Login(rest_words[1].to_string()))
+                } else {
+                    invalid("usage: /mcp login <server>")
+                }
+            }
+            _ => invalid("usage: /mcp [list | login <server>]"),
+        },
         // A typo'd command must not cost a model turn; a path like `/etc/hosts` is still a prompt.
         h if h.starts_with('/') && !h[1..].contains('/') => {
             Command::Unknown { typed: head.to_string(), suggestion: closest_command(head) }
@@ -236,6 +257,13 @@ mod tests {
         assert_eq!(parse("/providers"), Command::Providers { refresh: false });
         assert_eq!(parse("/providers refresh"), Command::Providers { refresh: true });
         assert!(matches!(parse("/providers nope"), Command::Invalid(_)));
+        assert_eq!(parse("/mcp"), Command::Mcp(McpCmd::List));
+        assert_eq!(parse("/mcp list"), Command::Mcp(McpCmd::List));
+        assert_eq!(parse("/mcp login my-server"), Command::Mcp(McpCmd::Login("my-server".into())));
+        assert_eq!(parse("/mcp auth my-server"), Command::Mcp(McpCmd::Login("my-server".into())));
+        assert!(matches!(parse("/mcp login"), Command::Invalid(_)));
+        assert!(matches!(parse("/mcp login a b"), Command::Invalid(_)));
+        assert!(matches!(parse("/mcp nope"), Command::Invalid(_)));
     }
 
     #[test]

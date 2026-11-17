@@ -353,6 +353,55 @@ impl Repl {
             Err(e) => self.console.out(&format!("{} not changed: {e}", style.yellow("⚠"))),
         }
     }
+
+    /// `/mcp [list | login <server>]`.
+    pub(super) fn mcp(&mut self, cmd: crate::commands::McpCmd) {
+        match cmd {
+            crate::commands::McpCmd::List => {
+                let servers = crate::mcp::discover(&self.engine.dir(), self.home.as_deref().map(Path::new), self.engine.orchestrate());
+                let style = self.out_style();
+                self.page_out(&uifmt::mcp_text(&servers, style));
+            }
+            crate::commands::McpCmd::Login(server) => {
+                self.mcp_login(&server);
+            }
+        }
+    }
+
+    fn mcp_login(&mut self, server: &str) {
+        let style = self.out_style();
+        let servers = crate::mcp::discover(&self.engine.dir(), self.home.as_deref().map(Path::new), self.engine.orchestrate());
+        let matching: Vec<_> = servers.iter().filter(|s| s.name == server).collect();
+        if matching.is_empty() {
+            self.console.out(&format!("{} Server `{server}` is not configured in any provider.", style.yellow("⚠")));
+            return;
+        }
+
+        let provider = matching.iter().find_map(|s| match s.scope {
+            crate::mcp::McpScope::Claude => Some("claude"),
+            crate::mcp::McpScope::Codex => Some("codex"),
+            _ => None,
+        });
+
+        let Some(bin) = provider else {
+            self.console.out(&format!(
+                "  {}",
+                style.dim(&format!("Server `{server}` is configured under {}, which does not need a login command.", matching[0].scope))
+            ));
+            return;
+        };
+
+        self.console.out(&format!("  {}", style.dim(&format!("Logging in to `{server}` via `{bin} mcp login`..."))));
+        let status = std::process::Command::new(bin)
+            .args(["mcp", "login", server])
+            .status();
+
+        match status {
+            Ok(s) if s.success() => self.console.out(&format!("{} Signed in to `{server}`.", style.green("✓"))),
+            Ok(s) => self.console.out(&format!("{} Login failed with exit code: {:?}", style.yellow("⚠"), s.code())),
+            Err(e) => self.console.out(&format!("{} Failed to run `{bin}`: {e}", style.red("✗"))),
+        }
+    }
 }
 
 /// A path the person typed: `~/` from home, relative ones from the project.

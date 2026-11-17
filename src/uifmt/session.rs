@@ -224,6 +224,48 @@ pub fn terminal_setup_text(f: &TerminalSetupFacts, style: Style) -> String {
     lines.join("\n")
 }
 
+// ------------------------------------------------------------------------ /mcp
+
+/// `/mcp`: show configured MCP servers across ready providers.
+pub fn mcp_text(servers: &[crate::mcp::McpRow], style: Style) -> String {
+    if servers.is_empty() {
+        return format!(
+            "{}\n\n  {}",
+            style.bold("MCP servers"),
+            style.dim("No MCP servers configured in this project or in ~/.claude.json, ~/.codex/config.toml, ~/.gemini/config/mcp_config.json.")
+        );
+    }
+
+    let name_col = servers.iter().map(|r| display_width(&r.name)).max().unwrap_or(4).max(4) + 2;
+    let scope_col = servers.iter().map(|r| display_width(&r.scope.to_string())).max().unwrap_or(8).max(8) + 2;
+    let transport_col = servers.iter().map(|r| display_width(&r.transport.to_string())).max().unwrap_or(9).max(9) + 2;
+
+    let header = format!(
+        "  {}{}{}{}",
+        style.dim(&pad_to_width("Name", name_col)),
+        style.dim(&pad_to_width("Provider", scope_col)),
+        style.dim(&pad_to_width("Transport", transport_col)),
+        style.dim("Target")
+    );
+
+    let mut lines = vec![style.bold("MCP servers"), String::new(), header];
+    for r in servers {
+        let line = format!(
+            "  {}{}{}{}",
+            pad_to_width(&r.name, name_col),
+            pad_to_width(&r.scope.to_string(), scope_col),
+            pad_to_width(&r.transport.to_string(), transport_col),
+            r.target
+        );
+        lines.push(line);
+    }
+
+    lines.push(String::new());
+    lines.push(format!("  {}", style.dim("To sign in to an HTTP server: /mcp login <server>")));
+
+    lines.join("\n")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -292,5 +334,24 @@ mod tests {
         assert!(text.contains("kitty · add to ~/.config/kitty/kitty.conf") && text.contains("    map a b") && text.contains("/terminal-setup install"), "{text}");
         let unknown = TerminalSetupFacts { terminal: None, ..f };
         assert!(terminal_setup_text(&unknown, OFF).contains("could not be told"));
+    }
+
+    #[test]
+    fn mcp_text_renders_empty_and_populated_tables() {
+        let empty = mcp_text(&[], OFF);
+        assert!(empty.contains("No MCP servers configured"), "{empty}");
+
+        let rows = [crate::mcp::McpRow {
+            name: "test-server".into(),
+            scope: crate::mcp::McpScope::Claude,
+            transport: crate::mcp::McpTransport::Http,
+            target: "https://example.com/mcp".into(),
+        }];
+        let populated = mcp_text(&rows, OFF);
+        assert!(populated.contains("test-server"), "{populated}");
+        assert!(populated.contains("claude"), "{populated}");
+        assert!(populated.contains("http"), "{populated}");
+        assert!(populated.contains("https://example.com/mcp"), "{populated}");
+        assert!(populated.contains("/mcp login"), "{populated}");
     }
 }
