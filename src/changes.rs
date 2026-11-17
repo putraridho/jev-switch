@@ -1,20 +1,31 @@
 //! What one turn changed in the working tree: a summary, the diff, and an undo.
 //!
-//! The tree is captured as a git *tree object* before and after the turn, through a
-//! temporary index (a copy of the real one, so git's stat cache keeps it fast), which
-//! means the user's index, branch and working tree are never touched. Untracked files
-//! that are not ignored are included; ignored ones never are, so an undo cannot reach
-//! them. Everything here is best effort: no git, not a repository or any git failure
-//! gives `None`, and a turn never fails because of it.
+//! A [`Snapshot`] has two parts, taken before and after the turn:
 //!
-//! Layout: the parsers and the undo plan are pure and tested on strings; the few
-//! functions that run `git` or touch files are thin and tested in real temp repos.
+//! * the **tracked** content, as a git *tree object* built through a temporary index
+//!   (a copy of the real one, plus `git add -u`). Only files the user already gave to git
+//!   are ever hashed into `.git/objects`; summary, diff and undo are complete for them.
+//! * a cheap **manifest** of the untracked, non-ignored files (path, size, mtime; no
+//!   content is read). A file that is untracked now and was not in the manifest was added
+//!   by the turn, so undo may delete it. One that was there and changed (or vanished) is
+//!   [`ChangeStatus::ModifiedUntracked`]: we never had its old content, so undo refuses.
+//!
+//! Ignored files are never looked at, so an undo cannot reach them. The user's index,
+//! branch and working tree are never touched by a snapshot. Everything here is best
+//! effort: no git, not a repository or any git failure gives `None`, and a turn never
+//! fails because of it.
+//!
+//! Layout: the parsers, the manifest merge, the undo plan and the "edited since" rule are
+//! pure and tested on values; the few functions that run `git` or touch files are thin and
+//! tested in real temp repos.
 
 use std::collections::{HashMap, HashSet};
 use std::fmt;
+use std::future::Future;
 use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::UNIX_EPOCH;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ChangeStatus {
@@ -22,6 +33,9 @@ pub enum ChangeStatus {
     Modified,
     Deleted,
     Renamed,
+    /// An untracked file that existed before the turn and was changed or removed by it.
+    /// There is no earlier copy, so it is reported but never undone.
+    ModifiedUntracked,
 }
 
 /// One file the turn changed. Paths are relative to the repository root.
@@ -37,14 +51,39 @@ pub struct FileChange {
     pub old_path: Option<String>,
 }
 
+impl FileChange {
+    fn new(path: String, status: ChangeStatus) -> Self {
+        Self { path, status, added: 0, removed: 0, old_path: None }
+    }
+}
+
+/// What a file looked like from the outside: enough to tell it changed, without reading it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Stamp {
+    pub size: u64,
+    pub mtime_ns: i128,
+}
+
+/// The working tree at one moment; see the module docs.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Snapshot {
+    /// Tree id of the tracked files, as they are in the working tree.
+    pub tree: String,
+    /// Untracked, non-ignored files by repository-relative path.
+    pub untracked: HashMap<String, Stamp>,
+}
+
 /// The difference between two working-tree snapshots. `files` is never empty in a
 /// summary the engine keeps: a turn that changed nothing has no summary.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ChangeSummary {
     pub files: Vec<FileChange>,
-    /// Tree ids of the working tree before and after the turn.
+    /// Tree ids of the tracked files before and after the turn.
     pub before: String,
     pub after: String,
+    /// The untracked files the turn added, as they were when it ended: undo deletes one
+    /// only while it still looks like this.
+    pub added_stamps: HashMap<String, Stamp>,
 }
 
 impl ChangeSummary {
@@ -118,6 +157,64 @@ fn build_files(name_status: &str, numstat: &str) -> Vec<FileChange> {
         .collect()
 }
 
+/// `git ls-files --others -z`: the untracked paths. A trailing `/` is a nested repository
+/// (not ours to track); a path mangled by lossy decoding cannot be addressed again.
+fn parse_untracked_list(raw: &str) -> Vec<&str> {
+    raw.split('\0').filter(|p| !p.is_empty() && !p.ends_with('/') && !p.contains('\u{FFFD}')).collect()
+}
+
+// ------------------------------------------------------------- tracked + untracked (pure)
+
+/// The tracked diff of two snapshots combined with what their manifests say.
+struct Merged {
+    files: Vec<FileChange>,
+    /// The untracked files the turn added, with their stamps now.
+    added: HashMap<String, Stamp>,
+}
+
+/// Fold the untracked manifests into the tracked file list.
+///
+/// * untracked now, not before: `Added` (unless it is a tracked file that left the index,
+///   which the tree diff already reports as deleted, and which is still there);
+/// * untracked before and changed or gone now: `ModifiedUntracked`;
+/// * a pre-existing untracked file the turn only staged shows as added in the tree diff:
+///   that is dropped (and caught above if its content changed), so an undo never deletes
+///   a file that was already there.
+///
+/// `stamp_now` looks a path up on disk, for files that are no longer in the manifest.
+fn merge_untracked(tree_files: Vec<FileChange>, before: &Snapshot, after: &Snapshot, stamp_now: impl Fn(&str) -> Option<Stamp>) -> Merged {
+    let deleted: HashSet<String> = tree_files.iter().filter(|f| f.status == ChangeStatus::Deleted).map(|f| f.path.clone()).collect();
+    let mut files = Vec::new();
+    for f in tree_files {
+        let existed_untracked = before.untracked.contains_key(&f.path);
+        match f.status {
+            ChangeStatus::Deleted if after.untracked.contains_key(&f.path) => {}
+            ChangeStatus::Added if existed_untracked => {}
+            ChangeStatus::Renamed if existed_untracked => {
+                if let Some(old) = f.old_path {
+                    files.push(FileChange::new(old, ChangeStatus::Deleted));
+                }
+            }
+            _ => files.push(f),
+        }
+    }
+
+    let mut modified: Vec<&String> = before
+        .untracked
+        .iter()
+        .filter(|(p, was)| after.untracked.get(*p).copied().or_else(|| stamp_now(p)) != Some(**was))
+        .map(|(p, _)| p)
+        .collect();
+    modified.sort();
+    files.extend(modified.into_iter().map(|p| FileChange::new(p.clone(), ChangeStatus::ModifiedUntracked)));
+
+    let mut added: Vec<(&String, &Stamp)> =
+        after.untracked.iter().filter(|(p, _)| !before.untracked.contains_key(*p) && !deleted.contains(*p)).collect();
+    added.sort_by(|a, b| a.0.cmp(b.0));
+    files.extend(added.iter().map(|(p, _)| FileChange::new((*p).clone(), ChangeStatus::Added)));
+    Merged { files, added: added.into_iter().map(|(p, s)| (p.clone(), *s)).collect() }
+}
+
 // ---------------------------------------------------------------------- git (thin IO)
 
 /// Run `git -C dir args...` (optionally on another index) and return stdout.
@@ -144,63 +241,200 @@ fn is_object_id(s: &str) -> bool {
 
 fn temp_index_path() -> PathBuf {
     static N: AtomicU64 = AtomicU64::new(0);
-    let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.subsec_nanos());
+    let nanos = std::time::SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.subsec_nanos());
     std::env::temp_dir().join(format!("jev-index-{}-{}-{nanos}", std::process::id(), N.fetch_add(1, Ordering::Relaxed)))
 }
 
-/// Where the repository's own index is (it may be relative to `dir`).
-fn real_index(dir: &Path) -> Option<PathBuf> {
-    let out = git_text(dir, None, &["rev-parse", "--git-path", "index"])?;
-    let p = PathBuf::from(out.trim());
-    Some(if p.is_absolute() { p } else { dir.join(p) })
+fn remove_temp_index(tmp: PathBuf) {
+    let _ = std::fs::remove_file(&tmp);
+    let mut lock = tmp.into_os_string();
+    lock.push(".lock");
+    let _ = std::fs::remove_file(lock);
 }
 
-/// The tree id of the working tree in `dir` right now, untracked files included and
-/// ignored ones left out; `None` outside a repository or if git fails. Reads the
-/// working tree and writes objects, never the index, branch or files. Blocking: call
-/// it from `spawn_blocking`.
-pub fn snapshot(dir: &Path) -> Option<String> {
-    let real = real_index(dir)?;
+/// The repository root and where its own index is, in one git run.
+fn repo_paths(dir: &Path) -> Option<(PathBuf, PathBuf)> {
+    let out = git_text(dir, None, &["rev-parse", "--show-toplevel", "--git-path", "index"])?;
+    let (root, index) = out.split_once('\n')?;
+    let (root, index) = (root.trim_end_matches('\r'), index.trim_end_matches(['\n', '\r']));
+    if root.is_empty() || index.is_empty() {
+        return None;
+    }
+    let index = PathBuf::from(index);
+    Some((PathBuf::from(root), if index.is_absolute() { index } else { dir.join(index) }))
+}
+
+fn toplevel(dir: &Path) -> Option<PathBuf> {
+    repo_paths(dir).map(|(root, _)| root)
+}
+
+fn stamp_of(root: &Path, rel: &str) -> Option<Stamp> {
+    let meta = std::fs::symlink_metadata(root.join(rel)).ok()?;
+    let mtime_ns = match meta.modified().ok()?.duration_since(UNIX_EPOCH) {
+        Ok(d) => d.as_nanos() as i128,
+        Err(e) => -(e.duration().as_nanos() as i128),
+    };
+    Some(Stamp { size: meta.len(), mtime_ns })
+}
+
+/// The untracked, non-ignored files and their stamps. Reads no file content.
+fn untracked_manifest(root: &Path) -> Option<HashMap<String, Stamp>> {
+    let listing = git_text(root, None, &["ls-files", "--others", "--exclude-standard", "-z"])?;
+    Some(parse_untracked_list(&listing).into_iter().filter_map(|p| Some((p.to_string(), stamp_of(root, p)?))).collect())
+}
+
+/// The state of the working tree in `dir` right now; `None` outside a repository or if
+/// git fails. Hashes only files git already tracks (into a temporary index, never the
+/// real one), and only stats the untracked ones. Blocking: call it from `spawn_blocking`,
+/// or use [`snapshot_until`].
+pub fn snapshot(dir: &Path) -> Option<Snapshot> {
+    let (root, real) = repo_paths(dir)?;
     let tmp = temp_index_path();
     // Starting from a copy of the real index keeps git's stat cache, so only files that
     // really changed are hashed again; without one it still works, just slower.
     if real.is_file() {
         let _ = std::fs::copy(&real, &tmp);
     }
-    let tree = git(dir, Some(&tmp), &["add", "-A"])
-        .and_then(|_| git_text(dir, Some(&tmp), &["write-tree"]))
+    let tree = git(&root, Some(&tmp), &["add", "-u"])
+        .and_then(|_| git_text(&root, Some(&tmp), &["write-tree"]))
         .map(|t| t.trim().to_string())
         .filter(|t| is_object_id(t));
-    let _ = std::fs::remove_file(&tmp);
-    let mut lock = tmp.into_os_string();
-    lock.push(".lock");
-    let _ = std::fs::remove_file(lock);
-    tree
+    remove_temp_index(tmp);
+    Some(Snapshot { tree: tree?, untracked: untracked_manifest(&root)? })
 }
 
-/// What changed between two snapshots. `Some` with no files when the trees are equal.
-pub fn summarize(dir: &Path, before: &str, after: &str) -> Option<ChangeSummary> {
-    if before == after {
-        return Some(ChangeSummary { files: Vec::new(), before: before.into(), after: after.into() });
+/// What changed between two snapshots. `Some` with no files when nothing did.
+pub fn summarize(dir: &Path, before: &Snapshot, after: &Snapshot) -> Option<ChangeSummary> {
+    let root = toplevel(dir)?;
+    let tree_files = if before.tree == after.tree {
+        Vec::new()
+    } else {
+        let diff = |mode: &str| git_text(&root, None, &["diff", mode, "-z", "-M", "--no-ext-diff", &before.tree, &after.tree]);
+        build_files(&diff("--name-status")?, &diff("--numstat")?)
+    };
+    let Merged { mut files, added } = merge_untracked(tree_files, before, after, |p| stamp_of(&root, p));
+    for f in files.iter_mut().filter(|f| f.status == ChangeStatus::Added && added.contains_key(&f.path)) {
+        f.added = new_file_lines(&root, &f.path);
     }
-    let diff = |mode: &str| git_text(dir, None, &["diff", mode, "-z", "-M", "--no-ext-diff", before, after]);
-    let files = build_files(&diff("--name-status")?, &diff("--numstat")?);
-    Some(ChangeSummary { files, before: before.into(), after: after.into() })
+    Some(ChangeSummary { files, before: before.tree.clone(), after: after.tree.clone(), added_stamps: added })
 }
 
-/// `git diff before after [-- path]` as plain text (no colour; the UI colours it).
-pub fn diff_text(dir: &Path, before: &str, after: &str, path: Option<&str>) -> Option<String> {
-    let mut args = vec!["--literal-pathspecs", "diff", "--no-color", "--no-ext-diff", "-M", before, after];
+/// `git diff before after [-- path]` as plain text (no colour; the UI colours it), with
+/// the untracked files the turn added shown as new files. `path` is repository-relative.
+pub fn diff_text(dir: &Path, summary: &ChangeSummary, path: Option<&str>) -> Option<String> {
+    // From the repository root, so `path` means the same as in the summary whatever
+    // folder the session was started in.
+    let root = toplevel(dir)?;
+    let mut args = vec!["--literal-pathspecs", "diff", "--no-color", "--no-ext-diff", "-M", &summary.before, &summary.after];
     if let Some(p) = path {
         args.extend(["--", p]);
     }
-    git_text(dir, None, &args)
+    let mut text = git_text(&root, None, &args)?;
+    let mut added: Vec<&String> = summary.added_stamps.keys().filter(|p| path.is_none_or(|want| want == p.as_str())).collect();
+    added.sort();
+    for p in added {
+        text.push_str(&new_file_diff(&root, p));
+    }
+    Some(text)
 }
 
-fn toplevel(dir: &Path) -> Option<PathBuf> {
-    let out = git_text(dir, None, &["rev-parse", "--show-toplevel"])?;
-    let out = out.trim_end_matches(['\n', '\r']);
-    (!out.is_empty()).then(|| PathBuf::from(out))
+// ------------------------------------------------- new untracked files, shown without git
+
+/// Files bigger than this are not read for line counts or shown in a diff.
+const MAX_SHOWN_BYTES: u64 = 1 << 20;
+
+fn looks_binary(bytes: &[u8]) -> bool {
+    bytes.iter().take(8000).any(|b| *b == 0)
+}
+
+fn count_lines(bytes: &[u8]) -> u32 {
+    let newlines = bytes.iter().filter(|b| **b == b'\n').count();
+    (newlines + usize::from(bytes.last().is_some_and(|b| *b != b'\n'))) as u32
+}
+
+/// What a new file would show in `git diff`: header and one hunk of added lines. Pure.
+fn render_new_file(path: &str, bytes: &[u8], mode: &str) -> String {
+    let mut out = format!("diff --git a/{path} b/{path}\nnew file mode {mode}\n");
+    if looks_binary(bytes) {
+        out.push_str(&format!("Binary files /dev/null and b/{path} differ\n"));
+        return out;
+    }
+    let text = String::from_utf8_lossy(bytes);
+    let n = count_lines(bytes);
+    if n == 0 {
+        return out;
+    }
+    out.push_str(&format!("--- /dev/null\n+++ b/{path}\n@@ -0,0 +1{} @@\n", if n == 1 { String::new() } else { format!(",{n}") }));
+    for line in text.split_inclusive('\n') {
+        out.push('+');
+        out.push_str(line.trim_end_matches('\n'));
+        out.push('\n');
+    }
+    if !bytes.ends_with(b"\n") {
+        out.push_str("\\ No newline at end of file\n");
+    }
+    out
+}
+
+/// Added lines of a new untracked file; 0 for binary, unreadable or very large ones.
+fn new_file_lines(root: &Path, rel: &str) -> u32 {
+    let target = root.join(rel);
+    match std::fs::symlink_metadata(&target) {
+        Ok(m) if m.is_file() && m.len() <= MAX_SHOWN_BYTES => std::fs::read(&target).ok().filter(|b| !looks_binary(b)).map_or(0, |b| count_lines(&b)),
+        _ => 0,
+    }
+}
+
+/// The diff of one new untracked file, read from disk (never through git's object store).
+fn new_file_diff(root: &Path, rel: &str) -> String {
+    let target = root.join(rel);
+    let Ok(meta) = std::fs::symlink_metadata(&target) else { return String::new() };
+    if meta.file_type().is_symlink() {
+        let to = std::fs::read_link(&target).map(|t| t.to_string_lossy().into_owned()).unwrap_or_default();
+        return render_new_file(rel, to.as_bytes(), "120000");
+    }
+    if !meta.is_file() {
+        return String::new();
+    }
+    if meta.len() > MAX_SHOWN_BYTES {
+        return format!("diff --git a/{rel} b/{rel}\nnew file ({} bytes, too large to show)\n", meta.len());
+    }
+    let mode = if is_executable(&meta) { "100755" } else { "100644" };
+    std::fs::read(&target).map(|b| render_new_file(rel, &b, mode)).unwrap_or_default()
+}
+
+#[cfg(unix)]
+fn is_executable(meta: &std::fs::Metadata) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    meta.permissions().mode() & 0o111 != 0
+}
+
+#[cfg(not(unix))]
+fn is_executable(_: &std::fs::Metadata) -> bool {
+    false
+}
+
+// ------------------------------------------------------------------ cancellation
+
+/// Run blocking `work` on the blocking pool and give its result, or `None` as soon as
+/// `cancel` resolves. The work is not stopped: it finishes in the background, and what
+/// it does (git writing a temporary index, or reading) is harmless once nobody waits.
+async fn until<T: Send + 'static>(cancel: impl Future<Output = ()>, work: impl FnOnce() -> Option<T> + Send + 'static) -> Option<T> {
+    let task = tokio::task::spawn_blocking(work);
+    tokio::select! {
+        done = task => done.ok().flatten(),
+        () = cancel => None,
+    }
+}
+
+/// [`snapshot`] that returns `None` promptly once `cancel` resolves.
+pub async fn snapshot_until(dir: PathBuf, cancel: impl Future<Output = ()>) -> Option<Snapshot> {
+    until(cancel, move || snapshot(&dir)).await
+}
+
+/// [`summarize`] that returns `None` promptly once `cancel` resolves.
+pub async fn summarize_until(dir: PathBuf, before: Snapshot, after: Snapshot, cancel: impl Future<Output = ()>) -> Option<ChangeSummary> {
+    until(cancel, move || summarize(&dir, &before, &after)).await
 }
 
 // ---------------------------------------------------------------------- undo
@@ -223,6 +457,9 @@ pub enum UndoError {
     /// These files differ from how the turn left them: the user or a later turn edited
     /// them again. Nothing was touched.
     ChangedSince(Vec<String>),
+    /// The turn changed these untracked files that already existed. There is no earlier
+    /// copy to put back, so nothing was touched.
+    UntrackedModified(Vec<String>),
     /// git named a path an undo must not touch (outside the repository, or `.git`).
     UnsafePath(String),
     /// git or the file system failed.
@@ -239,6 +476,14 @@ impl fmt::Display for UndoError {
                 if files.len() == 1 { "a file was" } else { "files were" },
                 files.join(", ")
             ),
+            Self::UntrackedModified(files) => write!(
+                f,
+                "not undone: the turn changed {} not tracked by git, so there is no earlier copy to put back: {}. Nothing was touched; \
+                 revert {} by hand (files you `git add` before a turn can be undone)",
+                if files.len() == 1 { "a file that is" } else { "files that are" },
+                files.join(", "),
+                if files.len() == 1 { "it" } else { "them" }
+            ),
             Self::UnsafePath(p) => write!(f, "not undone: refusing to touch `{p}`"),
             Self::Failed(m) => write!(f, "undo failed: {m}"),
         }
@@ -252,7 +497,7 @@ impl std::error::Error for UndoError {}
 enum Step {
     /// The turn created this path.
     Delete(String),
-    /// Put the path back to its `before` content; `existed` is whether the turn deleted it.
+    /// Put the path back to its `before` content; `recreated` is whether the turn deleted it.
     Restore { path: String, recreated: bool },
 }
 
@@ -278,9 +523,11 @@ fn is_safe_rel_path(p: &str) -> bool {
         })
 }
 
-/// What to do to undo `files`; refuses on the first unsafe path, before anything runs.
+/// What to do to undo `files`; refuses on the first unsafe path, and on untracked files
+/// that cannot be put back, before anything runs.
 fn plan_undo(files: &[FileChange]) -> Result<Vec<Step>, UndoError> {
     let mut steps = Vec::new();
+    let mut untracked = Vec::new();
     for f in files {
         let paths = std::iter::once(&f.path).chain(f.old_path.as_ref());
         if let Some(bad) = paths.into_iter().find(|p| !is_safe_rel_path(p)) {
@@ -290,6 +537,7 @@ fn plan_undo(files: &[FileChange]) -> Result<Vec<Step>, UndoError> {
             (ChangeStatus::Added, _) => steps.push(Step::Delete(f.path.clone())),
             (ChangeStatus::Modified, _) => steps.push(Step::Restore { path: f.path.clone(), recreated: false }),
             (ChangeStatus::Deleted, _) => steps.push(Step::Restore { path: f.path.clone(), recreated: true }),
+            (ChangeStatus::ModifiedUntracked, _) => untracked.push(f.path.clone()),
             (ChangeStatus::Renamed, old) => {
                 steps.push(Step::Delete(f.path.clone()));
                 if let Some(old) = old {
@@ -298,36 +546,44 @@ fn plan_undo(files: &[FileChange]) -> Result<Vec<Step>, UndoError> {
             }
         }
     }
+    if !untracked.is_empty() {
+        return Err(UndoError::UntrackedModified(untracked));
+    }
     if steps.is_empty() {
         return Err(UndoError::NothingToUndo);
     }
     Ok(steps)
 }
 
-/// A file mode from `git ls-tree`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Kind {
-    File { executable: bool },
-    Symlink,
+/// The paths an undo would overwrite or delete although someone changed them after the
+/// turn. `tree_diff` are the tracked paths that differ between the tree the turn left and
+/// the one now; `now` is the untracked manifest now. An untracked file the turn added is
+/// fine to delete only while it still looks as the turn left it; any other untracked file
+/// sitting at a path the undo is about to write is somebody's.
+fn changed_since(steps: &[Step], added: &HashMap<String, Stamp>, tree_diff: &HashSet<&str>, now: &HashMap<String, Stamp>) -> Vec<String> {
+    steps
+        .iter()
+        .map(Step::path)
+        .filter(|p| {
+            tree_diff.contains(p)
+                || match added.get(*p) {
+                    Some(left) => now.get(*p) != Some(left),
+                    None => now.contains_key(*p),
+                }
+        })
+        .map(String::from)
+        .collect()
 }
 
-/// `git ls-tree -z` lines: `<mode> SP <type> SP <hash> TAB <path>\0`, as path -> (kind, hash).
+/// A path that is restorable from git output: `<mode> SP <type> SP <hash> TAB <path>\0`.
 /// Submodule entries are left out (an undo cannot rebuild them).
-fn parse_ls_tree(raw: &str) -> HashMap<String, (Kind, String)> {
-    let mut out = HashMap::new();
-    for entry in raw.split('\0').filter(|s| !s.is_empty()) {
-        let Some((meta, path)) = entry.split_once('\t') else { continue };
-        let mut cols = meta.split(' ');
-        let (Some(mode), Some(_type), Some(hash)) = (cols.next(), cols.next(), cols.next()) else { continue };
-        let kind = match mode {
-            "100755" => Kind::File { executable: true },
-            "100644" | "100664" => Kind::File { executable: false },
-            "120000" => Kind::Symlink,
-            _ => continue,
-        };
-        out.insert(path.to_string(), (kind, hash.to_string()));
-    }
-    out
+fn parse_ls_tree_paths(raw: &str) -> HashSet<String> {
+    raw.split('\0')
+        .filter_map(|entry| {
+            let (meta, path) = entry.split_once('\t')?;
+            matches!(meta.split(' ').next()?, "100644" | "100664" | "100755" | "120000").then(|| path.to_string())
+        })
+        .collect()
 }
 
 /// True when `target` really lies inside `root_canon`, looking through symlinks: the
@@ -344,59 +600,80 @@ fn inside_root(root_canon: &Path, target: &Path) -> bool {
     false
 }
 
-/// What an undo will write for one path, read from git before anything is touched.
-struct Blob {
-    kind: Kind,
-    bytes: Vec<u8>,
-}
-
 fn io_err(what: &str, path: &str, e: std::io::Error) -> UndoError {
     UndoError::Failed(format!("{what} {path}: {e}"))
+}
+
+/// Something that is not a folder where a folder must be (a file or a link in the way of
+/// `rel`'s parents) and that this undo is not itself deleting: git would replace it.
+fn blocking_parent(root: &Path, rel: &str, deleting: &HashSet<&str>) -> Option<String> {
+    let mut prefix = PathBuf::new();
+    let parts: Vec<_> = Path::new(rel).components().collect();
+    for part in &parts[..parts.len().saturating_sub(1)] {
+        prefix.push(part);
+        let name = prefix.to_string_lossy();
+        if std::fs::symlink_metadata(root.join(&prefix)).is_ok_and(|m| !m.is_dir()) && !deleting.contains(name.as_ref()) {
+            return Some(name.into_owned());
+        }
+    }
+    None
+}
+
+/// A folder where the file `rel` has to go, holding something the undo does not delete.
+fn folder_in_the_way(root: &Path, rel: &str, deleting: &HashSet<&str>) -> bool {
+    let under = format!("{rel}/");
+    std::fs::symlink_metadata(root.join(rel)).is_ok_and(|m| m.is_dir()) && !deleting.iter().any(|d| d.starts_with(&under))
 }
 
 /// Undo what `summary` records, in the repository `dir` belongs to. Blocking.
 ///
 /// Safe by construction: nothing is touched unless every file the turn changed still
-/// matches the tree the turn left behind, every path is inside the repository, and all
-/// old contents were read successfully first. Only the paths in the summary are written.
+/// matches how the turn left it, every path is inside the repository, nothing the turn
+/// changed is an untracked file that existed before, and all old contents are known to be
+/// in the old tree. Only the paths in the summary are written.
 pub fn undo(dir: &Path, summary: &ChangeSummary) -> Result<UndoReport, UndoError> {
     let steps = plan_undo(&summary.files)?;
     let root = toplevel(dir).ok_or_else(|| UndoError::Failed("not inside a git repository".into()))?;
     let root_canon = std::fs::canonicalize(&root).map_err(|e| io_err("cannot resolve", &root.to_string_lossy(), e))?;
 
-    // 1. Has anything the turn touched been edited since? Compare against the tree the
+    // 1. Has anything the turn touched been edited since? Compare against the state the
     // turn left, not against `before`: only a difference from `after` is someone's edit.
     let now = snapshot(dir).ok_or_else(|| UndoError::Failed("could not read the working tree".into()))?;
-    let differing = git_text(&root, None, &["diff", "--name-only", "-z", "--no-renames", &summary.after, &now])
+    let differing = git_text(&root, None, &["diff", "--name-only", "-z", "--no-renames", &summary.after, &now.tree])
         .ok_or_else(|| UndoError::Failed("could not compare the working tree".into()))?;
     let differing: HashSet<&str> = differing.split('\0').filter(|s| !s.is_empty()).collect();
-    let changed: Vec<String> = steps.iter().map(Step::path).filter(|p| differing.contains(p)).map(String::from).collect();
+    let changed = changed_since(&steps, &summary.added_stamps, &differing, &now.untracked);
     if !changed.is_empty() {
         return Err(UndoError::ChangedSince(changed));
     }
 
-    // 2. Read every old content now, so a failure here leaves the tree untouched.
+    // 2. Every old content must be in the old tree, so a failure here leaves the tree untouched.
     let wanted: Vec<&str> = steps.iter().filter_map(|s| matches!(s, Step::Restore { .. }).then(|| s.path())).collect();
-    let mut entries = HashMap::new();
+    let mut restorable = HashSet::new();
     for chunk in wanted.chunks(200) {
         let mut args = vec!["--literal-pathspecs", "ls-tree", "-z", summary.before.as_str(), "--"];
         args.extend(chunk);
         let listing = git_text(&root, None, &args).ok_or_else(|| UndoError::Failed("could not read the old tree".into()))?;
-        entries.extend(parse_ls_tree(&listing));
+        restorable.extend(parse_ls_tree_paths(&listing));
     }
-    let mut blobs: HashMap<&str, Blob> = HashMap::new();
-    for path in &wanted {
-        let (kind, hash) = entries
-            .get(*path)
-            .ok_or_else(|| UndoError::Failed(format!("{path} is not in the tree from before the turn (or is a submodule)")))?;
-        let bytes = git(&root, None, &["cat-file", "blob", hash]).ok_or_else(|| UndoError::Failed(format!("could not read the old {path}")))?;
-        blobs.insert(path, Blob { kind: *kind, bytes });
+    if let Some(path) = wanted.iter().find(|p| !restorable.contains(**p)) {
+        return Err(UndoError::Failed(format!("{path} is not in the tree from before the turn (or is a submodule)")));
     }
 
-    // 3. Every target must really be inside the repository.
+    // 3. Every target must really be inside the repository and not blocked by something
+    // that is not ours to replace.
+    let deleting: HashSet<&str> = steps.iter().filter_map(|s| matches!(s, Step::Delete(_)).then(|| s.path())).collect();
     for step in &steps {
         if !inside_root(&root_canon, &root.join(step.path())) {
             return Err(UndoError::UnsafePath(step.path().to_string()));
+        }
+    }
+    for path in &wanted {
+        if let Some(p) = blocking_parent(&root, path, &deleting) {
+            return Err(UndoError::Failed(format!("{p} is in the way of {path}")));
+        }
+        if folder_in_the_way(&root, path, &deleting) {
+            return Err(UndoError::Failed(format!("{path} is now a folder with other things in it")));
         }
     }
 
@@ -408,13 +685,39 @@ pub fn undo(dir: &Path, summary: &ChangeSummary) -> Result<UndoReport, UndoError
             report.removed.push(path.clone());
         }
     }
+    for path in &wanted {
+        if folder_in_the_way(&root, path, &HashSet::new()) {
+            return Err(UndoError::Failed(format!("{path} is now a folder with other things in it")));
+        }
+    }
+    restore_paths(&root, &summary.before, &wanted)?;
     for step in &steps {
         if let Step::Restore { path, recreated } = step {
-            write_blob(&root, path, &blobs[path.as_str()])?;
             if *recreated { &mut report.recreated } else { &mut report.restored }.push(path.clone());
         }
     }
     Ok(report)
+}
+
+/// Put `paths` back as they are in `tree`, through git's own checkout so line endings and
+/// clean/smudge filters (git-lfs, `.gitattributes` eol rules) apply as they would for the
+/// user. A temporary index holds the tree, so the real index is never touched.
+fn restore_paths(root: &Path, tree: &str, paths: &[&str]) -> Result<(), UndoError> {
+    if paths.is_empty() {
+        return Ok(());
+    }
+    let tmp = temp_index_path();
+    let result = git(root, Some(&tmp), &["read-tree", tree])
+        .ok_or_else(|| UndoError::Failed("could not read the old tree".into()))
+        .and_then(|_| {
+            paths.chunks(200).try_for_each(|chunk| {
+                let mut args = vec!["checkout-index", "-f", "--"];
+                args.extend(chunk);
+                git(root, Some(&tmp), &args).map(drop).ok_or_else(|| UndoError::Failed("git could not put the old files back".into()))
+            })
+        });
+    remove_temp_index(tmp);
+    result
 }
 
 fn remove_file_and_empty_parents(root: &Path, rel: &str) -> Result<(), UndoError> {
@@ -432,44 +735,6 @@ fn remove_file_and_empty_parents(root: &Path, rel: &str) -> Result<(), UndoError
         }
         dir = d.parent();
     }
-    Ok(())
-}
-
-/// Write through a temp file and rename, so a symlink (or a read-only file) in the way
-/// is replaced rather than followed.
-fn write_blob(root: &Path, rel: &str, blob: &Blob) -> Result<(), UndoError> {
-    let target = root.join(rel);
-    let parent = target.parent().unwrap_or(root);
-    std::fs::create_dir_all(parent).map_err(|e| io_err("could not create the folder of", rel, e))?;
-    let name = target.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-    let tmp = parent.join(format!(".{name}.jev-undo"));
-    let _ = std::fs::remove_file(&tmp);
-    let written = match blob.kind {
-        #[cfg(unix)]
-        Kind::Symlink => {
-            use std::os::unix::ffi::OsStrExt;
-            std::os::unix::fs::symlink(std::ffi::OsStr::from_bytes(&blob.bytes), &tmp)
-        }
-        #[cfg(not(unix))]
-        Kind::Symlink => std::fs::write(&tmp, &blob.bytes),
-        Kind::File { executable } => std::fs::write(&tmp, &blob.bytes).and_then(|()| set_executable(&tmp, executable)),
-    };
-    written.map_err(|e| io_err("could not write", rel, e))?;
-    std::fs::rename(&tmp, &target).map_err(|e| {
-        let _ = std::fs::remove_file(&tmp);
-        io_err("could not replace", rel, e)
-    })
-}
-
-#[cfg(unix)]
-fn set_executable(path: &Path, executable: bool) -> std::io::Result<()> {
-    use std::os::unix::fs::PermissionsExt;
-    let mode = if executable { 0o755 } else { 0o644 };
-    std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode))
-}
-
-#[cfg(not(unix))]
-fn set_executable(_: &Path, _: bool) -> std::io::Result<()> {
     Ok(())
 }
 
@@ -604,32 +869,38 @@ mod tests {
     #[test]
     fn ls_tree_parses_modes_and_skips_submodules() {
         let raw = "100644 blob aaa\ta.txt\0100755 blob bbb\trun.sh\0120000 blob ccc\tlink\0160000 commit ddd\tsub\0";
-        let m = parse_ls_tree(raw);
-        assert_eq!(m["a.txt"].0, Kind::File { executable: false });
-        assert_eq!(m["run.sh"].0, Kind::File { executable: true });
-        assert_eq!(m["link"].0, Kind::Symlink);
-        assert!(!m.contains_key("sub"));
+        let m = parse_ls_tree_paths(raw);
+        assert!(m.contains("a.txt") && m.contains("run.sh") && m.contains("link"));
+        assert!(!m.contains("sub"));
     }
 
     #[test]
-    fn a_snapshot_sees_untracked_files_skips_ignored_ones_and_touches_nothing() {
+    fn a_snapshot_lists_untracked_files_skips_ignored_ones_and_touches_nothing() {
         let s = repo();
         let status_before = run_git(s.path(), &["status", "--porcelain=v1", "--ignored"]);
         let index_before = std::fs::read(s.path().join(".git/index")).unwrap();
         let t1 = snapshot(s.path()).expect("a tree id");
+        assert!(t1.untracked.is_empty());
         s.write("untracked.txt", "u\n");
         s.write("ignored.log", "i\n");
+        s.write("deep/er/more.txt", "m\n");
         let t2 = snapshot(s.path()).unwrap();
-        assert_ne!(t1, t2);
-        let listing = run_git(s.path(), &["ls-tree", "-r", "--name-only", &t2]);
-        assert!(listing.contains("untracked.txt") && !listing.contains("ignored.log"), "{listing}");
+        assert_eq!(t1.tree, t2.tree, "untracked files are not in the tracked tree");
+        let mut names: Vec<_> = t2.untracked.keys().map(String::as_str).collect();
+        names.sort();
+        assert_eq!(names, ["deep/er/more.txt", "untracked.txt"], "ignored files are left out, paths are repository-relative");
+        assert_eq!(t2.untracked["untracked.txt"].size, 2);
+        assert!(!run_git(s.path(), &["ls-tree", "-r", "--name-only", &t2.tree]).contains("untracked.txt"));
         // The user's index is as it was and the new file is still untracked, not staged.
         assert_eq!(std::fs::read(s.path().join(".git/index")).unwrap(), index_before);
         let status = run_git(s.path(), &["status", "--porcelain=v1", "--ignored"]);
         assert!(status.contains("?? untracked.txt"), "{status}");
         assert_ne!(status, status_before);
-        // Same content, same tree.
+        // Nothing changed, nothing differs.
         assert_eq!(snapshot(s.path()).unwrap(), t2);
+        // A tracked edit moves the tree.
+        s.write("a.txt", "edited\n");
+        assert_ne!(snapshot(s.path()).unwrap().tree, t1.tree);
     }
 
     #[test]
@@ -639,7 +910,7 @@ mod tests {
         fake_turn(&s);
         let after = snapshot(s.path()).unwrap();
         let sum = summarize(s.path(), &before, &after).unwrap();
-        assert_eq!((sum.before.as_str(), sum.after.as_str()), (before.as_str(), after.as_str()));
+        assert_eq!((sum.before.as_str(), sum.after.as_str()), (before.tree.as_str(), after.tree.as_str()));
         let by = files_by_path(&sum);
         assert_eq!(sum.files.len(), 3, "{:?}", sum.files);
         assert_eq!((by["a.txt"].status, by["a.txt"].added, by["a.txt"].removed), (ChangeStatus::Modified, 2, 1));
@@ -648,13 +919,13 @@ mod tests {
         assert!(!by.contains_key("debug.log"), "ignored files are not changes");
         assert_eq!(sum.totals(), (5, 2));
 
-        let diff = diff_text(s.path(), &before, &after, None).unwrap();
+        let diff = diff_text(s.path(), &sum, None).unwrap();
         assert!(diff.contains("+TWO") && diff.contains("-two") && diff.contains("+++ b/new.txt") && diff.contains("--- a/b.txt"), "{diff}");
         assert!(!diff.contains('\u{1b}'), "no colour codes");
-        let one = diff_text(s.path(), &before, &after, Some("new.txt")).unwrap();
+        let one = diff_text(s.path(), &sum, Some("new.txt")).unwrap();
         assert!(one.contains("new.txt") && !one.contains("a.txt"), "{one}");
         // A glob is a name here, not a pattern.
-        assert_eq!(diff_text(s.path(), &before, &after, Some("*.txt")).unwrap(), "");
+        assert_eq!(diff_text(s.path(), &sum, Some("*.txt")).unwrap(), "");
     }
 
     #[test]
@@ -665,10 +936,26 @@ mod tests {
     }
 
     #[test]
-    fn a_moved_file_is_a_rename_and_undo_moves_it_back() {
+    fn a_plain_move_is_a_deleted_and_an_added_file_and_undo_moves_it_back() {
         let s = repo();
         let before = snapshot(s.path()).unwrap();
         std::fs::rename(s.path().join("a.txt"), s.path().join("renamed.txt")).unwrap();
+        let after = snapshot(s.path()).unwrap();
+        let sum = summarize(s.path(), &before, &after).unwrap();
+        let by = files_by_path(&sum);
+        assert_eq!(sum.files.len(), 2, "{:?}", sum.files);
+        assert_eq!((by["a.txt"].status, by["renamed.txt"].status), (ChangeStatus::Deleted, ChangeStatus::Added));
+        assert_eq!(by["renamed.txt"].added, 3);
+        undo(s.path(), &sum).unwrap();
+        assert_eq!(s.read("a.txt"), "one\ntwo\nthree\n");
+        assert!(!s.exists("renamed.txt"));
+    }
+
+    #[test]
+    fn a_git_mv_is_a_rename_and_undo_moves_it_back() {
+        let s = repo();
+        let before = snapshot(s.path()).unwrap();
+        run_git(s.path(), &["mv", "a.txt", "renamed.txt"]);
         let after = snapshot(s.path()).unwrap();
         let sum = summarize(s.path(), &before, &after).unwrap();
         assert_eq!(sum.files.len(), 1, "{:?}", sum.files);
@@ -745,13 +1032,15 @@ mod tests {
         assert!(!s.exists("b.txt"));
 
         // A deleted file that came back, and a modified one edited again, are caught too.
+        // (new.txt is untracked, so rewriting it, even with the same text, changes its
+        // mtime and counts as an edit: we cannot compare content we never hashed.)
         s.write("new.txt", "x\ny\nz\n");
         s.write("b.txt", "back again\n");
         s.write("a.txt", "edited again\n");
         match undo(s.path(), &sum).unwrap_err() {
             UndoError::ChangedSince(mut files) => {
                 files.sort();
-                assert_eq!(files, ["a.txt", "b.txt"]);
+                assert_eq!(files, ["a.txt", "b.txt", "new.txt"]);
             }
             other => panic!("{other:?}"),
         }
@@ -776,8 +1065,9 @@ mod tests {
         let t = snapshot(s.path()).unwrap();
         let evil = ChangeSummary {
             files: vec![FileChange { path: "../escape.txt".into(), status: ChangeStatus::Added, added: 1, removed: 0, old_path: None }],
-            before: t.clone(),
-            after: t,
+            before: t.tree.clone(),
+            after: t.tree,
+            added_stamps: HashMap::new(),
         };
         std::fs::write(s.path().parent().unwrap().join("escape.txt"), "mine").ok();
         assert!(matches!(undo(s.path(), &evil), Err(UndoError::UnsafePath(_))));
@@ -803,13 +1093,15 @@ mod tests {
         s.write("f.txt", "x");
         assert_eq!(snapshot(s.path()), None);
         let t = "0".repeat(40);
-        assert_eq!(summarize(s.path(), &t, &"1".repeat(40)), None);
-        assert_eq!(diff_text(s.path(), &t, &t, None), None);
+        let snap = |tree: String| Snapshot { tree, untracked: HashMap::new() };
+        assert_eq!(summarize(s.path(), &snap(t.clone()), &snap("1".repeat(40))), None);
         let sum = ChangeSummary {
             files: vec![FileChange { path: "f.txt".into(), status: ChangeStatus::Added, added: 1, removed: 0, old_path: None }],
             before: t.clone(),
             after: t,
+            added_stamps: HashMap::new(),
         };
+        assert_eq!(diff_text(s.path(), &sum, None), None);
         assert!(matches!(undo(s.path(), &sum), Err(UndoError::Failed(_))));
         assert_eq!(snapshot(Path::new("/definitely/not/a/dir")), None);
     }
@@ -825,5 +1117,324 @@ mod tests {
         assert_eq!(sum.files.len(), 1);
         undo(s.path(), &sum).unwrap();
         assert!(!s.exists("first.txt"));
+    }
+
+    // ------------------------------------------------------------ untracked files
+
+    /// `git hash-object` WITHOUT `-w`: the id a blob with this content would have.
+    fn blob_id(dir: &Path, content: &str) -> String {
+        use std::io::Write;
+        let mut child = Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args(["hash-object", "--stdin"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+            .unwrap();
+        child.stdin.take().unwrap().write_all(content.as_bytes()).unwrap();
+        String::from_utf8(child.wait_with_output().unwrap().stdout).unwrap().trim().to_string()
+    }
+
+    fn object_exists(dir: &Path, id: &str) -> bool {
+        run_git(dir, &["cat-file", "--batch-all-objects", "--batch-check"]).lines().any(|l| l.starts_with(id))
+    }
+
+    #[test]
+    fn untracked_files_are_never_written_into_the_object_store() {
+        let s = repo();
+        let secret = "API_KEY=unique-secret-7f3a9c1e-not-in-git\n";
+        let id = blob_id(s.path(), secret);
+        assert!(!object_exists(s.path(), &id), "the check itself: the blob is not there yet");
+        s.write("secret.env", secret);
+        let before = snapshot(s.path()).unwrap();
+        s.write("a.txt", "one\nTWO\nthree\n");
+        s.write("data/big.bin", "dataset\n");
+        let after = snapshot(s.path()).unwrap();
+        let sum = summarize(s.path(), &before, &after).unwrap();
+        assert_eq!(sum.files.len(), 2, "{:?}", sum.files);
+        diff_text(s.path(), &sum, None).unwrap();
+        undo(s.path(), &sum).unwrap();
+        assert!(!object_exists(s.path(), &id), "the untracked secret must not be hashed into .git/objects");
+        assert!(!object_exists(s.path(), &blob_id(s.path(), "dataset\n")));
+        assert!(s.exists("secret.env"), "it was there before the turn, so undo leaves it");
+    }
+
+    /// Write `text` and give the file a fixed mtime, so two writes never look alike by luck.
+    fn write_at(s: &Scratch, rel: &str, text: &str, secs: u64) {
+        s.write(rel, text);
+        let f = std::fs::OpenOptions::new().write(true).open(s.path().join(rel)).unwrap();
+        f.set_modified(UNIX_EPOCH + std::time::Duration::from_secs(1_700_000_000 + secs)).unwrap();
+    }
+
+    #[test]
+    fn a_changed_untracked_file_is_reported_and_undo_refuses_to_touch_anything() {
+        let s = repo();
+        write_at(&s, "notes.txt", "mine\n", 0);
+        write_at(&s, "same.txt", "stays\n", 0);
+        write_at(&s, "gone.txt", "bye\n", 0);
+        let before = snapshot(s.path()).unwrap();
+        // Same size, different mtime still counts; so does a delete.
+        write_at(&s, "notes.txt", "MINE\n", 5);
+        std::fs::remove_file(s.path().join("gone.txt")).unwrap();
+        s.write("a.txt", "one\nTWO\nthree\n");
+        let after = snapshot(s.path()).unwrap();
+        let sum = summarize(s.path(), &before, &after).unwrap();
+        let by = files_by_path(&sum);
+        assert_eq!(sum.files.len(), 3, "an untouched untracked file is not a change: {:?}", sum.files);
+        assert_eq!(by["a.txt"].status, ChangeStatus::Modified);
+        assert_eq!(by["notes.txt"].status, ChangeStatus::ModifiedUntracked);
+        assert_eq!(by["gone.txt"].status, ChangeStatus::ModifiedUntracked);
+
+        let err = undo(s.path(), &sum).unwrap_err();
+        assert_eq!(err, UndoError::UntrackedModified(vec!["gone.txt".into(), "notes.txt".into()]));
+        let msg = err.to_string();
+        assert!(msg.contains("notes.txt") && msg.contains("gone.txt") && msg.contains("no earlier copy"), "{msg}");
+        assert_eq!(s.read("notes.txt"), "MINE\n");
+        assert_eq!(s.read("a.txt"), "one\nTWO\nthree\n", "nothing else was undone either");
+    }
+
+    #[test]
+    fn an_untracked_file_the_turn_added_is_deleted_by_undo_only_while_it_is_as_the_turn_left_it() {
+        let s = repo();
+        let before = snapshot(s.path()).unwrap();
+        write_at(&s, "new.txt", "made by the turn\n", 0);
+        let after = snapshot(s.path()).unwrap();
+        let sum = summarize(s.path(), &before, &after).unwrap();
+        assert_eq!(sum.files.len(), 1);
+        assert_eq!((sum.files[0].status, sum.files[0].added), (ChangeStatus::Added, 1));
+        assert!(sum.added_stamps.contains_key("new.txt"));
+
+        write_at(&s, "new.txt", "made by the turn\n", 9); // touched by someone since
+        assert_eq!(undo(s.path(), &sum), Err(UndoError::ChangedSince(vec!["new.txt".into()])));
+        assert!(s.exists("new.txt"));
+        write_at(&s, "new.txt", "made by the turn\n", 0);
+        assert_eq!(undo(s.path(), &sum).unwrap().removed, ["new.txt"]);
+        assert!(!s.exists("new.txt"));
+    }
+
+    #[test]
+    fn an_untracked_file_the_user_recreated_at_a_deleted_path_is_not_overwritten() {
+        let s = repo();
+        let before = snapshot(s.path()).unwrap();
+        run_git(s.path(), &["rm", "-q", "b.txt"]); // the turn deletes it from the index too
+        let after = snapshot(s.path()).unwrap();
+        let sum = summarize(s.path(), &before, &after).unwrap();
+        s.write("b.txt", "the user wrote this meanwhile\n"); // untracked now
+        assert_eq!(undo(s.path(), &sum), Err(UndoError::ChangedSince(vec!["b.txt".into()])));
+        assert_eq!(s.read("b.txt"), "the user wrote this meanwhile\n");
+    }
+
+    #[test]
+    fn a_pre_existing_untracked_file_the_turn_only_staged_is_not_an_addition_to_delete() {
+        let s = repo();
+        write_at(&s, "notes.txt", "mine\n", 0);
+        let before = snapshot(s.path()).unwrap();
+        run_git(s.path(), &["add", "notes.txt"]);
+        s.write("a.txt", "one\nTWO\nthree\n");
+        let after = snapshot(s.path()).unwrap();
+        let sum = summarize(s.path(), &before, &after).unwrap();
+        assert_eq!(sum.files.iter().map(|f| f.path.as_str()).collect::<Vec<_>>(), ["a.txt"]);
+        undo(s.path(), &sum).unwrap();
+        assert_eq!(s.read("notes.txt"), "mine\n", "it was there before the turn");
+    }
+
+    #[test]
+    fn a_tracked_file_the_turn_only_removed_from_the_index_is_still_there_and_not_a_change() {
+        let s = repo();
+        let before = snapshot(s.path()).unwrap();
+        run_git(s.path(), &["rm", "-q", "--cached", "b.txt"]);
+        let after = snapshot(s.path()).unwrap();
+        let sum = summarize(s.path(), &before, &after).unwrap();
+        assert!(sum.is_empty(), "{:?}", sum.files);
+        assert!(s.exists("b.txt"));
+    }
+
+    #[test]
+    fn untracked_changes_merge_into_the_file_list() {
+        let st = |size| Stamp { size, mtime_ns: 1 };
+        let snap = |tree: &str, files: &[(&str, u64)]| Snapshot { tree: tree.into(), untracked: files.iter().map(|(p, n)| (p.to_string(), st(*n))).collect() };
+        let fc = |p: &str, status| FileChange::new(p.into(), status);
+        let before = snap("t1", &[("keep", 1), ("edit", 1), ("gone", 1), ("staged", 1), ("moved", 1)]);
+        let after = snap("t2", &[("keep", 1), ("edit", 2), ("new", 3), ("zz", 1), ("untracked-now", 1)]);
+        let tree = vec![
+            fc("staged", ChangeStatus::Added),
+            fc("untracked-now", ChangeStatus::Deleted),
+            fc("tracked", ChangeStatus::Modified),
+            FileChange { old_path: Some("old".into()), ..fc("moved", ChangeStatus::Renamed) },
+        ];
+        // `staged` is on disk unchanged; `gone` and `moved` are not.
+        let on_disk = |p: &str| (p == "staged").then(|| st(1));
+        let m = merge_untracked(tree, &before, &after, on_disk);
+        let got: Vec<_> = m.files.iter().map(|f| (f.path.as_str(), f.status)).collect();
+        assert_eq!(
+            got,
+            [
+                ("tracked", ChangeStatus::Modified),
+                ("old", ChangeStatus::Deleted),
+                ("edit", ChangeStatus::ModifiedUntracked),
+                ("gone", ChangeStatus::ModifiedUntracked),
+                ("moved", ChangeStatus::ModifiedUntracked),
+                ("new", ChangeStatus::Added),
+                ("zz", ChangeStatus::Added),
+            ]
+        );
+        assert_eq!(m.added.len(), 2);
+    }
+
+    #[test]
+    fn the_edited_since_rule_covers_added_untracked_tracked_and_recreated_paths() {
+        let st = |n| Stamp { size: n, mtime_ns: 0 };
+        let steps = vec![
+            Step::Delete("same".into()),
+            Step::Delete("touched".into()),
+            Step::Delete("missing".into()),
+            Step::Restore { path: "tracked-edit".into(), recreated: false },
+            Step::Restore { path: "recreated".into(), recreated: true },
+            Step::Restore { path: "fine".into(), recreated: true },
+        ];
+        let added: HashMap<_, _> = [("same", st(1)), ("touched", st(1)), ("missing", st(1))].map(|(p, s)| (p.to_string(), s)).into();
+        let now: HashMap<_, _> = [("same", st(1)), ("touched", st(2)), ("recreated", st(1))].map(|(p, s)| (p.to_string(), s)).into();
+        let diff: HashSet<&str> = ["tracked-edit"].into();
+        assert_eq!(changed_since(&steps, &added, &diff, &now), ["touched", "missing", "tracked-edit", "recreated"]);
+    }
+
+    #[test]
+    fn a_new_file_renders_like_git_diff_would() {
+        assert_eq!(
+            render_new_file("a b.txt", b"x\ny\n", "100644"),
+            "diff --git a/a b.txt b/a b.txt\nnew file mode 100644\n--- /dev/null\n+++ b/a b.txt\n@@ -0,0 +1,2 @@\n+x\n+y\n"
+        );
+        assert!(render_new_file("f", b"one", "100755").ends_with("@@ -0,0 +1 @@\n+one\n\\ No newline at end of file\n"));
+        assert!(render_new_file("f", b"\0\x01", "100644").contains("Binary files /dev/null and b/f differ"));
+        assert!(!render_new_file("empty", b"", "100644").contains("@@"));
+        assert_eq!(count_lines(b"a\nb"), 2);
+        assert_eq!(count_lines(b""), 0);
+    }
+
+    #[test]
+    fn the_diff_shows_new_untracked_files_without_git_hashing_them() {
+        let s = repo();
+        let before = snapshot(s.path()).unwrap();
+        s.write("new.txt", "x\ny\nz\n");
+        s.write("a.txt", "one\nTWO\nthree\n");
+        let sum = summarize(s.path(), &before, &snapshot(s.path()).unwrap()).unwrap();
+        let all = diff_text(s.path(), &sum, None).unwrap();
+        assert!(all.contains("+TWO") && all.contains("+++ b/new.txt") && all.contains("+y\n"), "{all}");
+        let one = diff_text(s.path(), &sum, Some("new.txt")).unwrap();
+        assert!(one.contains("+++ b/new.txt") && !one.contains("a.txt"), "{one}");
+        let other = diff_text(s.path(), &sum, Some("a.txt")).unwrap();
+        assert!(other.contains("+TWO") && !other.contains("new.txt"), "{other}");
+        assert!(!object_exists(s.path(), &blob_id(s.path(), "x\ny\nz\n")));
+    }
+
+    // ------------------------------------------------------------ diff from a subfolder
+
+    #[test]
+    fn diff_of_one_file_works_when_the_project_is_a_subfolder_of_the_repository() {
+        let s = repo();
+        let sub = s.path().join("src");
+        let before = snapshot(&sub).unwrap();
+        fake_turn(&s);
+        s.write("src/c.txt", "see\nmore\n");
+        let sum = summarize(&sub, &before, &snapshot(&sub).unwrap()).unwrap();
+        // The summary names files from the repository root, and so does the diff.
+        for path in ["a.txt", "src/c.txt", "new.txt"] {
+            assert!(sum.files.iter().any(|f| f.path == path), "{path} in {:?}", sum.files);
+            let d = diff_text(&sub, &sum, Some(path)).unwrap();
+            assert!(d.contains(&format!("+++ b/{path}")), "{path}: {d}");
+        }
+        assert!(diff_text(&sub, &sum, Some("a.txt")).unwrap().contains("+TWO"));
+    }
+
+    // ------------------------------------------------------------ eol and filters
+
+    /// Commit `rel` (written as `text`), run a turn that changes it, undo; give the bytes after.
+    fn commit_change_undo(s: &Scratch, rel: &str, text: &str, changed: &str) -> Vec<u8> {
+        std::fs::write(s.path().join(rel), text).unwrap();
+        run_git(s.path(), &["add", "-A"]);
+        run_git(s.path(), &["commit", "-q", "-m", "add"]);
+        let before = snapshot(s.path()).unwrap();
+        std::fs::write(s.path().join(rel), changed).unwrap();
+        let sum = summarize(s.path(), &before, &snapshot(s.path()).unwrap()).unwrap();
+        undo(s.path(), &sum).unwrap_or_else(|e| panic!("{e}"));
+        std::fs::read(s.path().join(rel)).unwrap()
+    }
+
+    #[test]
+    fn undo_gives_back_crlf_files_under_autocrlf() {
+        let s = repo();
+        run_git(s.path(), &["config", "core.autocrlf", "true"]);
+        let original = "line one\r\nline two\r\n";
+        let restored = commit_change_undo(&s, "win.txt", original, "line one\r\nCHANGED\r\n");
+        assert_eq!(restored, original.as_bytes(), "byte-identical to the file the user had");
+        assert!(run_git(s.path(), &["status", "--porcelain"]).trim().is_empty());
+    }
+
+    #[test]
+    fn undo_applies_gitattributes_eol_rules() {
+        let s = repo();
+        s.write(".gitattributes", "win.dat text eol=crlf\n");
+        let original = "one\r\ntwo\r\n";
+        let restored = commit_change_undo(&s, "win.dat", original, "one\r\nCHANGED\r\n");
+        assert_eq!(restored, original.as_bytes());
+    }
+
+    #[test]
+    fn undo_runs_the_smudge_filter_so_filtered_files_come_back_whole() {
+        let s = repo();
+        // The same code path git-lfs takes: the stored blob is the clean form.
+        run_git(s.path(), &["config", "filter.up.clean", "sed s/secret/XXX/"]);
+        run_git(s.path(), &["config", "filter.up.smudge", "sed s/XXX/secret/"]);
+        s.write(".gitattributes", "f.dat filter=up\n");
+        let original = "my secret value\n";
+        let restored = commit_change_undo(&s, "f.dat", original, "something else\n");
+        assert_eq!(String::from_utf8(restored).unwrap(), original, "not the clean form (`XXX`)");
+        assert_eq!(run_git(s.path(), &["show", "HEAD:f.dat"]), "my XXX value\n", "the repository itself holds the clean form");
+    }
+
+    #[test]
+    fn restoring_leaves_the_real_index_alone() {
+        let s = repo();
+        run_git(s.path(), &["config", "core.autocrlf", "true"]);
+        std::fs::write(s.path().join("w.txt"), "x\r\ny\r\n").unwrap();
+        run_git(s.path(), &["add", "-A"]);
+        run_git(s.path(), &["commit", "-q", "-m", "w"]);
+        let before = snapshot(s.path()).unwrap();
+        s.write("a.txt", "changed\n");
+        std::fs::write(s.path().join("w.txt"), "z\r\n").unwrap();
+        let sum = summarize(s.path(), &before, &snapshot(s.path()).unwrap()).unwrap();
+        run_git(s.path(), &["add", "a.txt"]); // the user stages work after the turn
+        let index_before = std::fs::read(s.path().join(".git/index")).unwrap();
+        // a.txt is staged now, but its working copy is still as the turn left it.
+        undo(s.path(), &sum).unwrap_or_else(|e| panic!("{e}"));
+        assert_eq!(std::fs::read(s.path().join(".git/index")).unwrap(), index_before);
+        assert_eq!(std::fs::read(s.path().join("w.txt")).unwrap(), b"x\r\ny\r\n");
+    }
+
+    // ------------------------------------------------------------ cancellation
+
+    #[tokio::test]
+    async fn a_cancel_returns_at_once_while_a_slow_snapshot_finishes_in_the_background() {
+        use std::time::{Duration, Instant};
+        let started = Instant::now();
+        let out = until(tokio::time::sleep(Duration::from_millis(20)), || {
+            std::thread::sleep(Duration::from_millis(1000));
+            Some("late")
+        })
+        .await;
+        assert_eq!(out, None);
+        assert!(started.elapsed() < Duration::from_millis(200), "took {:?}", started.elapsed());
+    }
+
+    #[tokio::test]
+    async fn without_a_cancel_the_blocking_result_comes_back() {
+        assert_eq!(until(std::future::pending::<()>(), || Some(7)).await, Some(7));
+        assert_eq!(until(std::future::pending::<()>(), || None::<u8>).await, None);
+        let s = repo();
+        let snap = snapshot_until(s.path().to_path_buf(), std::future::pending()).await.expect("a snapshot");
+        let again = snapshot_until(s.path().to_path_buf(), std::future::pending()).await.unwrap();
+        let sum = summarize_until(s.path().to_path_buf(), snap, again, std::future::pending()).await.unwrap();
+        assert!(sum.is_empty());
     }
 }
