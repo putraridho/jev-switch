@@ -183,7 +183,7 @@ async fn orchestrate_check(State(app): State<Arc<App>>, Json(c): Json<OrchCheck>
     let Some(words) = words else {
         return Json(json!({ "trigger": false, "enabled": true, "skipped": "not typed" }));
     };
-    let check = app.router.multi_part(&words, &c.context);
+    let check = async { app.router.orchestration_p(&words, &c.context).await.map(|(score, _, _)| score) };
     let p = match tokio::time::timeout(std::time::Duration::from_secs(10), check).await {
         Ok(Ok(p)) => Some(p),
         Ok(Err(e)) => {

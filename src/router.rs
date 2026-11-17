@@ -75,6 +75,24 @@ pub const CODE_STRONG_THRESHOLD: f64 = 0.85;
 /// one PR). The 0.60-0.70 band starts mixing in follow-ups and single asks.
 pub const ORCH_TRIGGER_P: f64 = 0.70;
 
+/// `sequential` probability at or above which a multi-part request is NOT orchestrated:
+/// steps that must run in order ("run the tests, then check the report, then refactor",
+/// "do 1 -> 2 -> 3") gain nothing from parallel workers. A veto, not a rescaling, so
+/// the calibrated `multi_part` scores of genuinely parallel work are untouched.
+pub const SEQUENTIAL_VETO_P: f64 = 0.70;
+
+/// What a vetoed request's orchestration score is capped at: clearly below any cutoff.
+const VETOED_SCORE: f64 = 0.30;
+
+/// The score orchestration triggers on: `multi_part`, unless the request is a sequence.
+pub fn orchestration_score(multi_part_p: f64, sequential_p: f64) -> f64 {
+    if sequential_p >= SEQUENTIAL_VETO_P {
+        multi_part_p.min(VETOED_SCORE)
+    } else {
+        multi_part_p
+    }
+}
+
 /// Default `FABLE_THRESHOLD`: `very_hard` probability at or above which a turn that
 /// would go to Opus goes to Fable instead. NOT calibrated: there is no graded
 /// Opus-versus-Fable comparison yet, and Fable's price is unknown. The cutoff is high
@@ -323,6 +341,15 @@ impl Router {
         self.ts.noul_question(request_state(request, recent_context), multi_part_question()).await
     }
 
+    /// Orchestrate mode's trigger score, from ONE Jev request asking both `multi_part`
+    /// and `sequential` (see [`orchestration_score`]). Returns (score, multi_part, sequential).
+    pub async fn orchestration_p(&self, request: &str, recent_context: &str) -> Result<(f64, f64, f64)> {
+        let questions = json!({ Q_MULTI_PART: multi_part_question(), Q_SEQUENTIAL: sequential_question() });
+        let answers = self.ts.ask_many(request_state(request, recent_context), questions).await?;
+        let (multi, seq) = (decode_noul(&answers, Q_MULTI_PART)?, decode_noul(&answers, Q_SEQUENTIAL)?);
+        Ok((orchestration_score(multi, seq), multi, seq))
+    }
+
     /// Outcome signal: probability that `request` reacts to the previous answer as
     /// wrong, incomplete or not what was wanted (a correction, complaint, retry or
     /// the same question again). Logged for later analysis; never used for routing.
@@ -511,6 +538,16 @@ fn multi_part_question() -> Value {
     )
 }
 
+fn sequential_question() -> Value {
+    noul_question(
+        "Is this request a sequence of steps that must be done in order, each depending on the result of the previous one, rather than independent pieces that could be worked on at the same time?",
+        json!({
+            "true": "steps in a fixed order where a later step needs an earlier one's result: run the tests first, then check the report, then refactor; address one PR's comments, then the next stacked PR; or a short go-ahead for steps already discussed, such as \"do 1 -> 2 -> 3\" or \"go with the plan in that order\"",
+            "false": "independent pieces: several features, tickets, pages, variants or files that could each be done and checked on their own; or a single task, question or reply"
+        }),
+    )
+}
+
 fn is_correction_question() -> Value {
     noul_question(
         "Is this new message a reaction to the previous answer being wrong, incomplete, or not what the user wanted?",
@@ -600,6 +637,7 @@ const Q_SECURITY: &str = "security_review";
 const Q_HARD: &str = "very_hard";
 const Q_CORRECTION: &str = "is_correction";
 const Q_MULTI_PART: &str = "multi_part";
+const Q_SEQUENTIAL: &str = "sequential";
 
 /// Every question of a provider judgment as one `questions` map. The correction
 /// question needs the previous exchange, so it is asked only when there is one.
@@ -611,6 +649,7 @@ fn provider_questions(with_previous: bool) -> Value {
         Q_SECURITY: security_review_question(),
         Q_HARD: very_hard_question(),
         Q_MULTI_PART: multi_part_question(),
+        Q_SEQUENTIAL: sequential_question(),
     });
     if with_previous {
         q[Q_CORRECTION] = is_correction_question();
@@ -638,13 +677,16 @@ fn decode_provider_want(answers: &Value, request: &str, with_previous: bool) -> 
     let security_p = decode_noul(answers, Q_SECURITY)?;
     let edit_p = decode_noul(answers, Q_EDIT)?;
     let continues_p = decode_noul(answers, Q_CONTINUES)?;
-    let multi_part_p = decode_noul(answers, Q_MULTI_PART)?;
+    let multi_part_raw = decode_noul(answers, Q_MULTI_PART)?;
+    let sequential_p = decode_noul(answers, Q_SEQUENTIAL)?;
+    let multi_part_p = orchestration_score(multi_part_raw, sequential_p);
     let correction_p = if with_previous { Some(decode_noul(answers, Q_CORRECTION)?) } else { None };
     let security_keywords = security_level(request);
     let signals = json!({
         "task": task.as_str(), "task_confidence": task_answer.confidence,
         "very_hard_p": very_hard_p, "security_p": security_p, "edit_p": edit_p,
-        "continues_p": continues_p, "multi_part_p": multi_part_p, "correction_p": correction_p,
+        "continues_p": continues_p, "multi_part_p": multi_part_p, "multi_part_raw_p": multi_part_raw,
+        "sequential_p": sequential_p, "correction_p": correction_p,
         "security": format!("{security_keywords:?}").to_lowercase(),
     });
     Ok(ProviderWant {
@@ -962,6 +1004,7 @@ mod tests {
                     "very_hard" => 0.44,
                     "is_correction" => 0.55,
                     "multi_part" => 0.66,
+                    "sequential" => 0.11,
                     _ => 0.99,
                 };
                 json!({ "noul": p })
@@ -994,7 +1037,7 @@ mod tests {
         // exactly one request carried all seven questions and the previous exchange
         let seen = seen.lock().unwrap();
         assert_eq!(seen.len(), 1, "one HTTP request, not one per question");
-        assert_eq!(seen[0]["questions"].as_object().unwrap().len(), 7);
+        assert_eq!(seen[0]["questions"].as_object().unwrap().len(), 8);
         assert_eq!(seen[0]["state"]["previous_answer"], "earlier answer");
         assert_eq!(seen[0]["state"]["request"], "make the sidebar collapse");
     }
@@ -1007,7 +1050,7 @@ mod tests {
         assert!(w.signals["correction_p"].is_null());
         let seen = seen.lock().unwrap();
         let questions = seen[0]["questions"].as_object().unwrap();
-        assert_eq!(questions.len(), 6);
+        assert_eq!(questions.len(), 7);
         assert_eq!(questions["multi_part"], multi_part_question(), "the batch sends the shared definition");
         assert!(!questions.contains_key("is_correction"));
         assert!(seen[0]["state"].get("previous_request").is_none());
@@ -1071,5 +1114,13 @@ mod tests {
         );
         assert!(q["criteria"]["true"].as_str().unwrap().starts_with("editing, creating"));
         assert_eq!(choice_question("i", json!({})), json!({ "type": "choice", "instructions": "i", "criteria": {} }));
+    }
+
+    #[test]
+    fn a_sequence_vetoes_orchestration_but_parallel_work_keeps_its_score() {
+        assert_eq!(orchestration_score(0.89, 0.10), 0.89, "independent pieces: unchanged");
+        assert_eq!(orchestration_score(0.89, 0.69), 0.89, "below the veto: unchanged");
+        assert!(orchestration_score(0.89, 0.90) < ORCH_TRIGGER_P, "do 1 -> 2 -> 3 is not orchestrated");
+        assert_eq!(orchestration_score(0.10, 0.95), 0.10, "a veto never raises a score");
     }
 }

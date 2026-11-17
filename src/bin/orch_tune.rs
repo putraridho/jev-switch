@@ -56,7 +56,7 @@ async fn main() -> Result<()> {
         let (router, sem) = (router.clone(), sem.clone());
         tasks.spawn(async move {
             let _permit = sem.acquire_owned().await;
-            let p = router.multi_part(&prompt, "").await;
+            let p = router.orchestration_p(&prompt, "").await.map(|(score, _, _)| score);
             (prompt, p)
         });
     }
