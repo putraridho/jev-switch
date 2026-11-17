@@ -292,6 +292,9 @@ pub struct Engine {
     last_changes: Option<ChangeSummary>,
     /// Where saved sessions live (the state directory); `None` means nothing is saved.
     persist: Option<PathBuf>,
+    /// The file this session saves to: chosen at its first save, or the one `/resume` took
+    /// over. `/new` clears it, so the next save starts another file and the old one stays.
+    session_file: Option<PathBuf>,
 }
 
 impl Engine {
@@ -320,6 +323,7 @@ impl Engine {
             track_changes: true,
             last_changes: None,
             persist: None,
+            session_file: None,
         }
     }
 
@@ -424,9 +428,8 @@ impl Engine {
         self.last_context_tokens = 0;
         self.last_changes = None;
         self.runtime.forget_unusable_here();
-        if let Some(path) = self.session_path() {
-            let _ = std::fs::remove_file(path);
-        }
+        // The saved file stays (it can be resumed); the next save starts a new one.
+        self.session_file = None;
     }
 
     // ------------------------------------------------------------------ changes
@@ -458,37 +461,51 @@ impl Engine {
 
     // ------------------------------------------------------------------ saved sessions
 
-    /// The file this engine saves to, when persistence is on.
-    pub fn session_path(&self) -> Option<PathBuf> {
-        self.persist.as_ref().map(|d| handoff::session_file(d, &self.dir))
+    /// The file this session saves to; `None` until its first save, when persistence is
+    /// off, and after `/new`.
+    pub fn session_path(&self) -> Option<&Path> {
+        self.session_file.as_deref()
     }
 
     /// Save the session now and say why not on failure. A session with no turns is not
-    /// written. Turns save themselves best-effort; this is for an explicit `/save`.
-    pub fn save_now(&self) -> std::io::Result<()> {
-        let Some(path) = self.session_path() else { return Ok(()) };
+    /// written. Each session has its own file (see [`handoff::new_session_file`]), so
+    /// saving never touches an earlier session; the oldest beyond ten are deleted.
+    /// Turns save themselves best-effort; the binary calls this once more on exit.
+    pub fn save_now(&mut self) -> std::io::Result<()> {
+        let Some(state) = self.persist.clone() else { return Ok(()) };
         if self.sessions.turns() == 0 {
             return Ok(());
         }
+        let saved_ms = (self.now)();
+        let path = match &self.session_file {
+            Some(p) => p.clone(),
+            None => handoff::new_session_file(&state, &self.dir, saved_ms),
+        };
         let saved = SavedSession {
             project: handoff::project_key(&self.dir),
-            saved_ms: (self.now)(),
+            saved_ms,
             sessions: self.sessions.clone(),
             current: self.routing.current.clone(),
         };
-        handoff::write_atomic(&path, &saved.to_json().to_string())
+        handoff::write_atomic(&path, &saved.to_json().to_string())?;
+        handoff::prune(&state, &self.dir, &path);
+        self.session_file = Some(path);
+        Ok(())
     }
 
     /// A failed save never fails a turn.
-    fn save_quietly(&self) {
+    fn save_quietly(&mut self) {
         let _ = self.save_now();
     }
 
-    /// Load the saved session of this folder: the conversation, each provider's CLI
-    /// session, and where routing stood. Replaces the current conversation.
+    /// Load the most recent saved session of this folder other than the one running: the
+    /// conversation, each provider's CLI session, and where routing stood. Replaces the
+    /// current conversation, and from then on saves into the file it came from. Asking
+    /// again steps back to the one before.
     pub fn resume(&mut self) -> Result<handoff::SessionInfo, ResumeError> {
         let state = self.persist.as_ref().ok_or(ResumeError::Disabled)?;
-        let saved = handoff::load_saved(state, &self.dir, (self.now)())?;
+        let (path, saved) = handoff::load_latest(state, &self.dir, (self.now)(), self.session_file.as_deref())?;
+        self.session_file = Some(path);
         let info = saved.info();
         self.previous = saved.sessions.last_answered().map(|(p, r)| (p.to_string(), r.to_string()));
         self.sessions = saved.sessions;
@@ -608,6 +625,11 @@ impl Engine {
         let mut attempts = 0;
         loop {
             if cancel.is_cancelled() {
+                // The earlier attempt really failed (and may have touched files): keep its
+                // own error, then add the interruption, so neither is lost.
+                if let Some((failed, err)) = &last_failure {
+                    self.record_failed(prompt, failed, err);
+                }
                 return self.cancelled_report(prompt, last_failure.as_ref().map(|(a, _)| a), attempts, ui);
             }
             let now = (self.now)();
@@ -941,14 +963,9 @@ impl Engine {
         ui.cancelled(&message);
         let Some(attempt) = attempt else { return TurnReport::ended(TurnStatus::Cancelled, message, attempts) };
         let spec = attempt.chosen.spec;
-        self.sessions.record_failed(TurnRecord {
-            prompt: prompt.to_string(),
-            provider: spec.provider,
-            model: spec.id.to_string(),
-            reply: handoff::INTERRUPTED_NOTE.to_string(),
-            tools: attempt.tools.clone(),
-            ok: false,
-        });
+        // Not `record_failed`: that would mark the running provider caught up, but its own
+        // CLI session never recorded the killed turn, so it must be told next time too.
+        self.sessions.record_interrupted(prompt, spec.provider, spec.id, attempt.tools.clone());
         TurnReport {
             provider: Some(spec.provider),
             model: Some(spec.id.to_string()),
@@ -1135,6 +1152,8 @@ mod tests {
         seen: Vec<String>,
         /// Cancel this as soon as a tool call is shown, which is deterministic where a timer is not.
         cancel_on_tool: Option<Cancel>,
+        /// Cancel as soon as a note is shown: the failover note, which falls between two attempts.
+        cancel_on_note: Option<Cancel>,
     }
 
     impl Ui for Recorder {
@@ -1160,6 +1179,9 @@ mod tests {
         fn note(&mut self, line: &str) {
             self.notes.push(line.into());
             self.seen.push("note:".into());
+            if let Some(c) = &self.cancel_on_note {
+                c.cancel();
+            }
         }
     }
 
@@ -1912,6 +1934,49 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn the_provider_that_ran_a_cancelled_turn_is_told_about_it_on_its_next_prompt() {
+        let mut r = rig(&[Codex]);
+        r.script(Codex, HANGS);
+        let cancel = Cancel::new();
+        r.ui.cancel_on_tool = Some(cancel.clone());
+        let judged = Judged::Providers(Some(want(TaskType::Feature)));
+        let report = r.engine.run_judged_cancellable("rename the client", judged, &mut r.ui, &cancel).await;
+        assert_eq!((report.status, report.provider), (TurnStatus::Cancelled, Some(Codex)));
+        assert_eq!(r.engine.sessions.missed_turns(Codex), 1, "its own CLI session never recorded the killed turn");
+
+        r.ui.cancel_on_tool = None;
+        r.script(Codex, OK);
+        let next = r.turn("try again", want(TaskType::Feature)).await;
+        assert_eq!((next.status, next.provider), (TurnStatus::Answered, Some(Codex)));
+        let prompt = &r.started()[1].prompt;
+        assert!(prompt.contains("rename the client") && prompt.contains("interrupted by the user"), "{prompt}");
+        assert!(prompt.ends_with("try again"), "{prompt}");
+        assert_eq!(r.engine.sessions.missed_turns(Codex), 0, "told once, then current");
+    }
+
+    #[tokio::test]
+    async fn a_cancel_between_attempts_keeps_the_real_failure_and_adds_the_interruption() {
+        let ready = [Claude, Codex];
+        let mut r = rig(&ready);
+        let a = first_choice(TaskType::Feature, &ready);
+        r.script(a, QUOTA);
+        let cancel = Cancel::new();
+        // The failover note is shown after the first attempt failed, before the second starts.
+        r.ui.cancel_on_note = Some(cancel.clone());
+        let judged = Judged::Providers(Some(want(TaskType::Feature)));
+        let report = r.engine.run_judged_cancellable("add a retry", judged, &mut r.ui, &cancel).await;
+        assert_eq!((report.status, report.attempts), (TurnStatus::Cancelled, 1));
+        assert_eq!(r.started().len(), 1, "the second model was never started");
+
+        assert_eq!(r.engine.sessions.turns(), 2, "the failure and the interruption are two records");
+        let b = if a == Claude { Codex } else { Claude };
+        let text = r.engine.sessions.catch_up(b, "", 10_000).unwrap();
+        assert!(text.contains("usage limit reached"), "the real error is kept: {text}");
+        assert!(text.contains("interrupted by the user"), "{text}");
+        assert!(text.find("usage limit reached") < text.find("interrupted by the user"), "failure first: {text}");
+    }
+
+    #[tokio::test]
     async fn a_token_cancelled_before_anything_starts_starts_nothing_and_records_nothing() {
         let mut r = rig(&[Claude]);
         let cancel = Cancel::new();
@@ -2153,11 +2218,11 @@ mod tests {
         let (repo, state) = (Repo::new("persist", false), StateDir::new("persist"));
         let mut r = persisting(&repo, &state, &[Claude]);
         assert!(r.engine.save_now().is_ok(), "nothing to save yet is not an error");
-        assert!(!r.engine.session_path().unwrap().exists());
+        assert_eq!(r.engine.session_path(), None, "nothing saved yet, so no file yet");
         r.turn("first request", want(TaskType::Feature)).await;
         r.turn("second request", want(TaskType::Feature)).await;
-        assert!(r.engine.session_path().unwrap().starts_with(state.0.join("sessions")));
-        assert!(r.engine.session_path().unwrap().exists());
+        let file = r.engine.session_path().unwrap().to_path_buf();
+        assert!(file.starts_with(handoff::project_sessions_dir(&state.0, &repo.0)) && file.exists(), "{file:?}");
 
         // A fresh process: nothing in memory, same folder.
         let mut again = persisting(&repo, &state, &[Claude]);
@@ -2201,16 +2266,98 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn new_session_deletes_the_saved_file() {
+    async fn new_session_starts_another_file_and_leaves_the_old_one_resumable() {
         let (repo, state) = (Repo::new("persist-new", false), StateDir::new("persist-new"));
         let mut r = persisting(&repo, &state, &[Claude]);
         r.turn("hello", want(TaskType::Feature)).await;
-        let path = r.engine.session_path().unwrap();
-        assert!(path.exists());
+        let old = r.engine.session_path().unwrap().to_path_buf();
         r.engine.new_session();
-        assert!(!path.exists());
-        assert_eq!(r.engine.resume().unwrap_err(), ResumeError::NotFound);
-        r.engine.new_session();
+        assert!(old.exists(), "/new no longer deletes the saved session");
+        assert_eq!(r.engine.session_path(), None);
+        r.turn("something else", want(TaskType::Feature)).await;
+        let new = r.engine.session_path().unwrap().to_path_buf();
+        assert_ne!(old, new);
+        assert_eq!(r.engine.sessions.turns(), 1, "the new session starts empty");
+        // The old one is what /resume brings back.
+        assert_eq!(r.engine.resume().unwrap().turns, 1);
+        assert_eq!(r.engine.session_path(), Some(old.as_path()));
+        assert!(r.engine.sessions.recent_context(1, 50).contains("hello"));
+    }
+
+    /// A session of one prompt, saved by an engine of its own (a process of its own).
+    async fn session_of(repo: &Repo, state: &StateDir, prompts: &[&str], at: u64) -> Rig {
+        let mut r = persisting(repo, state, &[Claude]);
+        r.clock.store(at, Ordering::SeqCst);
+        for p in prompts {
+            r.turn(p, want(TaskType::Feature)).await;
+        }
+        r
+    }
+
+    #[tokio::test]
+    async fn a_new_sessions_first_turn_does_not_overwrite_the_previous_one() {
+        let (repo, state) = (Repo::new("persist-keep", false), StateDir::new("persist-keep"));
+        let first = session_of(&repo, &state, &["one", "two", "three"], NOW).await;
+        assert_eq!(handoff::saved_session_info_in(&state.0, &repo.0, NOW).unwrap().turns, 3);
+
+        // The startup offer was `previous session: 3 turns`; the user ignores it and types.
+        let second = session_of(&repo, &state, &["a new topic"], NOW + 1000).await;
+        assert_ne!(first.engine.session_path(), second.engine.session_path());
+
+        // The 3-turn conversation is intact: it is what is left after the newer one.
+        let mut third = persisting(&repo, &state, &[Claude]);
+        third.clock.store(NOW + 2000, Ordering::SeqCst);
+        assert_eq!(third.engine.resume().unwrap().turns, 1, "the most recent session comes first");
+        assert_eq!(third.engine.resume().unwrap().turns, 3, "and the one before it was not destroyed");
+        assert!(third.engine.sessions.recent_context(3, 50).contains("three"));
+    }
+
+    #[tokio::test]
+    async fn resuming_continues_the_resumed_file_and_a_further_resume_steps_back() {
+        let (repo, state) = (Repo::new("persist-step", false), StateDir::new("persist-step"));
+        session_of(&repo, &state, &["old one", "old two"], NOW).await;
+        session_of(&repo, &state, &["recent"], NOW + 1000).await;
+        let mut r = persisting(&repo, &state, &[Claude]);
+        r.clock.store(NOW + 2000, Ordering::SeqCst);
+        r.engine.resume().unwrap();
+        let recent = r.engine.session_path().unwrap().to_path_buf();
+        r.turn("and more", want(TaskType::Feature)).await;
+        assert_eq!(r.engine.session_path(), Some(recent.as_path()), "a resumed session is continued in place, not copied");
+        assert_eq!(std::fs::read_dir(recent.parent().unwrap()).unwrap().count(), 2, "no third file");
+        assert_eq!(r.engine.resume().unwrap().turns, 2, "the older session is next; the running one is skipped");
+        assert_ne!(r.engine.session_path(), Some(recent.as_path()));
+        // With only two sessions, the running one is always skipped, so it alternates.
+        r.engine.resume().unwrap();
+        assert_eq!(r.engine.session_path(), Some(recent.as_path()));
+    }
+
+    #[tokio::test]
+    async fn only_the_ten_newest_sessions_of_a_project_are_kept() {
+        let (repo, state) = (Repo::new("persist-cap", false), StateDir::new("persist-cap"));
+        let mut files = Vec::new();
+        for i in 0..12u64 {
+            let r = session_of(&repo, &state, &["hello"], NOW + i * 1000).await;
+            files.push(r.engine.session_path().unwrap().to_path_buf());
+        }
+        let dir = handoff::project_sessions_dir(&state.0, &repo.0);
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), handoff::SAVED_KEEP);
+        assert!(!files[0].exists() && !files[1].exists(), "the oldest went");
+        assert!(files[2..].iter().all(|f| f.exists()));
+    }
+
+    #[tokio::test]
+    async fn a_session_saved_by_an_older_version_in_one_file_is_still_resumed() {
+        let (repo, state) = (Repo::new("persist-legacy", false), StateDir::new("persist-legacy"));
+        let donor = session_of(&repo, &state, &["from before"], NOW).await;
+        // Move that session to where the old version kept it.
+        let legacy = handoff::legacy_session_file(&state.0, &repo.0);
+        std::fs::rename(donor.engine.session_path().unwrap(), &legacy).unwrap();
+        assert_eq!(handoff::saved_session_info_in(&state.0, &repo.0, NOW).unwrap().turns, 1);
+        let mut r = persisting(&repo, &state, &[Claude]);
+        assert_eq!(r.engine.resume().unwrap().turns, 1);
+        r.turn("carry on", want(TaskType::Feature)).await;
+        assert_eq!(r.engine.sessions.turns(), 2);
+        assert_eq!(std::fs::read_dir(handoff::project_sessions_dir(&state.0, &repo.0)).map_or(0, Iterator::count), 0);
     }
 
     #[tokio::test]
@@ -2230,15 +2377,16 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_garbage_saved_file_is_reported_and_the_next_turn_overwrites_it() {
+    async fn a_garbage_saved_file_is_reported_and_a_new_session_saves_beside_it() {
         let (repo, state) = (Repo::new("persist-bad", false), StateDir::new("persist-bad"));
         let mut r = persisting(&repo, &state, &[Claude]);
-        let path = r.engine.session_path().unwrap();
-        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        std::fs::write(&path, "{ this is not json").unwrap();
+        let dir = handoff::project_sessions_dir(&state.0, &repo.0);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("1-1.json"), "{ this is not json").unwrap();
         assert!(matches!(r.engine.resume(), Err(ResumeError::Corrupt(_))));
         assert_eq!(r.turn("hello", want(TaskType::Feature)).await.status, TurnStatus::Answered);
-        assert_eq!(r.engine.resume().unwrap().turns, 1);
+        let mut again = persisting(&repo, &state, &[Claude]);
+        assert_eq!(again.engine.resume().unwrap().turns, 1, "the good session is found past the damaged file");
     }
 
     #[tokio::test]

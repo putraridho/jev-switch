@@ -74,6 +74,20 @@ impl Sessions {
         }
     }
 
+    /// Append a turn the user cancelled. Like [`Sessions::record_undo`] it marks NOBODY as
+    /// caught up, not even `provider`, which ran it: that provider's own CLI session was
+    /// killed mid-turn and never recorded it, so its next prompt carries the note too.
+    pub fn record_interrupted(&mut self, prompt: &str, provider: ProviderId, model: &str, tools: Vec<String>) {
+        self.log.push(TurnRecord {
+            prompt: prompt.to_string(),
+            provider,
+            model: model.to_string(),
+            reply: INTERRUPTED_NOTE.to_string(),
+            tools,
+            ok: false,
+        });
+    }
+
     /// Declare `p` caught up with the whole log. Called after [`Sessions::catch_up`]
     /// has been put in front of a prompt.
     pub fn mark_seen(&mut self, p: ProviderId) {
@@ -442,7 +456,7 @@ impl std::fmt::Display for ResumeError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Disabled => f.write_str("saving sessions is switched off"),
-            Self::NotFound => f.write_str("no saved session for this folder (sessions are kept for 14 days)"),
+            Self::NotFound => f.write_str("no earlier saved session for this folder (the last 10 are kept, for 14 days)"),
             Self::Corrupt(m) => write!(f, "the saved session is unreadable: {m}"),
             Self::Io(m) => write!(f, "could not read the saved session: {m}"),
         }
@@ -500,9 +514,31 @@ fn fnv1a(bytes: &[u8]) -> u64 {
     bytes.iter().fold(0xcbf2_9ce4_8422_2325, |h, b| (h ^ u64::from(*b)).wrapping_mul(0x0100_0000_01b3))
 }
 
-/// `<state_dir>/sessions/<hash of the canonical project folder>.json`.
-pub fn session_file(state_dir: &Path, project_dir: &Path) -> PathBuf {
-    state_dir.join("sessions").join(format!("{:016x}.json", fnv1a(project_key(project_dir).as_bytes())))
+/// How many saved sessions are kept per project; the oldest go on save.
+pub const SAVED_KEEP: usize = 10;
+
+fn project_hash(project_dir: &Path) -> String {
+    format!("{:016x}", fnv1a(project_key(project_dir).as_bytes()))
+}
+
+/// `<state_dir>/sessions/<hash of the canonical project folder>/`: one file per session.
+pub fn project_sessions_dir(state_dir: &Path, project_dir: &Path) -> PathBuf {
+    state_dir.join("sessions").join(project_hash(project_dir))
+}
+
+/// The single file older versions kept per project, `<state_dir>/sessions/<hash>.json`.
+/// It is still found (and resumed) like any session of the project.
+pub fn legacy_session_file(state_dir: &Path, project_dir: &Path) -> PathBuf {
+    state_dir.join("sessions").join(format!("{}.json", project_hash(project_dir)))
+}
+
+/// A file for a session that starts now: `<project dir>/<now_ms>-<pid>.json`. A name that
+/// is taken (two sessions in one millisecond of one process) moves on a millisecond, so a
+/// new session never lands on, and overwrites, an older one.
+pub fn new_session_file(state_dir: &Path, project_dir: &Path, now_ms: u64) -> PathBuf {
+    let dir = project_sessions_dir(state_dir, project_dir);
+    let pid = std::process::id();
+    (now_ms..).map(|ms| dir.join(format!("{ms}-{pid}.json"))).find(|p| !p.exists()).expect("an unbounded range")
 }
 
 /// Write `text` to `path` through a temp file and a rename, so a crash never leaves half a
@@ -525,25 +561,77 @@ pub fn write_atomic(path: &Path, text: &str) -> std::io::Result<()> {
     }
 }
 
-/// Load the saved session for `project_dir`. A session older than 14 days, or one that
-/// belongs to another project (a hash collision), is [`ResumeError::NotFound`].
-pub fn load_saved(state_dir: &Path, project_dir: &Path, now_ms: u64) -> Result<SavedSession, ResumeError> {
-    let text = match std::fs::read_to_string(session_file(state_dir, project_dir)) {
+/// Read one session file. One that is not for `project_dir` (a hash collision) is
+/// [`ResumeError::NotFound`].
+fn read_session(path: &Path, project_dir: &Path) -> Result<SavedSession, ResumeError> {
+    let text = match std::fs::read_to_string(path) {
         Ok(t) => t,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Err(ResumeError::NotFound),
         Err(e) => return Err(ResumeError::Io(e.to_string())),
     };
     let value: Value = serde_json::from_str(&text).map_err(|e| ResumeError::Corrupt(e.to_string()))?;
     let saved = SavedSession::from_json(&value).map_err(ResumeError::Corrupt)?;
-    if saved.project != project_key(project_dir) || saved.expired(now_ms) {
+    if saved.project != project_key(project_dir) {
         return Err(ResumeError::NotFound);
     }
     Ok(saved)
 }
 
-/// What there is to resume for `project_dir` in `state_dir`, if anything usable.
+/// Every session file of the project: those in its folder, and the old single file.
+fn session_files(state_dir: &Path, project_dir: &Path) -> Vec<PathBuf> {
+    let listed = std::fs::read_dir(project_sessions_dir(state_dir, project_dir))
+        .into_iter()
+        .flatten()
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .filter(|p| p.extension().is_some_and(|x| x == "json"));
+    let legacy = legacy_session_file(state_dir, project_dir);
+    listed.chain(legacy.exists().then_some(legacy)).collect()
+}
+
+/// The most recently saved session of `project_dir` other than `current` (the file the
+/// running session writes to). Sessions older than 14 days and files of other projects do
+/// not count. `NotFound` when there is none; a damaged file is skipped unless it is all
+/// there is, and then it is reported.
+pub fn load_latest(
+    state_dir: &Path,
+    project_dir: &Path,
+    now_ms: u64,
+    current: Option<&Path>,
+) -> Result<(PathBuf, SavedSession), ResumeError> {
+    let mut best: Option<(PathBuf, SavedSession)> = None;
+    let mut broken: Option<ResumeError> = None;
+    for path in session_files(state_dir, project_dir).into_iter().filter(|p| Some(p.as_path()) != current) {
+        match read_session(&path, project_dir) {
+            Ok(s) if s.expired(now_ms) => {}
+            // Equal times (a coarse clock): the later file name is the newer session.
+            Ok(s) if best.as_ref().is_none_or(|(p, b)| (s.saved_ms, &path) > (b.saved_ms, p)) => best = Some((path, s)),
+            Ok(_) | Err(ResumeError::NotFound) => {}
+            Err(e) => broken = Some(e),
+        }
+    }
+    best.ok_or(broken.unwrap_or(ResumeError::NotFound))
+}
+
+/// Keep at most [`SAVED_KEEP`] sessions of the project: delete the oldest, never `current`.
+/// A file that cannot be read counts as the oldest. Cheap while under the cap (a listing).
+pub fn prune(state_dir: &Path, project_dir: &Path, current: &Path) {
+    let files = session_files(state_dir, project_dir);
+    if files.len() <= SAVED_KEEP {
+        return;
+    }
+    let mut aged: Vec<(u64, PathBuf)> =
+        files.into_iter().map(|p| (read_session(&p, project_dir).map_or(0, |s| s.saved_ms), p)).collect();
+    aged.sort();
+    let surplus = aged.len() - SAVED_KEEP;
+    for (_, path) in aged.into_iter().filter(|(_, p)| p != current).take(surplus) {
+        let _ = std::fs::remove_file(path);
+    }
+}
+
+/// What there is to resume for `project_dir` in `state_dir` (its most recent session), if
+/// anything usable.
 pub fn saved_session_info_in(state_dir: &Path, project_dir: &Path, now_ms: u64) -> Option<SessionInfo> {
-    load_saved(state_dir, project_dir, now_ms).ok().map(|s| s.info()).filter(|i| i.turns > 0)
+    load_latest(state_dir, project_dir, now_ms, None).ok().map(|(_, s)| s.info()).filter(|i| i.turns > 0)
 }
 
 /// [`saved_session_info_in`] for the default state directory and the real clock, for
@@ -876,8 +964,10 @@ mod tests {
         SavedSession { project: project_key(dir), saved_ms, sessions, current: Some((ProviderId::Claude, "m1".into())) }
     }
 
-    fn store(state: &Path, dir: &Path, saved: &SavedSession) {
-        write_atomic(&session_file(state, dir), &saved.to_json().to_string()).unwrap();
+    fn store(state: &Path, dir: &Path, saved: &SavedSession) -> PathBuf {
+        let path = new_session_file(state, dir, saved.saved_ms);
+        write_atomic(&path, &saved.to_json().to_string()).unwrap();
+        path
     }
 
     #[test]
@@ -885,19 +975,19 @@ mod tests {
         let (state, project) = (TempState::new("rt-state"), TempState::new("rt-proj"));
         let saved = saved_for(&project.0, NOW - 1000);
         store(&state.0, &project.0, &saved);
-        let back = load_saved(&state.0, &project.0, NOW).unwrap();
+        let (file, back) = load_latest(&state.0, &project.0, NOW, None).unwrap();
         assert_eq!((back.saved_ms, back.project.as_str()), (NOW - 1000, saved.project.as_str()));
         assert_eq!(back.current, Some((ProviderId::Claude, "m1".into())));
         assert_eq!(back.sessions.session_id(ProviderId::Claude), Some("s1"));
         let info = saved_session_info_in(&state.0, &project.0, NOW).unwrap();
         assert_eq!(info, SessionInfo { turns: 1, last_used_ms: NOW - 1000, providers: vec![ProviderId::Claude], current: back.current });
         // Written atomically and privately: no temp file left, owner-only on unix.
-        let names: Vec<_> = std::fs::read_dir(state.0.join("sessions")).unwrap().flatten().map(|e| e.file_name()).collect();
+        let names: Vec<_> = std::fs::read_dir(project_sessions_dir(&state.0, &project.0)).unwrap().flatten().map(|e| e.file_name()).collect();
         assert_eq!(names.len(), 1, "{names:?}");
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            let mode = std::fs::metadata(session_file(&state.0, &project.0)).unwrap().permissions().mode();
+            let mode = std::fs::metadata(&file).unwrap().permissions().mode();
             assert_eq!(mode & 0o077, 0);
         }
     }
@@ -905,38 +995,97 @@ mod tests {
     #[test]
     fn a_garbage_or_foreign_file_is_an_error_not_a_session() {
         let (state, project) = (TempState::new("bad-state"), TempState::new("bad-proj"));
-        assert_eq!(load_saved(&state.0, &project.0, NOW).unwrap_err(), ResumeError::NotFound);
-        let file = session_file(&state.0, &project.0);
+        assert_eq!(load_latest(&state.0, &project.0, NOW, None).unwrap_err(), ResumeError::NotFound);
+        let file = new_session_file(&state.0, &project.0, NOW);
         for junk in ["not json at all", "[1,2,3]", "{}", r#"{"project":"x"}"#] {
             write_atomic(&file, junk).unwrap();
-            assert!(matches!(load_saved(&state.0, &project.0, NOW), Err(ResumeError::Corrupt(_))), "{junk}");
+            assert!(matches!(load_latest(&state.0, &project.0, NOW, None), Err(ResumeError::Corrupt(_))), "{junk}");
             assert_eq!(saved_session_info_in(&state.0, &project.0, NOW), None);
         }
         // A file that says it is for another project is not ours.
         let mut other = saved_for(&project.0, NOW);
         other.project = "/somewhere/else".into();
         write_atomic(&file, &other.to_json().to_string()).unwrap();
-        assert_eq!(load_saved(&state.0, &project.0, NOW).unwrap_err(), ResumeError::NotFound);
+        assert_eq!(load_latest(&state.0, &project.0, NOW, None).unwrap_err(), ResumeError::NotFound);
     }
 
     #[test]
     fn sessions_older_than_fourteen_days_are_ignored() {
         let (state, project) = (TempState::new("age-state"), TempState::new("age-proj"));
-        store(&state.0, &project.0, &saved_for(&project.0, NOW - 13 * DAY));
+        let file = store(&state.0, &project.0, &saved_for(&project.0, NOW - 13 * DAY));
         assert!(saved_session_info_in(&state.0, &project.0, NOW).is_some());
-        store(&state.0, &project.0, &saved_for(&project.0, NOW - 15 * DAY));
+        write_atomic(&file, &saved_for(&project.0, NOW - 15 * DAY).to_json().to_string()).unwrap();
         assert_eq!(saved_session_info_in(&state.0, &project.0, NOW), None);
-        assert_eq!(load_saved(&state.0, &project.0, NOW).unwrap_err(), ResumeError::NotFound);
+        assert_eq!(load_latest(&state.0, &project.0, NOW, None).unwrap_err(), ResumeError::NotFound);
+    }
+
+    #[test]
+    fn the_most_recent_session_other_than_the_current_one_is_found() {
+        let (state, project) = (TempState::new("latest-state"), TempState::new("latest-proj"));
+        let old = store(&state.0, &project.0, &saved_for(&project.0, NOW - 3 * DAY));
+        let newer = store(&state.0, &project.0, &saved_for(&project.0, NOW - DAY));
+        let expired = store(&state.0, &project.0, &saved_for(&project.0, NOW - 20 * DAY));
+        assert_eq!(load_latest(&state.0, &project.0, NOW, None).unwrap().0, newer);
+        assert_eq!(load_latest(&state.0, &project.0, NOW, Some(&newer)).unwrap().0, old, "the running session is skipped");
+        std::fs::remove_file(&old).unwrap();
+        assert_eq!(load_latest(&state.0, &project.0, NOW, Some(&newer)).unwrap_err(), ResumeError::NotFound);
+        assert!(expired.exists(), "an expired file is ignored, not deleted by a lookup");
+    }
+
+    #[test]
+    fn the_old_single_file_is_still_found_and_ranks_by_its_time() {
+        let (state, project) = (TempState::new("legacy-state"), TempState::new("legacy-proj"));
+        let legacy = legacy_session_file(&state.0, &project.0);
+        write_atomic(&legacy, &saved_for(&project.0, NOW - DAY).to_json().to_string()).unwrap();
+        assert_eq!(load_latest(&state.0, &project.0, NOW, None).unwrap().0, legacy);
+        assert_eq!(saved_session_info_in(&state.0, &project.0, NOW).unwrap().turns, 1);
+        let newer = store(&state.0, &project.0, &saved_for(&project.0, NOW - 1000));
+        assert_eq!(load_latest(&state.0, &project.0, NOW, None).unwrap().0, newer);
+        assert_eq!(load_latest(&state.0, &project.0, NOW, Some(&newer)).unwrap().0, legacy);
+    }
+
+    #[test]
+    fn a_damaged_file_is_skipped_when_a_good_one_exists() {
+        let (state, project) = (TempState::new("skip-state"), TempState::new("skip-proj"));
+        let good = store(&state.0, &project.0, &saved_for(&project.0, NOW - DAY));
+        write_atomic(&project_sessions_dir(&state.0, &project.0).join("1-1.json"), "{ broken").unwrap();
+        assert_eq!(load_latest(&state.0, &project.0, NOW, None).unwrap().0, good);
+    }
+
+    #[test]
+    fn new_session_files_never_collide() {
+        let (state, project) = (TempState::new("collide-state"), TempState::new("collide-proj"));
+        let first = store(&state.0, &project.0, &saved_for(&project.0, NOW));
+        let second = new_session_file(&state.0, &project.0, NOW);
+        assert_ne!(first, second, "a session started in the same millisecond must not take over the first one's file");
+        assert_eq!(second.parent(), Some(project_sessions_dir(&state.0, &project.0).as_path()));
+    }
+
+    #[test]
+    fn only_the_newest_ten_sessions_are_kept_and_the_current_one_never_goes() {
+        let (state, project) = (TempState::new("prune-state"), TempState::new("prune-proj"));
+        let files: Vec<PathBuf> = (0..13).map(|i| store(&state.0, &project.0, &saved_for(&project.0, NOW - (20 - i) * 1000))).collect();
+        prune(&state.0, &project.0, &files[12]);
+        let left = session_files(&state.0, &project.0);
+        assert_eq!(left.len(), SAVED_KEEP);
+        assert!(files[..3].iter().all(|f| !f.exists()), "the three oldest are gone");
+        assert!(files[3..].iter().all(|f| f.exists()));
+        // The current session is spared even when it is the oldest.
+        let oldest = store(&state.0, &project.0, &saved_for(&project.0, NOW - 100_000));
+        prune(&state.0, &project.0, &oldest);
+        assert!(oldest.exists());
+        assert_eq!(session_files(&state.0, &project.0).len(), SAVED_KEEP);
+        assert!(!files[3].exists(), "the next oldest went instead");
     }
 
     #[test]
     fn each_project_has_its_own_file_and_the_name_is_stable() {
         let state = TempState::new("iso-state");
         let (a, b) = (TempState::new("iso-a"), TempState::new("iso-b"));
-        assert_ne!(session_file(&state.0, &a.0), session_file(&state.0, &b.0));
+        assert_ne!(project_sessions_dir(&state.0, &a.0), project_sessions_dir(&state.0, &b.0));
         // A path spelled differently but the same folder keys the same file.
         let roundabout = a.0.join("..").join(a.0.file_name().unwrap());
-        assert_eq!(session_file(&state.0, &a.0), session_file(&state.0, &roundabout));
+        assert_eq!(project_sessions_dir(&state.0, &a.0), project_sessions_dir(&state.0, &roundabout));
         store(&state.0, &a.0, &saved_for(&a.0, NOW));
         assert!(saved_session_info_in(&state.0, &a.0, NOW).is_some());
         assert_eq!(saved_session_info_in(&state.0, &b.0, NOW), None);

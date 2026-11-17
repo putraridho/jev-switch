@@ -649,13 +649,29 @@ async fn run_child(
     }
 }
 
-/// Alive means running: a killed process that nobody has reaped yet is a zombie. Linux only (reads `/proc`).
-#[cfg(test)]
+/// Alive means running: a killed process that nobody has reaped yet is a zombie, which
+/// `kill(pid, 0)` still reports as there. Unix only, like the process groups it tests.
+#[cfg(all(test, unix))]
 pub(crate) fn process_alive(pid: i32) -> bool {
-    match std::fs::read_to_string(format!("/proc/{pid}/stat")) {
-        Ok(stat) => !stat.rsplit(')').next().unwrap_or("").trim_start().starts_with('Z'),
-        Err(_) => false,
-    }
+    // SAFETY: signal 0 delivers nothing; it only asks whether the process exists.
+    let exists = unsafe { libc::kill(pid, 0) } == 0 || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM);
+    exists && !is_zombie(pid)
+}
+
+/// Linux: the state letter in `/proc/<pid>/stat` (after the `(name)`, which may hold spaces).
+#[cfg(all(test, target_os = "linux"))]
+fn is_zombie(pid: i32) -> bool {
+    std::fs::read_to_string(format!("/proc/{pid}/stat"))
+        .is_ok_and(|stat| stat.rsplit(')').next().unwrap_or("").trim_start().starts_with('Z'))
+}
+
+/// macOS and the BSDs have no `/proc`: ask `ps` for the state.
+#[cfg(all(test, unix, not(target_os = "linux")))]
+fn is_zombie(pid: i32) -> bool {
+    std::process::Command::new("ps")
+        .args(["-o", "stat=", "-p", &pid.to_string()])
+        .output()
+        .is_ok_and(|o| String::from_utf8_lossy(&o.stdout).trim_start().starts_with('Z'))
 }
 
 #[cfg(test)]
@@ -868,6 +884,26 @@ mod tests {
         // SAFETY: tidying our own test process.
         unsafe { libc::kill(child, libc::SIGKILL) };
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn process_alive_tells_running_from_zombie_from_gone() {
+        let mut child = std::process::Command::new("sleep").arg("30").spawn().unwrap();
+        let pid = child.id() as i32;
+        assert!(alive(pid), "a running process is alive");
+        assert!(alive(std::process::id() as i32), "so is this one");
+        child.kill().unwrap();
+        // Killed but not yet waited for: a zombie, which is not alive (the test helper must
+        // not call it running, or the group tests would pass vacuously on any OS).
+        for _ in 0..200 {
+            if !alive(pid) {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(!alive(pid), "a zombie is not alive");
+        child.wait().unwrap();
+        assert!(!alive(pid), "a reaped process is gone");
     }
 
     #[test]
