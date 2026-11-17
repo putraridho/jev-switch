@@ -9,8 +9,9 @@
 //! lines are in `tests/fixtures/claude/`. The CLI can withdraw a question it asked
 //! (`{"type":"control_cancel_request","request_id":...}`, from the protocol schema) when the
 //! turn is interrupted or something else settled it; no answer is sent for it then.
-//! Headless uses (the gateway, workers, `ask`) keep plain `-p`, where the CLI itself denies
-//! what is not allowed.
+//! Headless uses (the gateway, workers, `ask`) and a `jev-code` run nobody can answer
+//! (`jev-code -p`, piped input; see [`crate::providers::run_backends`]) keep plain `-p`,
+//! where the CLI itself denies what is not allowed.
 
 use std::path::PathBuf;
 
@@ -253,7 +254,7 @@ impl Backend for ClaudeBackend {
         let Ok(ev) = serde_json::from_str::<Value>(line) else { return vec![] };
         match ev["type"].as_str() {
             Some("assistant") => assistant_events(&ev),
-            Some("system") if ev["subtype"] == "permission_denied" => vec![Event::Text(format!(
+            Some("system") if ev["subtype"] == "permission_denied" => vec![Event::Hint(format!(
                 "\u{2717} denied {} \u{2014} allow it via CODE_ALLOWED_TOOLS or your Claude Code settings",
                 ev["tool_name"].as_str().unwrap_or("tool")
             ))],
@@ -339,10 +340,10 @@ mod tests {
     }
 
     #[test]
-    fn permission_denied_gives_a_hint() {
+    fn permission_denied_gives_a_hint_that_is_not_answer_text() {
         let line = json!({"type":"system","subtype":"permission_denied","tool_name":"Bash"}).to_string();
         let evs = backend().parse_line(&line);
-        assert!(matches!(&evs[..], [Event::Text(t)] if t.contains("denied Bash") && t.contains("CODE_ALLOWED_TOOLS")));
+        assert!(matches!(&evs[..], [Event::Hint(t)] if t.contains("denied Bash") && t.contains("CODE_ALLOWED_TOOLS")));
     }
 
     #[test]

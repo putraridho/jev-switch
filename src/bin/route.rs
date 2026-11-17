@@ -103,7 +103,8 @@ impl ProviderSetup {
 /// `routing::decide` picks) or `None` when Jev gave no answer. The decision is the
 /// first turn of a fresh session, so no stickiness applies.
 async fn provider_row(router: &Router, setup: &ProviderSetup, prompt: &str, context: &str) -> Option<(serde_json::Value, &'static str)> {
-    let w = router.provider_want(prompt, context, None).await?;
+    // Orchestration on: the tool shows every signal, the sequence veto included.
+    let w = router.provider_want(prompt, context, None, true).await?;
     let signals = Signals::from(&w);
     let plan = |_: ProviderId| None;
     let input = RouteInput {

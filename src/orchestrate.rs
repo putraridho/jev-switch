@@ -57,6 +57,15 @@ pub fn orch_gate(judgment: Option<&Orchestration>, cutoff: f64, route_tier: Opti
     }
 }
 
+impl Orchestration {
+    /// Whether the judgment alone clears the gate at `cutoff`: multi-part enough and not a
+    /// sequence. [`orch_gate`] with no routing requirement, so the gateway (which asks the
+    /// routing question only for a prompt that passes) and the engine use one rule.
+    pub fn passes(&self, cutoff: f64) -> bool {
+        orch_gate(Some(self), cutoff, None, false) == Gate::Trigger
+    }
+}
+
 /// The gateway's tier number for a catalog model: 0 light, 1 everyday, 2 top, 3 a
 /// top model reserved for very hard work (Fable, Astra, Carbon).
 pub fn route_tier_of(spec: &ModelSpec) -> usize {
@@ -227,6 +236,19 @@ mod tests {
         }
         // Below the cutoff it is just below the cutoff, as it would be without a veto.
         assert_eq!(orch_gate(Some(&Orchestration::new(0.1, 0.9)), 0.7, Some(2), true), Gate::BelowCutoff);
+    }
+
+    #[test]
+    fn the_judgment_alone_passes_only_when_multi_part_enough_and_not_a_sequence() {
+        // The predicate the gateway asks before it pays for the routing question.
+        assert!(parallel(0.7).passes(0.7), "at the cutoff");
+        assert!(!parallel(0.69).passes(0.7), "under it");
+        assert!(!Orchestration::new(0.95, 0.9).passes(0.7), "a sequence, however multi-part");
+        assert!(!Orchestration::new(0.95, 0.9).passes(0.0), "at any cutoff");
+        assert!(Orchestration::judged(0.95, None).passes(0.7), "no sequential answer: no veto information, multi_part decides");
+        for (j, cutoff) in [(parallel(0.8), 0.7), (parallel(0.5), 0.7), (Orchestration::new(0.9, 0.95), 0.2)] {
+            assert_eq!(j.passes(cutoff), orch_gate(Some(&j), cutoff, Some(2), true) == Gate::Trigger, "one rule for both");
+        }
     }
 
     #[test]

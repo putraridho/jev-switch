@@ -329,6 +329,12 @@ pub enum Refusal {
     NotListed,
     /// A path with wildcards, `..` or characters that would break the rule.
     UnsafePath,
+    /// A subcommand that takes a file-writing option, whose rule can only be the exact
+    /// command, and the command has a `*` (which a rule reads as a wildcard).
+    NotExact,
+    /// A hidden, settings or credentials file (`.claude/settings.local.json`, `.envrc`,
+    /// `.git/hooks/x`, `secrets/x`): writing it for good could grant or run anything.
+    SensitiveFile,
     /// A web address that is not a plain host name.
     BadHost,
     /// The folder that would be allowed for good is not one a grant may name: only a folder
@@ -350,6 +356,8 @@ impl Refusal {
             Self::ProjectProgram => "it runs a program that is not a system one (the model could rewrite it)",
             Self::NotListed => "it is not a read-only, build or test command that is safe to remember",
             Self::UnsafePath => "its path has wildcards, \"..\" or odd characters",
+            Self::NotExact => "it can write files, so only this exact command could be remembered, and it has a \"*\"",
+            Self::SensitiveFile => "it writes a hidden, settings or credentials file",
             Self::BadHost => "its address is not a plain host name",
             Self::FolderTooBroad => "the folder it touches is too broad or too sensitive to allow for good",
             Self::NoRule => "no narrow rule exists for this tool",
@@ -424,8 +432,24 @@ const READ_ONLY: &[&str] = &[
 const SYSTEM_BIN_DIRS: &[&str] = &["/bin", "/usr/bin", "/usr/local/bin", "/sbin", "/usr/sbin", "/opt/homebrew/bin"];
 
 /// Flags that make a read-only command write a named file or run a program, whatever the
-/// program is (`git diff --output=f`, `git grep --open-files-in-pager=sh`). Matched as the whole word or `flag=value`.
+/// program is (`git diff --output=f`, `git grep --open-files-in-pager=sh`). Matched as the
+/// whole word, `flag=value`, and any abbreviation of either (`--outp=f`): option parsers
+/// such as git's accept an unambiguous prefix of a long option.
 const DANGEROUS_FLAGS: &[&str] = &["--output", "--exec", "--open-files-in-pager", "--upload-pack", "--receive-pack"];
+
+/// Whether `word` is one of [`DANGEROUS_FLAGS`], `flag=value`, or an abbreviation of one.
+fn is_dangerous_flag(word: &str) -> bool {
+    let name = word.split_once('=').map_or(word, |(name, _)| name);
+    name.len() > 2 && name.starts_with("--") && DANGEROUS_FLAGS.iter().any(|f| f.starts_with(name))
+}
+
+/// Subcommands that are safe as approved but take an option that WRITES A FILE the command
+/// line names: every git command that parses diff options accepts `--output <file>` (checked
+/// against git 2.56: `diff`, `log`, `show`, `blame`, `rev-list`, `shortlog`, `diff-tree`).
+/// A rule is judged by everything it would match, and `Bash(git log:*)` would match a later
+/// `git log --output=~/.bashrc`, so for these the rule is the EXACT command that was approved
+/// (`Bash(git log --oneline -5)`: Claude Code reads a rule without `*` as one exact command).
+const WRITES_FILES: &[(&str, &[&str])] = &[("git", &["diff", "log", "show", "blame", "rev-list", "shortlog", "diff-tree"])];
 
 /// Programs that are used through a subcommand, and the subcommands a rule may be saved for
 /// (a rule is `Bash(git status:*)`, never `git -c ... x`). Allow-lists: a subcommand that is
@@ -532,7 +556,7 @@ fn bash_rule(command: &str) -> Result<String, Refusal> {
         return Err(Refusal::ProjectProgram);
     }
     let rest: Vec<&str> = words.collect();
-    if rest.iter().any(|w| DANGEROUS_FLAGS.iter().any(|f| w == f || w.strip_prefix(f).is_some_and(|r| r.starts_with('=')))) {
+    if rest.iter().any(|w| is_dangerous_flag(w)) {
         return Err(Refusal::TooBroad);
     }
     let sub = rest.first().copied().filter(|w| is_subcommand(w));
@@ -545,6 +569,14 @@ fn bash_rule(command: &str) -> Result<String, Refusal> {
         }
         None if READ_ONLY.contains(&name) => {}
         None => return Err(Refusal::NotListed),
+    }
+    let writes_files = sub.is_some_and(|sub| WRITES_FILES.iter().any(|(p, subs)| *p == name && subs.contains(&sub)));
+    if writes_files {
+        // A `*` would make the exact rule a wildcard pattern again.
+        if command.contains('*') {
+            return Err(Refusal::NotExact);
+        }
+        return Ok(format!("Bash({})", command.trim_matches([' ', '\t'])));
     }
     Ok(match sub {
         Some(sub) => format!("Bash({program} {sub}:*)"),
@@ -604,15 +636,63 @@ impl Places {
 /// `.docker`, `.mozilla`, `.claude`, `.git`: all start with a dot).
 const SENSITIVE_FOLDERS: &[&str] = &["keyrings", "keychains", "secrets", "credentials"];
 
+/// Top-level folders of the system itself: neither the home nor the temp folder can be one
+/// of them or inside one (`HOME=/etc/x`, `TMPDIR=/usr/bin`).
+const SYSTEM_TOP: &[&str] = &[
+    "bin", "boot", "dev", "etc", "lib", "lib32", "lib64", "libx32", "proc", "sbin", "sys", "usr", "System", "Library", "Applications",
+];
+
+/// Top-level folders that hold other people's or the system's things: fine to be inside
+/// (`/home/u`, `/var/folders/x/T`), never the temp folder themselves (`TMPDIR=/home`).
+/// `/tmp` itself is the usual temp folder and is allowed.
+const SHARED_TOP: &[&str] = &["home", "Users", "var", "private", "opt", "srv", "mnt", "media", "run", "root", "Volumes"];
+
+/// Absolute, and made of plain names only (no `.` or `..`).
+fn is_plain_absolute(path: &Path) -> bool {
+    path.is_absolute() && path.components().skip(1).all(|c| matches!(c, Component::Normal(_)))
+}
+
+/// The plain names of a path, as text.
+fn names(path: &Path) -> Vec<String> {
+    path.components()
+        .filter_map(|c| match c {
+            Component::Normal(n) => Some(n.to_string_lossy().into_owned()),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Whether `home` (from `HOME`) is a home folder grants may be judged against: absolute, at
+/// least two folders deep (`/home/u`; not `/`, `/home` or `/root`) and not a system folder.
+/// Otherwise nothing is grantable through it.
+fn safe_home(home: &Path) -> bool {
+    let names = names(home);
+    is_plain_absolute(home) && names.len() >= 2 && !SYSTEM_TOP.contains(&names[0].as_str())
+}
+
+/// Whether `temp` (from `TMPDIR`) is a temp folder grants may be judged against: absolute,
+/// not the root, not a system folder or inside one, not a shared top folder itself
+/// (`/home`, `/var`), and not the home folder or a folder above it (everything below the temp
+/// folder is grantable, hidden folders included). Otherwise nothing is grantable through it.
+fn safe_temp(temp: &Path, home: Option<&Path>) -> bool {
+    let names = names(temp);
+    let Some(top) = names.first().map(String::as_str) else { return false };
+    is_plain_absolute(temp)
+        && !SYSTEM_TOP.contains(&top)
+        && (names.len() >= 2 || !SHARED_TOP.contains(&top))
+        && !home.is_some_and(|h| h.starts_with(temp))
+}
+
 /// Whether `dir` is a folder a permanent grant may name, judged on the text of the path:
 /// inside the temp folder (not the temp folder itself), or inside the home folder (not the
 /// home folder itself) with no hidden or credentials folder on the way. Everything else
 /// (the root, `/usr/bin`, `/etc/ssh`, another user's home, `/opt`, a parent of home) is not.
 fn grantable_in(dir: &Path, home: Option<&Path>, temp: &Path) -> bool {
-    if !dir.is_absolute() || dir.components().any(|c| matches!(c, Component::ParentDir | Component::CurDir)) {
+    if !is_plain_absolute(dir) {
         return false;
     }
-    if dir != temp && dir.starts_with(temp) {
+    let home = home.filter(|h| safe_home(h));
+    if safe_temp(temp, home) && dir != temp && dir.starts_with(temp) {
         return true;
     }
     let Some(rest) = home.and_then(|h| dir.strip_prefix(h).ok()) else { return false };
@@ -643,15 +723,69 @@ fn grantable_folder(dir: &Path, places: &Places) -> Result<(), Refusal> {
     }
 }
 
+/// Whether `name` (one path component) is hidden or names a secrets folder.
+fn is_sensitive_name(name: &std::ffi::OsStr) -> bool {
+    let name = name.to_string_lossy().to_ascii_lowercase();
+    name.starts_with('.') || SENSITIVE_FOLDERS.contains(&name.as_str())
+}
+
+/// Whether `file` is inside `project` with no hidden or secrets component on the way, the
+/// file's own name included (`.claude/settings.local.json`, `.git/hooks/pre-commit`,
+/// `.envrc`): writing those for good could grant or run anything. `None` when `file` is
+/// not inside `project`.
+fn project_file_in(file: &Path, project: &Path) -> Option<Result<(), Refusal>> {
+    let rest = file.strip_prefix(project).ok()?;
+    let mut parts = rest.components().peekable();
+    let plain = parts.peek().is_some() && parts.all(|c| matches!(c, Component::Normal(name) if !is_sensitive_name(name)));
+    Some(if plain { Ok(()) } else { Err(Refusal::SensitiveFile) })
+}
+
+/// The one guard on a permanent rule for WRITING a file (absolute `file`): inside the
+/// project with no hidden or secrets component, or in a folder [`grantable_folder`] accepts
+/// and not hidden itself. A symbolic link cannot lead out: the file must not be one, and
+/// the real path of its folder has to pass too.
+fn grantable_file(file: &Path, places: &Places) -> Result<(), Refusal> {
+    if !is_plain_absolute(file) {
+        return Err(Refusal::UnsafePath);
+    }
+    let (Some(dir), Some(name)) = (file.parent(), file.file_name()) else { return Err(Refusal::UnsafePath) };
+    let judge = |file: &Path, project: &Path| match project_file_in(file, project) {
+        Some(verdict) => verdict,
+        None if is_sensitive_name(name) => Err(Refusal::SensitiveFile),
+        None => file.parent().map_or(Err(Refusal::FolderTooBroad), |dir| grantable_folder(dir, places)),
+    };
+    judge(file, &places.project)?;
+    if std::fs::symlink_metadata(file).is_ok_and(|m| m.file_type().is_symlink()) {
+        return Err(Refusal::UnsafePath);
+    }
+    match dir.canonicalize() {
+        Ok(real_dir) => {
+            let project = places.project.canonicalize().unwrap_or_else(|_| places.project.clone());
+            judge(&real_dir.join(name), &project)
+        }
+        Err(_) => Ok(()),
+    }
+}
+
 /// The allow rule that would let Claude Code run this call without asking again, in
 /// Claude Code's rule syntax, or why there is none narrower than "everything".
 pub fn rule_for(tool: &str, input: &Value, blocked_path: Option<&str>, places: &Places) -> Result<String, Refusal> {
     match tool {
         "Bash" => bash_rule(str_field(input, "command").ok_or(Refusal::NoRule)?),
+        // Claude Code checks every file-editing tool (Write, Edit, MultiEdit, NotebookEdit)
+        // against `Edit(path)` rules only; it accepts a `Write(path)` rule but never matches a
+        // write against it. Path anchors: `//path` is absolute, `~/path` the home folder,
+        // `/path` relative to the settings source (the project), `path` the current folder.
+        // https://code.claude.com/docs/en/permissions ("Read and Edit", and "`Write(path)`,
+        // `Glob(path)`, and `Grep(path)` rules don't match"). The rule is always `//absolute`,
+        // with a relative `file_path` resolved against the project the tool runs in.
         "Write" | "Edit" | "MultiEdit" | "NotebookEdit" => {
             let key = if tool == "NotebookEdit" { "notebook_path" } else { "file_path" };
             let path = literal_path(str_field(input, key).or(blocked_path).ok_or(Refusal::NoRule)?)?;
-            Ok(format!("{tool}({})", abs_path_rule(path)))
+            // Collecting the components drops a `./` the path started with.
+            let path: PathBuf = places.project.join(path).components().collect();
+            grantable_file(&path, places)?;
+            Ok(format!("Edit({})", abs_path_rule(&path)))
         }
         "Read" | "Grep" | "Glob" | "LS" => {
             let named = blocked_path.or_else(|| str_field(input, "file_path")).or_else(|| str_field(input, "path"));
@@ -1183,7 +1317,7 @@ mod tests {
             ("/usr/bin/cargo test", "Bash(/usr/bin/cargo test:*)"),
             ("npm test", "Bash(npm test:*)"),
             ("ls *.rs", "Bash(ls:*)"),
-            ("git log --oneline -n 5 # recent", "Bash(git log:*)"),
+            ("git log --oneline -n 5 # recent", "Bash(git log --oneline -n 5 # recent)"),
             ("echo 'a b'", "Bash(echo:*)"),
             ("cat README", "Bash(cat README:*)"),
         ] {
@@ -1256,10 +1390,46 @@ mod tests {
         // What stays rememberable: read-only programs and the project's build/test commands.
         for (command, want) in [
             ("cat x", "Bash(cat x:*)"), ("ls -la", "Bash(ls:*)"), ("/usr/bin/ls -la", "Bash(/usr/bin/ls:*)"), ("mkdir -p a/b", "Bash(mkdir:*)"),
-            ("git diff --stat", "Bash(git diff:*)"), ("git log -n 5", "Bash(git log:*)"), ("cargo clippy --all-targets", "Bash(cargo clippy:*)"),
+            ("git diff --stat", "Bash(git diff --stat)"), ("git log -n 5", "Bash(git log -n 5)"), ("cargo clippy --all-targets", "Bash(cargo clippy:*)"),
             ("npm test", "Bash(npm test:*)"), ("go vet ./...", "Bash(go vet:*)"), ("kubectl get pods", "Bash(kubectl get:*)"),
         ] {
             assert_eq!(rule(command).as_deref(), Ok(want), "{command}");
+        }
+    }
+
+    #[test]
+    fn a_subcommand_with_a_file_writing_option_is_only_ever_remembered_exactly() {
+        // `Bash(git log:*)` would also match a later `git log --output=~/.bashrc`.
+        for (command, want) in [
+            ("git diff", "Bash(git diff)"),
+            ("git log --oneline -5", "Bash(git log --oneline -5)"),
+            ("git show HEAD", "Bash(git show HEAD)"),
+            ("git blame src/a.rs", "Bash(git blame src/a.rs)"),
+            ("git rev-list --count HEAD", "Bash(git rev-list --count HEAD)"),
+            ("git shortlog -sn", "Bash(git shortlog -sn)"),
+            ("git diff-tree -r HEAD ", "Bash(git diff-tree -r HEAD)"),
+        ] {
+            assert_eq!(rule(command).as_deref(), Ok(want), "{command}");
+        }
+        // Subcommands with no such option keep their prefix rule.
+        assert_eq!(rule("git status -s").as_deref(), Ok("Bash(git status:*)"));
+        // A `*` would turn the exact rule into a pattern.
+        assert_eq!(rule("git log -- '*.rs'"), Err(Refusal::NotExact));
+        assert_eq!(rule("git diff -- src/*"), Err(Refusal::NotExact));
+    }
+
+    #[test]
+    fn file_writing_and_running_options_are_caught_however_abbreviated() {
+        for command in [
+            "git diff --output=x", "git diff --output x", "git log --outp=x", "git log --outpu x", "git show --out=/home/u/.bashrc",
+            "git status --outp=x", "git blame --output=x a", "git rev-list --ou=x HEAD", "cargo test --exe=sh", "git log --open-files=sh",
+            "git log --upload=x", "git log --rec=x",
+        ] {
+            assert_eq!(rule(command), Err(Refusal::TooBroad), "{command}");
+        }
+        // Words that are not abbreviations of those flags are fine.
+        for ok in ["git log --oneline", "git diff --stat", "cut -d, --output-delimiter=x -f1 a", "git log --", "cargo test --release"] {
+            assert!(rule(ok).is_ok(), "{ok} gave {:?}", rule(ok));
         }
     }
 
@@ -1350,7 +1520,12 @@ mod tests {
 
     /// An independent check of a rule: what its program is and that the command had no syntax.
     fn assert_narrow(command: &str, rule: &str) {
-        let inner = rule.strip_prefix("Bash(").and_then(|r| r.strip_suffix(":*)")).unwrap_or_else(|| panic!("{rule}"));
+        let body = rule.strip_prefix("Bash(").and_then(|r| r.strip_suffix(')')).unwrap_or_else(|| panic!("{rule}"));
+        if !body.ends_with(":*") {
+            assert_eq!(body, command.trim_matches([' ', '\t']), "an exact rule is the command itself");
+            assert!(!body.contains('*'), "{command:?} -> {rule}");
+        }
+        let inner = body.strip_suffix(":*").unwrap_or(body);
         let program = inner.split(' ').next().unwrap();
         let base = program.rsplit('/').next().unwrap().to_ascii_lowercase();
         let base = base.trim_end_matches(|c: char| c.is_ascii_digit() || c == '.');
@@ -1391,12 +1566,14 @@ mod tests {
     #[test]
     fn file_rules_use_the_absolute_path_spelling_and_the_right_field() {
         let rule = |tool: &str, input: Value, blocked: Option<&str>| allow_rule(tool, &input, blocked, &places());
-        assert_eq!(
-            rule("Write", json!({"file_path": "/work/app/.claude/settings.local.json"}), None).as_deref(),
-            Some("Write(//work/app/.claude/settings.local.json)")
-        );
+        // Every file-editing tool is matched against `Edit(...)` rules only.
+        assert_eq!(rule("Write", json!({"file_path": "/work/app/src/a.rs"}), None).as_deref(), Some("Edit(//work/app/src/a.rs)"));
         assert_eq!(rule("Edit", json!({"file_path": "/work/app/a.rs"}), None).as_deref(), Some("Edit(//work/app/a.rs)"));
-        assert_eq!(rule("NotebookEdit", json!({"notebook_path": "/work/app/n.ipynb"}), None).as_deref(), Some("NotebookEdit(//work/app/n.ipynb)"));
+        assert_eq!(rule("MultiEdit", json!({"file_path": "/work/app/a.rs"}), None).as_deref(), Some("Edit(//work/app/a.rs)"));
+        assert_eq!(rule("NotebookEdit", json!({"notebook_path": "/work/app/n.ipynb"}), None).as_deref(), Some("Edit(//work/app/n.ipynb)"));
+        // A relative path is the project's, not `/rel`.
+        assert_eq!(rule("Write", json!({"file_path": "src/b.rs"}), None).as_deref(), Some("Edit(//work/app/src/b.rs)"));
+        assert_eq!(rule("Edit", json!({"file_path": "./b.rs"}), None).as_deref(), Some("Edit(//work/app/b.rs)"));
         assert_eq!(rule("NotebookEdit", json!({"file_path": "/work/app/other"}), None), None, "a notebook is named by notebook_path");
         // A read outside the project allows its folder; a search names the folder itself.
         assert_eq!(rule("Read", json!({"file_path": "/home/u/notes/todo.md"}), None).as_deref(), Some("Read(//home/u/notes/**)"));
@@ -1404,6 +1581,75 @@ mod tests {
         assert_eq!(rule("Read", json!({"file_path": "/work/app/a.rs"}), None).as_deref(), Some("Read(//work/app/a.rs)"));
         // The blocked path Claude Code reports wins over the input.
         assert_eq!(rule("Read", json!({"file_path": "x"}), Some("/home/u/data/f.txt")).as_deref(), Some("Read(//home/u/data/**)"));
+    }
+
+    #[test]
+    fn a_write_rule_is_only_for_a_plain_project_file_or_a_grantable_folder() {
+        let rule = |tool: &str, path: &str| rule_for(tool, &json!({"file_path": path}), None, &places());
+        for (path, want) in [
+            // Settings, hooks, env files, credentials: writing them for good could grant or run anything.
+            ("/work/app/.claude/settings.local.json", Refusal::SensitiveFile),
+            (".claude/settings.json", Refusal::SensitiveFile),
+            ("/work/app/.git/hooks/pre-commit", Refusal::SensitiveFile),
+            ("/work/app/.envrc", Refusal::SensitiveFile),
+            ("/work/app/.env", Refusal::SensitiveFile),
+            ("/work/app/config/secrets/key.pem", Refusal::SensitiveFile),
+            ("/home/u/notes/.hidden", Refusal::SensitiveFile),
+            // Outside the project only a grantable folder qualifies.
+            ("/home/u/.bashrc", Refusal::SensitiveFile),
+            ("/home/u/.ssh/authorized_keys", Refusal::FolderTooBroad),
+            ("/home/u/notes.txt", Refusal::FolderTooBroad),
+            ("/etc/hosts", Refusal::FolderTooBroad),
+            ("/usr/local/bin/x", Refusal::FolderTooBroad),
+            ("/tmp/x.txt", Refusal::FolderTooBroad),
+            ("/work/other/a.rs", Refusal::FolderTooBroad),
+            ("/work/app", Refusal::SensitiveFile),
+        ] {
+            for tool in ["Write", "Edit"] {
+                assert_eq!(rule(tool, path), Err(want), "{tool} {path}");
+            }
+        }
+        assert_eq!(rule("Write", "/home/u/notes/todo.md").as_deref(), Ok("Edit(//home/u/notes/todo.md)"));
+        assert_eq!(rule("Write", "/tmp/build/out.txt").as_deref(), Ok("Edit(//tmp/build/out.txt)"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_symbolic_link_cannot_lead_a_write_rule_out_of_the_project() {
+        let dir = tmp("write-link");
+        let project = dir.join("app");
+        std::fs::create_dir_all(project.join("src")).unwrap();
+        std::os::unix::fs::symlink("/etc", project.join("etc")).unwrap();
+        std::os::unix::fs::symlink("/etc/hosts", project.join("hosts")).unwrap();
+        let places = Places { project: project.clone(), home: Some(PathBuf::from("/home/u")), temp: PathBuf::from("/nonexistent-temp") };
+        let rule = |path: &Path| rule_for("Write", &json!({"file_path": path.to_str().unwrap()}), None, &places);
+        assert_eq!(rule(&project.join("etc/hosts")), Err(Refusal::FolderTooBroad), "a folder link out");
+        assert_eq!(rule(&project.join("hosts")), Err(Refusal::UnsafePath), "a file link");
+        assert!(rule(&project.join("src/a.rs")).is_ok());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn unsafe_home_or_temp_folders_make_nothing_grantable_through_them() {
+        let with = |home: Option<&str>, temp: &str| Places { project: project().to_path_buf(), home: home.map(PathBuf::from), temp: PathBuf::from(temp) };
+        for (home, dir) in [
+            ("/", "/etc/ssh"), ("/", "/usr/bin"), ("/home", "/home/other/x"), ("/root", "/root/x"), ("home/u", "home/u/x"),
+            ("/etc/x", "/etc/x/y"), ("/usr/local", "/usr/local/bin"), ("/home/u/..", "/home/x"),
+        ] {
+            assert!(!grantable_in(Path::new(dir), Some(Path::new(home)), Path::new("/tmp")), "HOME={home} must not grant {dir}");
+            assert_eq!(grantable_folder(Path::new(dir), &with(Some(home), "/tmp")), Err(Refusal::FolderTooBroad), "HOME={home} {dir}");
+        }
+        for (temp, dir) in [
+            ("/", "/etc/ssh"), ("/home", "/home/other/x"), ("/var", "/var/lib/x"), ("/usr/bin", "/usr/bin/x"), ("/etc", "/etc/ssh"),
+            ("tmp", "tmp/x"), ("/home/u", "/home/u/.ssh"), ("/home", "/home/u/.ssh"), ("/Users", "/Users/u/.ssh"),
+        ] {
+            assert!(!grantable_in(Path::new(dir), Some(Path::new("/home/u")), Path::new(temp)), "TMPDIR={temp} must not grant {dir}");
+        }
+        // The usual places still work.
+        assert!(grantable_in(Path::new("/tmp/x"), Some(Path::new("/home/u")), Path::new("/tmp")));
+        assert!(grantable_in(Path::new("/var/folders/ab/T/x"), None, Path::new("/var/folders/ab/T")));
+        assert!(grantable_in(Path::new("/home/u/tmp/x"), Some(Path::new("/home/u")), Path::new("/home/u/tmp")));
+        assert!(grantable_in(Path::new("/Users/u/code"), Some(Path::new("/Users/u")), Path::new("/tmp")));
     }
 
     #[test]

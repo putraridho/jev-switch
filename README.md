@@ -383,13 +383,19 @@ run through Claude Code, which `jev-code` starts with `--input-format stream-jso
     Allow Bash: cargo test --quiet?  [y]es  [n]o  [a]lways in this project
 
 One key answers. `a` also saves a rule in `<project>/.claude/settings.local.json`
-(`Bash(cargo test:*)`, `Read(//abs/dir/**)`, `Write(//abs/file)`), which Claude Code reads
-itself, so it does not ask again. `a` is offered only for what is safe to remember for
-good: read-only programs (`ls`, `cat`, `grep`, ...) and the project's build/test commands
-(`cargo test`, `git diff`, `npm test`, ...), never a program that overwrites, deletes, sends
-data, installs, pushes or runs scripts (`tee`, `cp`, `curl`, `git push`, `npm install`); a
-folder outside the project only when it is inside your home folder (not home itself, not a
-hidden or credentials folder such as `~/.ssh`) or inside the temp folder. Otherwise the
+(`Bash(cargo test:*)`, `Read(//abs/dir/**)`, `Edit(//abs/file)`, the rule Claude Code checks
+every file-editing tool against), which Claude Code reads itself, so it does not ask again.
+`a` is offered only for what is safe to remember for good: read-only programs (`ls`, `cat`,
+`grep`, ...) and the project's build/test commands (`cargo test`, `npm test`, ...), never a
+program that overwrites, deletes, sends data, installs, pushes or runs scripts (`tee`, `cp`,
+`curl`, `git push`, `npm install`). A git command that has a file-writing option
+(`git diff|log|show|blame|rev-list|shortlog|diff-tree` all take `--output`) is remembered
+only as the exact command (`Bash(git log --oneline -5)`), never as a prefix; a write only
+for a plain project file (never a hidden, settings or credentials file such as
+`.claude/settings.local.json` or `.envrc`); a folder outside the project only when it is
+inside your home folder (not home itself, not a hidden or credentials folder such as
+`~/.ssh`) or inside the temp folder, and nothing is granted through a `HOME` or `TMPDIR`
+that is a system or shared top folder. Otherwise the
 question says why and offers only y/n. The question shows the call exactly as it will run
 (a sub-agent's whole prompt included); only path fields are shown relative to the project.
 Ctrl-C at the question denies it and stops the turn. The
@@ -398,9 +404,11 @@ user-level `~/.claude/settings.json` ones, read only); `/permissions allow <rule
 `/permissions remove <rule>` and `/permissions dir <path>` (an additional folder, which is
 how reads outside the project are allowed) edit the project file, keeping every other key,
 refusing a file that is not valid JSON, writing it atomically with mode 0600. Where no one
-can be asked (`-p`, piped input) the call is denied at once with a hint; `CODE_ALLOWED_TOOLS="Bash(cargo test) Bash(git status)"`
-still pre-allows. The model is told (a fixed `--append-system-prompt`) that it runs inside
-jev-code, that approvals are asked automatically, and not to suggest Claude Code UI keys.
+can be asked (`-p`, piped input) Claude Code runs as plain `claude -p` with your
+`CODE_ALLOWED_TOOLS="Bash(cargo test) Bash(git status)"` and `CODE_PERMISSION_MODE`, and
+denies what they do not allow itself; the denial hint goes to stderr, never into the answer.
+In an interactive session the model is told (a fixed `--append-system-prompt`) that it runs
+inside jev-code, that approvals are asked automatically, and not to suggest Claude Code UI keys.
 Codex, Gemini and Grok have no host approval protocol here: Codex runs in a workspace-write
 sandbox (`CODEX_SANDBOX`, never full access) and decides for itself. Use it inside a git repo.
 

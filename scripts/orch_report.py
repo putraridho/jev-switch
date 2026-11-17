@@ -42,20 +42,32 @@ def is_vetoed(check):
     return bool(check.get("vetoed"))
 
 
+def number(v):
+    """`v` when it is a real number (not a bool, not missing or null), else None."""
+    return v if isinstance(v, (int, float)) and not isinstance(v, bool) else None
+
+
+def score(check):
+    """The raw `multi_part_p` of a check, or None when the row has no number for it (Jev
+    failed or timed out). Such a row is never a near miss or a veto: there is nothing to rank."""
+    return number(check.get("multi_part_p"))
+
+
 def near_misses(checks, cutoff):
     """Checks that did not trigger but whose raw multi-part judgment came close, by raw
     `multi_part_p` (what Jev said, before the veto; old rows only have that field).
     Vetoed checks are left out: `vetoes` lists them, and their raw score is high on purpose."""
     return [c for c in checks
-            if not c.get("trigger") and not is_vetoed(c) and (c.get("multi_part_p") or 0) >= cutoff - NEAR_MISS_BAND]
+            if not c.get("trigger") and not is_vetoed(c) and score(c) is not None and score(c) >= cutoff - NEAR_MISS_BAND]
 
 
 def vetoes(checks):
     """Prompts the sequential veto actually held back: a sequence whose raw `multi_part_p`
     reached the row's cutoff (a sequence that scored low was never going to trigger).
     Highest raw score first."""
-    held = [c for c in checks if is_vetoed(c) and (c.get("multi_part_p") or 0) >= (c.get("cutoff") or 0)]
-    return sorted(held, key=lambda c: -(c.get("multi_part_p") or 0))
+    held = [c for c in checks
+            if is_vetoed(c) and score(c) is not None and number(c.get("cutoff")) is not None and score(c) >= c["cutoff"]]
+    return sorted(held, key=lambda c: -score(c))
 
 
 def tokens_cost(u):
@@ -140,7 +152,8 @@ def main():
     if held:
         print(f"  multi-part prompts the sequence veto kept on one thread: {len(held)}")
         for c in held[:5]:
-            print(f"    multi_part={c.get('multi_part_p') or 0:.2f} sequential={c.get('sequential_p') or 0:.2f}  "
+            seq = number(c.get("sequential_p"))
+            print(f"    multi_part={score(c):.2f} sequential={'-' if seq is None else f'{seq:.2f}'}  "
                   f"{c.get('prompt', '')[:80]!r}")
 
     if workers:

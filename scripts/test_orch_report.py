@@ -55,6 +55,20 @@ class VetoTests(unittest.TestCase):
         self.assertEqual(report.near_misses([failed], 0.7), [])
         self.assertEqual(report.vetoes([failed]), [])
 
+    def test_rows_without_a_number_are_skipped_even_at_a_low_cutoff(self):
+        # At a cutoff of 0.1 the band reaches 0 and below: a missing score used to count as
+        # 0 there and then crashed the `:.2f` formatting.
+        missing = {"trigger": False, "prompt": "no score"}
+        null = {"multi_part_p": None, "trigger": False}
+        text = {"multi_part_p": "0.9", "trigger": False}
+        near = check(0.05, cutoff=0.1)
+        self.assertEqual(report.near_misses([missing, null, text, near], 0.1), [near])
+        for c in report.near_misses([missing, null, text, near], 0.1):
+            f"{c['multi_part_p']:.2f}"
+        vetoed_without_score = {"vetoed": True, "cutoff": 0.0}
+        vetoed_without_cutoff = check(0.9, vetoed=True, cutoff=None)
+        self.assertEqual(report.vetoes([vetoed_without_score, vetoed_without_cutoff, VETOED]), [VETOED])
+
 
 if __name__ == "__main__":
     unittest.main()

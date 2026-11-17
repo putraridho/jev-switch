@@ -121,8 +121,11 @@ pub struct Finish {
 pub enum Event {
     /// One-line summary of a tool call, like "Bash cargo test".
     Tool(String),
-    /// Assistant text (or a hint) worth showing while the turn runs.
+    /// Assistant text: part of the answer.
     Text(String),
+    /// A diagnostic about the turn that is never part of the answer: a tool call that was
+    /// denied or failed, with what to do about it. Shown on stderr as it happens.
+    Hint(String),
     Finished(Finish),
     Failed { message: String },
     Plan(PlanUsage),
