@@ -53,6 +53,17 @@ pub enum TaskType {
 }
 
 impl TaskType {
+    /// The tier this kind of work actually needs. A chain may start higher (Explain
+    /// lists Grok 4.7 first because of who is good at it, not because explaining
+    /// needs a top model), so "dropped a tier" is judged against this, not the chain.
+    pub fn needed_tier(self) -> Tier {
+        match self {
+            Self::Security | Self::HardDebug | Self::Review => Tier::Top,
+            Self::SimpleEdit => Tier::Light,
+            Self::Feature | Self::Frontend | Self::Docs | Self::Explain | Self::CurrentInfo | Self::Unclear => Tier::Everyday,
+        }
+    }
+
     /// Every task type, so tests and config validation can loop over all of them.
     pub const ALL: [TaskType; 10] = [
         Self::Security,
@@ -357,7 +368,8 @@ pub struct Pick {
     pub spec: &'static ModelSpec,
     /// Index in the chain; 0 means the first choice was available.
     pub rank: usize,
-    /// The pick is a lower tier than the best the chain normally offers.
+    /// The pick is a lower tier than this kind of work needs ([`TaskType::needed_tier`]),
+    /// e.g. a hard bug landing on an everyday model because no top model is usable.
     pub dropped_tier: bool,
 }
 
@@ -374,10 +386,7 @@ pub fn pick(
     let (rank, spec) = chain.iter().copied().enumerate().find(|(_, s)| {
         usable.contains(s) && allow.permits(s.billing) && allowed_for(task, s) && s.context_tokens >= context_tokens
     })?;
-    // Very-hard-only entries are not the chain's normal best, so they don't count
-    // as "dropping" when a very-hard turn falls from them to an everyday model.
-    let best = chain.iter().filter(|s| !s.very_hard_only).map(|s| s.tier).max();
-    Some(Pick { spec, rank, dropped_tier: best.is_some_and(|b| spec.tier < b) })
+    Some(Pick { spec, rank, dropped_tier: spec.tier < task.needed_tier() })
 }
 
 #[cfg(test)]
@@ -533,13 +542,21 @@ mod tests {
     }
 
     #[test]
-    fn dropped_tier_is_reported() {
+    fn dropped_tier_means_below_what_the_task_needs_not_below_the_chain_head() {
+        // Explain needs an everyday model: Sonnet is not a drop just because Grok 4.7 heads the chain.
         let chain = default_chain(TaskType::Explain, false);
         let p = pick(&chain, TaskType::Explain, &Usable::all_of([Claude]), &open(), 0).unwrap();
         assert_eq!(p.spec.id, "claude-sonnet-5-5");
-        assert!(p.dropped_tier); // the chain's best is Grok (Top)
-        let p = pick(&chain, TaskType::Explain, &Usable::all_of([Grok]), &open(), 0).unwrap();
         assert!(!p.dropped_tier);
+        // A simple edit on a light model is exactly what it needs.
+        let chain = default_chain(TaskType::SimpleEdit, false);
+        let p = pick(&chain, TaskType::SimpleEdit, &Usable::all_of([Codex]), &open(), 0).unwrap();
+        assert!(!p.dropped_tier, "{}", p.spec.id);
+        // Explain landing on a light model (only Gemini usable) is a real drop.
+        let chain = default_chain(TaskType::Explain, false);
+        let p = pick(&chain, TaskType::Explain, &Usable::all_of([Gemini]), &open(), 0).unwrap();
+        assert_eq!(p.spec.id, "gemini-3.8-flash");
+        assert!(p.dropped_tier);
     }
 
     #[test]

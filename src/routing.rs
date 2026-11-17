@@ -761,11 +761,12 @@ mod tests {
 
     #[test]
     fn dropped_tier_comes_from_the_pick() {
+        // Sonnet is what explaining needs, even though Grok 4.7 heads the chain.
         let f = Fixture::new(&[Claude]);
-        let d = f.run(&mut RoutingState::default(), Some(&sig(TaskType::Explain)), 20).unwrap();
-        assert!(d.dropped_tier);
-        let f = Fixture::new(&[Grok]);
         assert!(!f.run(&mut RoutingState::default(), Some(&sig(TaskType::Explain)), 20).unwrap().dropped_tier);
+        // Only a light model left for an explanation: a real drop.
+        let f = Fixture::new(&[Gemini]);
+        assert!(f.run(&mut RoutingState::default(), Some(&sig(TaskType::Explain)), 20).unwrap().dropped_tier);
     }
 
     /// Tiny deterministic generator so the property test needs no dependency.
