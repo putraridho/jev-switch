@@ -514,15 +514,6 @@ fn is_mise_wrapper(path: &Path) -> bool {
         || parts.windows(2).any(|w| w[0] == "mise" && w[1] == "shims")
 }
 
-/// The mise tool name for a binary when they differ (the binary `agy` comes from the
-/// `antigravity-cli` tool); otherwise the binary name itself.
-fn mise_tool_for(bin: &str) -> &str {
-    match bin {
-        "agy" => "antigravity-cli",
-        other => other,
-    }
-}
-
 /// The pure decision: `bin` is really installed when some candidate on PATH is a real
 /// binary, or when every candidate is a lazy launcher but mise already has the tool.
 fn really_installed(candidates: &[PathBuf], mise_has_tool: bool) -> bool {
@@ -537,7 +528,7 @@ pub(crate) fn installed_for_real(bin: &str) -> bool {
     }
     let candidates = find_on_path(bin, &path_dirs(), &is_executable_file);
     let data = mise_data_dir(std::env::var("MISE_DATA_DIR").ok(), std::env::var("XDG_DATA_HOME").ok(), home());
-    really_installed(&candidates, data.is_some_and(|d| mise_has_install(&d, mise_tool_for(bin))))
+    really_installed(&candidates, data.is_some_and(|d| mise_installs_binary(&d, bin)))
 }
 
 /// mise's data directory: `$MISE_DATA_DIR`, else `$XDG_DATA_HOME/mise`, else
@@ -549,11 +540,22 @@ fn mise_data_dir(mise_data_dir: Option<String>, xdg_data_home: Option<String>, h
         .or_else(|| home.map(|h| h.join(".local/share/mise")))
 }
 
-/// True when some version directory under `<data>/installs/<tool>/` has files in it.
-fn mise_has_install(data_dir: &Path, tool: &str) -> bool {
-    std::fs::read_dir(data_dir.join("installs").join(tool))
-        .map(|versions| versions.flatten().any(|v| dir_has_entries(&v.path())))
-        .unwrap_or(false)
+/// True when some mise install holds an executable file called `bin`: `installs/<tool>/<version>/<bin>`
+/// or `installs/<tool>/<version>/bin/<bin>`, whatever the tool directory is called (a tool
+/// installed through a backend is `npm-google-gemini-cli`, its binary `gemini`).
+///
+/// Found from the filesystem alone, and a directory is not enough: mise creates an EMPTY
+/// version directory when an install is started, and Omarchy's account wrapper runs `mise
+/// install` (or `mise use -g`) whenever it finds no real binary, so an empty or half-done
+/// install must count as "not installed". Nothing is executed to find out.
+fn mise_installs_binary(data_dir: &Path, bin: &str) -> bool {
+    let subdirs = |dir: &Path| -> Vec<PathBuf> {
+        std::fs::read_dir(dir).map(|entries| entries.flatten().map(|e| e.path()).filter(|p| p.is_dir()).collect()).unwrap_or_default()
+    };
+    subdirs(&data_dir.join("installs"))
+        .iter()
+        .flat_map(|tool| subdirs(tool))
+        .any(|version| [version.join(bin), version.join("bin").join(bin)].iter().any(|exe| is_executable_file(exe)))
 }
 
 async fn probe_grok() -> Availability {
@@ -744,8 +746,64 @@ mod tests {
         assert!(really_installed(&[shim, real], false));
         // Nothing on PATH is never installed, whatever mise says.
         assert!(!really_installed(&[], true));
-        assert_eq!(mise_tool_for("agy"), "antigravity-cli");
-        assert_eq!(mise_tool_for("codex"), "codex");
+    }
+
+    /// A mise data directory in a fresh temp folder.
+    fn mise_dir(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("jev-mise-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("installs")).unwrap();
+        dir
+    }
+
+    fn write_file(path: &Path, mode: u32) {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, "#!/bin/sh\n").unwrap();
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).unwrap();
+    }
+
+    #[test]
+    fn an_install_is_found_by_its_binary_whatever_the_tool_directory_is_called() {
+        let data = mise_dir("layouts");
+        // The directory is named like the binary, the binary in the version directory.
+        write_file(&data.join("installs/claude/2.1.3/claude"), 0o755);
+        assert!(mise_installs_binary(&data, "claude"));
+        // Named like the binary, in `bin/`.
+        write_file(&data.join("installs/codex/0.1.0/bin/codex"), 0o755);
+        assert!(mise_installs_binary(&data, "codex"));
+        // A backend-prefixed tool name: `npm:@google/gemini-cli` is `npm-google-gemini-cli`.
+        write_file(&data.join("installs/npm-google-gemini-cli/0.9.0/bin/gemini"), 0o755);
+        assert!(mise_installs_binary(&data, "gemini"));
+        // A binary that differs from the tool (`agy` from `antigravity-cli`).
+        write_file(&data.join("installs/antigravity-cli/1.0.0/bin/agy"), 0o755);
+        assert!(mise_installs_binary(&data, "agy"));
+        // Other binaries are not found just because something is installed.
+        assert!(!mise_installs_binary(&data, "grok"));
+        assert!(!mise_installs_binary(&data.join("missing"), "claude"));
+        let _ = std::fs::remove_dir_all(&data);
+    }
+
+    #[test]
+    fn an_empty_version_directory_or_a_non_executable_file_is_not_an_install() {
+        let data = mise_dir("hollow");
+        // `mise install` started and did not finish (it happened with grok): a version
+        // directory exists, with nothing in it.
+        std::fs::create_dir_all(data.join("installs/grok/1.0.77")).unwrap();
+        assert!(!mise_installs_binary(&data, "grok"));
+        // Files that are not the binary.
+        write_file(&data.join("installs/grok/1.0.77/README"), 0o644);
+        assert!(!mise_installs_binary(&data, "grok"));
+        // The right name but not executable.
+        write_file(&data.join("installs/gemini/0.1.0/bin/gemini"), 0o644);
+        assert!(!mise_installs_binary(&data, "gemini"));
+        // A directory with the binary's name is not a binary either.
+        std::fs::create_dir_all(data.join("installs/agy/1.0.0/bin/agy")).unwrap();
+        assert!(!mise_installs_binary(&data, "agy"));
+        // And once it really is installed, it counts.
+        write_file(&data.join("installs/grok/1.0.77/bin/grok"), 0o755);
+        assert!(mise_installs_binary(&data, "grok"));
+        let _ = std::fs::remove_dir_all(&data);
     }
 
     #[test]
