@@ -1420,7 +1420,7 @@ def providers_line(p, name):
 
 
 @scenario
-def a_slow_provider_probe_is_retried_in_the_background_and_reported_during_a_turn(w):
+def a_slow_provider_probe_is_retried_in_the_background_applied_after_the_turn_and_reported_then(w):
     w.add_slow_codex()  # `codex login status` takes 7 s: past the 5 s startup cap, inside the 20 s retry cap
     started = time.time()
     p = Pty(w, [w.repo], "slow-probe-turn")
@@ -1434,15 +1434,21 @@ def a_slow_provider_probe_is_retried_in_the_background_and_reported_during_a_tur
         watch_status_rows(p)
         p.send("please stall forever\r")
         p.expect("⏺ Bash", 15, "the tool line of the stalled turn")
-        p.expect("codex is ready now", 20, "the notice, printed while the turn is running")
-        p.settle(0.5)
-        if p.visible().count("codex is ready now") != 1:
-            raise Fail(f"the notice should be printed once:\n{p.tail()}")
+        # The retry answers ~7 s after the banner, mid-turn. Routing never changes under a
+        # running turn, and the notice only reports what was applied, so it must NOT appear
+        # yet, and the live status line must stay one row.
+        p.settle(10.0)
+        if "ready now" in p.visible():
+            raise Fail(f"the notice was printed before the answer was applied (mid-turn):\n{p.tail()}")
         if len(p.vt.status_rows()) != 1:
-            raise Fail("the notice must not disturb the live status line")
+            raise Fail("the live status line must stay a single row")
         p.send("\x03")
         p.expect("stopped", 10, "the `stopped` summary")
+        # As soon as the turn ends the answer is applied and reported, before the next prompt.
+        p.expect("codex is ready now", 10, "the notice right after the turn ends")
         p.expect("› ", 10, "the prompt")
+        if p.visible().count("codex is ready now") != 1:
+            raise Fail(f"the notice should be printed once:\n{p.tail()}")
         line = providers_line(p, "codex")
         if "● codex" not in line:
             raise Fail(f"/providers should show codex ready (●) after the retry, got {line!r}:\n{p.tail()}")
