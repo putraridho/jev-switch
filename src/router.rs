@@ -75,10 +75,12 @@ pub const CODE_STRONG_THRESHOLD: f64 = 0.85;
 /// one PR). The 0.60-0.70 band starts mixing in follow-ups and single asks.
 pub const ORCH_TRIGGER_P: f64 = 0.70;
 
-/// Default `FABLE_THRESHOLD`: `very_hard` probability at or above which a turn that
-/// would go to Opus goes to Fable instead. NOT calibrated: there is no graded
-/// Opus-versus-Fable comparison yet, and Fable's price is unknown. The cutoff is high
-/// so few turns qualify; the gateway logs `hard_p` on every Opus-bound turn so it can
+/// Default of the gateway's `FABLE_THRESHOLD` environment variable (the one name users
+/// set; this constant says "top" because it is the top tier, whatever model fills it):
+/// `very_hard` probability at or above which a turn that would go to Opus goes to
+/// Fable instead. `jev-code` routing uses the same value, not configurable. NOT
+/// calibrated: there is no graded Opus-versus-Fable comparison yet, and Fable's price is
+/// unknown. The cutoff is high so few turns qualify; the gateway logs `hard_p` on every Opus-bound turn so it can
 /// be tuned from real usage. `JEV_FABLE=off` disables the tier.
 pub const TOP_THRESHOLD: f64 = 0.90;
 
