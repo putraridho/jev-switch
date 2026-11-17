@@ -171,6 +171,12 @@ impl Console {
         self
     }
 
+    /// Whether a tool approval can be asked here (a key reader is attached). Without one every
+    /// question would be denied, so the run should not ask the CLI to send any.
+    pub fn can_ask(&self) -> bool {
+        self.keys.is_some()
+    }
+
     /// A console on the process's real stdout and stderr.
     pub fn stdio(cfg: ConsoleConfig) -> Self {
         Self::new(Box::new(std::io::stdout()), Box::new(std::io::stderr()), cfg).with_screen(Box::new(StdScreen))
@@ -480,8 +486,8 @@ impl Ui for Console {
                 g.set_activity(&activity);
                 g.emit_err(&line);
             }
-            // Permission hints start with ✗; they are diagnostics, so they stay on stderr.
-            Event::Text(t) if t.starts_with('\u{2717}') => {
+            // Diagnostics, never part of the answer: stderr, in print mode too.
+            Event::Hint(t) => {
                 let text = format!("  {}", g.cfg.err_style.yellow(&uifmt::strip_ansi(t)));
                 g.emit_err(&text);
             }
@@ -723,7 +729,7 @@ mod tests {
         let (mut c, out, err) = console(false, Style::off(), true);
         c.route_facts(&facts("claude", "sonnet-5-5"));
         c.event(&Event::Tool("Edit /proj/src/a.rs".into()));
-        c.event(&Event::Text("✗ denied Bash".into()));
+        c.event(&Event::Hint("✗ denied Bash".into()));
         c.event(&Event::Text("the answer".into()));
         let e = err.text();
         assert!(e.contains("  → claude · sonnet-5-5   explain · first turn"), "{e}");
@@ -737,9 +743,15 @@ mod tests {
     fn answers_do_not_stream_in_print_mode_but_hints_still_reach_stderr() {
         let (mut c, out, err) = console(false, Style::off(), false);
         c.event(&Event::Text("the answer".into()));
-        c.event(&Event::Text("✗ denied Bash".into()));
+        c.event(&Event::Hint("✗ denied Bash".into()));
         assert_eq!(out.text(), "");
         assert!(err.text().contains("denied Bash"));
+        // A hint is never answer text, whatever it starts with; answer text never goes to stderr.
+        let (mut s, out, err) = console(false, Style::off(), true);
+        s.event(&Event::Hint("denied Bash".into()));
+        s.event(&Event::Text("✗ is a fine way to start an answer".into()));
+        assert_eq!(out.text(), "✗ is a fine way to start an answer\n");
+        assert!(err.text().contains("denied Bash") && !err.text().contains("fine way"), "{}", err.text());
     }
 
     #[test]

@@ -165,7 +165,7 @@ impl EngineApprover<'_> {
         // A UI that cannot ask: nothing was answered, so there is nothing to settle.
         if let Some(Decision::Deny { reason }) = &asked {
             if reason == backend::NO_ONE_TO_ASK {
-                lock_ui(self.ui).event(&Event::Text(uifmt::denied_without_asking(&req.tool)));
+                lock_ui(self.ui).event(&Event::Hint(uifmt::denied_without_asking(&req.tool)));
                 return Decision::Deny { reason: reason.clone() };
             }
         }
@@ -1030,7 +1030,7 @@ impl Engine {
         let result = result.unwrap_or_else(|| Err(TurnError::new(ErrorKind::Other, "cancelled by the user")));
         let discarded = result.is_err() && !held.is_empty();
         if let Ok(out) = &result {
-            let streamed = |t: &str| held.iter().any(|e| matches!(e, Event::Text(s) if !s.starts_with('\u{2717}') && s.trim() == t));
+            let streamed = |t: &str| held.iter().any(|e| matches!(e, Event::Text(s) if s.trim() == t));
             // Some CLIs deliver the answer only in the final event; show it unless it was already among the texts.
             let answer = out.text.trim();
             let missing = !answer.is_empty() && !streamed(answer);
@@ -2687,13 +2687,16 @@ mod tests {
     #[derive(Default)]
     struct Mute {
         texts: Vec<String>,
+        hints: Vec<String>,
     }
 
     impl Ui for Mute {
         fn route(&mut self, _: &str) {}
         fn event(&mut self, e: &Event) {
-            if let Event::Text(t) = e {
-                self.texts.push(t.clone());
+            match e {
+                Event::Text(t) => self.texts.push(t.clone()),
+                Event::Hint(t) => self.hints.push(t.clone()),
+                _ => {}
             }
         }
         fn note(&mut self, _: &str) {}
@@ -2794,7 +2797,8 @@ mod tests {
         assert!(started.elapsed() < Duration::from_secs(4));
         assert_eq!(report.status, TurnStatus::Answered);
         assert!(report.text.starts_with("refused no one to ask"), "{}", report.text);
-        assert!(ui.texts.iter().any(|t| t.starts_with('\u{2717}') && t.contains("denied Bash") && t.contains("CODE_ALLOWED_TOOLS")), "{:?}", ui.texts);
+        assert!(ui.hints.iter().any(|t| t.contains("denied Bash") && t.contains("CODE_ALLOWED_TOOLS")), "{:?}", ui.hints);
+        assert!(ui.texts.iter().all(|t| !t.contains("denied Bash")), "a hint is never answer text: {:?}", ui.texts);
         assert!(!permissions::local_settings_path(&dir).exists());
         let _ = std::fs::remove_dir_all(&dir);
     }

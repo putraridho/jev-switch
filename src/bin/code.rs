@@ -24,7 +24,7 @@ use jev_router::handoff;
 use jev_router::lineedit::{self, Input, InterruptGuard};
 use jev_router::log;
 use jev_router::orchestrate::{self, Setup};
-use jev_router::providers::Runtime;
+use jev_router::providers::{self, Runtime};
 use jev_router::repl::{Confirm, Flow, Interrupt, Io, Repl, SigInt};
 use jev_router::router::{Router, CODE_STRONG_THRESHOLD};
 use jev_router::terminal::{self, TerminalGuard};
@@ -170,8 +170,11 @@ async fn start_runtime(console: &Console) -> Runtime {
 }
 
 /// Settings come from the environment or `~/.jev-router.env`, like every other setting.
-fn engine_for(runtime: Runtime, router: Router, dir: PathBuf) -> Engine {
+/// `can_ask`: the console can put an approval question to a person
+/// ([`Console::can_ask`]); otherwise the CLIs run without the host prompt protocol.
+fn engine_for(runtime: Runtime, router: Router, dir: PathBuf, can_ask: bool) -> Engine {
     Engine::new(runtime, router, dir)
+        .with_backend_factory(Box::new(providers::run_backends(can_ask)))
         .with_enabled(commands::routing_enabled(envfile::lookup("JEV_PROVIDERS").as_deref()))
         .with_orchestrate(orchestrate::enabled_from_env(envfile::lookup("JEV_ORCHESTRATE").as_deref()))
         .with_orch_setup(Setup::detect())
@@ -218,7 +221,7 @@ async fn print_mode(args: &Args, source: &PromptSource, dir: &Path, term: &Term,
     let runtime = start_runtime(&console).await;
     // A one-shot starts a fresh conversation and leaves the saved session alone, unless -c asks to continue it.
     let persist = if args.resume { state_dir } else { None };
-    let engine = engine_for(runtime, router, dir.to_path_buf()).with_persistence(persist);
+    let engine = engine_for(runtime, router, dir.to_path_buf(), console.can_ask()).with_persistence(persist);
     let mut repl = Repl::new(engine, console.clone(), std::env::var("HOME").ok(), false);
     if args.resume {
         resume_quietly(&mut repl, &console);
@@ -267,7 +270,7 @@ async fn session(args: &Args, dir: &Path, term: &Term, console: Console, state_d
         }
     };
     let runtime = start_runtime(&console).await;
-    let engine = engine_for(runtime, router, dir.to_path_buf()).with_persistence(state_dir.clone());
+    let engine = engine_for(runtime, router, dir.to_path_buf(), console.can_ask()).with_persistence(state_dir.clone());
     let home = std::env::var("HOME").ok();
     let mut repl = Repl::new(engine, console.clone(), home.clone(), term.stdout_tty);
     startup(&mut repl, args, term, &console, state_dir.as_deref(), home.as_deref());

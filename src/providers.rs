@@ -72,6 +72,19 @@ pub fn session_backend_for(provider: ProviderId) -> Box<dyn Backend> {
     build_backend(provider, true)
 }
 
+/// The backends of a `jev-code` run: [`session_backend_for`] when someone can answer an
+/// approval question (`can_ask`: a session on a terminal), else [`backend_for`]. A run nobody
+/// can answer (`-p`, piped input) must not use the host prompt protocol: every question would
+/// be denied, and the model would be told "jev-code asks the user" when nobody will. Plain
+/// `claude -p` decides with the allowed tools and the permission mode instead.
+pub fn run_backends(can_ask: bool) -> fn(ProviderId) -> Box<dyn Backend> {
+    if can_ask {
+        session_backend_for
+    } else {
+        backend_for
+    }
+}
+
 fn build_backend(provider: ProviderId, session: bool) -> Box<dyn Backend> {
     let claude_code = |backend: ClaudeBackend| -> Box<dyn Backend> {
         Box::new(if session { backend.in_session() } else { backend })
@@ -536,6 +549,25 @@ mod tests {
     use ProviderId::{Claude, Codex, DeepSeek, Gemini};
 
     const NOW: u64 = 1_760_000_000_000;
+
+    #[test]
+    fn a_run_nobody_can_answer_never_uses_the_host_prompt_protocol() {
+        let req = crate::backend::TurnRequest { dir: "/tmp".into(), model: "m".into(), prompt: "hi".into(), session_id: None };
+        let args = |b: &dyn Backend| -> Vec<String> { b.command(&req).as_std().get_args().map(|a| a.to_string_lossy().into_owned()).collect() };
+        for provider in [Claude, DeepSeek] {
+            // `-p` or piped input: plain `claude -p`, allowed tools and permission mode decide.
+            let plain = run_backends(false)(provider);
+            let a = args(&*plain);
+            assert!(!plain.interactive(), "{provider}");
+            assert!(!a.iter().any(|x| x == "--permission-prompt-tool" || x == crate::backend::claude::SESSION_NOTE), "{provider}: {a:?}");
+            assert!(a.iter().any(|x| x == "--permission-mode"), "{provider}: {a:?}");
+            // A session on a terminal asks the person.
+            let asking = run_backends(true)(provider);
+            let a = args(&*asking);
+            assert!(asking.interactive(), "{provider}");
+            assert!(a.iter().any(|x| x == "--permission-prompt-tool") && a.iter().any(|x| x == crate::backend::claude::SESSION_NOTE), "{provider}: {a:?}");
+        }
+    }
 
     fn availability(provider: ProviderId, state: State) -> Availability {
         Availability { provider, state, plan: None, models: None, detail: String::new(), verified: true }

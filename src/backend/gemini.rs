@@ -182,7 +182,7 @@ fn finish_or_empty(text: &str, session_id: Option<String>, usage: Usage, note: &
 /// usual reason a turn goes nowhere, and nothing else tells the user.
 fn tool_failure(message: Option<&str>) -> Option<Event> {
     let message = message?.trim();
-    (!message.is_empty()).then(|| Event::Text(format!("\u{2717} tool failed: {}", message.chars().take(200).collect::<String>())))
+    (!message.is_empty()).then(|| Event::Hint(format!("\u{2717} tool failed: {}", message.chars().take(200).collect::<String>())))
 }
 
 impl GeminiBackend {
@@ -491,7 +491,7 @@ mod tests {
     #[test]
     fn gemini_failed_tool_result_gives_a_hint() {
         let line = r#"{"type":"tool_result","tool_id":"x","status":"error","error":{"type":"POLICY","message":"denied by policy"}}"#;
-        assert_eq!(gemini().parse_line(line), vec![Event::Text("\u{2717} tool failed: denied by policy".into())]);
+        assert_eq!(gemini().parse_line(line), vec![Event::Hint("\u{2717} tool failed: denied by policy".into())]);
         let ok = r#"{"type":"tool_result","tool_id":"x","status":"success","output":"fine"}"#;
         assert!(gemini().parse_line(ok).is_empty());
     }
@@ -553,7 +553,7 @@ mod tests {
     #[test]
     fn agy_failed_tool_step_gives_a_hint() {
         let line = r#"{"event":"step_update","step_update":{"step_type":"tool","state":"DONE","tool_info":{"name":"run_command","error":{"type":"DENIED","message":"needs permission"}}}}"#;
-        assert_eq!(agy().parse_line(line), vec![Event::Text("\u{2717} tool failed: needs permission".into())]);
+        assert_eq!(agy().parse_line(line), vec![Event::Hint("\u{2717} tool failed: needs permission".into())]);
     }
 
     #[test]
