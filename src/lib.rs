@@ -12,6 +12,7 @@ pub mod anthropic;
 pub mod availability;
 pub mod backend;
 pub mod catalog;
+pub mod changes;
 pub mod commands;
 pub mod cooldown;
 pub mod delegate;

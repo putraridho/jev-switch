@@ -537,6 +537,7 @@ dependencies = [
  "anyhow",
  "axum",
  "futures-util",
+ "libc",
  "reqwest",
  "rustyline",
  "serde",
