@@ -548,7 +548,7 @@ way, plus the two concrete forms:
 | | **Path A**: T00 runs before the refactor | **Path B**: T00 runs after it |
 |---|---|---|
 | `[workspace]` table | T00 creates it (block below) | exists; T00 only appends the three members and the two `exclude` entries |
-| default members | `["."]` (the engine package) | whatever the refactor set; T00 does not touch it |
+| default members | `["."]` (the engine package) | the engine's members only. The refactor's root is virtual and, as planned, has **no** `default-members` key (then every member is a default member), so T00 **adds** `default-members = ["crates/*"]` when the key is absent, in the same commit as the three members (the refactor's plan, section 4.4, says the same); when the key exists T00 leaves it alone |
 | engine facade | the module `jev_router::embed`, created by T00 (5.1) | the refactor's facade crate; T00 creates no engine file |
 | what the refactor / T00 edits in Flashboard | later, the refactor changes the **two lines** of 5.1 and nothing else | T00 writes those two lines for the facade crate |
 
@@ -563,16 +563,22 @@ Invariants (review-blocking in both paths):
    the clippy configuration is `dashboard/clippy.toml`. The engine's refactor owns the
    workspace-level lint table alone, and neither side can break the other's lint policy
    (the two policies differ: the engine needs one `unsafe` file and attribute reasons;
-   Flashboard forbids `unsafe` and uses the fixed test header of 11.1).
+   Flashboard forbids `unsafe` and uses the fixed test header of 11.1). Known conflict
+   with the refactor's plan as it stands (its 4.4 and check C1 expect every member to say
+   `[lints] workspace = true`, to write every dependency as `workspace = true` and to sit
+   under `crates/`): in Path B the three app crates need an exemption from that check, a
+   request to the engine's owner recorded in T00's report, like invariant 5.
 4. `[profile.dist]` is Flashboard's and is used by nothing else; no profile sets `panic`.
 5. No engine gate may compile the app crates by accident: they need webkit2gtk **and** the
    built UI (invariant of 11.4), so an engine command that says `--workspace` must exclude
    the three (`--exclude jev-usage-core --exclude jev-usage-io --exclude jev-dashboard`).
-   In Path B this is a request to the engine's owner, recorded in T00's report.
+   In Path B this is a request to the engine's owner, recorded in T00's report (the
+   plan's gate script runs `cargo clippy --workspace` and `cargo test --workspace` today).
 6. T00 states in its report which path it took.
 
 ```toml
-# Cargo.toml (root), Path A: the ONLY additions. Path B: only the marked lines are added.
+# Cargo.toml (root), Path A: the ONLY additions. Path B: only the marked lines are added,
+# plus `default-members = ["crates/*"]` when the refactor's root has no such key (table above).
 [workspace]
 members = [".", "dashboard/crates/usage-core", "dashboard/crates/usage-io", "dashboard/src-tauri"]   # B: append the three
 default-members = ["."]
@@ -686,14 +692,21 @@ not yet `pub`.
   `pub mod embed;` line and the word `pub` on `parse_codex_login`. Nothing else in the
   engine changes; its behaviour and tests are unchanged.
 - *Path B*: the facade crate already exists. If it lacks one of the six names, that is a
-  request to the engine's owner, never a T00 edit of an engine crate.
+  request to the engine's owner, never a T00 edit of an engine crate. Known today: the
+  plan's facade list has no `parse_codex_login` (and still lists `probe_all` and
+  `path_from_env`, which Flashboard does not use), so that one request is certain.
 - **Contract tests** (`usage-io/tests/engine_bridge.rs`, T00) pin the *behaviour* Flashboard
   relies on, so a refactor that changes it fails here and not in a user's tray: the
   env-file cases (`export`, quotes, comments, missing key), the Codex login rule's truth
   table, the two exact login command strings, the state directory under a temp
-  `XDG_STATE_HOME`/`HOME`, and the env-file path with and without its override.
+  `XDG_STATE_HOME`/`HOME`, and the env-file path with and without its override. The
+  cases that need a different environment (the facade reads the process environment
+  itself) run in a **child process**: the test re-executes its own test binary with
+  `Command::env`. No test calls `std::env::set_var` or `remove_var`: they race with the
+  parallel test harness, and are `unsafe` from edition 2024 on, which 1a forbids.
 - **Ripple check**: moving from Path A to Path B is a diff of the two lines above (plus the
-  workspace member list, which the refactor owns). If it needs more, the port has leaked
+  root manifest, which the refactor owns and must carry over: the three members,
+  `default-members` without them, the two `exclude` entries and `[profile.dist]`). If it needs more, the port has leaked
   and that is a design defect to fix here, not to absorb.
 
 `state_dir()` **creates** `~/.local/state/jev-router` when it is missing. Harmless (the
@@ -831,7 +844,9 @@ without `account/read`), read lines until the response with the `rateLimits/read
 stdin, wait for exit (kill after the 15 s deadline). Line cap 1 MiB, total cap 4 MiB.
 The three lines are written at once, without waiting for the `initialize` response; that
 the server accepts this (the spike sent them one by one) is **assumed** and is part of
-T04's one real run; the fallback is a `ProcSpec` whose `on_line` releases the next request.
+T04's one real run; the fallback (the next request is written when a line is answered:
+a `Flow` variant that carries the bytes to write) changes the frozen `proc` types, so it
+is a contract change request to the lead, not a worker's edit.
 `parse::codex::parse_rate_limits_response(line, id)` (signature in T01) reads `rateLimits`
 only: one window meter per non-null `primary`/`secondary`
 (`WindowKind::from_minutes(windowDurationMins)`, absent duration →
@@ -859,8 +874,10 @@ present, for example two unknown currencies, is dropped). No key → `NotConfigu
 with no network call. 401/403 → `Unauthorized`. Unverified until the user has a key.
 
 ### 6.5 Placeholders and the path to real adapters
-`PlaceholderSource::new(provider)` returns `Unsupported`. The UI lists these under "No usage
-interface yet" (section 9.3). Later, without touching the service or the UI:
+`PlaceholderSource::new(provider)` returns `Unsupported`. Its descriptor is
+`Trigger::OnSignal`, `Cost::Free`, `needs_login: false`: nothing ever signals it, so it is
+asked once at start and when the window opens, never on a timer, and it does no IO. The
+UI lists these under "No usage interface yet" (section 9.3). Later, without touching the service or the UI:
 - Antigravity: an `AntigravityUsageSource` running `agy -p /usage --output-format json`
   through `proc`, once verified against a really installed binary.
 - Grok: an `XaiPrepaidBalanceSource` on the Management API with `XAI_MANAGEMENT_KEY` and
@@ -968,8 +985,12 @@ Fetch timeouts stay on tokio's monotonic timer, which is the right clock for a d
   of that provider is not `Ready` and the cached facts are older than 60 s, so a probe that
   timed out during a busy login is retried on the source's backoff schedule **even while
   the window is hidden**; (c) on a manual refresh, at most once per 60 s; (d) otherwise when
-  the facts are older than 6 hours, piggy-backed on a fetch that is due anyway (no timer of
-  its own). The probe never runs more often than once per 60 s.
+  the facts are older than 6 hours, **or older than 15 minutes while a probed provider's
+  readiness is `Unknown`**, piggy-backed on a fetch that is due anyway (no timer of its
+  own). The second case is for Claude: its only `needs_login` source is the manual live
+  check, so (b) never retries a `claude auth status` that timed out during a busy login,
+  and the plan name would otherwise stay missing for 6 hours. The probe never runs more
+  often than once per 60 s.
 - **Suspend/resume and clock jumps**: handled by the wall-clock timer (7.1). Every wake
   recomputes deadlines from the injected clock; deadlines found in the past run once each
   (no catch-up storm).
@@ -1027,6 +1048,14 @@ enums whose tag is the one shown in the block below (`state` for `UsageView`, `k
 `dashboard/src/lib/ipc/bindings/` and checked for drift in CI. `u64`/`i64` fields carry
 `#[ts(type = "number")]` (all values are far below 2^53; `ts-rs` would print `bigint`), and
 `MeterId`/`Label` fields carry `#[ts(type = "string")]` (their serde impls are hand-written).
+The attribute replaces the **whole** field type, wrapper included (read in `ts-rs` 10's
+source), so an `Option` field says `"number | null"` or `"string | null"` and a `Vec`
+field `"number[]"`; a bare `"number"` on `Option<u64>` would type a value that is `null`
+at run time as a number. A T00 test serialises a value with every optional field `None`
+and checks each such key against the generated file's `| null`.
+A few IPC types live beside their logic instead of in `ipc.rs` (`Settings` and
+`SettingsPatch` in `settings`, `Severity` and `Phase` in `assess`); `ipc` re-exports them
+and every rule for IPC types applies to them wherever they are defined (8.10).
 No IPC type is a unit struct, an empty tuple struct or an empty enum: `ts-rs` 10 prints
 those as `Record<string, never>`, `never[]` and `never` (read in its source), which 1a bans. The block below shows the shapes;
 where `ts-rs` prints an equivalent type differently, the generated files are authoritative.
@@ -1499,7 +1528,12 @@ One module, `io::proc`, is the only place `std::process`/`tokio::process` may be
   font-src 'self'; connect-src ipc: http://ipc.localhost; base-uri 'none';
   form-action 'none'; frame-ancestors 'none'; object-src 'none'
   ```
-  No `'unsafe-inline'`, no `'unsafe-eval'`, no `data:`. Consequences for the UI, all
+  No `'unsafe-inline'`, no `'unsafe-eval'`, no `data:`. This is the policy of every built
+  binary. `pnpm dev` loads the UI from Vite's dev server, whose hot reload needs a
+  WebSocket to localhost and injected `<style>` elements; whether Tauri applies `csp` to
+  that page is **assumed** not (T00 checks). If it does, T00 sets `app.security.devCsp`,
+  which only development runs read, to this policy plus exactly those two allowances; the
+  manifest snapshot test pins `csp` itself. Consequences for the UI, all
   enforced by lint or test: Vite's `build.assetsInlineLimit` is `0` (no asset is ever inlined
   as a `data:` URI, which this CSP would block); icons are inline SVG in the markup; dynamic
   styles are set through Svelte's `style:` directive (the CSSOM), never through a `style="…"`
@@ -1507,6 +1541,11 @@ One module, `io::proc`, is the only place `std::process`/`tokio::process` may be
 - The window is built with `incognito(true)`: WebKit keeps cookies, storage and caches in
   memory only and leaves nothing under `~/.local/share` or `~/.cache`.
 - Navigation is locked: `on_navigation` allows only the app origin; new windows are denied.
+- The window is built with `disable_drag_drop_handler()`. Tauri's default handler turns a
+  file dropped on the window into a `tauri://drag-drop` event whose payload is the file's
+  **path**, and the capability's `allow-listen` would let the page receive it: the one
+  channel by which a path could reach the web view. With the handler off no such event
+  exists (the UI has nothing to drop onto).
 - Devtools: the `devtools` Cargo feature is not enabled; a test asserts the release manifest.
 - The web view's context menu (which offers Reload and Inspect) is suppressed by the UI in
   production builds (a `contextmenu` listener in `main.ts`; Tauri has no Rust switch for it
@@ -1583,7 +1622,7 @@ One module, `io::proc`, is the only place `std::process`/`tokio::process` may be
 | End to end: nothing leaks to IPC, store, settings, logs | `io` integration test: a service wired with canary-fed sources and a temp state dir runs a full cycle; then every emitted `Snapshot` (JSON), every file under the temp dir (raw bytes, including SQLite WAL), and captured `diag` output are searched for `JEVCANARY`, the canary e-mail and the canary key. The real-binary smoke test (11.4) repeats the search over its whole temp tree, including `XDG_DATA_HOME`, `XDG_CACHE_HOME`, `XDG_CONFIG_HOME` and `XDG_RUNTIME_DIR`, and over the binary's stderr. |
 | IPC carries only allowed fields | Test serialises generated values (proptest strategies for every IPC type) and walks the JSON: every key must be in `ipc-allowlist.txt`; no key matches `(?i)email|token|secret|password|prompt|message|content|account|session|cwd|path|url|auth|key$`; every string leaf must match a closed-vocabulary set or `^[a-z0-9_:.+-]{1,48}$`. The same walk runs over the generated `.ts` bindings' property names. |
 | `Secret` cannot be printed/cloned/serialised | `static_assertions::assert_not_impl_any!(Secret<String>: Debug, Display, Clone, Serialize, PartialEq)`. |
-| One exit for secrets, one HTTP client, one process spawner, one D-Bus user | Architecture test (plain Rust test that scans `dashboard/**/*.rs`, tests excluded where noted): `expose_secret(` only in `io/src/http.rs`; `reqwest` only in `io/src/http.rs`; `process::Command` only in `io/src/proc.rs`; `zbus` only in `src-tauri/src/bus.rs`; `notify_rust` only in `src-tauri/src/notifier.rs`; the engine's crate identifiers only in `io/src/engine_bridge.rs` (5.1); forbidden file names (8.3) nowhere; no `println!`/`eprintln!`/`dbg!`; no `serde_json::Value`, `json!` or `unwrap`/`expect` outside tests, and `#![forbid(unsafe_code)]` at the top of all three crate roots (1a); the **type-file rule**: a `syn`-based test walks every struct field and enum variant field in the core type files (`time quantity label provider meter usage port secret ipc`) and fails on any field whose type mentions `String`, `str`, `Cow`, `OsString`, `PathBuf`, `Vec<u8>` or `Value`, with exactly two exceptions: `Label`'s own `Box<str>` and `Diagnostics.app_version: &'static str`. (Function signatures such as `MeterId::key() -> String` are not fields and are allowed.) `text.rs` builds display strings from typed inputs only and is not a type file. |
+| One exit for secrets, one HTTP client, one process spawner, one D-Bus user | Architecture test (plain Rust test that scans `dashboard/**/*.rs`, tests excluded where noted): `expose_secret(` only in `io/src/http.rs`; `reqwest` only in `io/src/http.rs`; `process::Command` only in `io/src/proc.rs`; `zbus` only in `src-tauri/src/bus.rs`; `notify_rust` only in `src-tauri/src/notifier.rs`; the engine's crate identifiers only in `io/src/engine_bridge.rs` (5.1); forbidden file names (8.3) nowhere; no `println!`/`eprintln!`/`dbg!`; no `serde_json::Value`, `json!` or `unwrap`/`expect` outside tests, and `#![forbid(unsafe_code)]` at the top of all three crate roots (1a); the **type-file rule**: a `syn`-based test walks every struct field and enum variant field in the core type files (`time quantity label provider meter usage port secret ipc`) **and in every other core type that derives `TS`** (the IPC types defined beside their logic, 7.4) and fails on any field whose type mentions `String`, `str`, `Cow`, `OsString`, `PathBuf`, `Vec<u8>` or `Value`, with exactly two exceptions: `Label`'s own `Box<str>` and `Diagnostics.app_version: &'static str`. (Function signatures such as `MeterId::key() -> String` are not fields and are allowed.) `text.rs` builds display strings from typed inputs only and is not a type file. |
 | Children the dashboard spawns get no secrets | Test spawns a stub program through `proc` with `DEEPSEEK_API_KEY=JEVCANARY...` in the parent environment; the stub prints its environment; assert no canary and only allow-listed names plus the constants of 8.6. The login probe's two status commands go through the same `proc` and are covered by the same test. |
 | Files are private | Test asserts 0700 on the directory and 0600 on `history.db`, `-wal`, `-shm`, `settings.json`, with a process umask of 022. |
 | The web view stores nothing | ESLint bans `localStorage`, `sessionStorage`, `indexedDB`, `document.cookie`, `caches`; the smoke test finds no WebKit data directory in its temp tree. |
@@ -1828,7 +1867,9 @@ same value as the tray's checkbox); the two level switches are disabled, with th
 kept, while it is off. Turning on "Claude live check" opens a confirmation dialog. "Keep
 running in the tray" is disabled with an explanation when no tray host exists. "Start at
 login" is on by default (1a); if writing or removing the entry fails, the switch returns to
-its previous state and says why (`CommandError` `io`). "Size" is the zoom of 9.10
+its previous state and says why (`CommandError` `io`). Under the shortcuts switch the
+Behaviour section lists every key in text (9.10: this is what `?` opens; the wireframe
+shows the short form). "Size" is the zoom of 9.10
 (`zoom_pct`; also Ctrl + plus, minus and zero). "About and diagnostics" is the About
 screen of 1a: the name Flashboard, the version, and the typed diagnostics.
 
@@ -1966,8 +2007,14 @@ blocks the task.
 - **Not colour alone** (1.4.1): every level has a glyph shape, a bar pattern and a word (9.7).
 - **Keyboard** (2.1.1, 2.1.2): every function, no trap. Tab order equals reading order
   (2.4.3). Shortcuts: `R` refresh, `,` settings, `Esc` back, `1`–`6` open provider, `?`
-  shortcut list. Single-key shortcuts act only when no text field has focus and can be
-  switched off (`settings.shortcuts`, WCAG 2.1.4). `Esc` and Tab always work.
+  shortcut list. `1`–`6` follow the fixed order of `ProviderKey::ALL` (Claude, Codex,
+  DeepSeek, Gemini, Antigravity, Grok), never the cards' current order, which changes with
+  severity; the digit of a hidden provider does nothing. The shortcut list is not a
+  dialog: `?` opens Settings, whose Behaviour section lists every key in text (the
+  single-key ones, `Esc`, and the three zoom keys), so the list exists once and is
+  reachable without knowing a shortcut. Single-key shortcuts act only when no text field
+  has focus and can be switched off (`settings.shortcuts`, WCAG 2.1.4). `Esc` and Tab
+  always work.
 - **Focus** (2.4.7, 2.4.11, 2.4.13): a 2 px `accent` ring with 2 px offset on
   `:focus-visible`, never removed, never hidden behind the sticky header (scroll padding);
   focus moves to the view title on navigation and returns to the triggering control on back;
@@ -1977,6 +2024,11 @@ blocks the task.
   the full level-1 detail ("50 percent used, resets in 2 hours 14 minutes, today at 14:00,
   status allowed, seen at 12:33"); icon buttons have text names; the chart is described
   (9.4).
+- **Label in name** (2.5.3): where a control shows text, its accessible name contains
+  that text, word for word and in the same order. The card header button shows the
+  provider and the plan ("Claude", "Max 5x"), so its name begins "Claude, Max 5x" and the
+  summary follows, never a rephrasing; a meter row shows "5-hour" and is named
+  "Claude 5-hour". A test compares each control's visible text with its computed name.
 - **Status messages** (4.1.3) that are **not spammy**: one polite live region for the whole
   app. It speaks only when (a) a meter changes level (ok, warn, critical), (b) a provider's
   state changes (for example to "can't reach Codex"), or (c) the user's own action finishes
@@ -2160,8 +2212,14 @@ hidden element referenced by `aria-describedby`.
    `.svelte.ts` files it asks the type checker for the type of every expression and
    declaration and fails when one is `any` or `unknown` (this is how a third-party
    signature that returns `any`, such as `CustomEvent.detail` or `Object.fromEntries`, is
-   caught without anyone writing the keyword); inside `.svelte` files the same job is done
-   by the lint layer's `no-unsafe-*` rules.
+   caught without anyone writing the keyword); inside `.svelte` files the lint layer's
+   `no-unsafe-*` rules report every *use* of an `any` value (call, member access,
+   assignment, argument, return) but not one that is only printed in the markup. That
+   rest is closed at the source: a `.svelte` file may import only `svelte`, other
+   components, the project's own `.ts`/`.svelte.ts` modules and the generated bindings
+   (`no-restricted-imports`; `check-types.ts` repeats the check), and every one of those
+   modules is under the inferred-`any` check, so no third-party value typed `any` can
+   enter a component except through a member access the lint reports.
    Configuration files are TypeScript where the tool loads TypeScript (`vite`, `vitest`,
    `playwright`, `eslint`) and JSON where it does not (`.stylelintrc.json`,
    `.prettierrc.json`: data, not code).
@@ -2472,7 +2530,8 @@ item title as a name, not a panel label (T11); GTK and WebKitGTK start on a sess
 that activates nothing (T12, stage 10); `DISABLE_AUTOUPDATER=1` is honoured by `claude`
 (T04); in Path B the engine's facade crate offers the six names of 5.1 (T00);
 `generate_context!` needs the built UI at compile time (T00: if it does not, stage 2's
-order is merely harmless); WebKitGTK exposes `role="meter"` with
+order is merely harmless); Tauri does not apply `csp` to the Vite dev server's page (T00,
+else `devCsp`, 8.8); WebKitGTK exposes `role="meter"` with
 `aria-valuetext` to Orca. Each of these has a named check in
 the task that depends on it, and none blocks the design if it turns out false: the fallback
 is written where the assumption is used, or, for the two idle-budget assumptions and the

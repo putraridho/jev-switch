@@ -33,6 +33,11 @@ everything, including this file.
    `dashboard/fixtures/`.
 5. Tests never touch the real home directory, the real state dir, the network or real CLIs:
    temp dirs, stub programs, a local stub HTTP server, `FakeClock`, tokio paused time.
+   No test calls `std::env::set_var`/`remove_var` (a race in the parallel harness, and
+   `unsafe` from edition 2024): code that reads the environment has a pure `_from` variant
+   taking the values, and the few real-environment cases re-execute the test binary as a
+   child with `Command::env` (D5.1). Tests may use `std::process::Command` for that and
+   for stubs; production code only in `proc.rs`.
 6. Lints are `-D warnings`. No `unwrap`/`expect`/`panic!`/indexing/`as` outside tests, no
    `println!`/`eprintln!`/`dbg!`, no `unsafe`, no error type that carries a string, no
    `TODO`, no `serde_json::Value` or `json!` outside tests, `#![forbid(unsafe_code)]` in all
@@ -125,8 +130,10 @@ first `scripts/ci.sh`, so that everything compiles and every later task only fil
 - Root `Cargo.toml`, per the path of D5 (say which in the report). Path A: the
   `[workspace]` table (with `exclude = [".claude", "dashboard/fuzz"]`) and `[profile.dist]`.
   Path B: only the three members, the two `exclude` entries and `[profile.dist]` are added
-  to the existing workspace. Never `[workspace.lints]` and never `default-members` beyond
-  D5; no `panic = "abort"`. Also `Cargo.lock`, `deny.toml`, `dashboard/clippy.toml`
+  to the existing workspace, plus `default-members = ["crates/*"]` **when the refactor's
+  root has no `default-members` key** (a virtual root without one makes every member a
+  default member, which would break D5 invariant 1); an existing key is left alone.
+  Never `[workspace.lints]`; no `panic = "abort"`. Also `Cargo.lock`, `deny.toml`, `dashboard/clippy.toml`
   (D11.1; not at the root), the same `[lints]` table in each of the three app manifests
   (D5 invariant 3), and **in Path A only** `src/embed.rs`, one line `pub mod embed;` in
   `src/lib.rs` and the word `pub` on `parse_codex_login` in `src/availability.rs`,
@@ -160,7 +167,7 @@ first `scripts/ci.sh`, so that everything compiles and every later task only fil
   (`build.assetsInlineLimit: 0`), `vitest.config.ts`, `playwright.config.ts` (Chromium
   project; the static server sends the CSP of `tauri.conf.json` as a header),
   ESLint/stylelint/Prettier configs with the rules of D8.10 (raw-HTML sinks, web storage,
-  `style=` attributes), D9.7 and the complete **type discipline of D10** (`tsconfig.json`
+  `style=` attributes), the import rule for `.svelte` files (D10), D9.7 and the complete **type discipline of D10** (`tsconfig.json`
   flags, the type-checked ESLint rule set run with `--no-inline-config --max-warnings 0`,
   and `dashboard/scripts/check-types.ts`, all frozen; config files are TypeScript, or JSON
   for stylelint and Prettier; no `svelte.config.js`, D10), `src/env.d.ts`, `index.html` (`lang="en"`), `src/main.ts`, stub
@@ -281,7 +288,10 @@ first `scripts/ci.sh`, so that everything compiles and every later task only fil
   and `StaleCause::Failing` are struct variants (D4.2); argument types (`RefreshTarget`,
   `HistoryQuery`, `SettingsPatch`) and `Settings` also derive `Deserialize`. A round-trip
   test serialises one value of every IPC enum variant (this is where a tagged newtype
-  variant would fail at run time).
+  variant would fail at run time). `#[ts(type = …)]` replaces the whole field type, so
+  `Option` and `Vec` fields spell the wrapper (`"number | null"`, `"string | null"`,
+  `"number[]"`, D7.4); a test serialises values with every optional field `None` and
+  checks that each key that came out `null` is typed `| null` in the generated file.
 - Bindings: `cargo test -p jev-usage-core --features bindings export_bindings` writes
   `dashboard/src/lib/ipc/bindings/*.ts`; `ci.sh` fails on drift.
 
@@ -302,7 +312,9 @@ first `scripts/ci.sh`, so that everything compiles and every later task only fil
   `WindowKind::from_minutes`.
 - `static_assertions`: `Secret<String>` implements none of `Debug Display Clone Serialize
   PartialEq`. The **type-file test** of D8.10 (`usage-core/tests/type_files.rs`, `syn`):
-  no struct field or enum variant field in the frozen type files has a string-like type,
+  no struct field or enum variant field in the frozen type files, or in any other core
+  type that derives `TS` (`Settings`, `SettingsPatch`, `Severity`, `Phase`: IPC types
+  defined beside their logic and re-exported from `ipc`, D7.4), has a string-like type,
   except `Label`'s `Box<str>` and `Diagnostics.app_version`.
 - `LoginFacts`: `unknown()` is `Unknown` everywhere; `with` sets one provider; Debug output
   holds only readiness names and labels.
@@ -312,12 +324,15 @@ first `scripts/ci.sh`, so that everything compiles and every later task only fil
   `export`, quotes, comments, missing file, missing key.
 - **Engine port** (D5.1): the contract tests of `tests/engine_bridge.rs` pass (env-file
   cases, the Codex login truth table, the two login command strings, state directory and
-  env-file path under a temp environment); `jev_engine`/`jev_router` occur in no dashboard
+  env-file path under a temp environment, in a child process, rule 5); `jev_engine`/`jev_router` occur in no dashboard
   `.rs` file except `engine_bridge.rs` and in no manifest except `usage-io`'s (a grep test
   here; T12's architecture test takes it over); `usage-core` and the shell do not depend
   on the engine (`cargo tree -p jev-usage-core -i jev-engine` finds nothing). Report the
   path taken and, in Path B, any of the six facade names that was missing (a request to
-  the engine's owner, not an edit).
+  the engine's owner, not an edit; `parse_codex_login` is known to be missing from the
+  plan's list), and the two other requests of D5: the engine's `--workspace` gates
+  exclude the three app crates (invariant 5) and its manifest check exempts them
+  (invariant 3).
 - **Type discipline** (D1a): `#![forbid(unsafe_code)]` is the first line of all three crate
   roots and the Tauri scaffold compiles under it (report if a Tauri macro does not);
   `check-types.ts` passes over the stubs, the configs and the generated bindings, and a
@@ -341,7 +356,8 @@ first `scripts/ci.sh`, so that everything compiles and every later task only fil
   urgency setting (if it does, tell the lead before using `notify-rust`); that the scaffold
   window renders a Svelte component with `freezePrototype: true`; that `tauri.conf.json`
   needs the placeholder icons or not; that Tauri's macros pass `forbid(unsafe_code)` and
-  `disallowed_types`; that `svelte-check` and ESLint work with no `svelte.config.js`; the
+  `disallowed_types`; that `svelte-check` and ESLint work with no `svelte.config.js`;
+  whether `pnpm dev` works under the production `csp` (else `devCsp`, D8.8); the
   final npm dev-dependency list against D8.9; whether two major versions of `zbus` resolve.
 - Idle floor: the empty scaffold, started hidden under `dbus-run-session` (with the bus
   configuration of D8.8; report whether GTK and WebKitGTK start on it) for the D11.3
@@ -356,7 +372,8 @@ blocking and release-age rule), fixtures contain no real data.
 **Review checklist (lead).**
 - [ ] Root `Cargo.toml` diff is only what D5 allows for the path taken; no
       `[workspace.lints]`; engine build and tests identical.
-- [ ] The app crates are members and not default members; `exclude` has `.claude` and
+- [ ] The app crates are members and not default members (`cargo metadata`:
+      `workspace_default_members` names none of the three, in either path); `exclude` has `.claude` and
       `dashboard/fuzz`; `profile.dist` separate from `release`.
 - [ ] The engine is named in two lines only (D5.1); Path A: `src/embed.rs` is re-exports
       only and the only other engine diff is one `pub`; Path B: no engine diff at all.
@@ -760,7 +777,8 @@ is not part of this task.
   `ProcRunner::system` with the scrubbed environment, the `MISE_*` switches and the empty
   working directory, on this machine: both login-status commands give `Ready` with the
   right plan, and one real `codex app-server` run returns a reading with the three request
-  lines written at once (D6.3). List mise's
+  lines written at once (D6.3; if the server needs them one by one, report it: the fix
+  changes the frozen `proc` types and is the lead's decision). List mise's
   `installs/`, `downloads/` and `incomplete-installs/` directories and hash
   `~/.config/mise/config.toml` before and after: no
   entry may appear or change and the hash must be equal (the D8.6 assumptions that nothing
@@ -987,7 +1005,7 @@ export interface MockIpcClient extends IpcClient { push(s: Snapshot): void; navi
                                                    readonly calls: readonly MockCall[] }
 export type MockCall = { command: "getSnapshot" | "refresh" | "getHistory" | "getSettings" | "updateSettings" | "getDiagnostics" };
 export function createMockClient(script: MockScript): MockIpcClient;
-export const fixtures: Record<FixtureName, Snapshot>;
+export const fixtures: Record<FixtureName, MockScript>;   // a whole script: `first_run` differs in `settings`, not in the snapshot
 
 // lib/stores
 export const usage:    { readonly snapshot: Snapshot | null; readonly refreshing: boolean; refresh(t?: RefreshTarget): Promise<Outcome<null>> };
@@ -1017,7 +1035,8 @@ export function levelChange(provider: ProviderKey, meter: MeterView, nowMs: numb
 ```
 `App.svelte` mounts the header, the router outlet with the three screen files (owned by
 T09/T10), the single live region (fed by `announce`), global shortcuts (off when
-`settings.shortcuts` is false or a text field has focus), the zoom keys (Ctrl + plus, minus,
+`settings.shortcuts` is false or a text field has focus; `1`–`6` open the providers in
+`ProviderKey::ALL` order, a hidden one does nothing; `?` goes to Settings, D9.10), the zoom keys (Ctrl + plus, minus,
 zero call `settings.update({ zoom_pct })`, D9.10; they are not single-key shortcuts and stay
 on) and the document title per view. The header (back control, view title, freshness,
 refresh, settings) and the live region are T07's own components in
@@ -1042,6 +1061,9 @@ changed, produces one sentence; a changed number alone produces none.
   three widths; zero axe violations; the document title follows the route; `lang="en"`.
 - Zoom keys: Ctrl + plus steps 100 → 125 … 200 and stops; Ctrl + zero returns to 100; each
   sends one `updateSettings`.
+- Shortcuts: `2` opens Codex whatever the card order is; the digit of a hidden provider
+  does nothing; `?` and `,` open Settings; none acts in a text field or with
+  `settings.shortcuts` off, while `Esc` and the zoom keys still do.
 - `announce`/live region: a snapshot sequence in which a meter goes ok → warn announces one
   sentence; twenty snapshots that change only numbers announce nothing; three changes within
   2 s give one merged message; the same message is not repeated within 60 s; a background
@@ -1113,7 +1135,8 @@ backoff (`NotConfigured`/`Unsupported` are not failures), one-in-flight, the exa
 refresh semantics (returns when queued; 10 s floor; `Busy`/`NotEnabled` cases; `live_check`
 allowed only when the setting is on and the source's cost is `SpendsQuota`), and the engine
 probe schedule (start; before a fetch of a `needs_login` source when not `Ready` and older
-than 60 s, also while hidden; manual at most once per 60 s; 6-hourly piggy-back) through the
+than 60 s, also while hidden; manual at most once per 60 s; piggy-back on a due fetch when
+the facts are 6 hours old, or 15 minutes old with a probed provider still `Unknown`) through the
 injected `LoginProbe`, called with the providers that are not hidden and have a
 `needs_login` source, merging the result into `FactsCell` for the providers probed (the
 others keep what they had, D7.1); freshness from each descriptor's
@@ -1150,7 +1173,9 @@ fetches and ends the task within 2 s; dropping all handles does the same.
 - **Probe**: with a `ScriptedProbe` that first answers `Unknown` and then `Ready` for Codex,
   while hidden: the first gated fetch yields `Unavailable(Timeout)`, the retry re-probes and
   the source is fetched; the probe is called at most once per 60 s under 100 manual
-  refreshes; a 6-hour-old `Ready` is re-probed on the next due fetch, with no extra wake.
+  refreshes; a 6-hour-old `Ready` is re-probed on the next due fetch, with no extra wake;
+  a Claude `Unknown` (its only `needs_login` source is manual) is re-probed on the first
+  due fetch after 15 minutes, and not before.
 - Failure after success → `Stale{Failing}` keeps the reading; quiet passive source →
   `Stale{Quiet}` after 10 min; window passing `resets_at` flips to elapsed and the headline
   changes **with no fetch** (timer-driven).
@@ -1223,7 +1248,8 @@ There is no offline banner (D9.5).
 No IPC calls except through the stores.
 
 **Exposes.** `orderProviders(views: ProviderView[]): ProviderView[]` (D9.3 ordering, stable),
-`cardSummary(view, nowMs, hour): string` (the card header button's accessible name),
+`cardSummary(view, nowMs, hour): string` (the card header button's accessible name; it
+begins with the visible provider and plan text, D9.10 label in name),
 `rowDetail(meter, observedAtMs, nowMs, hour): string` (the level-1 text, used both for the
 `Detail` disclosure and inside `aria-valuetext`, so the two can never differ), the screen
 component.
@@ -1249,6 +1275,8 @@ or focus of a row. Whitespace per D9.1. Nothing decorative.
 - **Announcements**: the mixed fixture going ok → warn announces one sentence in the live
   region; twenty number-only updates announce nothing.
 - Ordering unit tests (severity, then fixed order; no reorder on equal severity).
+- Label in name (D9.10): for every button and meter row on every fixture, the computed
+  accessible name contains the control's visible text in order.
 - Type discipline (D10): zero findings in everything this task owns, tests and specs
   included; every component `lang="ts"` with typed props; state variants chosen by an
   exhaustive switch over `UsageView["state"]`.
@@ -1342,7 +1370,8 @@ export const history: { load(q: HistoryQuery): Promise<void>; readonly state: "i
 - Settings covers every field of D7.4 `Settings` except `first_run_seen`: the notification
   master switch with the two level switches disabled (values kept) while it is off; "Start
   at login" **on by default**, rolling back with a reason on an `io` error; the single-key
-  shortcuts switch; the "Size" radio group (`zoom_pct`, five steps); "About and diagnostics" showing the name Flashboard and the version.
+  shortcuts switch, with the full key list in text under it (`R`, `,`, `1`–`6` with the
+  provider each opens, `?`, `Esc`, Ctrl + plus / minus / zero; D9.10); the "Size" radio group (`zoom_pct`, five steps); "About and diagnostics" showing the name Flashboard and the version.
 - Settings: every control reads and writes through `settings.update`; thresholds validate
   on blur (warn < critical, 50..100) with a specific message tied to the field by
   `aria-describedby` and `aria-invalid` (D9.10 Forms); every control has a visible label
@@ -1407,7 +1436,7 @@ pub fn install<R: Runtime>(app: &AppHandle<R>) -> Result<(), TrayError>;    // T
 /// Touches the menu and icon only when `next` differs from the model last applied (D7.7).
 pub fn apply<R: Runtime>(app: &AppHandle<R>, next: TrayModel);
 // window.rs
-pub fn open<R: Runtime>(app: &AppHandle<R>, route: Route);                  // create (URL fragment: view, provider, theme; incognito; zoom) or show + `navigate` + focus request
+pub fn open<R: Runtime>(app: &AppHandle<R>, route: Route);                  // create (URL fragment: view, provider, theme; incognito; zoom; drag-and-drop handler off) or show + `navigate` + focus request
 pub fn close_requested<R: Runtime>(app: &AppHandle<R>, host: &dyn TrayHost);   // tray host present now and close_to_tray: hide, destroy after 30 s; else quit
 pub fn remember_size<R: Runtime>(app: &AppHandle<R>, w: u32, h: u32);       // debounced into the store's meta (WindowWidth/WindowHeight), through spawn_blocking
 // app.rs
@@ -1429,7 +1458,8 @@ window unless `--hidden` → run loop.
 `ExitRequested` is prevented only when it carries no exit code; tray Quit awaits
 `ServiceHandle::shutdown()` and then exits. Service visibility follows the window
 (`set_visible`). Navigation locked to the app origin; new windows denied. The web view is
-created in code on open (`incognito(true)`, size from the store's meta, zoom from
+created in code on open (`incognito(true)`, `disable_drag_drop_handler()` so no dropped
+file's path can reach the page (D8.8), size from the store's meta, zoom from
 `settings.zoom_pct` and re-applied when it changes) and destroyed 30 s after close (D9.13).
 `update_settings`: after the service accepts the patch, if `autostart` changed the shell
 reconciles the entry; on failure it restores the previous value through the service and
@@ -1476,7 +1506,7 @@ field-less `AutostartError`, which the command maps to the `io` outcome.
   overrides it, with no flash of the other theme when the window opens (D9.7, else the
   native background fallback); **log out and in: the app is running hidden, with Claude and Codex found**
   (autostart and its `PATH`); with `PR_SET_DUMPABLE=0` the window, clipboard copy and theme
-  still work, and Orca (once the user has installed it) still reads the window (else fall
+  still work, and Orca (installed, D3.4) still reads the window (else fall
   back per D8.8 and report); after closing the window for 30 s no
   WebKit helper process remains and no directory was created under `~/.local/share` or
   `~/.cache` for the app; suspend past a window's reset and resume: the tray is correct
@@ -1491,6 +1521,8 @@ extra command, no event from UI to Rust); notifications and tray text only from
 **Review checklist.**
 - [ ] No logic in the shell that belongs in core/io (no formatting, no thresholds, no parsing).
 - [ ] Exactly six commands; capability and CSP snapshots unchanged from T00.
+- [ ] The window builder disables the drag-and-drop handler (a source test finds the call
+      in `window.rs`; manual: dropping a file on the window does nothing).
 - [ ] Web view destroyed when closed; service marked hidden; no timer in the shell except
       the 30 s destroy and the size debounce.
 - [ ] Nothing spawns onto a runtime that is not there: the service and the watcher get
@@ -1630,7 +1662,7 @@ behaviour or contract changes; baselines regenerated and reviewed).
   every screen and state, the keys to press and what Orca must say, in order, each line with
   a box to tick and room for "said instead". The worker delivers the script and a
   keyboard-only walk-through; the **pass itself is run by the user with the lead** (D1a,
-  D11.5): the user installs Orca, follows the script on the installed app in the real
+  D11.5): the user (Orca is installed, D3.4) follows the script on the installed app in the real
   WebKitGTK view and confirms or corrects each line; every difference is a finding. The
   first lines check the D16 assumption about `role="meter"`. v1 is not done until this pass
   has no open finding.
