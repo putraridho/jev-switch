@@ -26,8 +26,16 @@
 //! with its +/- counts and carries whole-file diffs up to a size budget; `show_diff` pages
 //! the rest. The registry records which files were shown in full and `merge` refuses any
 //! other. The registry is saved to `<state>/workers` so a restarted server still knows
-//! its workers, and [`Delegator::recover`] removes abandoned checkouts. Git calls are
-//! blocking, so the delegator runs them on the blocking pool ([`Delegator::blocking`]).
+//! its workers, and [`Delegator::recover`] removes abandoned checkouts. Git calls and
+//! record IO are blocking, so the delegator runs them on the blocking pool
+//! ([`Delegator::off_thread`]) and never under the registry lock.
+//!
+//! **Servers share the state directory.** Every record carries its owner (pid plus process
+//! start time, [`Liveness`]); `recover` never touches a record whose owner is alive, and
+//! adopts or ages out only a dead server's. Worker ids carry a per-server tag, so two
+//! servers never produce the same id. A `delegate` call that is dropped mid-flight removes
+//! its placeholder, record and worktree ([`Reservation`]). A path read from a record is
+//! deleted only if it proves to be inside the worktrees root ([`checked_inside`]).
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::future::Future;
@@ -454,6 +462,32 @@ fn explain_apply_failure(plain: &str, three_way: &str) -> String {
     format!("{cause}; nothing was changed. Plain apply: {plain} 3-way apply: {three_way}")
 }
 
+/// `path` as a canonical location strictly inside `root`, or why it is not one. `path`
+/// may be untrusted (it was read from a saved record), so: it must be absolute and free of
+/// `..`; its parent is canonicalized (the entry itself may be gone) so a symlinked
+/// directory on the way cannot lead outside; the entry may not itself be a symlink; and it
+/// may not be `root` itself.
+fn checked_inside(root: &Path, path: &Path) -> Result<PathBuf> {
+    if !path.is_absolute() || path.components().any(|c| matches!(c, Component::ParentDir)) {
+        bail!("refusing to touch {}: not an absolute path without `..`", path.display());
+    }
+    let root = root.canonicalize().with_context(|| format!("worktrees root {} is not usable", root.display()))?;
+    let (Some(parent), Some(name)) = (path.parent(), path.file_name()) else {
+        bail!("refusing to touch {}: it has no parent directory and name", path.display());
+    };
+    let Ok(parent) = parent.canonicalize() else {
+        bail!("refusing to touch {}: its parent directory cannot be resolved", path.display());
+    };
+    let candidate = parent.join(name);
+    if candidate == root || !candidate.starts_with(&root) {
+        bail!("refusing to touch {}: not strictly inside {}", path.display(), root.display());
+    }
+    if std::fs::symlink_metadata(&candidate).is_ok_and(|m| m.file_type().is_symlink()) {
+        bail!("refusing to touch {}: it is a symlink", path.display());
+    }
+    Ok(candidate)
+}
+
 /// Real worktrees: `git worktree add --detach <root>/<id> HEAD`. Detached, so no branch
 /// is created and nothing is left behind once the worktree is removed.
 pub struct GitWorktrees {
@@ -517,13 +551,15 @@ impl Worktrees for GitWorktrees {
     }
 
     /// `git worktree remove`, and when git will not (the checkout belongs to another
-    /// repository, or git's record of it is gone) the directory itself, but only under `root`.
+    /// repository, or git's record of it is gone) the directory itself. The path comes from
+    /// a saved record, so it is trusted only after [`checked_inside`] proves it is a real
+    /// entry strictly inside `root`; nothing else is ever deleted or handed to git.
     fn remove(&self, path: &Path) -> Result<()> {
+        let inside = checked_inside(&self.root, path)?;
         match git(&self.repo, &["worktree", "remove", "--force", &path.to_string_lossy()], None) {
             Ok(_) => Ok(()),
-            Err(e) if !path.starts_with(&self.root) => Err(e),
-            Err(_) if !path.exists() => Ok(()),
-            Err(_) => std::fs::remove_dir_all(path).with_context(|| format!("remove {}", path.display())),
+            Err(_) if !inside.exists() => Ok(()),
+            Err(_) => std::fs::remove_dir_all(&inside).with_context(|| format!("remove {}", path.display())),
         }
     }
 
@@ -589,6 +625,52 @@ impl Worker {
     }
 }
 
+// --------------------------------------------------------------- who owns a record
+
+/// A server process: its pid plus a start-time token that survives pid reuse (a new
+/// process with a recycled pid has a different start time). `start` is `None` where the
+/// platform cannot say, and the pid alone is compared then.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct Owner {
+    pid: u32,
+    #[serde(default)]
+    start: Option<u64>,
+}
+
+/// Who is running. Real: [`ProcLiveness`]; tests inject a fake, so no test needs real pids.
+trait Liveness: Send + Sync {
+    /// This process.
+    fn me(&self) -> Owner;
+    /// Is that process still running? Unsure counts as yes: nothing of a live server may
+    /// be touched, and a dead one's records only wait longer.
+    fn alive(&self, owner: &Owner) -> bool;
+}
+
+/// The start time of `pid` in clock ticks since boot: field 22 of `/proc/<pid>/stat`,
+/// counted after the `)` that ends the command name (which may itself hold spaces).
+fn proc_start(pid: u32) -> Option<u64> {
+    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    stat.rsplit_once(')')?.1.split_whitespace().nth(19)?.parse().ok()
+}
+
+/// Real liveness: `/proc` where there is one, else `kill -0` (pid only).
+struct ProcLiveness;
+
+impl Liveness for ProcLiveness {
+    fn me(&self) -> Owner {
+        let pid = std::process::id();
+        Owner { pid, start: proc_start(pid) }
+    }
+
+    fn alive(&self, o: &Owner) -> bool {
+        if Path::new("/proc/self").exists() {
+            Path::new(&format!("/proc/{}", o.pid)).exists() && o.start.zip(proc_start(o.pid)).is_none_or(|(then, now)| then == now)
+        } else {
+            Command::new("kill").arg("-0").arg(o.pid.to_string()).stderr(Stdio::null()).status().map_or(true, |s| s.success())
+        }
+    }
+}
+
 /// A worker as written to disk. Plain data: provider as its name.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct Saved {
@@ -606,12 +688,17 @@ struct Saved {
     covered: BTreeMap<String, usize>,
     #[serde(default)]
     merged: BTreeSet<String>,
+    /// The server that owns the worker. A record without one (written before owners were
+    /// stamped) counts as owned by a dead server.
+    #[serde(default)]
+    owner: Option<Owner>,
 }
 
 impl Saved {
     /// `None` for a slot with no worktree yet: there is nothing on disk to keep track of.
-    fn of(id: &str, w: &Worker) -> Option<Self> {
+    fn of(id: &str, w: &Worker, owner: &Owner) -> Option<Self> {
         Some(Self {
+            owner: Some(owner.clone()),
             worker_id: id.to_string(),
             path: w.path.clone()?,
             repo: w.repo.clone(),
@@ -642,6 +729,14 @@ impl Saved {
     }
 }
 
+/// Where worker records live. Every method blocks on disk: the [`Delegator`] calls them
+/// only off the async threads and never under its registry lock. Real: [`Store`].
+trait Records: Send + Sync {
+    fn save(&self, s: &Saved);
+    fn remove(&self, id: &str);
+    fn load(&self) -> Vec<Saved>;
+}
+
 /// One JSON file per worker under `<state dir>/workers`, so two servers sharing a state
 /// directory never overwrite each other's records. Writes are atomic (temp file, then
 /// rename); a missing, unreadable or corrupt file is skipped, never an error.
@@ -657,7 +752,9 @@ impl Store {
     fn file(&self, id: &str) -> PathBuf {
         self.dir.join(format!("{id}.json"))
     }
+}
 
+impl Records for Store {
     fn save(&self, s: &Saved) {
         if !plain_id(&s.worker_id) || std::fs::create_dir_all(&self.dir).is_err() {
             return;
@@ -701,6 +798,80 @@ const STALE_AFTER_MS: u64 = 24 * 60 * 60 * 1000;
 /// A directory under the worktrees root that no record names is removed once it is this
 /// old; younger ones may belong to a server that is creating them right now.
 const ORPHAN_GRACE_MS: u64 = 10 * 60 * 1000;
+
+/// A saved record and what recovery learned about it from the disk and the process table.
+struct Found {
+    saved: Saved,
+    /// The checkout directory is still there.
+    exists: bool,
+    /// The owner is this process or another one still running.
+    owner_alive: bool,
+}
+
+/// What recovery does with a record.
+#[derive(Debug, PartialEq, Eq)]
+enum Fate {
+    /// Reload it, so merge and discard still work after a restart.
+    Adopt,
+    /// Remove its checkout and record.
+    Drop,
+    /// Leave it alone.
+    Keep,
+}
+
+impl Found {
+    /// A record whose owner is alive is never touched, however old: it is in use. Of a
+    /// dead owner's: a finished worker is adopted; one that was still running when its
+    /// server died is not reloaded (no planner was ever told its id) and waits to age out;
+    /// and old or checkout-less ones are dropped.
+    fn fate(&self, now_ms: u64) -> Fate {
+        let s = &self.saved;
+        if self.owner_alive {
+            Fate::Keep
+        } else if now_ms.saturating_sub(s.created_ms) > STALE_AFTER_MS || (!s.running && !self.exists) {
+            Fate::Drop
+        } else if s.running {
+            Fate::Keep
+        } else {
+            Fate::Adopt
+        }
+    }
+}
+
+/// Everything recovery reads from disk, gathered in one blocking step.
+struct Scan {
+    records: Vec<Found>,
+    /// Directories under the worktrees root, with their modification time.
+    dirs: Vec<(PathBuf, Option<u64>)>,
+}
+
+impl Scan {
+    fn gather(records: &dyn Records, liveness: &dyn Liveness, root: &Path) -> Self {
+        let me = liveness.me();
+        let records = records
+            .load()
+            .into_iter()
+            .map(|saved| Found {
+                exists: saved.path.exists(),
+                owner_alive: saved.owner.as_ref().is_some_and(|o| *o == me || liveness.alive(o)),
+                saved,
+            })
+            .collect();
+        let dirs = std::fs::read_dir(root)
+            .into_iter()
+            .flatten()
+            .filter_map(|e| e.ok())
+            .map(|e| e.path())
+            .filter(|p| p.is_dir())
+            .map(|p| {
+                let modified = std::fs::metadata(&p).and_then(|m| m.modified()).ok();
+                let ms = modified.and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map(|d| d.as_millis() as u64);
+                (p, ms)
+            })
+            .collect();
+        Self { records, dirs }
+    }
+}
 
 // --------------------------------------------------------------- the delegation API
 
@@ -823,16 +994,110 @@ fn unknown_worker(id: &str) -> String {
     format!("unknown worker id `{id}` (already merged or discarded?)")
 }
 
+/// A tag unique to one [`Delegator`]: the pid and the nanosecond clock tell servers apart
+/// (ids are also record file names in a state directory servers share), the instance
+/// count tells apart two made in one process at the same instant. Short and filename-safe.
+fn run_tag(pid: u32, nanos: u128, instance: u64) -> String {
+    format!("{pid:x}_{:x}_{instance:x}", nanos & 0xFF_FFFF_FFFF)
+}
+
+/// Where a worktree being created stands, shared between the blocking task making it and
+/// the [`Reservation`] that may be dropped meanwhile.
+#[derive(Default)]
+struct CreateSlot {
+    /// The delegation was dropped: whatever gets made must be removed again.
+    cancelled: bool,
+    /// The worktree, once made and not cancelled.
+    path: Option<PathBuf>,
+}
+
+/// `create`, then record the path in `slot`, all-or-nothing against a cancel: whichever of
+/// this and [`Reservation`]'s drop takes the slot lock second sees the other's work and
+/// removes the worktree, so none is ever left behind.
+fn create_unless_cancelled(w: &dyn Worktrees, id: &str, slot: &Mutex<CreateSlot>) -> Result<PathBuf> {
+    let path = w.create(id)?;
+    let mut s = lock(slot);
+    if s.cancelled {
+        drop(s);
+        let _ = w.remove(&path);
+        bail!("the delegation was cancelled");
+    }
+    s.path = Some(path.clone());
+    Ok(path)
+}
+
+/// Owns a worker's reserved slot while its delegation runs. Dropped before [`disarm`] (the
+/// `delegate` future was dropped, so nobody will ever merge or discard this worker) it
+/// removes the placeholder from the registry, its record and its worktree, so a cancelled
+/// call is not counted as load forever.
+///
+/// [`disarm`]: Reservation::disarm
+struct Reservation<'a> {
+    delegator: &'a Delegator,
+    id: String,
+    slot: Arc<Mutex<CreateSlot>>,
+    armed: bool,
+}
+
+impl<'a> Reservation<'a> {
+    fn new(delegator: &'a Delegator, id: &str) -> Self {
+        Self { delegator, id: id.to_string(), slot: Arc::default(), armed: true }
+    }
+
+    fn slot(&self) -> Arc<Mutex<CreateSlot>> {
+        self.slot.clone()
+    }
+
+    /// The delegation ended on its own: the registry already says what is left.
+    fn disarm(mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for Reservation<'_> {
+    fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
+        let d = self.delegator;
+        lock(&d.live).remove(&self.id);
+        let path = {
+            let mut s = lock(&self.slot);
+            s.cancelled = true;
+            s.path.take()
+        };
+        // Drop cannot await, and the disk work must not run on whichever thread dropped
+        // the future: a plain thread, which takes its turn among the record writers.
+        let (worktrees, records, gate, id) = (d.worktrees.clone(), d.records.clone(), d.gate.clone(), self.id.clone());
+        std::thread::spawn(move || {
+            let _turn = gate.blocking_lock();
+            if let Some(path) = path {
+                let _ = worktrees.remove(&path);
+            }
+            if let Some(records) = records {
+                records.remove(&id);
+            }
+        });
+    }
+}
+
 pub struct Delegator {
     runtime: Mutex<Runtime>,
     judge: Judge,
     worktrees: Arc<dyn Worktrees>,
     backend_factory: BackendFactory,
+    /// The registry. Never held across IO or an await.
     live: Mutex<HashMap<String, Worker>>,
-    store: Option<Store>,
+    records: Option<Arc<dyn Records>>,
+    /// One record write at a time. Each takes a fresh snapshot of the registry when its turn
+    /// comes, so the file always ends up as the registry is, whatever the order of writers.
+    gate: Arc<tokio::sync::Mutex<()>>,
+    liveness: Arc<dyn Liveness>,
+    /// This server, stamped on every record it writes.
+    owner: Owner,
     counter: AtomicU64,
-    /// Makes worker ids unique across runs that share a worktree directory.
-    run_tag: u64,
+    /// Makes worker ids unique across servers that share a state directory.
+    run_tag: String,
     now: Clock,
     idle_timeout: Duration,
     log_path: Option<String>,
@@ -849,17 +1114,22 @@ struct AttemptFailure {
 impl Delegator {
     /// Real backends, clock and idle timeout; no log, unknown planner, workers not saved.
     pub fn new(runtime: Runtime, judge: Judge, worktrees: Box<dyn Worktrees>) -> Self {
-        let now: Clock = Box::new(log::now_ms);
+        static INSTANCES: AtomicU64 = AtomicU64::new(0);
+        let liveness: Arc<dyn Liveness> = Arc::new(ProcLiveness);
+        let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos());
         Self {
             runtime: Mutex::new(runtime),
             judge,
             worktrees: Arc::from(worktrees),
             backend_factory: Box::new(crate::providers::backend_for),
             live: Mutex::new(HashMap::new()),
-            store: None,
+            records: None,
+            gate: Arc::new(tokio::sync::Mutex::new(())),
+            owner: liveness.me(),
+            liveness,
             counter: AtomicU64::new(1),
-            run_tag: now() / 1000 % 1_000_000,
-            now,
+            run_tag: run_tag(std::process::id(), nanos, INSTANCES.fetch_add(1, Ordering::SeqCst)),
+            now: Box::new(log::now_ms),
             idle_timeout: idle_timeout_from_env(),
             log_path: None,
             planner: String::new(),
@@ -895,8 +1165,20 @@ impl Delegator {
 
     /// Keep the worker registry in `<state_dir>/workers`, so a restarted server still
     /// knows its unmerged workers. Call [`Delegator::recover`] after.
-    pub fn with_store(mut self, state_dir: &Path) -> Self {
-        self.store = Some(Store { dir: state_dir.join("workers") });
+    pub fn with_store(self, state_dir: &Path) -> Self {
+        self.with_records(Arc::new(Store { dir: state_dir.join("workers") }))
+    }
+
+    fn with_records(mut self, records: Arc<dyn Records>) -> Self {
+        self.records = Some(records);
+        self
+    }
+
+    /// Who is running, for stamping records and for telling live servers from dead ones.
+    #[cfg(test)]
+    fn with_liveness(mut self, liveness: Arc<dyn Liveness>) -> Self {
+        self.owner = liveness.me();
+        self.liveness = liveness;
         self
     }
 
@@ -904,23 +1186,40 @@ impl Delegator {
         format!("w{}-{}", self.run_tag, self.counter.fetch_add(1, Ordering::SeqCst))
     }
 
-    /// The ONE place git work leaves the async threads: `f` runs on the blocking pool, so
-    /// slow worktree operations of parallel workers overlap instead of queueing up.
+    /// The ONE place blocking work leaves the async threads: `f` runs on the blocking pool,
+    /// so slow disk and git work of parallel workers overlaps instead of queueing up.
+    async fn off_thread<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> Result<T> {
+        tokio::task::spawn_blocking(f).await.map_err(|e| anyhow!("blocking task failed: {e}"))
+    }
+
+    /// Git work, through [`Worktrees`], via [`Delegator::off_thread`].
     async fn blocking<T: Send + 'static>(&self, f: impl FnOnce(&dyn Worktrees) -> Result<T> + Send + 'static) -> Result<T> {
         let worktrees = self.worktrees.clone();
-        tokio::task::spawn_blocking(move || f(&*worktrees)).await.map_err(|e| anyhow!("worktree task failed: {e}"))?
+        Self::off_thread(move || f(&*worktrees)).await?
     }
 
     // ---- the registry
 
+    /// Write the worker's record as the registry now has it: saved when it has a worktree,
+    /// removed when it is gone, nothing while it is only a reserved slot. The registry
+    /// lock is held just to copy the entry; the IO runs on the blocking pool, in turn.
+    async fn persist(&self, id: &str) {
+        let Some(records) = self.records.clone() else { return };
+        let _turn = self.gate.lock().await;
+        let id = id.to_string();
+        let snapshot = lock(&self.live).get(&id).map(|w| Saved::of(&id, w, &self.owner));
+        let _ = Self::off_thread(move || match snapshot {
+            Some(Some(saved)) => records.save(&saved),
+            Some(None) => {}
+            None => records.remove(&id),
+        })
+        .await;
+    }
+
     /// Change a worker's entry and save it. `None` when the id is unknown.
-    fn update<R>(&self, id: &str, f: impl FnOnce(&mut Worker) -> R) -> Option<R> {
-        let mut live = lock(&self.live);
-        let w = live.get_mut(id)?;
-        let r = f(w);
-        if let (Some(store), Some(saved)) = (&self.store, Saved::of(id, w)) {
-            store.save(&saved);
-        }
+    async fn update<R: Send>(&self, id: &str, f: impl FnOnce(&mut Worker) -> R) -> Option<R> {
+        let r = f(lock(&self.live).get_mut(id)?);
+        self.persist(id).await;
         Some(r)
     }
 
@@ -929,11 +1228,9 @@ impl Delegator {
     }
 
     /// Forget a worker (and its saved record), returning its entry.
-    fn take(&self, id: &str) -> Option<Worker> {
+    async fn take(&self, id: &str) -> Option<Worker> {
         let w = lock(&self.live).remove(id)?;
-        if let Some(store) = &self.store {
-            store.remove(id);
-        }
+        self.persist(id).await;
         Some(w)
     }
 
@@ -966,40 +1263,44 @@ impl Delegator {
     /// worker is forgotten anyway: a worktree that cannot be removed is a leftover to
     /// clean by hand (`git worktree prune`), not a reason to keep tracking it.
     async fn forget(&self, id: &str) -> Result<(), String> {
-        let worker = self.take(id).ok_or_else(|| unknown_worker(id))?;
+        let worker = self.take(id).await.ok_or_else(|| unknown_worker(id))?;
         let Some(path) = worker.path else { return Ok(()) };
         let shown = path.clone();
         self.blocking(move |w| w.remove(&path)).await.map_err(|e| format!("worker {id} forgotten, but its worktree {} was not removed: {e}", shown.display()))
     }
 
-    /// At startup: reload the workers an earlier run left, and clean up. Records older than
-    /// 24 hours lose their checkout; directories under the worktrees root that no record
-    /// names (and that are not brand new) go too; `git worktree prune` runs in every
-    /// repository touched. A record of a worker that was still running is left alone (it
-    /// may be another live server's) until it is 24 hours old.
+    /// At startup: reload the workers an earlier run left, and clean up. Records of a
+    /// server that is still running are NEVER touched, adopted or removed: they are in use.
+    /// Of a dead server's, finished workers are reloaded (stamped as this server's now),
+    /// and those older than 24 hours lose their checkout and record. Directories under the
+    /// worktrees root that no record names (and that are not brand new) go too; `git
+    /// worktree prune` runs in every repository touched. All disk work is off the async threads.
     pub async fn recover(&self) {
-        let Some(store) = &self.store else { return };
+        let Some(records) = self.records.clone() else { return };
+        let (liveness, root) = (self.liveness.clone(), self.worktrees.root());
+        let Ok(scan) = Self::off_thread(move || Scan::gather(&*records, &*liveness, &root)).await else { return };
         let now = (self.now)();
-        let mut known: HashSet<PathBuf> = HashSet::new();
+        let known: HashSet<&PathBuf> = scan.records.iter().map(|f| &f.saved.path).collect();
         let mut repos: BTreeSet<PathBuf> = BTreeSet::new();
-        for saved in store.load() {
-            known.insert(saved.path.clone());
-            if now.saturating_sub(saved.created_ms) > STALE_AFTER_MS || (!saved.running && !saved.path.exists()) {
-                self.drop_checkout(saved.path.clone()).await;
-                store.remove(&saved.worker_id);
-                repos.insert(saved.repo.clone());
-            } else if !saved.running {
-                if let Some((id, w)) = saved.into_worker() {
-                    lock(&self.live).insert(id, w);
+        for found in &scan.records {
+            match found.fate(now) {
+                Fate::Keep => {}
+                Fate::Drop => {
+                    self.drop_checkout(found.saved.path.clone()).await;
+                    self.persist(&found.saved.worker_id).await;
+                    repos.insert(found.saved.repo.clone());
+                }
+                Fate::Adopt => {
+                    if let Some((id, w)) = found.saved.clone().into_worker() {
+                        lock(&self.live).insert(id.clone(), w);
+                        self.persist(&id).await;
+                    }
                 }
             }
         }
-        let entries = std::fs::read_dir(self.worktrees.root()).into_iter().flatten().filter_map(|e| e.ok());
-        for path in entries.map(|e| e.path()).filter(|p| p.is_dir() && !known.contains(p)) {
-            let modified = std::fs::metadata(&path).and_then(|m| m.modified()).ok();
-            let modified_ms = modified.and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map_or(now, |d| d.as_millis() as u64);
-            if now.saturating_sub(modified_ms) > ORPHAN_GRACE_MS {
-                self.drop_checkout(path).await;
+        for (path, modified_ms) in scan.dirs.iter().filter(|(p, _)| !known.contains(p)) {
+            if now.saturating_sub(modified_ms.unwrap_or(now)) > ORPHAN_GRACE_MS {
+                self.drop_checkout(path.clone()).await;
                 repos.insert(self.worktrees.repo());
             }
         }
@@ -1045,7 +1346,9 @@ impl Delegator {
         log::append(path, &row);
     }
 
-    /// One attempt: pick and claim, create the worktree, run. `Err` is the failure to react to.
+    /// One attempt: pick and claim, create the worktree, run. `Err` is the failure to react
+    /// to. If the future is dropped on the way (the planner cancelled the call) the
+    /// [`Reservation`] removes the placeholder, its record and any worktree already made.
     async fn attempt(
         &self,
         req: &DelegateRequest,
@@ -1056,21 +1359,38 @@ impl Delegator {
     ) -> Result<DelegateResult, AttemptOutcome> {
         let id = self.next_id();
         let spec = self.reserve(signals, excluded, req.brief.len(), &id).map_err(|e| AttemptOutcome::Stop(e.to_string()))?;
+        let reservation = Reservation::new(self, &id);
+        let out = self.run_attempt(req, signals, jev, spec, id, &reservation, attempt).await;
+        reservation.disarm();
+        out
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn run_attempt(
+        &self,
+        req: &DelegateRequest,
+        signals: &BriefSignals,
+        jev: &Value,
+        spec: &'static ModelSpec,
+        id: String,
+        reservation: &Reservation<'_>,
+        attempt: u32,
+    ) -> Result<DelegateResult, AttemptOutcome> {
         let made = self.blocking({
-            let id = id.clone();
-            move |w| w.create(&id)
+            let (id, slot) = (id.clone(), reservation.slot());
+            move |w| create_unless_cancelled(w, &id, &slot)
         });
         let path = match made.await {
             Ok(path) => path,
             Err(e) => {
-                self.take(&id);
+                self.take(&id).await;
                 return Err(AttemptOutcome::Stop(format!("could not create a worktree: {e:#}")));
             }
         };
-        self.update(&id, |w| w.path = Some(path.clone()));
+        self.update(&id, |w| w.path = Some(path.clone())).await;
         let started = Instant::now();
         let (result, tools) = self.run_worker(spec, &path, worker_prompt(&req.brief, &req.files)).await;
-        self.update(&id, |w| w.running = false);
+        self.update(&id, |w| w.running = false).await;
         let wall_ms = started.elapsed().as_millis() as u64;
         let task = worker_task(signals);
         let log = |result: &Result<TurnOutcome, TurnError>, files: &[String]| {
@@ -1098,7 +1418,7 @@ impl Delegator {
                         let parts = split_patch(&diff);
                         let stats: Vec<FileStat> = parts.iter().map(FileDiff::stat).collect();
                         let (shown_text, shown) = first_page(&parts, MAX_DIFF_CHARS);
-                        self.update(&id, |w| w.shown.extend(shown.iter().cloned()));
+                        self.update(&id, |w| w.shown.extend(shown.iter().cloned())).await;
                         let files: Vec<String> = stats.iter().map(|s| s.path.clone()).collect();
                         log(&Ok(out.clone()), &files);
                         Ok(DelegateResult {
@@ -1202,7 +1522,8 @@ impl Delegator {
                     w.cover(path, lo - start, hi - start, *len);
                 }
             }
-        });
+        })
+        .await;
         let seen = self.lookup(id)?.shown;
         let unseen: Vec<&str> = all.iter().map(String::as_str).filter(|p| !seen.contains(*p)).collect();
         let what = file.map_or("all files".to_string(), |f| format!("file {f}"));
@@ -1262,7 +1583,7 @@ impl Delegator {
         let patch = join_diffs(chosen.iter().copied());
         let done: Vec<String> = chosen.iter().map(|p| p.path.clone()).collect();
         self.blocking(move |w| w.apply(&patch)).await.map_err(|e| format!("{e:#}\nWorker {id}'s worktree is kept; discard({id}) it or merge by hand."))?;
-        self.update(id, |w| w.merged.extend(done.iter().cloned()));
+        self.update(id, |w| w.merged.extend(done.iter().cloned())).await;
         let left: Vec<&str> = parts.iter().map(|p| p.path.as_str()).filter(|p| !done.iter().any(|d| d == p)).collect();
         if !left.is_empty() {
             return Ok(format!(
@@ -2054,12 +2375,44 @@ mod tests {
 
     const HOUR: u64 = 3_600_000;
 
-    /// A delegator that saves to `state`, with a clock the test moves.
-    fn saving(wt: &Arc<FakeWorktrees>, state: &Path, clock: &Arc<AtomicU64>) -> Delegator {
+    /// A fake process table: which fake pids are running. No real pid is ever looked at.
+    #[derive(Default)]
+    struct Procs {
+        alive: Mutex<HashSet<u32>>,
+    }
+
+    struct FakeLiveness {
+        pid: u32,
+        procs: Arc<Procs>,
+    }
+
+    impl Liveness for FakeLiveness {
+        fn me(&self) -> Owner {
+            Owner { pid: self.pid, start: Some(1) }
+        }
+        fn alive(&self, o: &Owner) -> bool {
+            self.procs.alive.lock().unwrap().contains(&o.pid)
+        }
+    }
+
+    static NEXT_PID: AtomicU64 = AtomicU64::new(1000);
+
+    /// A server on `state` with a fresh fake pid, running in `procs`, and a clock the test moves.
+    fn server(wt: &Arc<FakeWorktrees>, state: &Path, clock: &Arc<AtomicU64>, procs: &Arc<Procs>) -> Delegator {
         let started: Started = Arc::new(Mutex::new(Vec::new()));
         let scripts: Scripts = Arc::new(Mutex::new(PROVIDERS.iter().map(|p| (*p, OK)).collect()));
         let c = clock.clone();
-        delegator_on(wt, &[Claude], TaskType::Feature, &started, &scripts).with_clock(Box::new(move || c.load(Ordering::SeqCst))).with_store(state)
+        let pid = NEXT_PID.fetch_add(1, Ordering::SeqCst) as u32;
+        procs.alive.lock().unwrap().insert(pid);
+        delegator_on(wt, &[Claude], TaskType::Feature, &started, &scripts)
+            .with_clock(Box::new(move || c.load(Ordering::SeqCst)))
+            .with_liveness(Arc::new(FakeLiveness { pid, procs: procs.clone() }))
+            .with_store(state)
+    }
+
+    /// A server whose predecessors are all dead (nobody else is in its process table).
+    fn saving(wt: &Arc<FakeWorktrees>, state: &Path, clock: &Arc<AtomicU64>) -> Delegator {
+        server(wt, state, clock, &Arc::default())
     }
 
     fn real_now() -> Arc<AtomicU64> {
@@ -2109,7 +2462,7 @@ mod tests {
         std::fs::write(state.join("workers").join("other.txt"), "ignored").unwrap();
         let running = wt.base.join("w1-running");
         std::fs::create_dir_all(&running).unwrap();
-        let live = Saved { worker_id: "w1-running".into(), path: running.clone(), repo: wt.repo(), provider: "claude".into(), model: "m".into(), created_ms: log::now_ms(), running: true, shown: Default::default(), covered: Default::default(), merged: Default::default() };
+        let live = Saved { worker_id: "w1-running".into(), path: running.clone(), repo: wt.repo(), provider: "claude".into(), model: "m".into(), created_ms: log::now_ms(), running: true, shown: Default::default(), covered: Default::default(), merged: Default::default(), owner: None };
         std::fs::write(state.join("workers").join("w1-running.json"), serde_json::to_string(&live).unwrap()).unwrap();
         std::mem::drop(first);
 
@@ -2225,5 +2578,279 @@ mod tests {
         let outside = temp_dir("outside");
         assert!(wt.remove(&outside).is_err() && outside.exists(), "never deletes outside its root");
         wt.remove(&kept).unwrap();
+    }
+
+    // ---------------------------------------------------------------- shared state directory: owners
+
+    /// An in-memory [`Records`] with slow saves or loads, to show IO is not done under the
+    /// registry lock or on an async thread.
+    #[derive(Default)]
+    struct FakeRecords {
+        save_delay: Duration,
+        load_delay: Duration,
+        saved: Mutex<HashMap<String, Saved>>,
+        saves: AtomicUsize,
+    }
+
+    impl Records for FakeRecords {
+        fn save(&self, s: &Saved) {
+            std::thread::sleep(self.save_delay);
+            self.saves.fetch_add(1, Ordering::SeqCst);
+            self.saved.lock().unwrap().insert(s.worker_id.clone(), s.clone());
+        }
+        fn remove(&self, id: &str) {
+            self.saved.lock().unwrap().remove(id);
+        }
+        fn load(&self) -> Vec<Saved> {
+            std::thread::sleep(self.load_delay);
+            self.saved.lock().unwrap().values().cloned().collect()
+        }
+    }
+
+    fn record_file(state: &Path, id: &str) -> PathBuf {
+        state.join("workers").join(format!("{id}.json"))
+    }
+
+    fn read_record(state: &Path, id: &str) -> Value {
+        serde_json::from_slice(&std::fs::read(record_file(state, id)).unwrap()).unwrap()
+    }
+
+    /// Poll `cond` for up to 3 s: cleanup of a dropped call runs on a plain thread.
+    async fn eventually(what: &str, cond: impl Fn() -> bool) {
+        for _ in 0..300 {
+            if cond() {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        panic!("never became true: {what}");
+    }
+
+    #[tokio::test]
+    async fn a_second_server_never_touches_the_workers_of_a_live_one() {
+        let (wt, state, clock, procs) = (FakeWorktrees::new(), temp_dir("state"), real_now(), Arc::<Procs>::default());
+        let first = server(&wt, &state, &clock, &procs);
+        let (young, old) = (first.delegate(brief("one")).await.worker_id, first.delegate(brief("two")).await.worker_id);
+        assert_eq!(read_record(&state, &young)["owner"]["pid"], first.owner.pid, "every record names its server");
+        let mut record = read_record(&state, &old);
+        record["created_ms"] = json!(log::now_ms() - 25 * HOUR);
+        std::fs::write(record_file(&state, &old), record.to_string()).unwrap();
+
+        // A second session starts while the first is alive and still using both workers.
+        let second = server(&wt, &state, &clock, &procs);
+        second.recover().await;
+        assert!(wt.removed.lock().unwrap().is_empty(), "nothing of a live server's is deleted, however old");
+        assert!(record_file(&state, &young).exists() && record_file(&state, &old).exists());
+        assert!(second.merge(&young, None).await.unwrap_err().contains("unknown worker id"), "and nothing is adopted");
+        assert!(first.lookup(&young).is_ok() && first.lookup(&old).is_ok(), "the first server still has its workers");
+
+        // Once the first server is gone, a third adopts what is recent and removes what is stale.
+        procs.alive.lock().unwrap().remove(&first.owner.pid);
+        let third = server(&wt, &state, &clock, &procs);
+        third.recover().await;
+        assert!(wt.removed.lock().unwrap().contains(&wt.base.join(&old)) && !record_file(&state, &old).exists(), "a dead server's stale worker goes");
+        assert_eq!(read_record(&state, &young)["owner"]["pid"], third.owner.pid, "an adopted record is restamped");
+        assert!(third.merge(&young, None).await.unwrap().contains("merged worker"), "a dead server's recent worker still merges");
+    }
+
+    #[test]
+    fn what_recovery_does_with_a_record() {
+        let saved = |running: bool, age_ms: u64| Saved {
+            worker_id: "w1".into(),
+            path: PathBuf::from("/x/w1"),
+            repo: PathBuf::from("/x"),
+            provider: "claude".into(),
+            model: "m".into(),
+            created_ms: NOW - age_ms,
+            running,
+            shown: Default::default(),
+            covered: Default::default(),
+            merged: Default::default(),
+            owner: None,
+        };
+        let fate = |running, age_ms, exists, owner_alive| Found { saved: saved(running, age_ms), exists, owner_alive }.fate(NOW);
+        assert_eq!(fate(false, 0, true, true), Fate::Keep, "a live owner's record is in use");
+        assert_eq!(fate(false, 48 * HOUR, false, true), Fate::Keep, "even when old and checkout-less");
+        assert_eq!(fate(true, 48 * HOUR, true, true), Fate::Keep);
+        assert_eq!(fate(false, HOUR, true, false), Fate::Adopt);
+        assert_eq!(fate(false, 25 * HOUR, true, false), Fate::Drop);
+        assert_eq!(fate(false, HOUR, false, false), Fate::Drop, "no checkout left");
+        assert_eq!(fate(true, HOUR, true, false), Fate::Keep, "a worker that was running is not reloaded");
+        assert_eq!(fate(true, 25 * HOUR, true, false), Fate::Drop);
+        // A record written before owners existed has none, and parses.
+        let legacy = r#"{"worker_id":"w1","path":"/x/w1","repo":"/x","provider":"claude","model":"m","created_ms":1}"#;
+        assert_eq!(serde_json::from_str::<Saved>(legacy).unwrap().owner, None);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn real_liveness_knows_a_running_process_and_a_recycled_pid() {
+        let me = ProcLiveness.me();
+        assert!(me.start.is_some(), "the start time is read from /proc");
+        assert!(ProcLiveness.alive(&me));
+        assert!(ProcLiveness.alive(&Owner { pid: me.pid, start: None }), "pid alone is enough when no start time was saved");
+        assert!(!ProcLiveness.alive(&Owner { pid: me.pid, start: me.start.map(|s| s + 1) }), "same pid, other start time: a different process");
+        assert!(!ProcLiveness.alive(&Owner { pid: u32::MAX, start: Some(1) }), "no such process");
+    }
+
+    // ---------------------------------------------------------------- a dropped delegate call
+
+    fn running_on(d: &Delegator, p: ProviderId) -> usize {
+        lock(&d.live).values().filter(|w| w.running && w.provider == p).count()
+    }
+
+    #[tokio::test]
+    async fn a_delegation_dropped_while_its_worktree_is_made_leaves_nothing_behind() {
+        let wt = FakeWorktrees::slow(Duration::from_millis(300));
+        let r = rig_on(wt.clone(), &[Claude], TaskType::Feature);
+        let out = tokio::time::timeout(Duration::from_millis(100), r.d.delegate(brief("x"))).await;
+        assert!(out.is_err(), "the call was dropped mid-flight");
+        assert!(lock(&r.d.live).is_empty(), "no placeholder stays behind as a worker that is running forever");
+        assert_eq!(running_on(&r.d, Claude), 0, "the provider's live load is back to zero");
+        // The checkout that finished after the drop is removed again, not leaked.
+        eventually("the late checkout is removed", || {
+            let made = wt.created.lock().unwrap().clone();
+            made.len() == 1 && wt.removed.lock().unwrap().contains(&made[0]) && !made[0].exists()
+        })
+        .await;
+        assert!(r.d.delegate(brief("y")).await.ok, "and the server delegates normally afterwards");
+    }
+
+    #[tokio::test]
+    async fn a_delegation_dropped_while_its_worker_runs_removes_worktree_record_and_slot() {
+        let records = Arc::new(FakeRecords::default());
+        let mut r = rig(&[Claude], TaskType::Feature);
+        r.d = r.d.with_records(records.clone()).with_idle_timeout(Duration::from_secs(30));
+        r.scripts.lock().unwrap().insert(Claude, "sleep 5");
+        let out = tokio::time::timeout(Duration::from_millis(300), r.d.delegate(brief("x"))).await;
+        assert!(out.is_err());
+        assert!(records.saves.load(Ordering::SeqCst) >= 1, "the worker had been saved before the call was dropped");
+        assert!(lock(&r.d.live).is_empty() && running_on(&r.d, Claude) == 0);
+        eventually("record and worktree are removed", || records.saved.lock().unwrap().is_empty() && r.wt.removed.lock().unwrap().len() == 1).await;
+        assert!(!r.wt.created.lock().unwrap()[0].exists());
+    }
+
+    // ---------------------------------------------------------------- no IO under the lock or on async threads
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_slow_record_write_does_not_delay_the_registry() {
+        let records = Arc::new(FakeRecords { save_delay: Duration::from_millis(200), ..FakeRecords::default() });
+        let mut r = rig(&[Claude, Codex], TaskType::Feature);
+        r.d = r.d.with_records(records.clone());
+        let d = Arc::new(r.d);
+        let spec = models().iter().find(|m| m.provider == Claude).unwrap();
+        let mut w = Worker::reserved(spec, d.worktrees.repo(), NOW);
+        w.path = Some(d.worktrees.root().join("w1"));
+        lock(&d.live).insert("w1".into(), w);
+        let writer = {
+            let d = d.clone();
+            tokio::spawn(async move { d.update("w1", |w| w.running = false).await })
+        };
+        tokio::time::sleep(Duration::from_millis(40)).await; // the save is under way
+        let started = Instant::now();
+        d.reserve(&signals(TaskType::Feature), &HashSet::new(), 10, "w2").unwrap();
+        d.lookup("w1").unwrap();
+        let took = started.elapsed();
+        assert!(took < Duration::from_millis(100), "the registry waited {took:?} for a record write");
+        writer.await.unwrap();
+        assert!(records.saved.lock().unwrap().contains_key("w1"), "the write still happened");
+    }
+
+    #[tokio::test]
+    async fn recovery_reads_the_disk_off_the_async_threads() {
+        let records = Arc::new(FakeRecords { load_delay: Duration::from_millis(200), ..FakeRecords::default() });
+        let mut r = rig(&[Claude], TaskType::Feature);
+        r.d = r.d.with_records(records);
+        let started = Instant::now();
+        let tick = async {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+            started.elapsed()
+        };
+        let ((), tick) = tokio::join!(r.d.recover(), tick);
+        assert!(tick < Duration::from_millis(100), "a 10 ms timer fired after {tick:?}: recover blocked the async thread");
+    }
+
+    #[tokio::test]
+    async fn concurrent_record_writes_end_with_the_latest_state() {
+        let records = Arc::new(FakeRecords { save_delay: Duration::from_millis(30), ..FakeRecords::default() });
+        let mut r = rig(&[Claude], TaskType::Feature);
+        r.d = r.d.with_records(records.clone());
+        let spec = models().iter().find(|m| m.provider == Claude).unwrap();
+        let mut w = Worker::reserved(spec, r.d.worktrees.repo(), NOW);
+        w.path = Some(r.d.worktrees.root().join("w1"));
+        lock(&r.d.live).insert("w1".into(), w);
+        let (a, b) = tokio::join!(r.d.update("w1", |w| w.merged.insert("a".into())), r.d.update("w1", |w| w.merged.insert("b".into())));
+        assert!(a.is_some() && b.is_some());
+        let saved = records.saved.lock().unwrap()["w1"].clone();
+        assert_eq!(saved.merged.into_iter().collect::<Vec<_>>(), ["a", "b"], "a stale snapshot never overwrites a newer one");
+        r.d.take("w1").await.unwrap();
+        assert!(records.saved.lock().unwrap().is_empty(), "taking a worker removes its record");
+    }
+
+    // ---------------------------------------------------------------- worker ids
+
+    #[test]
+    fn servers_started_in_the_same_instant_never_share_worker_ids() {
+        let (a, b) = (rig(&[Claude], TaskType::Feature).d, rig(&[Claude], TaskType::Feature).d);
+        let ids = |d: &Delegator| (0..50).map(|_| d.next_id()).collect::<HashSet<_>>();
+        let (ia, ib) = (ids(&a), ids(&b));
+        assert!(ia.is_disjoint(&ib), "two servers made together must not produce the same ids: {:?}", ia.intersection(&ib).collect::<Vec<_>>());
+        assert_eq!(ia.len(), 50);
+    }
+
+    #[test]
+    fn the_run_tag_separates_processes_instants_and_instances_and_is_filename_safe() {
+        let base = run_tag(100, 5_000_000_123, 0);
+        assert_ne!(base, run_tag(101, 5_000_000_123, 0), "another process in the same nanosecond");
+        assert_ne!(base, run_tag(100, 5_000_000_124, 0), "the same process a nanosecond later");
+        assert_ne!(base, run_tag(100, 5_000_000_123, 1), "another Delegator in the same process and instant");
+        assert_ne!(run_tag(0x1, 0x20, 0), run_tag(0x12, 0x0, 0), "the parts cannot run together");
+        assert!(plain_id(&format!("w{}-{}", run_tag(u32::MAX, u128::MAX, u64::MAX), u64::MAX)));
+        let usual = format!("w{}-{}", run_tag(4_194_304, 1_760_000_000_123_456_789, 3), 12);
+        assert!(usual.len() <= 28, "{usual}");
+    }
+
+    // ---------------------------------------------------------------- removing only inside the root
+
+    #[test]
+    fn remove_never_deletes_outside_its_root_whatever_the_record_says() {
+        let repo = temp_repo();
+        let base = temp_dir("jail");
+        let root = base.join("root");
+        std::fs::create_dir_all(&root).unwrap();
+        let victim = base.join("victim");
+        std::fs::create_dir_all(victim.join("inner")).unwrap();
+        std::fs::write(victim.join("inner").join("keep.txt"), "precious").unwrap();
+        let wt = GitWorktrees::new(&repo, root.clone()).unwrap();
+        let kept = |why: &str| assert!(victim.join("inner").join("keep.txt").exists(), "{why}");
+
+        // `..` passes a lexical starts_with(root) but leads out of it.
+        assert!(wt.remove(&root.join("..").join("victim")).is_err());
+        kept("<root>/../victim");
+        assert!(wt.remove(&root.join("..").join("..").join(base.file_name().unwrap()).join("victim")).is_err());
+        kept("<root>/../../<base>/victim");
+        assert!(wt.remove(Path::new("victim")).is_err() && wt.remove(Path::new("root/x")).is_err(), "relative paths are refused");
+        // The root itself is never removed.
+        assert!(wt.remove(&root).is_err() && wt.remove(&root.join(".")).is_err());
+        assert!(root.exists());
+
+        #[cfg(unix)]
+        {
+            // A symlink inside the root that points out of it: neither through it nor itself.
+            std::os::unix::fs::symlink(&victim, root.join("link")).unwrap();
+            assert!(wt.remove(&root.join("link").join("inner")).is_err());
+            kept("<root>/link/inner");
+            assert!(wt.remove(&root.join("link")).is_err());
+            kept("<root>/link");
+            assert!(root.join("link").exists(), "the link is refused, not followed or removed");
+        }
+
+        // A plain leftover under the root still goes, and a vanished one is not an error.
+        let stray = root.join("wstray");
+        std::fs::create_dir_all(stray.join("deep")).unwrap();
+        wt.remove(&stray).unwrap();
+        assert!(!stray.exists());
+        wt.remove(&root.join("wgone")).unwrap();
+        kept("end");
     }
 }
