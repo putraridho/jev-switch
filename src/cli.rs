@@ -166,10 +166,10 @@ never shown as an answer. Security work never goes to DeepSeek or Grok.
 ENVIRONMENT (each may also be a KEY=VALUE line in ~/.jev-router.env):
   TYPESAFE_API_KEY | JEV_API_KEY   the Jev key (required for routing)
   JEV_TYPESAFE_URL           a different Jev endpoint (proxy, test server)
-  JEV_ORCHESTRATE            on starts with orchestration on; default off
+  JEV_ORCHESTRATE            on|off at start when nothing was set with /orchestrate; default on
   JEV_DELEGATE_BIN           the delegate tool (default: jev-delegate-mcp or delegate_mcp next to jev-code)
   JEV_DELEGATE_LOG           orchestration log (default <state dir>/orchestration.jsonl)
-  JEV_PROVIDERS              off starts with routing off (Claude only); default on
+  JEV_PROVIDERS              off starts with routing off (Claude only); default on; /provider is kept
   JEV_ALLOW_CREDITS          1 allows models billed as extra credits (e.g. Claude Fable); default off
   JEV_CHAINS                 JSON file replacing the model order per task type
   DEEPSEEK_API_KEY           enables DeepSeek (billed per token; used through the claude CLI)

@@ -55,7 +55,15 @@ pub fn turn_summary(f: &SummaryFacts, style: Style) -> String {
         let lines = if added == 0 && removed == 0 { String::new() } else { format!(" +{added} −{removed}") };
         parts.push(format!("{}{lines}", plural(n, "file", "files")));
     }
-    format!("{mark} {}", style.dim(&parts.join(" · ")))
+    // Keep the outcome and model legible; usage is supporting information.
+    let mut parts = parts.into_iter();
+    let first = parts.next().unwrap_or_default();
+    let rest = parts.collect::<Vec<_>>();
+    if rest.is_empty() {
+        format!("{mark} {first}")
+    } else {
+        format!("{mark} {first} {} {}", style.dim("·"), style.dim(&rest.join(" · ")))
+    }
 }
 
 #[cfg(test)]
@@ -100,8 +108,7 @@ mod tests {
         assert!(s.starts_with("\x1b[32m✓\x1b[0m "));
         assert!(s.contains("\x1b[2m"));
         assert_eq!(strip_ansi(&s), turn_summary(&facts(), OFF));
-        // the dimming survives the coloured provider name inside it
-        assert!(s.contains("\x1b[0m\x1b[2m · gpt-6-luna"));
+        assert!(s.contains("\x1b[32mcodex\x1b[0m"));
         let hot = SummaryFacts { plan: Some(("claude".into(), 0.93)), ..facts() };
         assert!(turn_summary(&hot, ON).contains("\x1b[33mclaude plan 93%\x1b[0m"));
         assert!(turn_summary(&hot, OFF).ends_with("claude plan 93%"));

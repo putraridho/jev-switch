@@ -173,13 +173,16 @@ pub fn display_path(dir: &Path, home: Option<&str>) -> String {
     }
 }
 
-/// The two-line banner: where we are and whether routing is on, then every provider as a
-/// glyph and a name. The long table lives behind `/providers`.
+/// A compact session header. The long provider table lives behind `/providers`.
 pub fn banner(dir: &Path, home: Option<&str>, routing_on: bool, rows: &[AvailRow], style: Style, width: usize) -> String {
-    let routing = if routing_on { "routing on" } else { "routing off (Claude only)" };
-    let head = format!("{} · {} · {routing}", style.bold("jev-code"), display_path(dir, home));
-    let head = uifmt::truncate_to_width(&head, width.max(uifmt::MIN_WIDTH));
-    format!("{head}\n{}", uifmt::provider_glyphs(rows, style, width))
+    let width = width.max(uifmt::MIN_WIDTH);
+    let rule = style.dim(&"─".repeat(width.min(56)));
+    let brand = format!("{}  {}", style.bold(&style.cyan("jev-code")), style.dim(env!("CARGO_PKG_VERSION")));
+    let routing = if routing_on { style.green("routing on") } else { style.yellow("routing off (Claude only)") };
+    let project = uifmt::truncate_to_width(&display_path(dir, home), width.saturating_sub(4));
+    let providers = uifmt::truncate_to_width(&uifmt::provider_glyphs(rows, style, width.saturating_sub(2)), width.saturating_sub(2));
+    let heading = uifmt::truncate_to_width(&format!("  {brand}  {}  {routing}", style.dim("·")), width);
+    format!("{rule}\n{heading}\n  {project}\n  {providers}\n{rule}")
 }
 
 /// "just now", "5m ago", "2h ago", "3d ago".
@@ -252,7 +255,7 @@ pub fn plain_prompt(label: Option<&str>) -> String {
 
 /// The same prompt coloured: the label in the provider's colour, the arrow bold.
 pub fn styled_prompt(label: Option<&str>, style: Style) -> String {
-    let arrow = style.bold(&style.cyan("›"));
+    let arrow = style.cyan(&style.bold("›"));
     match label {
         Some(l) => {
             let provider = l.split(':').next().unwrap_or(l);
@@ -453,13 +456,17 @@ mod tests {
     }
 
     #[test]
-    fn the_banner_is_two_lines() {
+    fn the_banner_is_a_compact_session_header() {
         let rows = avail_rows(&runtime(), NOW);
         let b = banner(Path::new("/home/me/proj"), Some("/home/me"), true, &rows, Style::off(), 100);
-        assert_eq!(b, "jev-code · ~/proj · routing on\n● claude  ○ deepseek  ● codex  ✕ gemini  ○ grok");
+        let v = env!("CARGO_PKG_VERSION");
+        assert!(b.contains(&format!("jev-code  {v}  ·  routing on\n  ~/proj\n  ● claude")), "{b}");
         let off = banner(Path::new("/x"), None, false, &rows, Style::off(), 100);
-        assert!(off.starts_with("jev-code · /x · routing off (Claude only)\n"), "{off}");
-        assert_eq!(off.lines().count(), 2);
+        assert!(off.contains("routing off (Claude only)\n  /x"), "{off}");
+        assert_eq!(off.lines().count(), 5);
+        let narrow = banner(Path::new("/a/very/long/project/directory"), None, true, &rows, Style::off(), 40);
+        assert!(narrow.contains("routing on"), "{narrow}");
+        assert!(narrow.lines().all(|line| uifmt::display_width(line) <= 40));
     }
 
     #[test]

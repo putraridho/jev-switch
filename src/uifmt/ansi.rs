@@ -84,6 +84,11 @@ pub fn clear_line() -> &'static str {
     "\r\x1b[2K"
 }
 
+/// Move the cursor up one row, keeping its column.
+pub fn up_row() -> &'static str {
+    "\x1b[1A"
+}
+
 pub fn save_cursor() -> &'static str {
     "\x1b7"
 }

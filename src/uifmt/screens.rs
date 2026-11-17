@@ -11,9 +11,9 @@ use super::wrap::wrap_to_width;
 /// an argument, an example; then the keys.
 pub fn help_text(style: Style) -> String {
     let col = COMMANDS.iter().map(|c| display_width(&usage(c))).max().unwrap_or(0) + 2;
-    let mut lines: Vec<String> = Vec::new();
+    let mut lines: Vec<String> = vec![style.bold("Commands & shortcuts"), style.dim("Use /command to run an action. Tab completes commands and paths."), String::new()];
     for (group, title) in [(Group::Model, "Model & routing"), (Group::Session, "Session"), (Group::Context, "Context & output"), (Group::Project, "Project"), (Group::Info, "Info")] {
-        lines.push(style.bold(title));
+        lines.push(style.bold(&style.cyan(title)));
         for c in COMMANDS.iter().filter(|c| c.group == group) {
             lines.push(format!("  {}{}", style.cyan(&pad_to_width(&usage(c), col)), c.about));
             if !c.example.is_empty() {
@@ -74,7 +74,7 @@ fn on_off(on: bool, style: Style) -> String {
 /// cooldowns, the last turn and how many turns the session has had.
 pub fn status_text(f: &StatusFacts, style: Style) -> String {
     let th = Theme::new(style);
-    let mut rows = vec![status_row("Project", &one_line(&f.project), style)];
+    let mut rows = vec![style.bold("Session overview"), String::new(), status_row("Project", &one_line(&f.project), style)];
     let routing = if f.routing_on { on_off(true, style) } else { format!("off {}", style.dim("(Claude only)")) };
     rows.push(status_row("Routing", &routing, style));
     rows.push(status_row("Model", &one_line(&f.pin), style));
@@ -229,12 +229,12 @@ mod tests {
         };
         assert_eq!(
             status_text(&f, OFF),
-            "  Project      /home/me/proj\n  Routing      on\n  Model        auto\n  Orchestrate  off\n  Providers    ● claude  max_5x  plan 32% used\n               ● codex\n  Cooling down gemini for 1h 5m\n  Last turn    ✓ codex · g · 2s\n  Session      4 turns"
+            "Session overview\n\n  Project      /home/me/proj\n  Routing      on\n  Model        auto\n  Orchestrate  off\n  Providers    ● claude  max_5x  plan 32% used\n               ● codex\n  Cooling down gemini for 1h 5m\n  Last turn    ✓ codex · g · 2s\n  Session      4 turns"
         );
         let bare = StatusFacts { project: "/p".into(), pin: "codex".into(), turns: 1, ..Default::default() };
         assert_eq!(
             status_text(&bare, OFF),
-            "  Project      /p\n  Routing      off (Claude only)\n  Model        codex\n  Orchestrate  off\n  Providers    none ready: see /providers or `jev-code doctor`\n  Last turn    none yet\n  Session      1 turn"
+            "Session overview\n\n  Project      /p\n  Routing      off (Claude only)\n  Model        codex\n  Orchestrate  off\n  Providers    none ready: see /providers or `jev-code doctor`\n  Last turn    none yet\n  Session      1 turn"
         );
         let fresh = StatusFacts { ..Default::default() };
         assert!(status_text(&fresh, OFF).ends_with("Session      no turns yet"));

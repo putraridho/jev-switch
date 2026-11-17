@@ -169,7 +169,7 @@ pub fn route_line(f: &RouteFacts, style: Style) -> String {
     } else {
         format!("{} {} {}", th.name(&f.provider), style.dim("·"), f.model)
     };
-    let head = format!("{} {who}", style.dim("→"));
+    let head = format!("{} {who}", style.cyan("→"));
     if tag.is_empty() {
         head
     } else {

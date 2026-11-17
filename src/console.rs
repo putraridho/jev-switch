@@ -158,7 +158,9 @@ struct Live {
     label: String,
     activity: Option<String>,
     started: Instant,
-    drawn: bool,
+    /// Rows the live area takes on screen right now: 0 when not drawn, 1 for the status line,
+    /// 2 with the field under it. The cursor is left on the last of them.
+    rows: usize,
 }
 
 struct Inner {
@@ -188,8 +190,10 @@ struct Inner {
     held: Option<Vec<HeldLine>>,
     /// The route of the latest turn, for `/why`.
     last_route: Option<RouteFacts>,
-    /// What is being typed during a turn, shown at the end of the status line.
+    /// What is being typed during a turn, shown in the field under the status line.
     draft: String,
+    /// Keys are read during a turn, so the field under the status line is drawn.
+    type_ahead: bool,
     /// Messages typed during a turn, to run when it is over (oldest first).
     queued: std::collections::VecDeque<String>,
 }
@@ -226,6 +230,7 @@ impl Console {
             held: None,
             last_route: None,
             draft: String::new(),
+            type_ahead: false,
             queued: std::collections::VecDeque::new(),
         };
         Self {
@@ -240,6 +245,7 @@ impl Console {
     /// Let the person type during a turn: Enter queues a message, Esc stops the turn.
     pub fn with_type_ahead(mut self) -> Self {
         self.type_ahead = true;
+        self.lock().type_ahead = true;
         self
     }
 
@@ -520,11 +526,17 @@ impl Inner {
         self.screen.as_ref().and_then(|s| s.columns()).unwrap_or(self.cfg.width).max(1)
     }
 
-    /// Remove the status line from the screen (it is redrawn after the next print).
+    /// Remove the live area (status line and field) from the screen; it is redrawn after the
+    /// next print. The cursor ends on the first row of it, where the next line goes.
     fn erase(&mut self) {
-        if let Some(l) = self.live.as_mut().filter(|l| l.drawn) {
-            l.drawn = false;
-            let _ = self.err.write_all(uifmt::clear_line().as_bytes());
+        if let Some(l) = self.live.as_mut().filter(|l| l.rows > 0) {
+            let rows = std::mem::take(&mut l.rows);
+            let mut frame = String::from(uifmt::clear_line());
+            for _ in 1..rows {
+                frame.push_str(uifmt::up_row());
+                frame.push_str(uifmt::clear_line());
+            }
+            let _ = self.err.write_all(frame.as_bytes());
         }
     }
 
@@ -532,29 +544,32 @@ impl Inner {
         if self.asking.is_some() || self.held.is_some() {
             return;
         }
-        // The status line is redrawn in place (`\r`, erase the row), which only works while it
-        // is ONE row: so it is cut by display width to one column short of the live width,
+        // Each row is redrawn in place (`\r`, erase the row), which only works while it is ONE
+        // screen row: so it is cut by display width to one column short of the live width,
         // since a full row wraps on terminals that wrap at the last column.
         let budget = self.width().saturating_sub(1);
         let style = self.cfg.err_style;
-        // What is typed during the turn takes up to half the row, at the end.
-        let typed = uifmt::draft_tail(&self.draft, self.queued.len(), budget / 2, style);
-        let status_budget = if typed.is_empty() { budget } else { budget.saturating_sub(uifmt::display_width(&typed) + 2) };
+        let field = self.type_ahead.then(|| uifmt::input_row(&self.draft, self.queued.len(), budget, style));
         let Some(l) = self.live.as_mut() else { return };
-        let mut line = uifmt::status_line(&l.label, elapsed, l.activity.as_deref(), status_budget, style);
-        if !typed.is_empty() {
-            line.push_str("  ");
-            line.push_str(&typed);
-        }
+        let line = uifmt::status_line(&l.label, elapsed, l.activity.as_deref(), budget, style);
         let mut frame = String::new();
         if !self.cursor_hidden {
             self.cursor_hidden = true;
             terminal::note_cursor_hidden(true);
             frame.push_str(uifmt::hide_cursor());
         }
+        // The cursor is on the last row of what was drawn: go up to the first, then redraw.
+        if l.rows > 1 {
+            frame.push_str(uifmt::up_row());
+        }
         frame.push_str(uifmt::clear_line());
         frame.push_str(&line);
-        l.drawn = true;
+        l.rows = 1;
+        if let Some(field) = field {
+            frame.push_str("\r\n\x1b[2K");
+            frame.push_str(&field);
+            l.rows = 2;
+        }
         let _ = self.err.write_all(frame.as_bytes());
         let _ = self.err.flush();
     }
@@ -609,7 +624,7 @@ impl Inner {
         if !self.cfg.live {
             return;
         }
-        self.live = Some(Live { label: "routing".into(), activity: None, started: Instant::now(), drawn: false });
+        self.live = Some(Live { label: "routing".into(), activity: None, started: Instant::now(), rows: 0 });
         if let Some(screen) = &self.screen {
             // Remember what the terminal had, so `end` puts back exactly that: a person who
             // runs with echo already off must not find it switched on.

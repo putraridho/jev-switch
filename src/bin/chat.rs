@@ -65,8 +65,8 @@ async fn main() -> Result<()> {
     let mut prev_model: Option<&'static str> = None;
 
     println!(
-        "jev-chat — haiku / sonnet / opus (cheap≥{} strong≥{}) · /new · /quit\n",
-        threshold, strong
+        "jev-chat {} — haiku / sonnet / opus (cheap≥{} strong≥{}) · /new · /quit\n",
+        env!("CARGO_PKG_VERSION"), threshold, strong
     );
     let _ = (MODEL_CHEAP, MODEL_STRONG);
     let stdin = io::stdin();

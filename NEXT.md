@@ -5,11 +5,11 @@ session so the work can continue from `jev-code`. Read this whole file first.
 
 ## 1. State right now
 
-| Stream | Branch / place | State |
-|---|---|---|
-| jev-code fixes (approvals, `/permissions`, mise-safe probes, orchestration veto, status line, racy-git snapshots, `uifmt/` split) | **merged to `master` (98df79a) and installed** in `~/.local/bin` | 798 Rust tests, 38/38 PTY scenarios, Python tests green. Code review rounds 1–3 each found ~9–10 issues, all fixed. **No clean review round yet.** |
-| DDD refactor plan | `docs/architecture/DDD.md` (on `master`) | Plan only, no code moved. Review rounds: 24, then 27 issues (all fixed). **Not converged.** Refactor NOT started. |
-| Flashboard (usage dashboard, Tauri 2 + Svelte 5) | branch `dashboard` (has master merged in); `docs/dashboard/DESIGN.md`, `docs/dashboard/TASKS.md` | Design **final** (6 review rounds, capped by the user). **Build NOT started**: wait for the user's go. |
+| Stream                                                                                                                            | Branch / place                                                                                   | State                                                                                                                                              |
+| --------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------- |
+| jev-code fixes (approvals, `/permissions`, mise-safe probes, orchestration veto, status line, racy-git snapshots, `uifmt/` split) | **merged to `master` (98df79a) and installed** in `~/.local/bin`                                 | 798 Rust tests, 38/38 PTY scenarios, Python tests green. Code review rounds 1–3 each found ~9–10 issues, all fixed. **No clean review round yet.** |
+| DDD refactor plan                                                                                                                 | `docs/architecture/DDD.md` (on `master`)                                                         | Plan only, no code moved. Review rounds: 24, then 27 issues (all fixed). **Not converged.** Refactor NOT started.                                  |
+| Flashboard (usage dashboard, Tauri 2 + Svelte 5)                                                                                  | branch `dashboard` (has master merged in); `docs/dashboard/DESIGN.md`, `docs/dashboard/TASKS.md` | Design **final** (6 review rounds, capped by the user). **Build NOT started**: wait for the user's go.                                             |
 
 Branches: `master` = installed code. `fix-orch-trigger` = same as master (can be deleted).
 `dashboard` = master + Flashboard design docs and fixtures.
@@ -43,6 +43,7 @@ A full `jev-code` turn routed to Antigravity has NOT been run yet.
 ## 3. Next actions, in order (once the user decides)
 
 ### A. jev-code (if round 4 is wanted)
+
 1. `/code-review high 86cd09e..master` (the round-3 fix commits).
 2. Verify each finding against the code; fix real ones in a worktree with a test that fails
    before the fix.
@@ -52,6 +53,7 @@ A full `jev-code` turn routed to Antigravity has NOT been run yet.
    fix what breaks.
 
 ### B. DDD refactor
+
 1. More plan review rounds as the user decides (fresh reviewer each round, Fable 5.2,
    fixes go into `docs/architecture/DDD.md` only).
 2. Before moving any code: merge open branches (`dashboard` docs are fine to keep apart),
@@ -62,6 +64,7 @@ A full `jev-code` turn routed to Antigravity has NOT been run yet.
    log formats byte-identical.
 
 ### C. Flashboard
+
 1. Path A or B depends on whether the DDD refactor has started (DESIGN.md D5): Path A if
    not (T00 adds `src/embed.rs`), Path B if it has (depend on `crates/embed` /
    `jev-embed`).

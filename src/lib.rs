@@ -28,6 +28,7 @@ pub mod lineedit;
 pub mod log;
 pub mod mode;
 pub mod orchestrate;
+pub mod prefs;
 pub mod permissions;
 pub mod prefix;
 pub mod providers;

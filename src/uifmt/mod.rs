@@ -43,7 +43,7 @@ mod wrap;
 #[cfg(test)]
 mod testutil;
 
-pub use ansi::{clear_line, hide_cursor, restore_cursor, save_cursor, show_cursor, strip_ansi};
+pub use ansi::{clear_line, hide_cursor, restore_cursor, save_cursor, show_cursor, strip_ansi, up_row};
 pub use changes::{changes_block, diff_colorize, relativize_paths, tool_line, FileChange, MAX_CHANGE_ROWS};
 pub use commands::{command_names, command_usage};
 pub use complete::{complete, completion_start, hint, Candidate, CompleteCtx};
@@ -54,7 +54,7 @@ pub use provider_view::{provider_glyphs, providers_table, AvailRow, ProviderStat
 pub use route::{route_line, short_reason, RouteFacts};
 pub use screens::{doctor_report, doctor_summary, help_text, status_text, DoctorItem, ReadyProvider, Severity, StatusFacts};
 pub use session::{config_text, context_text, cost_text, terminal_setup_text, why_text, ConfigRow, ContextFacts, CostRow, TerminalSetupFacts, COMPACT_SUGGEST_AT};
-pub use status::{draft_tail, status_line, Spinner, SPINNER_FRAMES, SPINNER_FRAME_MS};
+pub use status::{input_row, status_line, Spinner, SPINNER_FRAMES, SPINNER_FRAME_MS};
 pub use style::{stderr_is_tty, stdout_is_tty, Style, Theme};
 pub use summary::{turn_summary, SummaryFacts};
 pub use text::{human_count, human_duration};

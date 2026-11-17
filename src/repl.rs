@@ -207,9 +207,21 @@ impl Repl {
     /// Keep the mode the person just chose for the next session. Only their choices come
     /// here: the read-only mode `/review` and `/compact` borrow for one turn is not kept.
     pub fn remember_mode(&self) {
-        let Some(dir) = &self.state_dir else { return };
-        if let Err(e) = crate::mode::save(dir, self.engine.mode()) {
-            self.console.err(&format!("  could not keep the mode for the next session: {e}"));
+        if let Some(dir) = &self.state_dir {
+            self.said_if_failed(crate::mode::save(dir, self.engine.mode()), "the mode");
+        }
+    }
+
+    /// Keep an on/off setting the person just chose (`/orchestrate`, `/provider`).
+    fn remember_flag(&self, flag: crate::prefs::Flag, on: bool, what: &str) {
+        if let Some(dir) = &self.state_dir {
+            self.said_if_failed(crate::prefs::save_flag(dir, flag, on), what);
+        }
+    }
+
+    fn said_if_failed(&self, saved: std::io::Result<()>, what: &str) {
+        if let Err(e) = saved {
+            self.console.err(&format!("  could not keep {what} for the next session: {e}"));
         }
     }
 
@@ -260,11 +272,13 @@ impl Repl {
             Command::SetPin(pin) => self.set_pin(pin),
             Command::SetRouting(on) => {
                 self.engine.set_enabled(on);
+                self.remember_flag(crate::prefs::Flag::Routing, on, "routing");
                 let text = if on { "on".to_string() } else { format!("off {}", style.dim("(Claude only)")) };
                 self.console.out(&format!("  routing: {text}"));
             }
             Command::SetOrchestrate(on) => {
                 self.engine.set_orchestrate(on);
+                self.remember_flag(crate::prefs::Flag::Orchestrate, on, "orchestrate");
                 self.console.out(&format!("  orchestrate: {}", on_off(on)));
             }
             Command::ShowOrchestrate => self.console.out(&format!("  orchestrate: {}", on_off(self.engine.orchestrate()))),

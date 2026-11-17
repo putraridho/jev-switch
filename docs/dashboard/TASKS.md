@@ -94,6 +94,7 @@ W3   T11 Tauri shell wiring (needs T08, T15; UI contract from T07)
       │
 W4   T12 security proofs + CI + e2e + budgets        T13 packaging + UI polish audit
 ```
+
 All tasks in a wave run in parallel, each in its own worktree. A wave starts when the
 previous wave is merged and `scripts/ci.sh` is green. Inside wave 1 there are soft orders:
 T03, T04, T05 call T01's parsers, T06 calls T02's history rules, T15's notifier calls T02's
@@ -104,17 +105,17 @@ screenshot tests cannot pass against the neutral stubs). Inside wave 4 there is 
 regenerates screenshot baselines, so the lead merges T13 first and T12 makes its final
 `scripts/ci.sh` run on top of it.
 
-| task | wave | UI-design pass | skills to load |
-|---|---|---|---|
-| T00 | 0 | no (creates token file skeleton only) | none |
-| T01–T06, T08, T15 | 1–2 | no (T15: tray icon only, follow D9.11 exactly) | none |
-| T07 | 1 | **yes, primary** (tokens, base, app shell) | `frontend-design` then `impeccable` |
-| T14 | 1 | **yes** (primitives) | `impeccable`, finish with `better-ui` |
-| T09 | 2 | **yes** | `impeccable`, finish with `better-ui` |
-| T10 | 2 | **yes** | `impeccable`, `dataviz` for the chart, finish with `better-ui` |
-| T11 | 3 | no | none |
-| T12 | 4 | no | `security-review` on the final diff |
-| T13 | 4 | **yes, audit** | `impeccable` (audit + polish), `better-ui` |
+| task              | wave | UI-design pass                                 | skills to load                                                 |
+| ----------------- | ---- | ---------------------------------------------- | -------------------------------------------------------------- |
+| T00               | 0    | no (creates token file skeleton only)          | none                                                           |
+| T01–T06, T08, T15 | 1–2  | no (T15: tray icon only, follow D9.11 exactly) | none                                                           |
+| T07               | 1    | **yes, primary** (tokens, base, app shell)     | `frontend-design` then `impeccable`                            |
+| T14               | 1    | **yes** (primitives)                           | `impeccable`, finish with `better-ui`                          |
+| T09               | 2    | **yes**                                        | `impeccable`, finish with `better-ui`                          |
+| T10               | 2    | **yes**                                        | `impeccable`, `dataviz` for the chart, finish with `better-ui` |
+| T11               | 3    | no                                             | none                                                           |
+| T12               | 4    | no                                             | `security-review` on the final diff                            |
+| T13               | 4    | **yes, audit**                                 | `impeccable` (audit + polish), `better-ui`                     |
 
 `artifact-design` is not used anywhere in this project.
 
@@ -127,6 +128,7 @@ the engine facade, the generated TypeScript bindings, the UI skeleton, the fixtu
 first `scripts/ci.sh`, so that everything compiles and every later task only fills bodies.
 
 **Owns (creates).**
+
 - Root `Cargo.toml`, per the path of D5 (say which in the report). Path A: the
   `[workspace]` table (with `exclude = [".claude", "dashboard/fuzz"]`) and `[profile.dist]`.
   Path B: only the three members, the two `exclude` entries and `[profile.dist]` are added
@@ -143,12 +145,12 @@ first `scripts/ci.sh`, so that everything compiles and every later task only fil
 - `dashboard/crates/usage-core/**`: manifests, `lib.rs`, the frozen type files **complete
   with tests** (`time quantity label provider meter usage port secret ipc`), and stubs for
   `parse/{claude_log,claude_event,claude_auth,codex,deepseek}.rs`, `assess.rs alerts.rs summary.rs
-  history.rs text.rs settings.rs view.rs` (types complete, functions returning a neutral
+history.rs text.rs settings.rs view.rs` (types complete, functions returning a neutral
   value: `None`, `Err(Unavailable::Internal)`, an empty vec; no `todo!`, no lint allows).
 - `dashboard/crates/usage-io/**`: manifests (with the one engine dependency line, renamed
   to `jev-engine`, D5.1), `lib.rs`, **complete** `engine_bridge.rs` (the engine port, with
   its contract tests in `tests/engine_bridge.rs`), `envfile.rs`, `clock.rs`, `diag.rs`; stubs for `fsutil tail watch proc probe http secrets
-  store settings_file timer registry service` and `sources/{claude_log,claude_live,codex,deepseek,placeholder}.rs`
+store settings_file timer registry service` and `sources/{claude_log,claude_live,codex,deepseek,placeholder}.rs`
   (`placeholder.rs` complete).
 - `dashboard/src-tauri/**`: `Cargo.toml` (a library target plus the binary, so the shell's
   modules can be tested from `tests/`), `build.rs` (AppManifest commands, D8.8),
@@ -156,10 +158,10 @@ first `scripts/ci.sh`, so that everything compiles and every later task only fil
   `Flashboard`, `app.windows: []`, no bundle targets), `capabilities/main.json`, `lib.rs`
   (the module list and `pub fn run()`), a three-line `main.rs`, an `app.rs` that creates the
   `main` window in code and shows it empty, stub modules `commands events tray tray_icon
-  notifier window autostart hardening localtime bus cli`, and a placeholder `icons/` set
+notifier window autostart hardening localtime bus cli`, and a placeholder `icons/` set
   (T13 replaces it).
 - `dashboard/` UI: `package.json` (exact versions, scripts `dev dev:real build check lint
-  test test:screens tauri`; `dev` passes the identifier `dev.jev.flashboard.dev`, D8.8, and
+test test:screens tauri`; `dev` passes the identifier `dev.jev.flashboard.dev`, D8.8, and
   runs against stub CLIs and a temp home, rule 11; two stub programs under
   `dashboard/e2e/smoke/stubs/` and the activation-free bus configuration
   `dashboard/e2e/smoke/session-bus.conf` (D8.8), all later T12's),
@@ -183,12 +185,13 @@ first `scripts/ci.sh`, so that everything compiles and every later task only fil
   `claude-gateway/{sample.jsonl,canary.jsonl,rotation/…}` (synthetic rows shaped like D3.2,
   both canaries of D8.10), `claude-auth/{logged_in.json,logged_out.json,text_form.txt}`
   (synthetic, key names of D3.1, canary e-mail, org id and org name), `codex-app-server/
-  paid_plan.response.json` (synthetic from the schema: 300 and 10080 minutes, credits with
+paid_plan.response.json` (synthetic from the schema: 300 and 10080 minutes, credits with
   a balance; the user's plan is paid now, D1a, and the lead replaces this file with the
   redacted real response after T04's run), `deepseek/{balance_ok.json,balance_two_currencies.json,
-  unauthorized.json}`, `format-vectors.json` (≥ 60 cases for D9.9), `ipc-allowlist.txt`.
+unauthorized.json}`, `format-vectors.json` (≥ 60 cases for D9.9), `ipc-allowlist.txt`.
 
 **Interfaces to expose (exactly as written in the design).**
+
 - D4.1–D4.4 types and ports, D7.4 IPC types (`core::ipc`, including the generic
   `Outcome<T>`), D8.5 `Secret<T>`, D7.8
   `LocalStamp`/`LocalTime` (in `core::text`), D5.1 the engine port `io::engine_bridge`
@@ -298,12 +301,13 @@ first `scripts/ci.sh`, so that everything compiles and every later task only fil
   `dashboard/src/lib/ipc/bindings/*.ts`; `ci.sh` fails on drift.
 
 **Acceptance.**
+
 - `cargo build --all-targets --locked` and `cargo test --locked` at the root: unchanged
   behaviour, all existing engine tests pass; `scripts/install.sh` untouched and working.
 - `pnpm --dir dashboard install --frozen-lockfile && pnpm --dir dashboard build && pnpm
-  --dir dashboard check && pnpm --dir dashboard lint` pass; then (the shell embeds the built
+--dir dashboard check && pnpm --dir dashboard lint` pass; then (the shell embeds the built
   UI, D11.4 stage 2) `cargo test -p jev-usage-core -p jev-usage-io --locked` and `cargo
-  build -p jev-dashboard --locked` pass; `cargo fmt --check` and clippy pass **scoped to
+build -p jev-dashboard --locked` pass; `cargo fmt --check` and clippy pass **scoped to
   the three app crates**, clippy with `-- --no-deps -D warnings` so the engine, a workspace
   dependency, is not linted by the app's gate (D11.1); `cargo deny check` passes with the
   path-dependency setting of D8.9 (`allow-wildcard-paths`, the app crates `publish = false`);
@@ -315,7 +319,7 @@ first `scripts/ci.sh`, so that everything compiles and every later task only fil
   duplicate ids), `MeterId::key`/`parse_key` round-trip for arbitrary values,
   `WindowKind::from_minutes`.
 - `static_assertions`: `Secret<String>` implements none of `Debug Display Clone Serialize
-  PartialEq`. The **type-file test** of D8.10 (`usage-core/tests/type_files.rs`, `syn`):
+PartialEq`. The **type-file test** of D8.10 (`usage-core/tests/type_files.rs`, `syn`):
   no struct field or enum variant field in the frozen type files, or in any other core
   type that derives `TS` (`Settings`, `SettingsPatch`, `Severity`, `Phase`: IPC types
   defined beside their logic and re-exported from `ipc`, D7.4), has a string-like type,
@@ -358,7 +362,7 @@ first `scripts/ci.sh`, so that everything compiles and every later task only fil
   `.claude/worktrees/` (the `exclude` works), and `cargo build` at the root builds only the
   engine.
 - Confirm and report (D16): the pinned versions of Tauri 2, Svelte 5, Vite; that `tauri
-  build -- --profile dist` lands in `target/dist/`; whether `tauri-plugin-notification` has an
+build -- --profile dist` lands in `target/dist/`; whether `tauri-plugin-notification` has an
   urgency setting (if it does, tell the lead before using `notify-rust`); that the scaffold
   window renders a Svelte component with `freezePrototype: true`; that `tauri.conf.json`
   needs the placeholder icons or not; that Tauri's macros pass `forbid(unsafe_code)` and
@@ -376,6 +380,7 @@ blocking and release-age rule), fixtures contain no real data.
 **Depends on.** nothing.
 
 **Review checklist (lead).**
+
 - [ ] Root `Cargo.toml` diff is only what D5 allows for the path taken; no
       `[workspace.lints]`; engine build and tests identical.
 - [ ] The app crates are members and not default members (`cargo metadata`:
@@ -401,6 +406,7 @@ anything but numbers, closed enums and `Label`s.
 `dashboard/crates/usage-core/tests/parse_*.rs`.
 
 **Exposes.**
+
 ```rust
 // parse::claude_log
 pub struct ClaudeLogSample { pub at: UnixMillis, pub windows: Meters }      // ≥ 1 window meter
@@ -424,6 +430,7 @@ pub fn parse_balance(body: &[u8]) -> Result<Meters, Unavailable>;
 pub struct ClaudeLogin { pub logged_in: bool, pub plan: Option<Label> }
 pub fn parse(output: &[u8]) -> Option<ClaudeLogin>;
 ```
+
 Mapping rules: D6.1 (including the exact **key rule**: split at the last `-`, attributes
 `utilization`/`reset`/`status` only), D6.3, D6.4, D3.1, D3.2. Details: utilization and reset
 are strings in the log and numbers in the event; a window with a utilization but an
@@ -440,6 +447,7 @@ with exactly `loggedIn`, `planTier`, `subscriptionType`; plan = `planTier`, else
 when the bytes are not that JSON, the text rule of D8.6 on bytes; anything else `None`.
 
 **Acceptance tests.**
+
 - Each parser against its recorded/synthetic fixtures with exact expected `Meters`
   (`rate_limits_read.response.json` → one `Monthly` window, 400 bp, reset 1797439066,
   plan `free`; notifications and other ids → `None`).
@@ -476,6 +484,7 @@ when the bytes are not that JSON, the text rule of D8.6 on bytes; anything else 
 **Depends on.** T00.
 
 **Review checklist.**
+
 - [ ] No `Value`, `String`, `&str` field in any deserialisation struct except where it is
       converted in the same function to a number/enum/`Label`.
 - [ ] The `ratelimit` visitor ignores non-prefixed keys without allocating their values.
@@ -493,6 +502,7 @@ when the bytes are not that JSON, the text rule of D8.6 on bytes; anything else 
 `dashboard/crates/usage-core/tests/policy_*.rs`.
 
 **Exposes.**
+
 ```rust
 // assess
 pub fn derive(state: &SourceState, now: UnixMillis, policy: &FreshnessPolicy) -> Usage;
@@ -532,6 +542,7 @@ pub fn same_content(a: &Snapshot, b: &Snapshot) -> bool;                        
 ```
 
 **Acceptance tests.**
+
 - `derive`: table test over every combination of (`attempted`, `last_good` age, failure
   presence/kind) → the exact `Usage` of D4.3/D7.7; a `NotConfigured` or `Unsupported` error
   never displaces a reading; property: total (never panics), never
@@ -574,6 +585,7 @@ pub fn same_content(a: &Snapshot, b: &Snapshot) -> bool;                        
 **Depends on.** T00.
 
 **Review checklist.**
+
 - [ ] No clock, IO, randomness or global state anywhere in these files.
 - [ ] `alerts::step` invariants are property-tested, not only example-tested.
 - [ ] `text` output for every vector equals the UI formatter's output (shared file).
@@ -590,6 +602,7 @@ can only ever hand lines to T01's parser.
 `dashboard/crates/usage-io/tests/claude_log_*.rs`.
 
 **Exposes.**
+
 ```rust
 // tail
 pub struct TailReader { /* path, (dev, inode), offset, carry buffer (zeroized on drop) */ }
@@ -628,6 +641,7 @@ impl UsageSource for ClaudeGatewayLogSource   // Trigger::OnSignal, Cost::Free, 
 /// `HistoryStore::record_all` (which applies the write rule). Returns samples stored.
 pub fn backfill(path: &Path, store: &dyn HistoryStore) -> Result<u64, StoreError>;
 ```
+
 The source holds the per-window state of D6.1 (latest value and `ts_ms` per window name,
 behind a mutex): rows are **not** in `ts_ms` order, a row replaces a window only when its
 `ts_ms` is greater, and a window missing from the newest row is carried while its reset is
@@ -637,6 +651,7 @@ reading it already holds. No sample anywhere → `Err(NotConfigured(UseGateway))
 missing → the same. Permission or read error → `Err(Unavailable(Io))`.
 
 **Acceptance tests** (temp dirs, synthetic rows from `fixtures/claude-gateway/`).
+
 - Property: for any split of a file into appended chunks (including splits inside a line and
   inside a multi-byte character) and any rotation point (rename to `.1` + new file, with or
   without unread bytes in the old one), the sequence of lines delivered equals a whole-file
@@ -674,6 +689,7 @@ log), D8.4 (no line content in errors or `diag`).
 **Depends on.** T00 (uses T01's `parse_line` and `might_have_sample`).
 
 **Review checklist.**
+
 - [ ] Files opened with read-only flags only; no `create`, no locks.
 - [ ] No polling loop, no `sleep` in a loop, no watcher thread; only the two narrow inotify
       watches and the throttle timer.
@@ -693,6 +709,7 @@ sources that use them.
 programs under `dashboard/crates/usage-io/tests/stubs/` (shell scripts).
 
 **Exposes.**
+
 ```rust
 // proc (the only module allowed to use std/tokio process APIs)
 #[derive(Copy, Clone, Eq, PartialEq, Debug)] pub enum Program { Codex, Claude }
@@ -727,6 +744,7 @@ pub struct ClaudeLiveSource;
 impl ClaudeLiveSource { pub fn new(runner: Arc<ProcRunner>, clock: Arc<dyn Clock>, facts: Arc<FactsCell>) -> Self; }
 impl UsageSource   // Trigger::Manual, Cost::SpendsQuota, timeout 60 s
 ```
+
 Codex request bytes are a `const` equal to lines 1–3 of
 `fixtures/codex-app-server/requests.jsonl` (no `account/usage/read`, no `account/read`).
 Both sources set `needs_login: true` in their descriptor.
@@ -741,6 +759,7 @@ unit-tested with a stub program that replays `tests/fixtures/claude/turn1.jsonl`
 is not part of this task.
 
 **Acceptance tests** (stub programs only).
+
 - Stub replays the recorded Codex session (with notifications interleaved and a 200 ms
   delay) → the expected `Reading`; stdin received by the stub equals the three request
   lines exactly. The same with `paid_plan.response.json` → two window meters and the plan;
@@ -809,6 +828,7 @@ constant), D6.2 (live check only on manual trigger), D8.4.
 **Depends on.** T00 (uses T01's `parse::codex` and `parse::claude_event`).
 
 **Review checklist.**
+
 - [ ] `env_clear()` then allow-list; own process group; group kill on deadline and on drop.
 - [ ] stderr is `Stdio::null()` except for the two status specs (merged); output bounded per
       line and in total.
@@ -829,6 +849,7 @@ constant), D6.2 (live check only on manual trigger), D8.4.
 `dashboard/crates/usage-io/tests/deepseek_*.rs`.
 
 **Exposes.**
+
 ```rust
 // http (the only module allowed to use reqwest)
 #[derive(Copy, Clone, Debug)] pub enum Endpoint { DeepSeekBalance }
@@ -849,15 +870,17 @@ pub struct DeepSeekBalanceSource;
 impl DeepSeekBalanceSource { pub fn new(http: Arc<HttpClient>, clock: Arc<dyn Clock>, keys: Arc<dyn Fn() -> KeySources + Send + Sync>) -> Self; }
 impl UsageSource   // Interval { visible: 10 min, hidden: 30 min }, Cost::Free, timeout 10 s
 ```
+
 Status mapping: 200 → parse; 401/403 → `Unauthorized`; 429 → `RateLimited`; 5xx →
 `ServerError`; connect/DNS failure → `Offline`; timeout → `Timeout`; body over 64 KiB or
 unparsable → `Protocol`. No key → `Err(NotConfigured(AddDeepSeekKey))` and **no request**.
 
 **Acceptance tests** (local stub server on 127.0.0.1, ephemeral port).
+
 - Happy path with `fixtures/deepseek/balance_ok.json` → expected balance meter; two
   currencies → two meters.
 - The request the stub receives: method GET, path `/user/balance`, `Authorization: Bearer
-  <key>`, `User-Agent: jev-dashboard`, no cookies, no other custom headers.
+<key>`, `User-Agent: jev-dashboard`, no cookies, no other custom headers.
 - Each status/failure mapping above; a redirect response is **not followed** (stub counts
   hits on the redirect target: zero); a slow body hits the timeout; a 1 MiB body is cut off.
 - **Key canary**: key = `JEVCANARY_KEY_…`. After success and after every failure: the
@@ -878,6 +901,7 @@ proxy, body cap), D8.4 (reqwest errors classified and dropped; never `to_string(
 **Depends on.** T00 (uses T01's `parse::deepseek`).
 
 **Review checklist.**
+
 - [ ] `Secret` never leaves the fetch call's stack; no field of a long-lived struct holds it.
 - [ ] `reqwest::Error` is matched by kind (`is_timeout`, `is_connect`, status) and discarded.
 - [ ] The production URL is a `const` with `https://api.deepseek.com/user/balance`; the test
@@ -895,6 +919,7 @@ proxy, body cap), D8.4 (reqwest errors classified and dropped; never `to_string(
 `dashboard/crates/usage-io/tests/{store_*.rs,settings_*.rs,fsutil_*.rs}`.
 
 **Exposes.**
+
 ```rust
 // fsutil
 // `FsError` is T00's field-less enum; `std::io::Error` is classified here and dropped (D8.4)
@@ -918,6 +943,7 @@ pub struct JsonSettingsStore;
 impl JsonSettingsStore { pub fn new(path: PathBuf) -> Self; }
 impl SettingsStore for JsonSettingsStore   // load: missing/invalid → defaults (invalid file renamed *.invalid); save: write_private_atomic
 ```
+
 Schema, pragmas, retention and migration rules: D7.5. `series` returns `SeriesData`: points
 with `lo/hi` (equal to `value` for raw samples), never more than `max_points`, aggregated by
 SQL `GROUP BY` so the raw rows of a range are never loaded; the bucket width; and the reset
@@ -931,6 +957,7 @@ database comes from `ProviderKey::as_str()` and `MeterId::key()`; all SQL uses b
 parameters.
 
 **Acceptance tests** (temp dirs).
+
 - Modes: directory 0700; `history.db`, `-wal`, `-shm`, `settings.json` and the atomic temp
   file 0600, also when the process umask is 022 at test time.
 - `record` + `series` round-trip; write rule (unchanged value within 15 min not stored;
@@ -965,6 +992,7 @@ no SQL string concatenation.
 **Depends on.** T00 (uses T02's `history::should_store`, `downsample`, retention constants).
 
 **Review checklist.**
+
 - [ ] Every statement uses bound parameters; no `format!` into SQL.
 - [ ] All writes in transactions; prune + rollup atomic.
 - [ ] One connection, `Mutex`, callers use `spawn_blocking` (documented on the type).
@@ -996,6 +1024,7 @@ width matrix, axe runner, no-network guard, CSP-violation guard) and
 `dashboard/e2e/screens/shell.spec.ts` with its baselines.
 
 **Exposes.**
+
 ```ts
 // lib/ipc/client.ts (T00's, frozen) — components and stores import ONLY this, never @tauri-apps/api.
 // `Outcome<T>` is the generated envelope of D7.3; nothing here is hand-typed twice.
@@ -1013,23 +1042,60 @@ export interface IpcClient {
 // takes NO parameter and returns the constant invalid_argument outcome (D7.3).
 export function createTauriClient(): IpcClient;
 // lib/ipc/mock.ts and fixtures.ts: every name is a declared type (D1a)
-export type FixtureName = "pending" | "known" | "stale_quiet" | "stale_failing" | "elapsed" | "unavailable"
-                        | "not_configured" | "first_run" | "mixed";    // one per state of D9.5 + mixed
-export type MockScript = { snapshot: Snapshot; settings: Settings; history: HistorySeries; diagnostics: Diagnostics;
-                           fail: Partial<Record<"refresh" | "getHistory" | "updateSettings", CommandError>> };
-export interface MockIpcClient extends IpcClient { push(s: Snapshot): void; navigate(r: Route): void;
-                                                   readonly calls: readonly MockCall[] }
-export type MockCall = { command: "getSnapshot" | "refresh" | "getHistory" | "getSettings" | "updateSettings" | "getDiagnostics" };
+export type FixtureName =
+  | "pending"
+  | "known"
+  | "stale_quiet"
+  | "stale_failing"
+  | "elapsed"
+  | "unavailable"
+  | "not_configured"
+  | "first_run"
+  | "mixed"; // one per state of D9.5 + mixed
+export type MockScript = {
+  snapshot: Snapshot;
+  settings: Settings;
+  history: HistorySeries;
+  diagnostics: Diagnostics;
+  fail: Partial<
+    Record<"refresh" | "getHistory" | "updateSettings", CommandError>
+  >;
+};
+export interface MockIpcClient extends IpcClient {
+  push(s: Snapshot): void;
+  navigate(r: Route): void;
+  readonly calls: readonly MockCall[];
+}
+export type MockCall = {
+  command:
+    | "getSnapshot"
+    | "refresh"
+    | "getHistory"
+    | "getSettings"
+    | "updateSettings"
+    | "getDiagnostics";
+};
 export function createMockClient(script: MockScript): MockIpcClient;
-export const fixtures: Record<FixtureName, MockScript>;   // a whole script: `first_run` differs in `settings`, not in the snapshot
+export const fixtures: Record<FixtureName, MockScript>; // a whole script: `first_run` differs in `settings`, not in the snapshot
 // Every script lists all six providers, Gemini, Antigravity and Grok as `unsupported`. Codex is the paid shape
 // (two windows) in `known` and `mixed` and the free shape (one 30-day window) in `stale_failing` (D1a, D9.3).
 
 // lib/stores
-export const usage:    { readonly snapshot: Snapshot | null; readonly refreshing: boolean; refresh(t?: RefreshTarget): Promise<Outcome<null>> };
-export const settings: { readonly value: Settings; update(p: SettingsPatch): Promise<Outcome<Settings>> };
-export const clock:    { readonly now: number };                 // epoch ms; ticks on the minute, only while visible
-export const router:   { readonly route: Route; go(r: Route): void; back(): void };   // initial route and theme from the URL fragment (D7.3)
+export const usage: {
+  readonly snapshot: Snapshot | null;
+  readonly refreshing: boolean;
+  refresh(t?: RefreshTarget): Promise<Outcome<null>>;
+};
+export const settings: {
+  readonly value: Settings;
+  update(p: SettingsPatch): Promise<Outcome<Settings>>;
+};
+export const clock: { readonly now: number }; // epoch ms; ticks on the minute, only while visible
+export const router: {
+  readonly route: Route;
+  go(r: Route): void;
+  back(): void;
+}; // initial route and theme from the URL fragment (D7.3)
 /// The single polite live region's queue (D9.10): merges messages within 2 s, drops a repeat within 60 s.
 export const announce: { say(message: string): void; readonly current: string };
 /// Subscribes to `snapshot` BEFORE calling `getSnapshot`, keeps the greater `generated_at` (D7.3).
@@ -1038,20 +1104,41 @@ export function initStores(client: IpcClient): Promise<() => void>;
 // lib/format (pure; D9.9; tested against fixtures/format-vectors.json)
 export function percent(bp: number): string;
 export function countdown(resetsAtS: number, nowMs: number): string | null;
-export function absolute(resetsAtS: number, nowMs: number, hour: HourCycle, zone?: string): string;
+export function absolute(
+  resetsAtS: number,
+  nowMs: number,
+  hour: HourCycle,
+  zone?: string,
+): string;
 export function age(atMs: number, nowMs: number, hour: HourCycle): string;
 export function money(micros: number, currency: Currency): string;
 export function windowName(w: WindowKind): string;
-export function meterValueText(m: MeterView, nowMs: number, hour: HourCycle): string;   // aria-valuetext
+export function meterValueText(
+  m: MeterView,
+  nowMs: number,
+  hour: HourCycle,
+): string; // aria-valuetext
 
 // lib/copy.ts — every user-facing sentence for Unavailable, Setup, StaleCause; commands to copy
-export function unavailableCopy(reason: Unavailable, provider: ProviderKey): { text: string; command?: string };
-export function setupCopy(setup: Setup, provider: ProviderKey): { text: string; command?: string };
-export function unsupportedCopy(provider: ProviderKey): string;   // D9.3: the honest "no source yet" sentence; no number, no plan
+export function unavailableCopy(
+  reason: Unavailable,
+  provider: ProviderKey,
+): { text: string; command?: string };
+export function setupCopy(
+  setup: Setup,
+  provider: ProviderKey,
+): { text: string; command?: string };
+export function unsupportedCopy(provider: ProviderKey): string; // D9.3: the honest "no source yet" sentence; no number, no plan
 export const providerName: Record<ProviderKey, string>;
-export function planName(label: string): string;   // "max_5x" → "Max 5x", "free" → "Free"; unknown → "_" as spaces, capitalised
-export function levelChange(provider: ProviderKey, meter: MeterView, nowMs: number, hour: HourCycle): string;   // live-region sentence, same words as the notification
+export function planName(label: string): string; // "max_5x" → "Max 5x", "free" → "Free"; unknown → "_" as spaces, capitalised
+export function levelChange(
+  provider: ProviderKey,
+  meter: MeterView,
+  nowMs: number,
+  hour: HourCycle,
+): string; // live-region sentence, same words as the notification
 ```
+
 `App.svelte` mounts the header, the router outlet with the three screen files (owned by
 T09/T10), the single live region (fed by `announce`), global shortcuts (off when
 `settings.shortcuts` is false or a text field has focus; `1`–`6` open the providers in
@@ -1068,6 +1155,7 @@ comparing consecutive snapshots: a meter whose `severity` changed, or a provider
 changed, produces one sentence; a changed number alone produces none.
 
 **Acceptance tests.**
+
 - `format` passes every vector in `format-vectors.json`; property tests with fast-check are
   not required, the vectors are.
 - Contrast test computed from `tokens.css` for both themes meets D9.10 (text ≥ 4.5,
@@ -1112,6 +1200,7 @@ only from the generated bindings; no hand-written IPC types).
 **Depends on.** T00.
 
 **Review checklist.**
+
 - [ ] Components import `IpcClient`, never `@tauri-apps/api`; no `try`/`catch` outside
       `ipc/tauri.ts` and the clipboard helper, and none with a binding.
 - [ ] Tokens match D9.7 or the deviation was approved; no magic numbers in components.
@@ -1133,6 +1222,7 @@ event-driven task of D7.1–D7.2.
 `dashboard/crates/usage-io/tests/{service_*.rs,timer_*.rs}`.
 
 **Exposes.** Exactly D7.1 (`ServiceDeps`, `ServiceHandle`, `spawn(deps, rt)`), plus:
+
 ```rust
 // registry
 pub struct RegistryInputs { pub usage_log: Option<PathBuf>, pub facts: Arc<FactsCell>, pub clock: Arc<dyn Clock>,
@@ -1149,6 +1239,7 @@ pub struct Backoff;   // pure: next_delay(failures, kind, jitter: f64) -> Durati
 pub struct SystemJitter;  impl Jitter for SystemJitter   // std RandomState, no `rand` (D8.9); `Jitter`, `Backfill`, `ShellFacts` are T00's types
 // timer (D7.1): bodies of SystemTimer (timerfd, CLOCK_REALTIME, absolute, cancel-on-set) and FakeTimer
 ```
+
 Behaviour to implement: D7.1 loop with **one** `WallTimer` wait (never
 `tokio::time::sleep` for a deadline); D7.2 in full: signal sources, intervals, visibility,
 backoff (`NotConfigured`/`Unsupported` are not failures), one-in-flight, the exact manual
@@ -1176,6 +1267,7 @@ fetches); `Wake::ClockChanged` recomputes every deadline; `shutdown()` cancels i
 fetches and ends the task within 2 s; dropping all handles does the same.
 
 **Acceptance tests** (fake sources, `FakeClock`, tokio paused time, in-memory or temp store).
+
 - Start: all `Pending`, then each provider settles as its fake source answers/fails.
 - Signal → exactly one fetch of that source; 50 signals while a fetch is in flight → one
   more fetch after it; becoming visible fetches a signal source once.
@@ -1240,6 +1332,7 @@ manual only), D7.4 (snapshot built only by `view::snapshot`).
 **Depends on.** T01–T06.
 
 **Review checklist.**
+
 - [ ] One task owns all state; no `Mutex` around service state; no detached tasks that
       outlive the handle.
 - [ ] Exactly one `WallTimer::sleep_until`; no tokio sleep for a deadline; no `interval`
@@ -1283,6 +1376,7 @@ unless a level is reached (then the level's glyph and word appear). Level 1 appe
 or focus of a row. Whitespace per D9.1. Nothing decorative.
 
 **Acceptance tests.**
+
 - A screenshot for every fixture state x light/dark x widths 360/720/1200, plus reduced
   motion and forced colors for the mixed fixture; baselines reviewed by the lead.
 - Zero axe violations on every state x theme. Each card is a group with a heading; its
@@ -1339,6 +1433,7 @@ rendered; no dynamic HTML.
 **Depends on.** T07, T14.
 
 **Review checklist.**
+
 - [ ] Matches the D9.3 wireframe and D9.5 state table; numbers right-aligned in tabular mono.
 - [ ] Minimal at rest (level 0 only), detail one focus away, and the same detail in the
       accessible text; every item of D9.10 demonstrated.
@@ -1363,23 +1458,50 @@ geometry), `dashboard/src/lib/components/settings/**`,
 their tests, `dashboard/e2e/screens/{detail,settings}.spec.ts` and baselines.
 
 **Exposes.**
+
 ```ts
 // lib/chart (pure, unit-tested)
 export type Scale = { x(t: number): number; y(v: number): number };
 export type Pad = { top: number; right: number; bottom: number; left: number };
 export type Tick = { at: number; label: string };
-export function makeScale(series: HistorySeries, width: number, height: number, pad: Pad): Scale;
-export function stepPath(points: HistoryPoint[], scale: Scale, gapSeconds: number): string;   // breaks at gaps; gapSeconds is always series.gap_s
-export function bandPath(points: HistoryPoint[], scale: Scale, gapSeconds: number): string;   // lo..hi
-export function ticks(series: HistorySeries, range: HistoryRange, hour: HourCycle): { x: Tick[]; y: Tick[] };
-export function summarize(series: HistorySeries, hour: HourCycle): string;                     // the role="img" label
-export function nearest(points: HistoryPoint[], t: number): number;                            // index for the crosshair
-export function pointText(p: HistoryPoint, unit: HistorySeries["unit"], hour: HourCycle): string;   // the crosshair slider's aria-valuetext
+export function makeScale(
+  series: HistorySeries,
+  width: number,
+  height: number,
+  pad: Pad,
+): Scale;
+export function stepPath(
+  points: HistoryPoint[],
+  scale: Scale,
+  gapSeconds: number,
+): string; // breaks at gaps; gapSeconds is always series.gap_s
+export function bandPath(
+  points: HistoryPoint[],
+  scale: Scale,
+  gapSeconds: number,
+): string; // lo..hi
+export function ticks(
+  series: HistorySeries,
+  range: HistoryRange,
+  hour: HourCycle,
+): { x: Tick[]; y: Tick[] };
+export function summarize(series: HistorySeries, hour: HourCycle): string; // the role="img" label
+export function nearest(points: HistoryPoint[], t: number): number; // index for the crosshair
+export function pointText(
+  p: HistoryPoint,
+  unit: HistorySeries["unit"],
+  hour: HourCycle,
+): string; // the crosshair slider's aria-valuetext
 // lib/detail/history.svelte.ts
-export const history: { load(q: HistoryQuery): Promise<void>; readonly state: "idle" | "loading" | "ready" | "empty" | "error"; readonly series: HistorySeries | null };
+export const history: {
+  load(q: HistoryQuery): Promise<void>;
+  readonly state: "idle" | "loading" | "ready" | "empty" | "error";
+  readonly series: HistorySeries | null;
+};
 ```
 
 **Acceptance tests.**
+
 - Chart geometry: step path for known points equals an expected path string; gaps split the
   path exactly where two points are further apart than `series.gap_s` (the UI has no gap
   constant of its own); band for rollups; empty series → empty state ("No history yet. It
@@ -1430,6 +1552,7 @@ export const history: { load(q: HistoryQuery): Promise<void>; readonly state: "i
 **Depends on.** T07, T14.
 
 **Review checklist.**
+
 - [ ] Step chart, no interpolation across gaps, thresholds labelled in text.
 - [ ] No chart dependency added; SVG only; colours from tokens.
 - [ ] Chart is usable by keyboard and described for screen readers.
@@ -1449,6 +1572,7 @@ export const history: { load(q: HistoryQuery): Promise<void>; readonly state: "i
 **Exposes / implements.** Everything that takes an app handle is generic over the runtime
 (`R: tauri::Runtime`), because the tests use `tauri::test`'s mock runtime and a function
 written for the default runtime does not accept it.
+
 ```rust
 // commands.rs — exactly these six, names fixed by the capability file
 // Every command returns the generated envelope `Outcome<T>` and always resolves (D7.3).
@@ -1477,11 +1601,12 @@ pub fn remember_size<R: Runtime>(app: &AppHandle<R>, w: u32, h: u32);       // d
 // app.rs
 pub fn run();                                                               // the wiring below
 ```
+
 `app::run` order: `hardening::apply()` (before any thread) → take the binary's path once
 (`current_exe`, D9.13) → builder with the single-instance plugin registered first (a second
 launch calls `window::open` unless its arguments contain `--hidden`) → in `setup` (which runs
 after plugin initialisation, so a second process never gets here): build `ServiceDeps`
-(engine_bridge paths, `SqliteStore`, `JsonSettingsStore`, `ProcRunner::system`,
+(engine*bridge paths, `SqliteStore`, `JsonSettingsStore`, `ProcRunner::system`,
 `registry::build`, `registry::backfill_job`, `watch_file`, `CliProbe`, `SystemTimer`,
 `SystemJitter`, `DesktopNotifier`) → `spawn(deps, rt)` and `watch_file(.., rt)` with Tauri's
 runtime handle (`tauri::async_runtime::handle().inner()`, the tokio handle inside Tauri's
@@ -1501,12 +1626,12 @@ reconciles the entry; on failure it restores the previous value through the serv
 returns the `io` error outcome. The tray's Notifications checkbox writes
 `settings.notifications`; the shell re-applies the tray model when settings change
 (`subscribe_settings`). `DiagEvent::WindowReady` is emitted when the first `get_snapshot`
-of a newly created web view returns; the commands may take further `State<'_, …>`
-parameters for shell state such as that window-creation instant (the six names and their
-IPC arguments and results are what is fixed). `autostart::reconcile` returns T15's
-field-less `AutostartError`, which the command maps to the `io` outcome.
+of a newly created web view returns; the commands may take further `State<'*, …>`parameters for shell state such as that window-creation instant (the six names and their
+IPC arguments and results are what is fixed).`autostart::reconcile`returns T15's
+field-less`AutostartError`, which the command maps to the `io` outcome.
 
 **Acceptance tests.**
+
 - `update_settings` with a failing reconcile returns `io` and the stored setting is the old
   value; a failing reconcile at start leaves `autostart` off.
 - Tray (pure): `model` of two snapshots that differ only in `RefreshView` is equal; a
@@ -1554,6 +1679,7 @@ extra command, no event from UI to Rust); notifications and tray text only from
 **Depends on.** T08, T15 (and the event/command names used by T07's `tauri.ts`).
 
 **Review checklist.**
+
 - [ ] No logic in the shell that belongs in core/io (no formatting, no thresholds, no parsing).
 - [ ] Exactly six commands; capability and CSP snapshots unchanged from T00.
 - [ ] The window builder disables the drag-and-drop handler (a source test finds the call
@@ -1584,6 +1710,7 @@ programs), `dashboard/e2e/webdriver/**`, `dashboard/e2e/screens/security.spec.ts
 `dashboard/scripts/measure-idle.sh`, coverage configuration.
 
 **Delivers.**
+
 - Every proof in the table of D8.10 that is not already owned by T01–T11, in particular:
   the **architecture test** (allowed locations of `expose_secret` and `reqwest` (`http.rs`),
   process APIs (`proc.rs`), `zbus` (`bus.rs`), `notify_rust` (`notifier.rs`), the engine's
@@ -1655,6 +1782,7 @@ that cannot be met is escalated to the lead.
 **Depends on.** T01–T11, T14, T15; final run after T13 is merged (section 1).
 
 **Review checklist.**
+
 - [ ] Each row of D8.10 and each bullet of D9.10 maps to a named, passing test or a named
       manual step (tables in the report).
 - [ ] Mutation check done: each proof fails when its rule is broken.
@@ -1679,6 +1807,7 @@ that cannot be met is escalated to the lead.
 behaviour or contract changes; baselines regenerated and reviewed).
 
 **Delivers.**
+
 - D12 build and install flow; `install.sh [dest]` and `--uninstall`; the binary is replaced
   by rename (a running instance is never half-replaced); desktop entry
   validated with `desktop-file-validate` (`Name=Flashboard`, icon `dev.jev.flashboard`,
@@ -1718,6 +1847,7 @@ exactly what D8 guarantees and its honest limits.
 **Depends on.** T09, T10, T11 (runs alongside T12; T12 owns `ci.sh`, T13 does not edit it).
 
 **Review checklist.**
+
 - [ ] `scripts/install.sh` byte-identical to before the project.
 - [ ] Desktop entry valid; icon legible at 16–128 px in light and dark.
 - [ ] Polish diff changes presentation only; no new dependency; screenshots reviewed.
@@ -1753,6 +1883,7 @@ trigger; when the trigger is a button, pressing it opens the disclosure again, D
 primitives. No primitive nests one interactive element in another.
 
 **Acceptance tests.**
+
 - Every primitive: Testing Library tests for each state and keyboard behaviour; **zero axe
   violations**; screenshot per state x theme (`primitives.spec.ts`), plus reduced-motion and
   forced-colors runs.
@@ -1774,6 +1905,7 @@ primitives. No primitive nests one interactive element in another.
 **Depends on.** T00 (uses T07's tokens, `clock` and harness).
 
 **Review checklist.**
+
 - [ ] Status is never colour-only (glyph + word + pattern present in `Meter`).
 - [ ] `Meter` and `Countdown` have correct accessible text; exactly one `svelte-ignore`, on
       the meter row, with its reason.
@@ -1793,6 +1925,7 @@ bus.rs,notifier.rs,cli.rs}`, `dashboard/src-tauri/tests/{tray_icon_*,autostart_*
 hardening_*,notifier_*,localtime_*,cli_*}.rs`.
 
 **Exposes.**
+
 ```rust
 // tray_icon.rs (pure)
 #[derive(Copy, Clone, Eq, PartialEq, Debug)]
@@ -1822,6 +1955,7 @@ pub struct Args { pub hidden: bool }  pub fn parse<I: IntoIterator<Item = String
 ```
 
 **Acceptance tests.**
+
 - `tray_icon::render`: golden-image tests for representative specs (0, 50, 80, 95, 100 % x
   levels); property: every pixel buffer has length `size*size*4`, alpha-premultiplied
   correctly, deterministic.
@@ -1848,6 +1982,7 @@ directory). `zbus` only in `bus.rs`, `notify_rust` only in `notifier.rs`; no `un
 **Depends on.** T00 (uses T02's `text::notification`).
 
 **Review checklist.**
+
 - [ ] `render` is pure and matches D9.11 (level is a shape, not only a colour).
 - [ ] `Exec=` is quoted per the specification; no path is written that does not exist.
 - [ ] The notifier can never block its caller; no notification text is built here.
@@ -1862,7 +1997,7 @@ directory). `zbus` only in `bus.rs`, `notify_rust` only in `notifier.rs`; no `un
    fail if the rule were broken.
 3. Search the diff for: new dependencies, `allow(` attributes, `String` in error or IPC
    types, `unwrap`/`expect`, `Value`, `unsafe`, and in TypeScript `any`, `unknown`, `never`,
-   ` as `, `!.`, `@ts-`, `catch (`, ` is ` in a return type, `declare`, `JSON.parse`, `eslint-disable`, `svelte-ignore` (one approved, D9.3), `io::Result` in a `pub` signature, new file names read from disk, new network hosts, new commands
+   `as`, `!.`, `@ts-`, `catch (`, `is` in a return type, `declare`, `JSON.parse`, `eslint-disable`, `svelte-ignore` (one approved, D9.3), `io::Result` in a `pub` signature, new file names read from disk, new network hosts, new commands
    or permissions, timers and loops.
 4. For UI tasks: review every baseline screenshot in both themes at 360 and 1200 px, tab
    through the screen, read the copy aloud; check the four words of D1a (minimal, detailed,

@@ -159,7 +159,7 @@ async fn main() -> Result<()> {
         .fallback(any(proxy))
         .with_state(app);
     let listener = tokio::net::TcpListener::bind(&addr).await.with_context(|| format!("bind {addr}"))?;
-    eprintln!("jev-gateway listening on http://{addr}");
+    eprintln!("jev-gateway {} listening on http://{addr}", env!("CARGO_PKG_VERSION"));
     axum::serve(listener, http).await?;
     Ok(())
 }

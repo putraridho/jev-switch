@@ -277,8 +277,8 @@ impl Repl {
         let set = |name: &str| if envfile::lookup(name).is_some_and(|v| !v.is_empty()) { "set" } else { "not set" }.to_string();
         let env = vec![
             row("CODE_PERMISSION_MODE", shown("CODE_PERMISSION_MODE"), "the mode a session starts in"),
-            row("JEV_PROVIDERS", shown("JEV_PROVIDERS"), "off starts with routing off"),
-            row("JEV_ORCHESTRATE", shown("JEV_ORCHESTRATE"), "on starts with orchestration on"),
+            row("JEV_PROVIDERS", shown("JEV_PROVIDERS"), "off starts with routing off; /provider is kept"),
+            row("JEV_ORCHESTRATE", shown("JEV_ORCHESTRATE"), "on|off at start; /orchestrate is kept"),
             row("CODE_ALLOWED_TOOLS", shown("CODE_ALLOWED_TOOLS"), "tools allowed without asking"),
             row("DOWNGRADE_AFTER", shown("DOWNGRADE_AFTER"), "turns before a cheaper tier is tried"),
             row("CODE_STRONG_THRESHOLD", shown("CODE_STRONG_THRESHOLD"), "when routing is off: hard-task cut-off"),

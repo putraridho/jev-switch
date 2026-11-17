@@ -142,7 +142,13 @@ pub fn relativize_paths(text: &str, project_dir: &Path) -> String {
 /// ellipsis to `width`.
 pub fn tool_line(summary: &str, project_dir: &Path, style: Style, width: usize) -> String {
     let body = relativize_paths(&one_line(summary), project_dir);
-    style.dim(&truncate_to_width(&format!("  ⏺ {body}"), clamp_width(width)))
+    let (verb, detail) = body.split_once(' ').unwrap_or((&body, ""));
+    let line = if detail.is_empty() {
+        format!("  {} {}", style.cyan("⏺"), style.bold(verb))
+    } else {
+        format!("  {} {} {}", style.cyan("⏺"), style.bold(verb), style.dim(detail))
+    };
+    truncate_to_width(&line, clamp_width(width))
 }
 
 #[cfg(test)]
@@ -264,7 +270,9 @@ mod tests {
     }
 
     #[test]
-    fn tool_line_is_dim() {
-        assert_eq!(tool_line("Edit a", Path::new("/p"), ON, 40), "\x1b[2m  ⏺ Edit a\x1b[0m");
+    fn tool_line_separates_action_from_detail() {
+        let line = tool_line("Edit a", Path::new("/p"), ON, 40);
+        assert!(line.contains("\x1b[1mEdit\x1b[0m"));
+        assert!(line.contains("\x1b[2ma\x1b[0m"));
     }
 }

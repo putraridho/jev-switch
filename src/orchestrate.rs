@@ -4,9 +4,10 @@
 //! [`crate::delegate`].)
 //!
 //! Everything that decides is pure, so each rule is a unit test and the engine only
-//! sequences them. Orchestration is OFF by default and per session (`/orchestrate
-//! on|off`, or `JEV_ORCHESTRATE=on` at start): a planner plus workers costs more than
-//! one model on a small task, so it must be asked for.
+//! sequences them. Orchestration is ON by default in a session and what `/orchestrate
+//! on|off` sets is kept for the next one (a one-shot `-p` stays off unless `JEV_ORCHESTRATE=on`):
+//! a planner plus workers costs more than one model on a small task, so it only triggers when
+//! Jev says the request splits into pieces.
 //!
 //! Hard rules:
 //! - it triggers only when Jev says the request splits into pieces (`multi_part` at
@@ -126,10 +127,25 @@ fn names(providers: &[ProviderId]) -> String {
     providers.iter().map(|p| p.as_str()).collect::<Vec<_>>().join(", ")
 }
 
-/// The `/orchestrate` switch at start: only an explicit yes turns it on, because it is
-/// off by default (`JEV_ORCHESTRATE=on`, also `1`, `true`, `yes`).
-pub fn enabled_from_env(env: Option<&str>) -> bool {
-    env.is_some_and(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "on" | "1" | "true" | "yes"))
+/// What `JEV_ORCHESTRATE` says: `on` (also `1`, `true`, `yes`), `off` (also `0`, `false`, `no`),
+/// or nothing when it is unset or says something else.
+pub fn env_choice(env: Option<&str>) -> Option<bool> {
+    match env?.trim().to_ascii_lowercase().as_str() {
+        "on" | "1" | "true" | "yes" => Some(true),
+        "off" | "0" | "false" | "no" => Some(false),
+        _ => None,
+    }
+}
+
+/// Whether orchestration starts on. A session: what the last one left (`/orchestrate`), else
+/// `JEV_ORCHESTRATE`, else on. A one-shot (`-p`) has no one to ask and costs what it costs
+/// in a script, so there only an explicit `JEV_ORCHESTRATE=on` turns it on.
+pub fn start(saved: Option<bool>, env: Option<&str>, session: bool) -> bool {
+    if session {
+        saved.or(env_choice(env)).unwrap_or(true)
+    } else {
+        env_choice(env) == Some(true)
+    }
 }
 
 /// Where the delegate tool lives and where its per-run config goes.
@@ -260,14 +276,27 @@ mod tests {
     }
 
     #[test]
-    fn orchestration_is_off_unless_the_env_says_on() {
-        assert!(!enabled_from_env(None));
-        assert!(!enabled_from_env(Some("")));
-        assert!(!enabled_from_env(Some("off")));
-        assert!(!enabled_from_env(Some("maybe")));
+    fn a_session_starts_with_orchestration_on_unless_a_choice_says_otherwise() {
+        // The env names a choice only with a clear word.
+        assert_eq!(env_choice(None), None);
+        assert_eq!(env_choice(Some("")), None);
+        assert_eq!(env_choice(Some("maybe")), None);
         for on in ["on", "ON", " 1 ", "true", "yes"] {
-            assert!(enabled_from_env(Some(on)), "{on}");
+            assert_eq!(env_choice(Some(on)), Some(true), "{on}");
         }
+        for off in ["off", "0", "False", "no"] {
+            assert_eq!(env_choice(Some(off)), Some(false), "{off}");
+        }
+        // A session: kept choice, else the env, else on.
+        assert!(start(None, None, true));
+        assert!(start(None, Some("maybe"), true));
+        assert!(!start(None, Some("off"), true));
+        assert!(!start(Some(false), Some("on"), true), "what the person set last wins over the env");
+        assert!(start(Some(true), Some("off"), true));
+        // A one-shot only turns it on when told to, and never reads a kept choice.
+        assert!(!start(Some(true), None, false));
+        assert!(!start(None, Some("off"), false));
+        assert!(start(None, Some("on"), false));
     }
 
     const MCP: [ProviderId; 3] = [Claude, DeepSeek, Codex];

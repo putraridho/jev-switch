@@ -628,15 +628,31 @@ class Pty:
             pass
 
 
+def wait_prompt(p, timeout=15, what="the prompt"):
+    """Wait for a NEW real prompt. While a turn runs, the field under the status line also
+    starts with `› `, but it carries the cursor mark `▏` and the prompt never does."""
+    deadline = time.time() + timeout
+    while True:
+        text = p.visible()
+        last = text.rstrip("\n").split("\n")[-1].lstrip()
+        seen = text.count("› ")
+        if seen > p.counts.get("› ", 0) and re.match(r"(\[[^\]]*\] )?›", last) and "▏" not in last:
+            p.counts["› "] = seen
+            return text
+        if time.time() >= deadline or (p.eof and p.poll() is not None):
+            raise Fail(f"{what} '› ' within {timeout}s, got:\n{p.tail()}")
+        p.pump(0.1)
+
+
 def prompt_ready(p, timeout=15):
-    p.expect("› ", timeout, "the prompt")
+    wait_prompt(p, timeout, "the prompt")
 
 
 def ask(p, text, answer=ANSWER, timeout=20):
     """Send a message, wait for its answer and for the next prompt."""
     p.send(text + "\r")
     p.expect(answer, timeout, "the answer")
-    p.expect("› ", timeout, "the next prompt")
+    wait_prompt(p, timeout, "the next prompt")
 
 
 MODE_HINT = re.compile(r"\s*\[(ask|edit|plan|auto) mode \u00b7 shift-tab to change\]\s*$")
@@ -644,7 +660,9 @@ MODE_HINT = re.compile(r"\s*\[(ask|edit|plan|auto) mode \u00b7 shift-tab to chan
 
 def at_empty_prompt(p):
     # An empty prompt shows the permission mode as a dim hint after it.
-    return MODE_HINT.sub("", p.visible().rstrip("\n").split("\n")[-1]).strip() == "›"
+    last = MODE_HINT.sub("", p.visible().rstrip("\n").split("\n")[-1]).strip()
+    # A pinned or Claude-only session labels its prompt: `[claude only] ›`.
+    return re.sub(r"^\[[^\]]*\]\s*", "", last) == "›"
 
 
 def quit_with_ctrl_d(p):
@@ -698,10 +716,10 @@ def banner_is_compact(w):
         prompt_ready(p)
         before = p.visible().split("› ")[0]
         lines = [l for l in before.split("\n") if l.strip()]
-        if len(lines) > 3:
-            raise Fail(f"banner should be at most 3 lines, got {len(lines)}:\n{p.tail()}")
-        if not any("jev-code" in l and "routing on" in l for l in lines):
-            raise Fail(f"first banner line should say `jev-code · <dir> · routing on`:\n{p.tail()}")
+        if len(lines) > 6:
+            raise Fail(f"banner should be at most 6 lines, got {len(lines)}:\n{p.tail()}")
+        if not any(re.match(r"\s*jev-code\s+\d+\.\d+\.\d+\S*\s+·\s+routing on", l) for l in lines):
+            raise Fail(f"banner should show the version and routing state:\n{p.tail()}")
         if not any("claude" in l and "●" in l for l in lines):
             raise Fail(f"second banner line should show provider glyphs (● claude ...):\n{p.tail()}")
         if "checking providers" in before.replace("checking providers...", "", 1):
@@ -721,7 +739,7 @@ def a_typed_prompt_runs_a_turn_with_route_tools_answer_and_summary(w):
         p.expect("⏺ Read a.txt", 15, "the tool line")
         p.expect(ANSWER, 15, "the answer")
         p.expect("✓ claude", 15, "the turn summary")
-        summary = p.expect("› ", 15, "the next prompt")
+        summary = wait_prompt(p, 15, "the next prompt")
         line = [l for l in summary.split("\n") if "✓ claude" in l][-1]
         for part in ("in 15", "(cached 5)", "out 3"):
             if part not in line:
@@ -746,7 +764,7 @@ def status_line_shows_during_a_slow_turn_and_is_erased_after(w):
                 raise Fail(f"no spinner glyph appeared during a slow turn:\n{p.tail()}")
             p.pump(0.1)
         p.expect("✓ claude", 20, "the end of the slow turn")
-        p.expect("› ", 10, "the next prompt")
+        wait_prompt(p, 10, "the next prompt")
         turn = p.raw[start:].decode("utf-8", "replace")
         frames = sum(turn.count(g) for g in SPINNER)
         if frames < 5:
@@ -776,7 +794,7 @@ def ctrl_c_stops_the_turn_not_the_program_and_leaves_no_process_behind(w):
             raise Fail("the fake CLI and its child should be running before Ctrl-C")
         p.send("\x03")
         p.expect("stopped", 10, "the `stopped` summary after Ctrl-C")
-        p.expect("› ", 10, "the prompt after the stopped turn")
+        wait_prompt(p, 10, "the prompt after the stopped turn")
         if not p.still_running():
             raise Fail(f"Ctrl-C during a turn must not exit the program (exit {p.exit}):\n{p.tail()}")
         wait_dead(cli, "the fake CLI")
@@ -795,7 +813,7 @@ def ctrl_c_at_the_prompt_warns_and_a_second_one_exits(w):
         p.send("half typed")
         p.send("\x03")
         p.expect("press Ctrl-C again", 5, "the exit hint")
-        p.expect("› ", 5, "a fresh prompt after the first Ctrl-C")
+        wait_prompt(p, 5, "a fresh prompt after the first Ctrl-C")
         if not p.still_running():
             raise Fail("the first Ctrl-C at the prompt must not exit")
         p.send("\x03")
@@ -813,7 +831,7 @@ def ctrl_c_twice_far_apart_does_not_exit(w):
         prompt_ready(p)
         p.send("\x03")
         p.expect("press Ctrl-C again", 5, "the exit hint")
-        p.expect("› ", 5, "a fresh prompt")
+        wait_prompt(p, 5, "a fresh prompt")
         time.sleep(2.4)
         p.send("\x03")
         p.expect("press Ctrl-C again", 5, "the hint again, because the window had passed")
@@ -845,7 +863,7 @@ def help_lists_every_command_and_the_keys(w):
         prompt_ready(p)
         p.send("/help\r")
         p.expect("Keys", 10, "the keys section of /help")
-        p.expect("› ", 5, "the prompt")
+        wait_prompt(p, 5, "the prompt")
         shown = p.visible()
         for name in ["/model", "/provider", "/orchestrate", "/new", "/resume", "/diff", "/undo", "/quit", "/help", "/status", "/providers", "/doctor"]:
             if name not in shown:
@@ -884,7 +902,7 @@ def an_unknown_command_suggests_the_closest(w):
         p.expect("unknown command /provders", 10, "the unknown-command message")
         p.expect("Did you mean /providers?", 5, "the suggestion")
         p.expect("/help", 5, "the pointer to /help")
-        p.expect("› ", 5, "the prompt")
+        wait_prompt(p, 5, "the prompt")
         if "→ claude" in p.visible():
             raise Fail("a mistyped command must not be sent to the model")
         quit_with_ctrl_d(p)
@@ -925,7 +943,7 @@ def alt_enter_and_paste_make_one_multi_line_message(w):
         prompt_ready(p)
         p.send("first line\x1b\rexplain quick\r")
         p.expect(ANSWER, 15, "an answer to the two-line message")
-        p.expect("› ", 10, "the prompt")
+        wait_prompt(p, 10, "the prompt")
         if p.visible().count("→ claude") != 1:
             raise Fail("Alt-Enter should add a line, not send the message")
         before = p.visible().count(ANSWER)
@@ -935,7 +953,7 @@ def alt_enter_and_paste_make_one_multi_line_message(w):
             raise Fail("a bracketed paste with a newline must not send anything by itself")
         p.send("\r")
         p.expect(ANSWER, 15, "an answer to the pasted message")
-        p.expect("› ", 10, "the prompt")
+        wait_prompt(p, 10, "the prompt")
         if p.visible().count("→ claude") != 2:
             raise Fail("the pasted two lines should be ONE message (one turn)")
         quit_with_ctrl_d(p)
@@ -951,10 +969,10 @@ def diff_and_undo_review_what_a_turn_changed(w):
         p.send("edit a file quick\r")
         p.expect("new.txt", 15, "the changed file under the summary")
         p.expect("/diff to review, /undo to revert", 5, "the review hint")
-        p.expect("› ", 5, "the prompt")
+        wait_prompt(p, 5, "the prompt")
         p.send("/diff\r")
         p.expect("+hi", 10, "the diff")
-        p.expect("› ", 5, "the prompt")
+        wait_prompt(p, 5, "the prompt")
         p.send("/undo\r")
         p.expect("Revert 1 file? [y/N]", 10, "the confirmation through the editor")
         p.send("y\r")
@@ -975,7 +993,7 @@ def a_failed_turn_shows_an_error_block_with_next_steps_and_the_session_goes_on(w
         p.expect("The turn failed", 15, "the error title")
         p.expect("segmentation fault", 5, "the CLI's message")
         p.expect("jev-code doctor", 5, "a next step")
-        p.expect("› ", 5, "the prompt")
+        wait_prompt(p, 5, "the prompt")
         shown = p.visible()
         if "Other" in shown or "Err(" in shown or "{ " in shown:
             raise Fail(f"no Debug output may reach the user:\n{p.tail()}")
@@ -1075,7 +1093,7 @@ def no_color_output_has_no_escape_bytes(w):
         prompt_ready(p)
         p.send("slow work please\r")
         p.expect(ANSWER, 20, "the answer")
-        p.expect("› ", 10, "the prompt")
+        wait_prompt(p, 10, "the prompt")
         raw = p.raw.decode("utf-8", "replace")
         if re.search(r"\x1b\[[0-9;]*m", raw):
             raise Fail("NO_COLOR=1 must not produce colour sequences in a session")
@@ -1136,7 +1154,7 @@ def a_tool_that_needs_approval_asks_and_y_lets_it_run_once(w):
         p.send("y")
         p.expect("✓ allowed", 10, "the allowed line")
         p.expect("FAKE ALLOWED", 10, "the answer after approval")
-        p.expect("› ", 10, "the next prompt")
+        wait_prompt(p, 10, "the next prompt")
         answer = host_reply(w)["response"]
         if answer.get("behavior") != "allow" or answer.get("updatedInput", {}).get("command") != "cargo test --quiet":
             raise Fail(f"the host answer should allow and echo the input: {answer}")
@@ -1166,7 +1184,7 @@ def n_denies_with_a_reason_and_the_turn_goes_on(w):
         answer = host_reply(w)["response"]
         if answer.get("behavior") != "deny" or "denied" not in answer.get("message", ""):
             raise Fail(f"the host answer should deny with a reason: {answer}")
-        p.expect("› ", 10, "the next prompt")
+        wait_prompt(p, 10, "the next prompt")
         quit_with_ctrl_d(p)
     finally:
         p.close()
@@ -1182,7 +1200,7 @@ def always_saves_a_private_rule_and_the_next_turn_does_not_ask_again(w):
         p.send("a")
         p.expect("always in this project: Bash(cargo test:*)", 10, "the saved-rule line")
         p.expect("FAKE ALLOWED", 10, "the answer after approval")
-        p.expect("› ", 10, "the next prompt")
+        wait_prompt(p, 10, "the next prompt")
         if settings_rules(w) != ["Bash(cargo test:*)"]:
             raise Fail(f"the rule should be saved in .claude/settings.local.json: {settings_rules(w)}")
         mode = os.stat(os.path.join(w.repo, ".claude", "settings.local.json")).st_mode & 0o777
@@ -1192,7 +1210,7 @@ def always_saves_a_private_rule_and_the_next_turn_does_not_ask_again(w):
         p.expect("FAKE ALLOWED by rule", 15, "the second turn, answered without a question")
         if p.visible().count(QUESTION) != 1:
             raise Fail(f"the second turn must not ask again:\n{p.tail()}")
-        p.expect("› ", 10, "the next prompt")
+        wait_prompt(p, 10, "the next prompt")
         p.send("/permissions\r")
         p.expect("Bash(cargo test:*)", 10, "the rule in /permissions")
         quit_with_ctrl_d(p)
@@ -1213,7 +1231,7 @@ def a_sub_agent_question_shows_the_whole_prompt_before_the_key(w):
                 raise Fail(f"the question should show {part!r}:\n{p.tail()}")
         p.send("n")
         p.expect("✗ denied", 10, "the denied line")
-        p.expect("› ", 10, "the next prompt")
+        wait_prompt(p, 10, "the next prompt")
         quit_with_ctrl_d(p)
     finally:
         p.close()
@@ -1237,7 +1255,7 @@ def a_read_of_a_system_folder_is_never_offered_always(w):
         p.send("y")
         p.expect("✓ allowed", 10, "the allowed line")
         p.expect("FAKE ALLOWED", 10, "the answer")
-        p.expect("› ", 10, "the next prompt")
+        wait_prompt(p, 10, "the next prompt")
         if settings_rules(w) is not None:
             raise Fail(f"nothing may be saved: {settings_rules(w)}")
         quit_with_ctrl_d(p)
@@ -1255,7 +1273,7 @@ def ctrl_c_at_the_question_denies_stops_the_turn_and_leaves_no_process_behind(w)
         cli = w.pid_file("cli.pid")
         p.send("\x03")
         p.expect("stopped", 10, "the `stopped` summary after Ctrl-C")
-        p.expect("› ", 10, "the prompt after the stopped turn")
+        wait_prompt(p, 10, "the prompt after the stopped turn")
         if not p.still_running():
             raise Fail(f"Ctrl-C at the question must not exit the program (exit {p.exit}):\n{p.tail()}")
         wait_dead(cli, "the fake CLI")
@@ -1284,7 +1302,7 @@ def an_arrow_key_or_enter_at_the_question_does_not_answer_it(w):
             raise Fail("an arrow key must not save a rule")
         p.send("n")
         p.expect("✗ denied", 10, "the denial once `n` is pressed")
-        p.expect("› ", 10, "the next prompt")
+        wait_prompt(p, 10, "the next prompt")
         quit_with_ctrl_d(p)
     finally:
         p.close()
@@ -1330,7 +1348,7 @@ def a_question_the_cli_withdraws_is_erased_and_the_terminal_and_keyboard_are_lef
         # A key typed now belongs to the next prompt: no stale reader may take it.
         p.send("z")
         p.expect("FAKE CARRIED ON", 15, "the turn going on without the answer")
-        p.expect("› ", 10, "the next prompt")
+        wait_prompt(p, 10, "the next prompt")
         p.settle(0.4)
         if not p.visible().rstrip("\n").split("\n")[-1].strip().endswith("› z"):
             raise Fail(f"the key typed after the withdrawal should be waiting at the next prompt:\n{p.tail()}")
@@ -1420,7 +1438,7 @@ def a_question_withdrawn_while_its_pager_is_open_is_never_shown_and_ctrl_c_there
         open(os.path.join(w.pids, "pager.close"), "w").close()
         p.expect("(the tool call was withdrawn)", 10, "the withdrawal line once the pager closed")
         p.expect("FAKE CARRIED ON", 10, "the answer, held until the pager closed")
-        p.expect("› ", 10, "the next prompt")
+        wait_prompt(p, 10, "the next prompt")
         shown = p.visible().split("pagewithdraw please")[-1]
         if "[y]es" in shown or "stopped" in shown:
             raise Fail(f"a question withdrawn while paged is never shown, and the turn was not stopped:\n{p.tail()}")
@@ -1446,15 +1464,15 @@ def permissions_command_lists_adds_and_removes_rules(w):
         prompt_ready(p)
         p.send("/permissions\r")
         p.expect("none yet", 10, "the empty list")
-        p.expect("› ", 5, "the prompt")
+        wait_prompt(p, 5, "the prompt")
         p.send("/permissions allow Bash(ls:*)\r")
         p.expect("✓ allowed Bash(ls:*)", 10, "the confirmation")
-        p.expect("› ", 5, "the prompt")
+        wait_prompt(p, 5, "the prompt")
         if settings_rules(w) != ["Bash(ls:*)"]:
             raise Fail(f"the rule should be in the project file: {settings_rules(w)}")
         p.send("/permissions remove Bash(ls:*)\r")
         p.expect("✓ removed Bash(ls:*)", 10, "the removal")
-        p.expect("› ", 5, "the prompt")
+        wait_prompt(p, 5, "the prompt")
         if settings_rules(w) != []:
             raise Fail(f"the rule should be gone: {settings_rules(w)}")
         p.send("/permissions allow nonsense(\r")
@@ -1585,12 +1603,67 @@ def the_permission_mode_carries_over_to_the_next_session(w):
 
 
 @scenario
+def orchestrate_starts_on_and_it_and_provider_carry_over_to_the_next_session(w):
+    def start(name):
+        p = Pty(w, [w.repo], name)
+        prompt_ready(p)
+        return p
+
+    def banner_routing(p):
+        return "routing off" if "routing off" in p.visible() else "routing on"
+
+    # A first session: orchestration is on, routing is on. Turn both off.
+    p = start("flags-1")
+    try:
+        p.send("/orchestrate\r")
+        p.expect("orchestrate: on", 10, "orchestration is on by default")
+        if banner_routing(p) != "routing on":
+            raise Fail(f"routing starts on:\n{p.tail()}")
+        p.send("/orchestrate off\r")
+        p.expect("orchestrate: off", 10, "/orchestrate off confirms")
+        p.send("/provider off\r")
+        p.expect("routing: off", 10, "/provider off confirms")
+        wait_prompt(p, 10, "the prompt")
+        quit_with_ctrl_d(p)
+    finally:
+        p.close()
+    # The next one starts the way they were left.
+    q = start("flags-2")
+    try:
+        if banner_routing(q) != "routing off":
+            raise Fail(f"/provider off should carry over:\n{q.tail()}")
+        q.send("/orchestrate\r")
+        q.expect("orchestrate: off", 10, "/orchestrate off should carry over")
+        q.send("/orchestrate on\r")
+        q.expect("orchestrate: on", 10, "/orchestrate on confirms")
+        q.send("/provider auto\r")
+        q.expect("routing: on", 10, "/provider auto confirms")
+        wait_prompt(q, 10, "the prompt")
+        quit_with_ctrl_d(q)
+    finally:
+        q.close()
+    r = start("flags-3")
+    try:
+        if banner_routing(r) != "routing on":
+            raise Fail(f"/provider auto should carry over:\n{r.tail()}")
+        r.send("/orchestrate\r")
+        r.expect("orchestrate: on", 10, "/orchestrate on should carry over")
+        quit_with_ctrl_d(r)
+    finally:
+        r.close()
+    for name, want in (("orchestrate", "on"), ("routing", "on")):
+        path = os.path.join(w.state, "jev-router", name)
+        if not os.path.isfile(path) or open(path).read() != want or os.stat(path).st_mode & 0o777 != 0o600:
+            raise Fail(f"{path} should hold {want!r} and be private")
+
+
+@scenario
 def the_terminal_is_restored_when_the_program_ends(w):
     p = Pty(w, [w.repo], "restore")
     try:
         prompt_ready(p)
         p.send("slow work please\r")
-        p.expect("› ", 25, "the prompt after a slow turn")
+        wait_prompt(p, 25, "the prompt after a slow turn")
         quit_with_ctrl_d(p)
         raw = p.raw.decode("utf-8", "replace")
         if raw.rfind("\x1b[?25l") > raw.rfind("\x1b[?25h"):
@@ -1649,7 +1722,7 @@ def the_status_line_is_one_row_on_a_narrow_terminal_whatever_columns_says(w):
         if not 20 < width <= 59:
             raise Fail(f"the status frame should fill a 60-column window up to the last-but-one column, it is {width} columns wide")
         p.expect("✓ claude", 20, "the end of the turn")
-        p.expect("› ", 10, "the next prompt")
+        wait_prompt(p, 10, "the next prompt")
         expect_one_row_status_then_nothing_left(p, "narrow")
         # Nothing but known escape sequences was written for the turn: no lone ESC, bell or other control byte.
         raw = p.raw.decode("utf-8", "replace")
@@ -1683,7 +1756,7 @@ def the_status_line_follows_a_resize_in_the_middle_of_a_turn(w):
             if cols >= 41 and width < min(cols - 1, 40):
                 raise Fail(f"after resizing to {cols} columns the status line is cut far short ({width} columns)")
         p.expect("✓ claude", 20, "the end of the turn")
-        p.expect("› ", 10, "the next prompt")
+        wait_prompt(p, 10, "the next prompt")
         left = p.vt.status_rows()
         if left:
             raise Fail("fragments of the status line are left after the resized turn:\n" + "\n".join(f"      | {r}" for r in left))
@@ -1713,7 +1786,7 @@ def a_slow_provider_probe_is_retried_in_the_background_applied_after_the_turn_an
     started = time.time()
     p = Pty(w, [w.repo], "slow-probe-turn")
     try:
-        p.expect("› ", 20, "the prompt")
+        wait_prompt(p, 20, "the prompt")
         if time.time() - started > 9:
             raise Fail("the banner waited for the slow probe: startup must only wait for the 5 s cap")
         banner = p.visible().split("› ")[0]
@@ -1734,7 +1807,7 @@ def a_slow_provider_probe_is_retried_in_the_background_applied_after_the_turn_an
         p.expect("stopped", 10, "the `stopped` summary")
         # As soon as the turn ends the answer is applied and reported, before the next prompt.
         p.expect("codex is ready now", 10, "the notice right after the turn ends")
-        p.expect("› ", 10, "the prompt")
+        wait_prompt(p, 10, "the prompt")
         if p.visible().count("codex is ready now") != 1:
             raise Fail(f"the notice should be printed once:\n{p.tail()}")
         line = providers_line(p, "codex")
@@ -1797,7 +1870,36 @@ def typing_during_a_turn_queues_a_message_that_runs_after_it(w):
         p.expect("✓ claude", 20, "the end of the slow turn")
         p.expect("› and then hello", 10, "the queued message run as the next one")
         p.expect(ANSWER, 20, "the answer to the queued message")
-        p.expect("› ", 10, "the next prompt")
+        wait_prompt(p, 10, "the next prompt")
+        quit_with_ctrl_d(p)
+    finally:
+        p.close()
+
+
+@scenario
+def a_field_stays_under_the_status_line_for_the_whole_turn(w):
+    p = Pty(w, [w.repo], "field")
+    try:
+        prompt_ready(p)
+        p.send("slow work please\r")
+        # Before anything is typed the field is already there, with what it is for.
+        p.expect("type to queue the next message", 15, "the field with its hint")
+        rows = [l for l in p.visible().split("\n") if l.strip()]
+        if "›" not in rows[-1] or "▏" not in rows[-1] or "claude" not in rows[-2] and "routing" not in rows[-2]:
+            raise Fail(f"the field should be the last row, right under the status line:\n{p.tail()}")
+        # It stays while the turn prints lines above it, and shows what is typed.
+        p.send("and then hello")
+        p.expect("› and then hello▏", 5, "what is typed in the field")
+        p.send("\r")
+        p.expect("1 queued", 5, "the count of waiting messages in the field")
+        rows = [l for l in p.visible().split("\n") if l.strip()]
+        if "▏" not in rows[-1]:
+            raise Fail(f"the field should still be the last row after a message was queued:\n{p.tail()}")
+        p.expect("✓ claude", 20, "the end of the turn")
+        p.expect(ANSWER, 20, "the answer to the queued message")
+        wait_prompt(p, 10, "the next prompt")
+        if "▏" in p.visible().rstrip().split("\n")[-1]:
+            raise Fail(f"the field must be gone once the turn is over:\n{p.tail()}")
         quit_with_ctrl_d(p)
     finally:
         p.close()
@@ -1837,7 +1939,7 @@ def backslash_enter_adds_a_line_and_bang_runs_a_shell_command(w):
         p.send("!echo shell-says-hi\r")
         p.expect("shell-says-hi", 10, "the shell output")
         p.expect("exit 0", 10, "the exit status")
-        p.expect("› ", 10, "the next prompt")
+        wait_prompt(p, 10, "the next prompt")
         quit_with_ctrl_d(p)
     finally:
         p.close()

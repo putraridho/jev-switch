@@ -25,6 +25,7 @@ use jev_router::lineedit::{self, Input, InterruptGuard};
 use jev_router::log;
 use jev_router::mode;
 use jev_router::orchestrate::{self, Setup};
+use jev_router::prefs::Saved;
 use jev_router::providers::{self, Runtime};
 use jev_router::repl::{Confirm, Flow, Interrupt, Io, Repl, SigInt};
 use jev_router::router::{Router, CODE_STRONG_THRESHOLD};
@@ -179,14 +180,19 @@ async fn start_runtime(console: &Console) -> Runtime {
 /// Settings come from the environment or `~/.jev-router.env`, like every other setting.
 /// `can_ask`: the console can put an approval question to a person
 /// ([`Console::can_ask`]); otherwise the CLIs run without the host prompt protocol.
-/// `saved`: the mode the last session ended in; a run nobody can answer passes `None`.
-fn engine_for(args: &Args, runtime: Runtime, router: Router, dir: PathBuf, can_ask: bool, saved: Option<mode::Mode>) -> Engine {
-    let mode = mode::start(args.mode, saved, envfile::lookup("CODE_PERMISSION_MODE").as_deref());
+/// `session`: what the last session left (`/mode`, `/orchestrate`, `/provider`) for an
+/// interactive session; a one-shot run nobody can answer passes `None` and starts from the
+/// flags and the environment alone.
+fn engine_for(args: &Args, runtime: Runtime, router: Router, dir: PathBuf, can_ask: bool, session: Option<Saved>) -> Engine {
+    let saved = session.unwrap_or_default();
+    let mode = mode::start(args.mode, saved.mode, envfile::lookup("CODE_PERMISSION_MODE").as_deref());
+    let routing = saved.routing.unwrap_or_else(|| commands::routing_enabled(envfile::lookup("JEV_PROVIDERS").as_deref()));
+    let orchestrate = orchestrate::start(saved.orchestrate, envfile::lookup("JEV_ORCHESTRATE").as_deref(), session.is_some());
     let engine = Engine::new(runtime, router, dir)
         .with_backend_factory(Box::new(providers::run_backends(can_ask)))
-        .with_enabled(commands::routing_enabled(envfile::lookup("JEV_PROVIDERS").as_deref()))
+        .with_enabled(routing)
         .with_mode(mode)
-        .with_orchestrate(orchestrate::enabled_from_env(envfile::lookup("JEV_ORCHESTRATE").as_deref()))
+        .with_orchestrate(orchestrate)
         .with_orch_setup(Setup::detect())
         .with_downgrade_after(envfile::lookup_f64("DOWNGRADE_AFTER", 2.0) as u32);
     match &args.pin {
@@ -288,8 +294,8 @@ async fn session(args: &Args, dir: &Path, term: &Term, console: Console, state_d
         }
     };
     let runtime = start_runtime(&console).await;
-    let saved = state_dir.as_deref().and_then(mode::load_saved);
-    let engine = engine_for(args, runtime, router, dir.to_path_buf(), console.can_ask(), saved).with_persistence(state_dir.clone());
+    let saved = state_dir.as_deref().map(Saved::load).unwrap_or_default();
+    let engine = engine_for(args, runtime, router, dir.to_path_buf(), console.can_ask(), Some(saved)).with_persistence(state_dir.clone());
     let home = std::env::var("HOME").ok();
     let mut repl = Repl::new(engine, console.clone(), home.clone(), term.stdout_tty).with_state_dir(state_dir.clone());
     startup(&mut repl, args, term, &console, state_dir.as_deref(), home.as_deref());
@@ -343,6 +349,7 @@ fn startup(repl: &mut Repl, args: &Args, term: &Term, console: &Console, state_d
         console.out(&views::previous_session_line(&info, now, style));
     }
     if term.interactive() {
+        console.out(&uifmt::truncate_to_width(&style.dim("/help commands  ·  Shift+Tab mode"), width));
         if let Some(hint) = views::first_run_hint_once(&repl.engine.runtime.avail, state_dir) {
             for line in hint.lines() {
                 console.out(&style.dim(line));

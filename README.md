@@ -9,9 +9,9 @@ using only the providers you can really use right now and failing over when one 
 the turn (see [Code mode](#code-mode-jev-code)). A chat REPL and the `tune` calibration
 sweep complete the set. The router fixes the two things that make routers bad:
 
-1. **Memory across switches.** The model has no memory — the *transcript* does.
+1. **Memory across switches.** The model has no memory — the _transcript_ does.
    One canonical history (`Transcript`) is sent in full to whichever model a turn
-   routes to, so continuity survives every switch. (You lose the prompt *cache*
+   routes to, so continuity survives every switch. (You lose the prompt _cache_
    when you switch models — that's cost, not memory.)
 2. **Guessed thresholds.** The cheap-route confidence cutoff is **calibrated from a
    labeled set**, not guessed. `tune` sweeps it and prints the savings/miss curve.
@@ -19,7 +19,7 @@ sweep complete the set. The router fixes the two things that make routers bad:
 ## Design
 
 - **Judge the task, not the model.** Jev returns a `Choice` over `{simple, standard,
-  reasoning, unclear}` with described criteria — never "which model".
+reasoning, unclear}` with described criteria — never "which model".
 - **Code owns policy.** Three tiers: cheap (`claude-haiku-5-5`) when `simple` AND
   `confidence ≥ CHEAP_THRESHOLD`; strong (`claude-opus-5-5`) when `reasoning` AND
   `confidence ≥ STRONG_THRESHOLD`; mid (`claude-sonnet-5-5`) for everything else
@@ -141,9 +141,9 @@ strong model and carried out by Sonnet subagents. Everything else routes as abov
     benchmark and ~8.5x in the second (the Sonnet baseline itself varied 2x), and not faster.
   - A hard gateway-concurrency redesign that normal routing sent to Opus: orchestrated cost
     ~21% less and finished 35% faster (Opus planner, Sonnet workers).
-  The Fable-planner and Opus-worker path is unmeasured. `scripts/orch_report.py` prices real
-  tasks. Turn it on per session with `/orchestrate on`; `JEV_ORCH=off` in the gateway's
-  environment disables the check everywhere.
+    The Fable-planner and Opus-worker path is unmeasured. `scripts/orch_report.py` prices real
+    tasks. Turn it on per session with `/orchestrate on`; `JEV_ORCH=off` in the gateway's
+    environment disables the check everywhere.
 - **Sequences are not orchestrated.** The same Jev request also asks whether the prompt is
   a sequence of dependent steps ("run the tests, then check the report, then refactor",
   "do 1 -> 2 -> 3"); at `sequential_p` 0.70 or more the check is vetoed, because parallel
@@ -194,7 +194,7 @@ every `/v1/messages` request, including ones you send to Sonnet or Opus directly
 - `turns.jsonl`: one line per user turn, summing its requests (`requests`, `by_class`,
   `models`, `tokens`, `tools`, `errors`, `wall_ms`, `ended`: `end_turn`, `max_tokens`,
   `aborted`, `error` or `superseded`) plus the **outcome signals**, in `followup`,
-  describing how the user reacted to the *previous* turn:
+  describing how the user reacted to the _previous_ turn:
   - `gap_ms`: time from the previous answer to this prompt.
   - `similarity`: word overlap with the previous prompt (near 1 = asked again).
   - `model_switched`, `prev_requested_model`: you changed `/model` between turns.
@@ -203,7 +203,7 @@ every `/v1/messages` request, including ones you send to Sonnet or Opus directly
     used for routing). Off by default: on 276 logged turns it did not track aborts,
     gaps or model switches, so it needs real labels before it is worth a call per turn.
 
-  To judge routing, read turn *n+1*'s `followup` as a verdict on turn *n*. An `aborted`
+  To judge routing, read turn _n+1_'s `followup` as a verdict on turn _n_. An `aborted`
   turn means you interrupted it. Turns with no `prompt_id` header are not rolled up.
 
 The tap reads the usage events as the response streams past and never changes what the
@@ -273,47 +273,47 @@ Type a request and press Enter. While a model works there is one live line under
 answer follows, then a dim summary (provider, model, time, tokens, plan use, files changed).
 When files changed, `/diff` shows them and `/undo` puts them back.
 
-| command | what it does |
-|---|---|
-| `/model [target]` | pin a model or provider, or `auto` to let the router choose. `target` is `auto`, `<provider>`, `<provider>:<model>` or `sonnet`/`opus`/`haiku`; with no argument, show the pin. Pins are never silently overridden |
-| `/provider auto\|off` | route across providers (default), or Claude only |
-| `/orchestrate [on\|off]` | let a planner split a big task across cheaper workers (below) |
-| `/new` | start a fresh session on every provider; the saved ones stay and can be resumed |
-| `/resume` | pick up the most recent saved session of this folder other than the running one; again, the one before |
-| `/diff [file]` | show what the last turn changed, coloured, through `$PAGER` (default `less -R`) when it is long and you are on a terminal |
-| `/undo` | revert the last turn's file changes; lists the files and asks `Revert N files? [y/N]` first; refuses without a terminal, and refuses if you edited those files since |
-| `/why` | the full reason the router picked the last turn's model, and whether it is pinned |
-| `/clear` | clear the screen and start a fresh session |
-| `/edit` | write the message in `$VISUAL`/`$EDITOR` (default `vi`), then send it |
-| `/compact [focus]` | have the model summarise the conversation (read-only), then start a fresh session that gets the summary with your next message; frees the context window |
-| `/context` | how full the last model's context window is, as tokens, a share and a bar |
-| `/copy` | copy the last answer to the clipboard (`wl-copy`, `xclip`, `xsel`, `pbcopy`, else the terminal's OSC 52) |
-| `/export [file]` | save the conversation as Markdown (default `jev-session-<time>.md` in the project; never overwrites) |
-| `/init` | have the agent write `AGENTS.md` and point `CLAUDE.md`/`GEMINI.md` at it, so every CLI gets the same instructions |
-| `/memory` | open the instructions file (`AGENTS.md`, `CLAUDE.md` or `GEMINI.md`) in the editor |
-| `/review [focus]` | review the uncommitted changes for bugs, in plan mode (nothing is edited) |
-| `/quit` | exit (also `/exit`) |
-| `/help` | commands and keys |
-| `/status` | project, routing, pin, ready providers with plan use, cooldowns, last turn |
-| `/cost` | tokens and time of this session by model, and how full each plan window is (also `/usage`) |
-| `/config` | the effective settings and the files they live in (keys show only as set / not set) |
-| `/providers [refresh]` | what was detected and why each provider can or cannot run; `refresh` probes again |
-| `/doctor` | the setup check, inside the session |
-| `/terminal-setup [install]` | make Shift-Enter insert a new line: shows the line for your terminal (kitty, Ghostty, Alacritty, foot, WezTerm, VS Code); `install` adds it, with a backup |
-| `!command` | run a shell command in the project; its output is shown and goes with your next message |
+| command                     | what it does                                                                                                                                                                                                       |
+| --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `/model [target]`           | pin a model or provider, or `auto` to let the router choose. `target` is `auto`, `<provider>`, `<provider>:<model>` or `sonnet`/`opus`/`haiku`; with no argument, show the pin. Pins are never silently overridden |
+| `/provider auto\|off`       | route across providers (default), or Claude only                                                                                                                                                                   |
+| `/orchestrate [on\|off]`    | let a planner split a big task across cheaper workers (below)                                                                                                                                                      |
+| `/new`                      | start a fresh session on every provider; the saved ones stay and can be resumed                                                                                                                                    |
+| `/resume`                   | pick up the most recent saved session of this folder other than the running one; again, the one before                                                                                                             |
+| `/diff [file]`              | show what the last turn changed, coloured, through `$PAGER` (default `less -R`) when it is long and you are on a terminal                                                                                          |
+| `/undo`                     | revert the last turn's file changes; lists the files and asks `Revert N files? [y/N]` first; refuses without a terminal, and refuses if you edited those files since                                               |
+| `/why`                      | the full reason the router picked the last turn's model, and whether it is pinned                                                                                                                                  |
+| `/clear`                    | clear the screen and start a fresh session                                                                                                                                                                         |
+| `/edit`                     | write the message in `$VISUAL`/`$EDITOR` (default `vi`), then send it                                                                                                                                              |
+| `/compact [focus]`          | have the model summarise the conversation (read-only), then start a fresh session that gets the summary with your next message; frees the context window                                                           |
+| `/context`                  | how full the last model's context window is, as tokens, a share and a bar                                                                                                                                          |
+| `/copy`                     | copy the last answer to the clipboard (`wl-copy`, `xclip`, `xsel`, `pbcopy`, else the terminal's OSC 52)                                                                                                           |
+| `/export [file]`            | save the conversation as Markdown (default `jev-session-<time>.md` in the project; never overwrites)                                                                                                               |
+| `/init`                     | have the agent write `AGENTS.md` and point `CLAUDE.md`/`GEMINI.md` at it, so every CLI gets the same instructions                                                                                                  |
+| `/memory`                   | open the instructions file (`AGENTS.md`, `CLAUDE.md` or `GEMINI.md`) in the editor                                                                                                                                 |
+| `/review [focus]`           | review the uncommitted changes for bugs, in plan mode (nothing is edited)                                                                                                                                          |
+| `/quit`                     | exit (also `/exit`)                                                                                                                                                                                                |
+| `/help`                     | commands and keys                                                                                                                                                                                                  |
+| `/status`                   | project, routing, pin, ready providers with plan use, cooldowns, last turn                                                                                                                                         |
+| `/cost`                     | tokens and time of this session by model, and how full each plan window is (also `/usage`)                                                                                                                         |
+| `/config`                   | the effective settings and the files they live in (keys show only as set / not set)                                                                                                                                |
+| `/providers [refresh]`      | what was detected and why each provider can or cannot run; `refresh` probes again                                                                                                                                  |
+| `/doctor`                   | the setup check, inside the session                                                                                                                                                                                |
+| `/terminal-setup [install]` | make Shift-Enter insert a new line: shows the line for your terminal (kitty, Ghostty, Alacritty, foot, WezTerm, VS Code); `install` adds it, with a backup                                                         |
+| `!command`                  | run a shell command in the project; its output is shown and goes with your next message                                                                                                                            |
 
 A mistyped command (`/provders`) is never sent to the model: it says so and suggests the closest one.
 
-| key | what it does |
-|---|---|
-| Tab | complete a command, or its argument (providers, `provider:model`, changed files for `/diff`), or an `@path` (files of the folder, and tracked files anywhere by name); a faint hint after the cursor shows the arguments |
-| typing during a turn | what you type shows at the end of the live line; Enter queues it to run after the turn (several can wait, in order); whatever is unfinished comes back into the prompt |
-| Esc | while a turn runs: stop it; a message typed before Esc is sent right after (queued ones keep waiting) |
-| Ctrl-C | while a turn runs: stop it (the model CLI and everything it started are killed), drop the queue, and carry on; at the prompt: clear the line, press again within 2 s to exit |
-| Ctrl-D | exit (on an empty line) |
-| Alt-Enter, `\` then Enter | a new line inside your message; pasting several lines works too; Shift-Enter after `/terminal-setup` |
-| drag and drop | dropping a file or image into the terminal pastes its path; images are sent as images (Claude, Codex) or by path (Gemini, Grok), other files and folders become plain paths the model opens |
-| ↑ / ↓ | earlier messages, kept across runs in `<state dir>/history` (private, 2000 lines) |
+| key                       | what it does                                                                                                                                                                                                             |
+| ------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Tab                       | complete a command, or its argument (providers, `provider:model`, changed files for `/diff`), or an `@path` (files of the folder, and tracked files anywhere by name); a faint hint after the cursor shows the arguments |
+| typing during a turn      | what you type shows at the end of the live line; Enter queues it to run after the turn (several can wait, in order); whatever is unfinished comes back into the prompt                                                   |
+| Esc                       | while a turn runs: stop it; a message typed before Esc is sent right after (queued ones keep waiting)                                                                                                                    |
+| Ctrl-C                    | while a turn runs: stop it (the model CLI and everything it started are killed), drop the queue, and carry on; at the prompt: clear the line, press again within 2 s to exit                                             |
+| Ctrl-D                    | exit (on an empty line)                                                                                                                                                                                                  |
+| Alt-Enter, `\` then Enter | a new line inside your message; pasting several lines works too; Shift-Enter after `/terminal-setup`                                                                                                                     |
+| drag and drop             | dropping a file or image into the terminal pastes its path; images are sent as images (Claude, Codex) or by path (Gemini, Grok), other files and folders become plain paths the model opens                              |
+| ↑ / ↓                     | earlier messages, kept across runs in `<state dir>/history` (private, 2000 lines)                                                                                                                                        |
 
 Piped input still works (`printf 'explain src/lib.rs\n/quit\n' | jev-code`): one line per
 message, no prompt, no colours, no live line.
@@ -345,13 +345,13 @@ need the Jev key to start: `JEV_API_KEY` (or `TYPESAFE_API_KEY`), `JEV_PROVIDERS
 
 **Providers: what each needs, and how far to trust it**
 
-| provider | needs | log in with | billing | tried against the real CLI |
-|---|---|---|---|---|
-| claude | `claude` installed and logged in | `claude auth login` | your plan; Fable only with `JEV_ALLOW_CREDITS=1` (automatic on Max/Ultra) | yes |
-| codex | `codex` installed and logged in (ChatGPT plan); it needs a git repository | `codex login` | your plan | yes |
-| gemini | `gemini` with auth configured, else `agy` (Antigravity) | `gemini` (choose a login) | your plan | no, from documentation only |
-| grok | Grok Build installed (never executed by the probe) | `grok` (sign in) | your plan | no, from documentation only |
-| deepseek | `claude` installed and `DEEPSEEK_API_KEY` in the env or `~/.jev-router.env` | add the key | per token; setting the key is the opt-in | key check yes; that it really bypasses your Claude login and reaches DeepSeek is unverified |
+| provider | needs                                                                       | log in with               | billing                                                                   | tried against the real CLI                                                                  |
+| -------- | --------------------------------------------------------------------------- | ------------------------- | ------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------- |
+| claude   | `claude` installed and logged in                                            | `claude auth login`       | your plan; Fable only with `JEV_ALLOW_CREDITS=1` (automatic on Max/Ultra) | yes                                                                                         |
+| codex    | `codex` installed and logged in (ChatGPT plan); it needs a git repository   | `codex login`             | your plan                                                                 | yes                                                                                         |
+| gemini   | `gemini` with auth configured, else `agy` (Antigravity)                     | `gemini` (choose a login) | your plan                                                                 | no, from documentation only                                                                 |
+| grok     | Grok Build installed (never executed by the probe)                          | `grok` (sign in)          | your plan                                                                 | no, from documentation only                                                                 |
+| deepseek | `claude` installed and `DEEPSEEK_API_KEY` in the env or `~/.jev-router.env` | add the key               | per token; setting the key is the opt-in                                  | key check yes; that it really bypasses your Claude login and reaches DeepSeek is unverified |
 
 The login commands are written once (`src/doctor.rs`) and used by `doctor`, the first-run
 hint and every error message, so they cannot drift apart. `/providers` marks the unverified
@@ -453,8 +453,9 @@ signals, attempt number and failover notes). A crash writes a short note to
 **Provider names, tiers and chains** in the catalog come from the vendors' pages as of
 2026-11-17; the task-to-model chains are defaults, not calibrated on your work.
 
-**Orchestration across providers** (`/orchestrate on|off`, or `JEV_ORCHESTRATE=on`; off by
-default). A request that Jev scores multi-part (`multi_part` at `ORCH_TRIGGER_P`, 0.70) AND
+**Orchestration across providers** (`/orchestrate on|off`; on by default in a session, and
+what you set is kept for the next `jev-code`, like `/mode` and `/provider`; `JEV_ORCHESTRATE=on|off`
+is the start-up default when nothing was set, and a one-shot `-p` stays off unless it says on). A request that Jev scores multi-part (`multi_part` at `ORCH_TRIGGER_P`, 0.70) AND
 that normal routing would send to a Top-tier model runs on a PLANNER, which gets a
 `delegate` tool (an MCP server, `delegate_mcp`). The planner hands independent pieces to
 cheaper WORKERS, each in its own git worktree (`<state dir>/worktrees/<id>`, detached at
@@ -481,7 +482,7 @@ never chosen as planner; with no planner available the turn runs normally and th
 does not read it yet. Codex attaching the tool through `-c mcp_servers...` overrides was
 checked against `codex exec --help` only, not run.
 
-**Routing off** (`/provider off` or `JEV_PROVIDERS=off`) is the earlier Claude-only
+**Routing off** (`/provider off`, kept for the next `jev-code`; or `JEV_PROVIDERS=off`) is the earlier Claude-only
 mode: one attempt, no availability check, no failover, two tiers and no Haiku:
 
 - Sonnet by default; Opus for confident reasoning (`CODE_STRONG_THRESHOLD=0.85`),
@@ -496,12 +497,12 @@ mode: one attempt, no availability check, no failover, two tiers and no Haiku:
   way. Sonnet was correct on 383 (94%). Replaying candidate policies on the
   recorded signals:
 
-  | policy | turns on Opus | Sonnet misses Opus fixes, left on Sonnet |
-  |---|---|---|
-  | reasoning 0.75, security 0.90 (before) | 31% | 7 |
-  | reasoning 0.85, security 0.85 (now) | 28% | 5 |
-  | reasoning 0.90, security 0.85 | 26% | 6 |
-  | security only, 0.85 (no reasoning rule) | 15% | 7 |
+  | policy                                  | turns on Opus | Sonnet misses Opus fixes, left on Sonnet |
+  | --------------------------------------- | ------------- | ---------------------------------------- |
+  | reasoning 0.75, security 0.90 (before)  | 31%           | 7                                        |
+  | reasoning 0.85, security 0.85 (now)     | 28%           | 5                                        |
+  | reasoning 0.90, security 0.85           | 26%           | 6                                        |
+  | security only, 0.85 (no reasoning rule) | 15%           | 7                                        |
 
   Sonnet's answers at reasoning confidence 0.75–0.85 were 31 correct and 2 partial
   that Opus also got partly wrong. The keyword-less security questions it missed and
@@ -510,6 +511,7 @@ mode: one attempt, no availability check, no failover, two tiers and no Haiku:
   (a theme-token lookup, md5 for content hashes), and one security question Jev scored
   0.60. Strong keywords still go to Opus unconditionally: gating them on
   `security_review` would save under 2% and they also cover Jev being down.
+
 - No Haiku. Tested on five repos (2,500 questions, 120 answers verified against the
   code): Haiku's code explanations held up ~85% at every Jev confidence, so no
   cutoff separated its misses, and prompt caches are per model, so its cache-cold
