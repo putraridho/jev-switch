@@ -76,8 +76,10 @@ impl CodexBackend {
     /// `-c mcp_servers.<name>.command=... -c mcp_servers.<name>.args=[...]`: Codex has
     /// no per-run config file flag for MCP, but `-c` takes dotted TOML overrides (checked
     /// against `codex exec --help`). A JSON string is a valid TOML basic string, so
-    /// `serde_json` does the quoting. UNVERIFIED end to end: whether `codex exec` runs
-    /// the server's tools without an approval prompt was not tried (no quota spent).
+    /// `serde_json` does the quoting. VERIFIED against codex 0.169.0 on 2026-11-17: without
+    /// `default_tools_approval_mode="approve"` a headless `codex exec` refuses every MCP
+    /// call ("MCP tool call requires approval, but approval policy is never"); with it
+    /// the tool runs. The approval applies to this one server only.
     fn mcp_overrides(&self) -> Vec<String> {
         let Some(m) = &self.mcp else { return vec![] };
         let quote = |s: &str| serde_json::to_string(s).unwrap_or_default();
@@ -89,6 +91,8 @@ impl CodexBackend {
             format!("{key}.command={command}"),
             "-c".into(),
             format!("{key}.args=[{}]", args.join(",")),
+            "-c".into(),
+            format!("{key}.default_tools_approval_mode=\"approve\""),
         ]
     }
 
@@ -405,6 +409,10 @@ mod tests {
         let fresh = args(&b.command(&req(None)));
         assert!(fresh.contains(&"mcp_servers.jev.command=\"/bin/delegate_mcp\"".to_string()), "{fresh:?}");
         assert!(fresh.contains(&"mcp_servers.jev.args=[\"--dir\",\"/my repo\"]".to_string()), "{fresh:?}");
+        assert!(
+            fresh.contains(&"mcp_servers.jev.default_tools_approval_mode=\"approve\"".to_string()),
+            "headless codex refuses MCP tools unless this server's tools are pre-approved: {fresh:?}"
+        );
         let resumed = args(&b.command(&req(Some("t1"))));
         assert_eq!(&resumed[resumed.len() - 2..], ["t1", "-"], "overrides stay before the positionals");
         assert!(resumed.iter().any(|a| a.starts_with("mcp_servers.jev.command")));

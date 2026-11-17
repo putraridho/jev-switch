@@ -510,12 +510,12 @@ impl Engine {
 
     /// The prompt for `provider`: with the catch-up in front when its own session
     /// missed turns that ran elsewhere.
-    fn prompt_for(&mut self, provider: ProviderId, prompt: &str) -> String {
+    fn prompt_for(&mut self, provider: ProviderId, model: &str, prompt: &str) -> String {
         if self.sessions.missed_turns(provider) == 0 {
             return prompt.to_string();
         }
         let git = (self.git_status)(&self.dir);
-        let catch_up = self.sessions.catch_up(provider, &git, CATCH_UP_TOKENS);
+        let catch_up = self.sessions.catch_up_for(provider, model, &git, CATCH_UP_TOKENS);
         self.sessions.mark_seen(provider);
         match catch_up {
             Some(text) => format!("{text}{prompt}"),
@@ -525,7 +525,7 @@ impl Engine {
 
     async fn run_attempt(&mut self, chosen: Chosen, prompt: &str, ui: &mut dyn Ui) -> Attempt {
         let provider = chosen.spec.provider;
-        let mut sent = self.prompt_for(provider, prompt);
+        let mut sent = self.prompt_for(provider, chosen.spec.id, prompt);
         let mut backend = (self.backend_factory)(provider);
         if let Some(mcp) = chosen.mcp.as_ref().filter(|_| backend.supports_mcp()) {
             match orchestrate::write_mcp_config(mcp) {
