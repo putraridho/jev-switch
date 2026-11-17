@@ -449,15 +449,19 @@ pub fn stderr_is_tty() -> bool {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Style {
     pub enabled: bool,
+    /// The stream is a terminal. With colour off, text going to a terminal is still
+    /// stripped of escape and control sequences (model output must not be able to
+    /// retitle, clear or spoof the screen); only non-terminal output stays raw.
+    pub terminal: bool,
 }
 
 impl Style {
     pub fn on() -> Self {
-        Self { enabled: true }
+        Self { enabled: true, terminal: true }
     }
 
     pub fn off() -> Self {
-        Self { enabled: false }
+        Self { enabled: false, terminal: false }
     }
 
     /// Colour for a stream, from the environment: `NO_COLOR` (non-empty) turns it off
@@ -479,7 +483,7 @@ impl Style {
         } else {
             stream_is_tty
         };
-        Self { enabled }
+        Self { enabled, terminal: stream_is_tty }
     }
 
     /// `s` in SGR `code`. Resets after the span, and re-opens the style after any
@@ -1792,7 +1796,9 @@ fn draw_wrapped(words: &[Word], avail: usize, first: &str, rest: &str, style: St
 /// disabled style the text is returned UNCHANGED, so pipes and logs stay raw.
 pub fn answer_text(text: &str, style: Style, width: usize) -> String {
     if !style.enabled {
-        return text.to_string();
+        // Colour off: keep the text as written, but never pass control sequences to a
+        // terminal (NO_COLOR, --no-color and TERM=dumb are still terminals).
+        return if style.terminal { text.split('\n').map(sanitize_answer_line).collect::<Vec<_>>().join("\n") } else { text.to_string() };
     }
     let width = clamp_width(width);
     let mut out: Vec<String> = Vec::new();
@@ -2035,8 +2041,8 @@ pub fn hint(line: &str) -> Option<String> {
 mod tests {
     use super::*;
 
-    const ON: Style = Style { enabled: true };
-    const OFF: Style = Style { enabled: false };
+    const ON: Style = Style { enabled: true, terminal: true };
+    const OFF: Style = Style { enabled: false, terminal: false };
 
     fn no_esc(s: &str) {
         assert!(!s.contains('\x1b'), "escape bytes in {s:?}");
@@ -3283,5 +3289,17 @@ mod tests {
         for (styled, plain) in pairs {
             assert_eq!(strip_ansi(&styled), plain);
         }
+    }
+
+    #[test]
+    fn colour_off_on_a_terminal_still_strips_control_sequences_but_pipes_stay_raw() {
+        let hostile = "ok\x1b]0;pwned\x07 \x1b[2Jdone\x07";
+        let tty_no_colour = Style::resolve(true, Some("1"), None, None);
+        assert!(!tty_no_colour.enabled && tty_no_colour.terminal);
+        let shown = answer_text(hostile, tty_no_colour, 80);
+        assert!(!shown.contains('\x1b') && !shown.contains('\x07'), "{shown:?}");
+        assert!(shown.contains("ok") && shown.contains("done"));
+        let piped = Style::resolve(false, None, None, None);
+        assert_eq!(answer_text(hostile, piped, 80), hostile, "non-terminal output is passed through byte for byte");
     }
 }

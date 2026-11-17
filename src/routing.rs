@@ -391,14 +391,14 @@ fn sticky(
     // The chain's entries on the current provider that can serve, best first.
     let own: Vec<_> = chain.iter().copied().filter(|s| s.provider == cur.provider && can_serve(s, task, input)).collect();
     if best.spec.provider == cur.provider {
-        return hold_within(state, cur, best, &own, "same provider".into());
+        return hold_within(state, task, cur, &own, "same provider".into());
     }
     let Some(gate) = switch_gate(input, task, source) else {
-        return stay(cur, "same task, warm session".into(), best.dropped_tier || cur.tier < best.spec.tier);
+        return stay(cur, "same task, warm session".into(), cur.tier < task.needed_tier());
     };
     if !gate.confident && own.first().is_some_and(|k| k.tier >= best.spec.tier) {
         let why = format!("not confident enough to switch from {} ({})", cur.provider, gate.why);
-        return hold_within(state, cur, best, &own, why);
+        return hold_within(state, task, cur, &own, why);
     }
     state.held = 0;
     let why = format!("switched from {} ({})", cur.provider, gate.why);
@@ -432,9 +432,16 @@ fn stay(spec: &'static ModelSpec, why: String, dropped_tier: bool) -> Choice {
 /// immediate (quality matters now). A downgrade is held for up to `MAX_HOLD - 1`
 /// consecutive turns, because dropping a tier rebuilds the cache and short dips in
 /// difficulty are common; then it steps down ONE tier, not all the way.
-fn hold_within(state: &mut RoutingState, cur: &'static ModelSpec, best: Pick, own: &[&'static ModelSpec], note: String) -> Choice {
+fn hold_within(
+    state: &mut RoutingState,
+    task: TaskType,
+    cur: &'static ModelSpec,
+    own: &[&'static ModelSpec],
+    note: String,
+) -> Choice {
     let target = own[0];
-    let dropped = |spec: &'static ModelSpec| best.dropped_tier || spec.tier < best.spec.tier;
+    // Judged against what the task needs, like `catalog::pick`, not the chain head.
+    let dropped = |spec: &'static ModelSpec| spec.tier < task.needed_tier();
     if target.tier >= cur.tier {
         // Equal tier is not worth rebuilding the cache for.
         let upgrade = target.tier > cur.tier;
@@ -757,6 +764,17 @@ mod tests {
         for n in 0..20 {
             assert_eq!(n <= SHORT_FOLLOW_UP_WORDS, crate::router::is_short_follow_up(&words(n)), "{n}");
         }
+    }
+
+    #[test]
+    fn staying_warm_reports_a_drop_only_below_what_the_task_needs() {
+        // Explain, Claude warm on Sonnet, Grok 4.7 (Top) also ready: a short follow-up
+        // stays on Sonnet, which is all explaining needs, so it is not "lower tier".
+        let f = Fixture::new(&[Claude, Grok]);
+        let mut st = RoutingState { current: Some((Claude, "claude-sonnet-5-5".into())), ..Default::default() };
+        let d = f.run(&mut st, Some(&sig(TaskType::Explain)), 3).unwrap();
+        assert_eq!(d.spec.id, "claude-sonnet-5-5", "{}", d.reason);
+        assert!(!d.dropped_tier, "{}", d.reason);
     }
 
     #[test]
