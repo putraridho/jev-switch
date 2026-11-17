@@ -4,6 +4,7 @@
 use std::path::Path;
 
 use super::changes::relativize_paths;
+use crate::permissions::Settled;
 use super::style::Style;
 use super::text::one_line;
 use super::width::{char_width, clamp_width, display_width};
@@ -15,8 +16,9 @@ const MAX_INLINE_ROWS: usize = 20;
 /// Rows of a long input kept in the question next to the pager's.
 const PEEK_ROWS: usize = 6;
 
-/// What to ask. `lines` is everything the answer approves, already safe to print (see
-/// `permissions::review`); it is wrapped, never cut.
+/// What to ask. `lines` is everything the answer approves, already safe to print and with
+/// paths already shortened where that is safe (see `permissions::review`); it is printed as
+/// it is (wrapped, never cut, never rewritten), so what is approved is what runs.
 pub struct Question<'a> {
     pub tool: &'a str,
     /// Facts about the call that are not its input, printed apart from the input rows.
@@ -26,7 +28,6 @@ pub struct Question<'a> {
     pub always: bool,
     /// A dim line under the choices: why `a` is missing, or what it would also allow.
     pub note: Option<&'a str>,
-    pub project_dir: &'a Path,
     pub style: Style,
     pub width: usize,
 }
@@ -82,13 +83,13 @@ fn choices(always: bool, style: Style) -> String {
 pub fn permission_prompt(q: &Question) -> Prompt {
     let (style, width) = (q.style, clamp_width(q.width).saturating_sub(1));
     let tool = one_line(q.tool);
-    let lines: Vec<String> = q.lines.iter().map(|l| relativize_paths(l, q.project_dir)).collect();
+    let lines = q.lines;
     let choices_plain = if q.always { "[y]es  [n]o  [a]lways in this project" } else { "[y]es  [n]o" };
     let note_rows: Vec<String> = q.note.map(|n| wrap_hard(&one_line(n), width).into_iter().map(|r| style.dim(&r)).collect()).unwrap_or_default();
     let join = |parts: &[&[String]]| parts.iter().flat_map(|p| p.iter()).map(String::as_str).collect::<Vec<_>>().join("\n");
 
     let head = format!("Allow {tool}: ");
-    if let ([line], true) = (lines.as_slice(), q.notes.is_empty()) {
+    if let ([line], true) = (lines, q.notes.is_empty()) {
         if display_width(&head) + display_width(line) + 1 + 2 + display_width(choices_plain) <= width {
             let first = format!("{}{line}{}  {}", style.bold(&head), style.bold("?"), choices(q.always, style));
             return Prompt { text: join(&[&[first], &note_rows]), full: None, tail: String::new() };
@@ -119,17 +120,15 @@ pub fn permission_prompt(q: &Question) -> Prompt {
     Prompt { text, full: Some(join(&[&top, &rows])), tail }
 }
 
-/// What the answer to an approval question looks like once given.
-pub fn permission_answered(decision: Option<&crate::backend::Decision>, rule: Option<&str>, style: Style) -> String {
-    use crate::backend::Decision;
-    match decision {
-        Some(Decision::Allow) => style.green("\u{2713} allowed"),
-        Some(Decision::AllowAlways) => match rule {
-            Some(rule) => format!("{} {}", style.green("\u{2713} allowed, and always in this project:"), one_line(rule)),
-            None => style.green("\u{2713} allowed"),
-        },
-        Some(Decision::Deny { .. }) => style.yellow("\u{2717} denied"),
-        None => style.yellow("\u{25a0} stopped"),
+/// What the answer to an approval question looks like once the engine has settled it: "always"
+/// only for what was really saved, and a failed save in words on a second line.
+pub fn permission_answered(settled: &Settled, style: Style) -> String {
+    match settled {
+        Settled::Allowed => style.green("\u{2713} allowed"),
+        Settled::Remembered(always) => format!("{} {}", style.green("\u{2713} allowed, and always in this project:"), one_line(&always.label())),
+        Settled::NotSaved(e) => format!("{}\n{}", style.green("\u{2713} allowed"), one_line(&format!("[permissions] {e}; allowed this once, nothing was saved"))),
+        Settled::Denied(_) => style.yellow("\u{2717} denied"),
+        Settled::Stopped => style.yellow("\u{25a0} stopped"),
     }
 }
 
@@ -174,12 +173,10 @@ mod tests {
 
     // ---------------------------------------------------------- permissions
 
-    const PROJECT: &str = "/proj";
-
     /// Lay out a question about `lines` with the defaults the tests share.
     fn ask(lines: &[&str], always: bool, style: Style, width: usize) -> Prompt {
         let lines: Vec<String> = lines.iter().map(|l| (*l).to_string()).collect();
-        permission_prompt(&Question { tool: "Bash", notes: &[], lines: &lines, always, note: None, project_dir: Path::new(PROJECT), style, width })
+        permission_prompt(&Question { tool: "Bash", notes: &[], lines: &lines, always, note: None, style, width })
     }
 
     fn many(n: usize) -> Vec<String> {
@@ -194,18 +191,17 @@ mod tests {
     fn a_short_command_and_the_choices_share_one_line() {
         assert_eq!(ask(&["cargo test --quiet"], true, OFF, 100).text, "Allow Bash: cargo test --quiet?  [y]es  [n]o  [a]lways in this project");
         assert_eq!(ask(&["x"], false, OFF, 100).text, "Allow Bash: x?  [y]es  [n]o");
-        // Paths in the project are shown relative, like tool lines.
-        let p = permission_prompt(&Question {
-            tool: "Write",
-            notes: &[],
-            lines: &["/proj/src/a.rs (12 bytes)".to_string()],
-            always: true,
-            note: None,
-            project_dir: Path::new(PROJECT),
-            style: OFF,
-            width: 100,
-        });
-        assert!(p.text.contains("Allow Write: src/a.rs (12 bytes)?"), "{}", p.text);
+    }
+
+    #[test]
+    fn the_lines_are_printed_exactly_as_given_never_rewritten() {
+        // A command naming the project folder runs with that text, so it is shown with it:
+        // the prompt does not shorten paths (the review shortened only path fields).
+        let command = "rm -rf /proj/build /proj && cat /proj/.env";
+        assert_eq!(ask(&[command], false, OFF, 100).text, format!("Allow Bash: {command}?  [y]es  [n]o"));
+        let content = ["/w/x.txt (20 bytes)".to_string(), "  path=/proj/src/a.rs".to_string()];
+        let p = permission_prompt(&Question { tool: "Write", notes: &[], lines: &content, always: false, note: None, style: OFF, width: 100 });
+        assert!(p.text.contains("\u{2502}   path=/proj/src/a.rs"), "{}", p.text);
     }
 
     #[test]
@@ -261,7 +257,7 @@ mod tests {
     fn options_of_the_call_are_printed_apart_from_the_input() {
         let lines = vec!["ls".to_string()];
         let notes = vec!["dangerouslyDisableSandbox=true".to_string()];
-        let p = permission_prompt(&Question { tool: "Bash", notes: &notes, lines: &lines, always: false, note: None, project_dir: Path::new(PROJECT), style: OFF, width: 100 });
+        let p = permission_prompt(&Question { tool: "Bash", notes: &notes, lines: &lines, always: false, note: None, style: OFF, width: 100 });
         assert_eq!(rows_of(&p)[..3], ["Allow Bash:", "options: dangerouslyDisableSandbox=true", "\u{2502} ls"]);
     }
 
@@ -269,7 +265,7 @@ mod tests {
     fn the_note_goes_under_the_choices_and_is_wrapped() {
         let lines = vec!["ls".to_string()];
         let note = "can't remember this one: it runs other commands and then some more words to make it long";
-        let p = permission_prompt(&Question { tool: "Bash", notes: &[], lines: &lines, always: false, note: Some(note), project_dir: Path::new(PROJECT), style: OFF, width: 50 });
+        let p = permission_prompt(&Question { tool: "Bash", notes: &[], lines: &lines, always: false, note: Some(note), style: OFF, width: 50 });
         let rows = rows_of(&p);
         assert_eq!(rows[0], "Allow Bash: ls?  [y]es  [n]o");
         assert!(rows.len() >= 3 && rows.iter().all(|r| display_width(r) < 50), "{rows:?}");
@@ -286,14 +282,15 @@ mod tests {
 
     #[test]
     fn answered_questions_and_the_non_interactive_hint_read_plainly() {
-        use crate::backend::Decision;
-        assert_eq!(permission_answered(Some(&Decision::Allow), None, OFF), "✓ allowed");
-        assert_eq!(
-            permission_answered(Some(&Decision::AllowAlways), Some("Bash(ls:*)"), OFF),
-            "✓ allowed, and always in this project: Bash(ls:*)"
-        );
-        assert_eq!(permission_answered(Some(&Decision::Deny { reason: "x".into() }), None, OFF), "✗ denied");
-        assert_eq!(permission_answered(None, None, OFF), "■ stopped");
+        use crate::permissions::{Always, SettingsError};
+        assert_eq!(permission_answered(&Settled::Allowed, OFF), "✓ allowed");
+        let always = Always { rule: Some("Bash(ls:*)".into()), folder: None };
+        assert_eq!(permission_answered(&Settled::Remembered(always), OFF), "✓ allowed, and always in this project: Bash(ls:*)");
+        let failed = permission_answered(&Settled::NotSaved(SettingsError("/p/.claude/settings.local.json: cannot write it".into())), OFF);
+        assert_eq!(failed, "✓ allowed\n[permissions] /p/.claude/settings.local.json: cannot write it; allowed this once, nothing was saved");
+        assert!(!failed.contains("always"), "{failed}");
+        assert_eq!(permission_answered(&Settled::Denied("x".into()), OFF), "✗ denied");
+        assert_eq!(permission_answered(&Settled::Stopped, OFF), "■ stopped");
         let hint = denied_without_asking("Bash");
         assert!(hint.starts_with("✗ denied Bash") && hint.contains("CODE_ALLOWED_TOOLS") && hint.contains("/permissions"), "{hint}");
     }

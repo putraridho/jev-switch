@@ -384,7 +384,15 @@ run through Claude Code, which `jev-code` starts with `--input-format stream-jso
 
 One key answers. `a` also saves a rule in `<project>/.claude/settings.local.json`
 (`Bash(cargo test:*)`, `Read(//abs/dir/**)`, `Write(//abs/file)`), which Claude Code reads
-itself, so it does not ask again. Ctrl-C at the question denies it and stops the turn. The
+itself, so it does not ask again. `a` is offered only for what is safe to remember for
+good: read-only programs (`ls`, `cat`, `grep`, ...) and the project's build/test commands
+(`cargo test`, `git diff`, `npm test`, ...), never a program that overwrites, deletes, sends
+data, installs, pushes or runs scripts (`tee`, `cp`, `curl`, `git push`, `npm install`); a
+folder outside the project only when it is inside your home folder (not home itself, not a
+hidden or credentials folder such as `~/.ssh`) or inside the temp folder. Otherwise the
+question says why and offers only y/n. The question shows the call exactly as it will run
+(a sub-agent's whole prompt included); only path fields are shown relative to the project.
+Ctrl-C at the question denies it and stops the turn. The
 idle timeout does not run while a question waits. `/permissions` lists the rules (and your
 user-level `~/.claude/settings.json` ones, read only); `/permissions allow <rule>`,
 `/permissions remove <rule>` and `/permissions dir <path>` (an additional folder, which is
