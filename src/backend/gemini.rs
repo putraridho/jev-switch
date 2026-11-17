@@ -111,7 +111,7 @@ impl GeminiBackend {
 }
 
 fn bin_from_env(var: &str, default: &str) -> String {
-    std::env::var(var).unwrap_or_else(|_| default.into())
+    crate::envfile::lookup(var).unwrap_or_else(|| default.into())
 }
 
 /// The prompt travels on stdin (see `stdin_payload`): a piped stdin already makes

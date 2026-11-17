@@ -40,7 +40,7 @@ impl GrokBackend {
 
     /// Grok Build with the user's own login; the binary can be overridden with `GROK_BIN`.
     pub fn grok() -> Self {
-        Self::new(std::env::var("GROK_BIN").unwrap_or_else(|_| "grok".into()))
+        Self::new(crate::envfile::lookup("GROK_BIN").unwrap_or_else(|| "grok".into()))
     }
 }
 

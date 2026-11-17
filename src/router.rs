@@ -181,7 +181,7 @@ pub fn worker_alias(tier: usize, signals: &Value, cheap: Option<f64>, allow_opus
 
 impl Router {
     pub fn new(ts: TypeSafe, cheap_threshold: f64) -> Self {
-        let ms = std::env::var("JEV_TIMEOUT_MS").ok().and_then(|v| v.parse().ok()).unwrap_or(JEV_TIMEOUT_MS);
+        let ms = crate::envfile::lookup("JEV_TIMEOUT_MS").and_then(|v| v.parse().ok()).unwrap_or(JEV_TIMEOUT_MS);
         Self {
             ts,
             cheap_threshold,

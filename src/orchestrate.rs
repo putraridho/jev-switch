@@ -130,7 +130,7 @@ impl Setup {
     /// `cargo build` and `install.sh` put it). The config goes in the state dir.
     pub fn detect() -> Option<Self> {
         let config_dir = crate::log::state_dir()?;
-        let bin = std::env::var_os("JEV_DELEGATE_BIN")
+        let bin = crate::envfile::lookup("JEV_DELEGATE_BIN")
             .map(PathBuf::from)
             .or_else(|| std::env::current_exe().ok().map(|e| e.with_file_name(DELEGATE_BIN)))
             .filter(|p| p.is_file());

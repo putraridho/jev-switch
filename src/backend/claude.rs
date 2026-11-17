@@ -35,11 +35,11 @@ impl ClaudeBackend {
     /// The same CLI for another provider, pointed at its API through `env`.
     pub fn with_profile(provider: ProviderId, env: Vec<(String, String)>) -> Self {
         Self {
-            bin: std::env::var("CLAUDE_BIN").unwrap_or_else(|_| "claude".into()),
+            bin: crate::envfile::lookup("CLAUDE_BIN").unwrap_or_else(|| "claude".into()),
             provider,
             env,
-            permission_mode: std::env::var("CODE_PERMISSION_MODE").unwrap_or_else(|_| "acceptEdits".into()),
-            allowed_tools: std::env::var("CODE_ALLOWED_TOOLS").ok(),
+            permission_mode: crate::envfile::lookup("CODE_PERMISSION_MODE").unwrap_or_else(|| "acceptEdits".into()),
+            allowed_tools: crate::envfile::lookup("CODE_ALLOWED_TOOLS"),
             mcp_config: None,
             mcp_name: None,
         }

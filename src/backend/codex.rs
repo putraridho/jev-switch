@@ -49,8 +49,8 @@ impl CodexBackend {
     /// environment so every front end (code, gateway workers) behaves the same.
     pub fn codex() -> Self {
         Self::new(
-            std::env::var("CODEX_BIN").unwrap_or_else(|_| "codex".into()),
-            std::env::var("CODEX_SANDBOX").unwrap_or_else(|_| DEFAULT_SANDBOX.into()),
+            crate::envfile::lookup("CODEX_BIN").unwrap_or_else(|| "codex".into()),
+            crate::envfile::lookup("CODEX_SANDBOX").unwrap_or_else(|| DEFAULT_SANDBOX.into()),
         )
     }
 

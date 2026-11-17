@@ -228,7 +228,9 @@ cd ~/some-project && jev-code # or: jev-code /path/to/project; jev-code --help
 ```
 
 The Jev key is read from `TYPESAFE_API_KEY` / `JEV_API_KEY`, or from
-`~/.jev-router.env` (`JEV_API_KEY=...`), so it works from any directory. Re-run
+`~/.jev-router.env` (`JEV_API_KEY=...`), so it works from any directory. Copy
+[`.jev-router.env.example`](.jev-router.env.example) there and `chmod 600` it: it lists every
+key and setting, and you only need the Jev key to start. Re-run
 `scripts/install.sh` after changing the code.
 
 A routed coding agent. Every turn runs one provider's coding CLI in your project with

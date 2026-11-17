@@ -102,9 +102,24 @@ fn detect_gemini_flavor() -> Flavor {
 /// user's agreement to pay per token.
 pub fn allowances_for(credits_env: Option<&str>, avail: &[Availability]) -> Allowances {
     Allowances {
-        credits: credits_env.is_some_and(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true")),
+        // Extra-credit models (Claude Fable) are free to use when the plan includes them:
+        // Claude Max and Ultra do, Pro bills them as pay-as-you-go credits (opt-in).
+        credits: credits_env.is_some_and(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true"))
+            || claude_plan_includes_fable(avail),
         per_token: deepseek_ready(avail),
     }
+}
+
+/// Whether the logged-in Claude plan includes Fable (Max and Ultra do; Pro does not).
+fn claude_plan_includes_fable(avail: &[Availability]) -> bool {
+    avail.iter().any(|a| {
+        a.provider == ProviderId::Claude
+            && a.state == State::Ready
+            && a.plan.as_deref().is_some_and(|p| {
+                let p = p.to_ascii_lowercase();
+                p.contains("max") || p.contains("ultra")
+            })
+    })
 }
 
 fn deepseek_ready(avail: &[Availability]) -> bool {
@@ -196,7 +211,7 @@ impl Runtime {
         let avail = availability::probe_all().await;
         let cooldown_path = cooldown::default_path();
         let cooldowns = cooldown_path.as_deref().map(Cooldowns::load).unwrap_or_default();
-        let allow = allowances_for(std::env::var("JEV_ALLOW_CREDITS").ok().as_deref(), &avail);
+        let allow = allowances_for(crate::envfile::lookup("JEV_ALLOW_CREDITS").as_deref(), &avail);
         Self::build(avail, cooldowns, allow, Overrides::from_env(), cooldown_path)
     }
 
@@ -329,7 +344,7 @@ impl Runtime {
     /// The pure half of [`Runtime::refresh`].
     fn apply_probe(&mut self, avail: Vec<Availability>) {
         self.avail = avail;
-        self.allow.per_token = deepseek_ready(&self.avail);
+        self.allow = allowances_for(crate::envfile::lookup("JEV_ALLOW_CREDITS").as_deref(), &self.avail);
         let avail = &self.avail;
         self.blocked.retain(|p, reason| {
             *reason != BlockReason::Auth || !avail.iter().any(|a| a.provider == *p && a.state == State::Ready)
@@ -694,5 +709,21 @@ mod tests {
         let lookup = |n: &str| (n == "GEMINI_API_KEY").then(|| "from-file".to_string());
         assert_eq!(gemini_env(&lookup), vec![("GEMINI_API_KEY".to_string(), "from-file".to_string())]);
         assert!(gemini_env(&|_| None).is_empty());
+    }
+
+    #[test]
+    fn a_max_or_ultra_claude_plan_allows_fable_but_pro_does_not() {
+        let claude = |plan: &str| Availability {
+            provider: ProviderId::Claude,
+            state: State::Ready,
+            plan: Some(plan.into()),
+            models: None,
+            detail: String::new(),
+            verified: true,
+        };
+        assert!(allowances_for(None, &[claude("max_5x")]).credits);
+        assert!(allowances_for(None, &[claude("Ultra")]).credits);
+        assert!(!allowances_for(None, &[claude("pro")]).credits);
+        assert!(allowances_for(Some("1"), &[claude("pro")]).credits, "the env opt-in still works on Pro");
     }
 }
