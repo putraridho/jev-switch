@@ -679,7 +679,7 @@ impl Engine {
             return Judged::Legacy(want);
         }
         let previous = self.previous.as_ref().map(|(p, r)| (p.as_str(), r.as_str()));
-        let want = self.router.provider_want(prompt, &recent, previous).await;
+        let want = self.router.provider_want(prompt, &recent, previous, self.orchestrate).await;
         if want.is_none() {
             ui.note("[jev] unavailable (timeout or error); routing without its judgment");
         }

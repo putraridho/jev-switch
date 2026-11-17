@@ -1,15 +1,16 @@
 //! Starting cutoff for orchestrate mode's auto-trigger: score the prompts the gateway
 //! has logged with Jev's `multi_part` and `sequential` judgment and show how many would
 //! trigger at each cutoff, with example prompts per score band, so the cutoff is read off
-//! real prompts. A prompt the sequence veto held back shows its raw `multi_part` beside
-//! the lowered score.
+//! real prompts. A prompt the sequence veto holds back keeps its raw `multi_part` in the
+//! output, marked `vetoed`, and is never counted as triggering at any cutoff.
 //!
 //!   cargo run --bin orch_tune [gateway.jsonl] > scores.tsv
 //!
 //! Input: the gateway's decision log (default `~/.local/state/jev-router/gateway.jsonl`).
 //! It keeps only the first 200 characters of each prompt and no conversation context,
-//! so long prompts are scored on their start. Output: `score<TAB>multi_part<TAB>sequential
-//! <TAB>prompt` on stdout; the distribution and examples on stderr.
+//! so long prompts are scored on their start. Output, highest trigger score first:
+//! `multi_part<TAB>sequential<TAB>veto<TAB>prompt` on stdout (see [`columns`]; `veto` is
+//! `vetoed` or `-`); the distribution and examples on stderr.
 
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -36,9 +37,11 @@ fn is_harness(prompt: &str) -> bool {
 }
 
 /// `multi_part  sequential  veto`, tab separated: Jev's two answers and whether the sequence
-/// veto holds the prompt back (`vetoed`) however high `multi_part` is.
+/// veto holds the prompt back (`vetoed`) however high `multi_part` is. A `sequential` answer
+/// Jev did not give is `-`.
 fn columns(j: &Orchestration) -> String {
-    format!("{:.3}\t{:.3}\t{}", j.multi_part_p, j.sequential_p, if j.vetoed { "vetoed" } else { "-" })
+    let sequential = j.sequential_p.map_or_else(|| "-".to_string(), |p| format!("{p:.3}"));
+    format!("{:.3}\t{sequential}\t{}", j.multi_part_p, if j.vetoed { "vetoed" } else { "-" })
 }
 
 /// What the trigger would see at a cutoff: `multi_part`, or nothing for a vetoed prompt.
@@ -121,5 +124,6 @@ mod tests {
         assert_eq!(columns(&Orchestration::new(0.8, 0.1)), "0.800\t0.100\t-");
         assert!(trigger_score(&Orchestration::new(0.95, 0.9)) < 0.0);
         assert_eq!(trigger_score(&Orchestration::new(0.8, 0.1)), 0.8);
+        assert_eq!(columns(&Orchestration::judged(0.8, None)), "0.800\t-\t-");
     }
 }

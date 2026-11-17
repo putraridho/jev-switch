@@ -982,7 +982,8 @@ type Clock = Box<dyn Fn() -> u64 + Send + Sync>;
 pub fn router_judge(router: Arc<Router>) -> Judge {
     Box::new(move |brief| {
         let router = router.clone();
-        Box::pin(async move { router.provider_want(&brief, "", None).await })
+        // A worker never orchestrates, so the sequence veto is not asked.
+        Box::pin(async move { router.provider_want(&brief, "", None, false).await })
     })
 }
 

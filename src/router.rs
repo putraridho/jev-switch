@@ -90,8 +90,9 @@ pub const SEQUENTIAL_VETO_P: f64 = 0.70;
 pub struct Orchestration {
     /// Jev's `multi_part` answer: what the cutoff is compared with.
     pub multi_part_p: f64,
-    /// Jev's `sequential` answer.
-    pub sequential_p: f64,
+    /// Jev's `sequential` answer; `None` when it was not asked (orchestration is off) or
+    /// could not be read, which leaves no veto information: only `multi_part` decides.
+    pub sequential_p: Option<f64>,
     /// The request is a sequence of dependent steps (`sequential_p` at [`SEQUENTIAL_VETO_P`]
     /// or more): parallel workers gain nothing, so it is never orchestrated.
     pub vetoed: bool,
@@ -99,7 +100,12 @@ pub struct Orchestration {
 
 impl Orchestration {
     pub fn new(multi_part_p: f64, sequential_p: f64) -> Self {
-        Self { multi_part_p, sequential_p, vetoed: sequential_p >= SEQUENTIAL_VETO_P }
+        Self::judged(multi_part_p, Some(sequential_p))
+    }
+
+    /// The judgment from the answers there are: without a `sequential` answer nothing is vetoed.
+    pub fn judged(multi_part_p: f64, sequential_p: Option<f64>) -> Self {
+        Self { multi_part_p, sequential_p, vetoed: sequential_p.is_some_and(|p| p >= SEQUENTIAL_VETO_P) }
     }
 
     /// The fields of an orchestrate check's log row and response; all null when Jev gave
@@ -361,10 +367,13 @@ impl Router {
     /// hand them to cheaper workers; questions, single fixes and short follow-ups score
     /// low) and `sequential` (see [`SEQUENTIAL_VETO_P`]). The only way to ask
     /// `multi_part` for orchestration, so no caller can skip the sequence veto.
+    ///
+    /// An unreadable `sequential` answer does not fail the judgment: it only loses the veto
+    /// (`sequential_p` is `None`), the same as in [`Router::provider_want`]; the caller logs it.
     pub async fn orchestration_p(&self, request: &str, recent_context: &str) -> Result<Orchestration> {
         let questions = json!({ Q_MULTI_PART: multi_part_question(), Q_SEQUENTIAL: sequential_question() });
         let answers = self.ts.ask_many(request_state(request, recent_context), questions).await?;
-        Ok(Orchestration::new(decode_noul(&answers, Q_MULTI_PART)?, decode_noul(&answers, Q_SEQUENTIAL)?))
+        Ok(Orchestration::judged(decode_noul(&answers, Q_MULTI_PART)?, decode_noul(&answers, Q_SEQUENTIAL).ok()))
     }
 
     /// Outcome signal: probability that `request` reacts to the previous answer as
@@ -378,7 +387,9 @@ impl Router {
     /// The whole provider-routing judgment in ONE request: which kind of task this is,
     /// plus the yes/no signals the router weighs it with. A single round trip (~0.5 s)
     /// instead of five keeps the added latency off every turn. `previous` is the prior
-    /// (request, answer) pair; without it the correction question is not asked. Bounded
+    /// (request, answer) pair; without it the correction question is not asked.
+    /// `orchestrate`: orchestration is on, so the `sequential` veto question is asked too
+    /// (it is used for nothing else). Bounded
     /// by `jev_timeout`; `None` on a timeout, any error or an unreadable answer, and the
     /// caller then stays on its current model.
     pub async fn provider_want(
@@ -386,11 +397,12 @@ impl Router {
         request: &str,
         recent_context: &str,
         previous: Option<(&str, &str)>,
+        orchestrate: bool,
     ) -> Option<ProviderWant> {
         let state = provider_state(request, recent_context, previous);
-        let questions = provider_questions(previous.is_some());
+        let questions = provider_questions(previous.is_some(), orchestrate);
         let answers = tokio::time::timeout(self.jev_timeout, self.ts.ask_many(state, questions)).await.ok()?.ok()?;
-        decode_provider_want(&answers, request, previous.is_some()).ok()
+        decode_provider_want(&answers, request, previous.is_some(), orchestrate).ok()
     }
 
     /// Code-mode tier for one turn, before session stickiness: 1 mid or 2 strong.
@@ -657,8 +669,9 @@ const Q_MULTI_PART: &str = "multi_part";
 const Q_SEQUENTIAL: &str = "sequential";
 
 /// Every question of a provider judgment as one `questions` map. The correction
-/// question needs the previous exchange, so it is asked only when there is one.
-fn provider_questions(with_previous: bool) -> Value {
+/// question needs the previous exchange, so it is asked only when there is one; the
+/// `sequential` veto only matters to orchestration, so it is asked only when that is on.
+fn provider_questions(with_previous: bool, with_sequence: bool) -> Value {
     let mut q = json!({
         Q_TASK: task_type_question(),
         Q_CONTINUES: continues_question(),
@@ -666,10 +679,12 @@ fn provider_questions(with_previous: bool) -> Value {
         Q_SECURITY: security_review_question(),
         Q_HARD: very_hard_question(),
         Q_MULTI_PART: multi_part_question(),
-        Q_SEQUENTIAL: sequential_question(),
     });
     if with_previous {
         q[Q_CORRECTION] = is_correction_question();
+    }
+    if with_sequence {
+        q[Q_SEQUENTIAL] = sequential_question();
     }
     q
 }
@@ -686,24 +701,32 @@ fn provider_state(request: &str, recent_context: &str, previous: Option<(&str, &
 }
 
 /// Turn the batch's `answers` into a [`ProviderWant`]. An unknown task type name is an
-/// error rather than a guess: the caller falls back to its current model.
-fn decode_provider_want(answers: &Value, request: &str, with_previous: bool) -> Result<ProviderWant> {
+/// error rather than a guess: the caller falls back to its current model. The `sequential`
+/// answer is the exception: it only feeds the orchestration veto, so when it cannot be read
+/// the judgment keeps every other signal, has no veto information, and the decision log
+/// says why (`sequential_error`).
+fn decode_provider_want(answers: &Value, request: &str, with_previous: bool, with_sequence: bool) -> Result<ProviderWant> {
     let task_answer = decode_choice(answers, Q_TASK)?;
     let task: TaskType = task_answer.choice.parse().map_err(|e: String| anyhow::anyhow!(e))?;
     let very_hard_p = decode_noul(answers, Q_HARD)?;
     let security_p = decode_noul(answers, Q_SECURITY)?;
     let edit_p = decode_noul(answers, Q_EDIT)?;
     let continues_p = decode_noul(answers, Q_CONTINUES)?;
-    let orchestration = Orchestration::new(decode_noul(answers, Q_MULTI_PART)?, decode_noul(answers, Q_SEQUENTIAL)?);
+    let sequential = with_sequence.then(|| decode_noul(answers, Q_SEQUENTIAL));
+    let sequential_error = sequential.as_ref().and_then(|r| r.as_ref().err()).map(|e| format!("{e:#}"));
+    let orchestration = Orchestration::judged(decode_noul(answers, Q_MULTI_PART)?, sequential.and_then(Result::ok));
     let correction_p = if with_previous { Some(decode_noul(answers, Q_CORRECTION)?) } else { None };
     let security_keywords = security_level(request);
-    let signals = json!({
+    let mut signals = json!({
         "task": task.as_str(), "task_confidence": task_answer.confidence,
         "very_hard_p": very_hard_p, "security_p": security_p, "edit_p": edit_p,
         "continues_p": continues_p, "multi_part_p": orchestration.multi_part_p,
         "sequential_p": orchestration.sequential_p, "orch_vetoed": orchestration.vetoed, "correction_p": correction_p,
         "security": format!("{security_keywords:?}").to_lowercase(),
     });
+    if let Some(e) = sequential_error {
+        signals["sequential_error"] = json!(e);
+    }
     Ok(ProviderWant {
         task,
         task_confidence: task_answer.confidence,
@@ -1038,7 +1061,7 @@ mod tests {
     async fn provider_want_decodes_every_answer_from_one_request() {
         let (url, seen) = fake_jev(answer_all).await;
         let w = router_at(&url, 2000)
-            .provider_want("make the sidebar collapse", "ctx", Some(("earlier ask", "earlier answer")))
+            .provider_want("make the sidebar collapse", "ctx", Some(("earlier ask", "earlier answer")), true)
             .await
             .expect("answered");
         assert_eq!(w.task, TaskType::Frontend);
@@ -1060,7 +1083,7 @@ mod tests {
     #[tokio::test]
     async fn provider_want_without_a_previous_turn_omits_the_correction_question() {
         let (url, seen) = fake_jev(answer_all).await;
-        let w = router_at(&url, 2000).provider_want("rename usr to user", "", None).await.expect("answered");
+        let w = router_at(&url, 2000).provider_want("rename usr to user", "", None, true).await.expect("answered");
         assert_eq!(w.correction_p, None);
         assert!(w.signals["correction_p"].is_null());
         let seen = seen.lock().unwrap();
@@ -1069,6 +1092,42 @@ mod tests {
         assert_eq!(questions["multi_part"], multi_part_question(), "the batch sends the shared definition");
         assert!(!questions.contains_key("is_correction"));
         assert!(seen[0]["state"].get("previous_request").is_none());
+    }
+
+    #[tokio::test]
+    async fn with_orchestration_off_the_sequence_veto_is_not_asked() {
+        let (url, seen) = fake_jev(answer_all).await;
+        let w = router_at(&url, 2000).provider_want("rename usr to user", "", None, false).await.expect("answered");
+        assert_eq!((w.orchestration.multi_part_p, w.orchestration.sequential_p, w.orchestration.vetoed), (0.66, None, false));
+        assert!(w.signals["sequential_p"].is_null() && w.signals.get("sequential_error").is_none());
+        let seen = seen.lock().unwrap();
+        let questions = seen[0]["questions"].as_object().unwrap();
+        assert_eq!(questions.len(), 6);
+        assert!(!questions.contains_key("sequential"), "asked only when orchestration is on");
+    }
+
+    /// Every answer readable except `sequential`, which has no probability.
+    fn unreadable_sequential(req: &Value) -> (u16, String) {
+        let (_, body) = answer_all(req);
+        let mut body: Value = serde_json::from_str(&body).unwrap();
+        if body["answers"].get("sequential").is_some() {
+            body["answers"]["sequential"] = json!({ "noul": "not a number" });
+        }
+        (200, body.to_string())
+    }
+
+    #[tokio::test]
+    async fn an_unreadable_sequential_answer_loses_only_the_veto() {
+        let (url, _) = fake_jev(unreadable_sequential).await;
+        let router = router_at(&url, 2000);
+        let w = router.provider_want("make the sidebar collapse", "", None, true).await.expect("the other signals still route");
+        assert_eq!(w.task, TaskType::Frontend);
+        assert_eq!((w.continues_p, w.edit_p, w.security_p, w.very_hard_p), (0.11, 0.22, 0.33, 0.44));
+        assert_eq!((w.orchestration.multi_part_p, w.orchestration.sequential_p, w.orchestration.vetoed), (0.66, None, false));
+        assert!(w.signals["sequential_error"].as_str().is_some_and(|e| !e.is_empty()), "the log says why: {}", w.signals);
+        // The gateway's check degrades the same way.
+        let j = router.orchestration_p("make the sidebar collapse", "").await.expect("multi_part was readable");
+        assert_eq!((j.multi_part_p, j.sequential_p, j.vetoed), (0.66, None, false));
     }
 
     /// A multi-part request that is also a sequence: the veto holds it back.
@@ -1089,7 +1148,7 @@ mod tests {
     async fn orchestration_p_keeps_the_raw_judgment_and_the_veto() {
         let (url, seen) = fake_jev(multi_part_but_sequential).await;
         let j = router_at(&url, 2000).orchestration_p("do 1, then 2, then 3", "").await.expect("answered");
-        assert_eq!((j.multi_part_p, j.sequential_p, j.vetoed), (0.95, 0.9, true));
+        assert_eq!((j.multi_part_p, j.sequential_p, j.vetoed), (0.95, Some(0.9), true));
         let fields = Orchestration::fields(Some(&j));
         assert_eq!(fields["multi_part_p"], 0.95, "the log keeps the raw judgment");
         assert_eq!((fields["sequential_p"].clone(), fields["vetoed"].clone()), (json!(0.9), json!(true)));
@@ -1128,7 +1187,7 @@ mod tests {
             }
         });
         let started = std::time::Instant::now();
-        let w = router_at(&url, 200).provider_want("why does the upload hang", "", None).await;
+        let w = router_at(&url, 200).provider_want("why does the upload hang", "", None, true).await;
         assert!(w.is_none());
         assert!(started.elapsed() < std::time::Duration::from_secs(2), "took {:?}", started.elapsed());
     }
@@ -1136,13 +1195,13 @@ mod tests {
     #[tokio::test]
     async fn a_jev_error_gives_no_provider_want() {
         let (url, _) = fake_jev(|_| (500, "boom".into())).await;
-        assert!(router_at(&url, 2000).provider_want("anything", "", None).await.is_none());
+        assert!(router_at(&url, 2000).provider_want("anything", "", None, true).await.is_none());
         // a well-formed reply with an unknown task name is no answer either
         let (url, _) = fake_jev(|_| {
             (200, json!({ "answers": { "task_type": { "choice": "astrology", "confidence": 1.0 } } }).to_string())
         })
         .await;
-        assert!(router_at(&url, 2000).provider_want("anything", "", None).await.is_none());
+        assert!(router_at(&url, 2000).provider_want("anything", "", None, true).await.is_none());
     }
 
     #[tokio::test]

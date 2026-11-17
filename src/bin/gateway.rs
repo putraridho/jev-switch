@@ -87,8 +87,8 @@ struct App {
 struct Orch {
     /// `JEV_ORCH=off` turns the trigger off for every session.
     enabled: bool,
-    /// `ORCH_TRIGGER_P`: orchestration score (`multi_part`, held back to 0.30 for a
-    /// sequence) at or above which a prompt triggers.
+    /// `ORCH_TRIGGER_P`: Jev's raw `multi_part` at or above which a prompt triggers. A
+    /// sequence (the `sequential` veto) never triggers, whatever the cutoff.
     cutoff: f64,
     /// The model the main thread runs on for an orchestrated turn when Jev has no say:
     /// Opus, or `ORCH_PLANNER` if set.
@@ -187,7 +187,12 @@ async fn orchestrate_check(State(app): State<Arc<App>>, Json(c): Json<OrchCheck>
     };
     let check = app.router.orchestration_p(&words, &c.context);
     let judgment = match tokio::time::timeout(std::time::Duration::from_secs(10), check).await {
-        Ok(Ok(j)) => Some(j),
+        Ok(Ok(j)) => {
+            if j.sequential_p.is_none() {
+                eprintln!("[warn] orchestrate check: jev's sequential answer was unreadable; no veto this time");
+            }
+            Some(j)
+        }
         Ok(Err(e)) => {
             eprintln!("[warn] orchestrate check: jev failed: {e:#}");
             None
@@ -202,7 +207,7 @@ async fn orchestrate_check(State(app): State<Arc<App>>, Json(c): Json<OrchCheck>
     // when routing escalates it as very hard (and ORCH_PLANNER doesn't pin one).
     let mut route_tier = None;
     let mut hard_p = None;
-    if judgment.as_ref().is_some_and(|j| !j.vetoed && j.multi_part_p >= app.orch.cutoff) {
+    if judgment.as_ref().is_some_and(|j| j.passes(app.orch.cutoff)) {
         let want = app.router.code_want(&words, &c.context, 1).await;
         if !want.signals.is_null() {
             route_tier = Some(want.tier);
@@ -1010,7 +1015,8 @@ mod tests {
 
     #[test]
     fn an_orchestrate_check_logs_the_raw_judgment_and_that_it_was_vetoed() {
-        // Multi-part 0.95 but a sequence: the trigger sees 0.30, the log must still show 0.95.
+        // Multi-part 0.95 but a sequence: the veto refuses it at any cutoff, and the log
+        // still shows the raw 0.95 beside `vetoed`.
         let vetoed = Orchestration::new(0.95, 0.9);
         let record = check_record(Some(&vetoed), json!({ "trigger": false, "cutoff": 0.7 }));
         assert_eq!(record["multi_part_p"], 0.95);
