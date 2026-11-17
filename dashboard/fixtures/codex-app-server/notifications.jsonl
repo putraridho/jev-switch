@@ -1,0 +1,2 @@
+{"method":"remoteControl/status/changed","params":{"status":"disabled","serverName":"REDACTED","installationId":"00000000-0000-4000-8000-000000000001","environmentId":null},"emittedAtMs":1794893671573}
+{"method":"account/updated","params":{"authMode":"chatgpt","planType":"free"},"emittedAtMs":1794893672496}
