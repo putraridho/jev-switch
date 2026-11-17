@@ -240,7 +240,7 @@ impl Backend for CodexBackend {
         let lower = message.to_lowercase();
         if lower.contains("not supported when using codex with a chatgpt account") {
             ErrorKind::NotEntitled
-        } else if lower.contains("401") || lower.contains("missing bearer") {
+        } else if crate::backend::has_token(&lower, "401") || lower.contains("missing bearer") {
             ErrorKind::Auth
         } else if ["not inside a git", "not a git repo", "requires a git repo"].iter().any(|p| lower.contains(p)) {
             ErrorKind::UnusableHere
@@ -471,5 +471,12 @@ mod tests {
         assert_eq!(allowed_models_from_cache(cache), ["gpt-a", "gpt-b"]);
         assert!(allowed_models_from_cache("nope").is_empty());
         assert!(allowed_models_from_cache("{}").is_empty());
+    }
+
+    #[test]
+    fn ordinary_text_with_401_inside_is_not_an_auth_failure() {
+        let b = CodexBackend::codex();
+        assert_eq!(b.classify_error("added 4012 rows to the table"), ErrorKind::Other);
+        assert_eq!(b.classify_error("HTTP 401 Unauthorized"), ErrorKind::Auth);
     }
 }

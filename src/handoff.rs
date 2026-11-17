@@ -56,6 +56,20 @@ impl Sessions {
         self.mark_seen(p);
     }
 
+    /// Append a turn that got NO answer. Unlike [`Sessions::record`] this marks the
+    /// provider caught up only if it already was before this turn: a provider that was
+    /// still owed earlier turns when its attempt failed (login, stall, wrong folder)
+    /// never read them, so it must get them next time. A provider that was current keeps
+    /// its place (its own CLI session has seen the prompt).
+    pub fn record_failed(&mut self, rec: TurnRecord) {
+        let p = rec.provider;
+        let was_current = self.missed_turns(p) == 0;
+        self.log.push(rec);
+        if was_current {
+            self.mark_seen(p);
+        }
+    }
+
     /// Declare `p` caught up with the whole log. Called after [`Sessions::catch_up`]
     /// has been put in front of a prompt.
     pub fn mark_seen(&mut self, p: ProviderId) {
@@ -494,5 +508,20 @@ mod tests {
             strings(&["src/a.rs", "/abs/b.md", "f", "n", "src/c.rs", "*** Begin Patch"])
         );
         assert_eq!(commands_run(&tools), strings(&["cargo test", "cargo build"]));
+    }
+
+    #[test]
+    fn a_failed_turn_keeps_a_provider_that_was_behind_owed_its_catch_up() {
+        let rec = |p, ok: bool| TurnRecord { prompt: "q".into(), provider: p, model: "m".into(), reply: "r".into(), tools: vec![], ok };
+        let mut s = Sessions::new();
+        s.record(rec(ProviderId::Claude, true));
+        s.record(rec(ProviderId::Claude, true));
+        // codex is behind (missed 2 turns) and its attempt fails: still owed all 3
+        s.record_failed(rec(ProviderId::Codex, false));
+        assert_eq!(s.missed_turns(ProviderId::Codex), 3);
+        // a provider that was current keeps its place when its own turn fails
+        s.mark_seen(ProviderId::Claude);
+        s.record_failed(rec(ProviderId::Claude, false));
+        assert_eq!(s.missed_turns(ProviderId::Claude), 0);
     }
 }

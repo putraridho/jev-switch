@@ -215,7 +215,7 @@ pub trait Backend: Send + Sync {
 
 /// True when `needle` (a number) appears in `hay` not glued to other digits or
 /// letters, so "429" matches "HTTP 429" but not "a4291b".
-fn has_token(hay: &str, needle: &str) -> bool {
+pub(crate) fn has_token(hay: &str, needle: &str) -> bool {
     hay.match_indices(needle).any(|(i, _)| {
         let before = hay[..i].chars().next_back();
         let after = hay[i + needle.len()..].chars().next();

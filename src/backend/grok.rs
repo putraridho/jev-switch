@@ -111,14 +111,24 @@ fn result_event(ev: &Value) -> Event {
     })
 }
 
-/// The plan gate shows up as a refusal that names the subscription, not as a limit.
+/// The plan gate shows up as a refusal that names the plan or subscription, not as a
+/// limit. A bare mention of "subscription" or "premium" is not enough: those words
+/// appear in ordinary answers about billing code.
 fn is_entitlement_text(lower: &str) -> bool {
-    ["not included", "subscription", "supergrok", "premium"].iter().any(|p| lower.contains(p))
+    let names_plan = ["supergrok", "premium", "subscription", "your plan"].iter().any(|p| lower.contains(p));
+    let says_gate = ["not included", "required", "upgrade", "only available", "not available", "need a", "no active"]
+        .iter()
+        .any(|p| lower.contains(p));
+    names_plan && says_gate
 }
 
-/// Grok's own login wording; the shared rules only know "authenticate".
+/// Grok's own login wording; the shared rules only know "authenticate". An API key or
+/// "authentication" counts only next to a word that says it is missing or wrong.
 fn is_auth_text(lower: &str) -> bool {
-    ["grok login", "xai_api_key", "authentication", "api key"].iter().any(|p| lower.contains(p))
+    let broken = ["missing", "invalid", "not set", "not found", "required", "failed", "error", "expired"]
+        .iter()
+        .any(|p| lower.contains(p));
+    lower.contains("grok login") || lower.contains("xai_api_key") || ((lower.contains("authentication") || lower.contains("api key")) && broken)
 }
 
 impl Backend for GrokBackend {
@@ -333,5 +343,13 @@ mod tests {
         std::fs::create_dir(home.join(".grok")).unwrap();
         assert!(session_dir_exists(&home));
         std::fs::remove_dir_all(&home).unwrap();
+    }
+
+    #[test]
+    fn billing_words_alone_do_not_mean_the_plan_gate_or_a_login_problem() {
+        assert!(!is_entitlement_text("update the subscription handler to apply premium pricing"));
+        assert!(is_entitlement_text("grok build is not included in your x premium plan"));
+        assert!(!is_auth_text("the api key field is rendered in the settings form"));
+        assert!(is_auth_text("api key missing: run grok login"));
     }
 }

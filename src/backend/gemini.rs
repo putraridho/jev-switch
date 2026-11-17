@@ -289,7 +289,17 @@ fn classify_text(message: &str) -> Option<ErrorKind> {
     let has = |phrases: &[&str]| phrases.iter().any(|p| lower.contains(p));
     if has(&["resource_exhausted", "exhausted your capacity", "too many requests"]) {
         Some(ErrorKind::Quota { resets_at: None })
-    } else if has(&["authenticat", "auth method", "sign in", "api key not valid", "api_key_invalid"]) {
+    } else if has(&[
+        "authentication failed",
+        "authentication required",
+        "authentication error",
+        "not authenticated",
+        "auth method",
+        "please sign in",
+        "sign in to",
+        "api key not valid",
+        "api_key_invalid",
+    ]) {
         Some(ErrorKind::Auth)
     } else if has(&["empty response", "empty answer"]) {
         Some(ErrorKind::Empty)
@@ -674,5 +684,13 @@ mod tests {
         assert!(!is_configured(None, none));
         assert!(!is_configured(Some("{}"), none));
         assert!(!is_configured(Some(r#"{"theme":"dark"}"#), |n| n == "SOMETHING_ELSE"));
+    }
+
+    #[test]
+    fn auth_wording_must_say_the_login_failed_not_just_mention_authentication() {
+        let b = GeminiBackend::gemini_cli();
+        assert_eq!(b.classify_error("authenticate the user in the request handler"), ErrorKind::Other);
+        assert_eq!(b.classify_error("the sign in page redirects twice"), ErrorKind::Other);
+        assert_eq!(b.classify_error("Authentication failed: please sign in again"), ErrorKind::Auth);
     }
 }

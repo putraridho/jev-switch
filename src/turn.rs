@@ -617,7 +617,7 @@ impl Engine {
 
     /// Remember a turn that got no answer, so a later catch-up says it was asked.
     fn record_failed(&mut self, prompt: &str, attempt: &Attempt, err: &TurnError) {
-        self.sessions.record(TurnRecord {
+        self.sessions.record_failed(TurnRecord {
             prompt: prompt.to_string(),
             provider: attempt.chosen.spec.provider,
             model: attempt.chosen.spec.id.to_string(),

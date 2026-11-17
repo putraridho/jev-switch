@@ -15,7 +15,7 @@ use std::sync::{Mutex, PoisonError};
 use crate::availability::{self, Availability, State};
 use crate::backend::claude::ClaudeBackend;
 use crate::backend::codex::CodexBackend;
-use crate::backend::gemini::{auth_looks_configured, Flavor, GeminiBackend, AUTH_ENV_VARS};
+use crate::backend::gemini::{Flavor, GeminiBackend};
 use crate::backend::grok::GrokBackend;
 use crate::backend::{Backend, ErrorKind, PlanUsage, ProviderId, TurnError};
 use crate::catalog::{self, Allowances, Overrides, Usable};
@@ -81,11 +81,9 @@ pub fn backend_for(provider: ProviderId) -> Box<dyn Backend> {
 fn detect_gemini_flavor() -> Flavor {
     let settings = std::env::var_os("HOME")
         .and_then(|h| std::fs::read_to_string(PathBuf::from(h).join(".gemini/settings.json")).ok());
-    let env_has_key = AUTH_ENV_VARS.iter().any(|n| envfile::from_env(n).is_some());
-    choose_gemini_flavor(
-        crate::availability::on_path(&GeminiBackend::gemini_cli().bin),
-        auth_looks_configured(settings.as_deref(), env_has_key),
-    )
+    // The same rule the availability probe uses, so "ready" and "which CLI" agree.
+    let configured = crate::backend::gemini::is_configured(settings.as_deref(), |n| envfile::from_env(n).is_some());
+    choose_gemini_flavor(crate::availability::on_path(&GeminiBackend::gemini_cli().bin), configured)
 }
 
 // ------------------------------------------------------------- pure decisions
