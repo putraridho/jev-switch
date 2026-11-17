@@ -124,6 +124,16 @@ case "$last" in
       answer="FAKE DENIED headless"
     fi
     ;;
+  *withdraw*)
+    # Asks, then takes the question back a second later (a hook settled it, say) and goes on
+    # without waiting for any reply: the person never got to answer.
+    emit '{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t9","name":"Bash","input":{"command":"cargo test --quiet"}}]}}'
+    emit '{"type":"control_request","request_id":"req-1","request":{"subtype":"can_use_tool","tool_name":"Bash","input":{"command":"cargo test --quiet"}}}'
+    sleep 1
+    emit '{"type":"control_cancel_request","request_id":"req-1"}'
+    sleep 2
+    answer="FAKE CARRIED ON"
+    ;;
   *stall*)
     sleep 300 &
     echo $! > "$FAKE_PIDS/child.pid"
@@ -1181,6 +1191,66 @@ def an_arrow_key_or_enter_at_the_question_does_not_answer_it(w):
         p.send("n")
         p.expect("✗ denied", 10, "the denial once `n` is pressed")
         p.expect("› ", 10, "the next prompt")
+        quit_with_ctrl_d(p)
+    finally:
+        p.close()
+
+
+def screen_text(vt):
+    """The emulated screen, row by row."""
+    return "\n".join("".join(row).rstrip() for row in vt.rows)
+
+
+def local_flags(p):
+    """The terminal's local mode flags as the program left them (read off the pty master)."""
+    return termios.tcgetattr(p.fd)[3]
+
+
+@scenario
+def a_question_the_cli_withdraws_is_erased_and_the_terminal_and_keyboard_are_left_as_they_were(w):
+    p = Pty(w, [w.repo], "withdrawn")
+    try:
+        prompt_ready(p)
+        p.send("withdraw it please\r")
+        p.expect(QUESTION, 15, "the approval question")
+        if screen_text(p.vt).count(QUESTION) != 1:
+            raise Fail(f"the question should be on screen once:\n{p.tail()}")
+        asking = local_flags(p)
+        if asking & (termios.ICANON | termios.ECHO | termios.ISIG):
+            raise Fail("while the question waits the terminal should be raw (no ICANON, ECHO, ISIG)")
+        # Nobody presses a key: a second later the CLI takes the question back.
+        p.expect("(the tool call was withdrawn)", 10, "the withdrawal line")
+        p.settle(0.3)
+        screen = screen_text(p.vt)
+        if QUESTION in screen or "[y]es" in screen:
+            raise Fail(f"the withdrawn question should be gone from the screen:\n{screen}")
+        if "✓" in screen.split("withdrawn")[-1] or "denied" in screen or "stopped" in screen:
+            raise Fail(f"a withdrawn question is not an answer:\n{screen}")
+        # Raw mode is off again, and echo is as it was before the question (off under the status line).
+        now = local_flags(p)
+        if not (now & termios.ICANON and now & termios.ISIG):
+            raise Fail(f"the terminal was left in raw mode after the withdrawal (lflag {now:#x})")
+        if now & termios.ECHO:
+            raise Fail("echo should be as it was during the turn (off), not switched on early")
+        # A key typed now belongs to the next prompt: no stale reader may take it.
+        p.send("z")
+        p.expect("FAKE CARRIED ON", 15, "the turn going on without the answer")
+        p.expect("› ", 10, "the next prompt")
+        p.settle(0.4)
+        if not p.visible().rstrip("\n").split("\n")[-1].strip().endswith("› z"):
+            raise Fail(f"the key typed after the withdrawal should be waiting at the next prompt:\n{p.tail()}")
+        if os.path.exists(os.path.join(w.pids, "reply.json")):
+            raise Fail("a withdrawn question must never be answered")
+        if settings_rules(w) is not None:
+            raise Fail("a withdrawn question must not save a rule")
+        # The prompt works normally: the keys echo, Ctrl-C is a signal again.
+        p.send("yz")
+        p.settle(0.4)
+        if not p.visible().rstrip("\n").split("\n")[-1].strip().endswith("› zyz"):
+            raise Fail(f"typing at the prompt should echo:\n{p.tail()}")
+        p.send("\x03")
+        p.expect("Ctrl-C again", 10, "the Ctrl-C hint at the prompt")
+        ask(p, "explain quick")
         quit_with_ctrl_d(p)
     finally:
         p.close()
