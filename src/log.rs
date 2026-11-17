@@ -20,8 +20,8 @@ pub fn state_dir() -> Option<PathBuf> {
 
 /// `env_var` if set, else `file` inside [`state_dir`].
 pub fn path_from_env(env_var: &str, file: &str) -> Option<String> {
-    std::env::var(env_var)
-        .ok()
+    // The environment first, then the env file, like every other setting.
+    crate::envfile::lookup(env_var)
         .or_else(|| Some(state_dir()?.join(file).to_string_lossy().into_owned()))
 }
 

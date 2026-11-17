@@ -31,6 +31,7 @@ use crate::providers::{self, Runtime};
 use crate::router::{CodeWant, ProviderWant, Router, Sticky};
 use crate::routing::{self, NoRoute, Pin, RouteDecision, RouteInput, RoutingState, Signals};
 use crate::turnlog::turn_row;
+use crate::uifmt::RouteFacts;
 
 /// Most models tried for one user turn before giving up.
 pub const MAX_ATTEMPTS: u32 = 6;
@@ -48,6 +49,56 @@ pub trait Ui: Send {
     fn event(&mut self, e: &Event);
     /// Anything else the user should know: failover, errors, "nothing is usable".
     fn note(&mut self, line: &str);
+
+    // The structured callbacks below carry the facts behind a line, so a UI can word and
+    // style it itself. Each one defaults to the plain-text callback above, so a UI that
+    // only prints strings keeps working unchanged.
+
+    /// The routing decision with its parts. Called instead of [`Ui::route`] by the engine.
+    fn route_facts(&mut self, facts: &RouteFacts) {
+        self.route(&facts.reason);
+    }
+
+    /// An attempt failed: either the turn moves on to the next model
+    /// ([`Failover::will_retry`]) or this is the final error.
+    fn failover(&mut self, f: &Failover) {
+        self.note(f.text);
+    }
+
+    /// No model can take the turn; nothing was started. `text` is the plain-words message.
+    fn no_route(&mut self, _info: &NoRouteInfo, text: &str) {
+        self.note(text);
+    }
+
+    /// The user stopped the turn.
+    fn cancelled(&mut self, text: &str) {
+        self.note(text);
+    }
+}
+
+/// A failed attempt, as the UI is told about it.
+#[derive(Debug, Clone, Copy)]
+pub struct Failover<'a> {
+    pub provider: ProviderId,
+    pub model: &'a str,
+    pub kind: &'a ErrorKind,
+    /// What the CLI said.
+    pub message: &'a str,
+    /// The failed attempt had already produced text, which was dropped.
+    pub discarded: bool,
+    /// True: another model is tried next. False: the turn ends here with this error.
+    pub will_retry: bool,
+    /// The engine's own one-line wording, for UIs that only print text.
+    pub text: &'a str,
+}
+
+/// Why nothing could be started, as the UI is told about it.
+#[derive(Debug, Clone, Copy)]
+pub enum NoRouteInfo<'a> {
+    /// A `/model` pin names a model that cannot run now.
+    Pin { what: &'a str },
+    /// No usable model fits this kind of task.
+    Nothing { task: &'a str },
 }
 
 /// A switch that stops one turn without stopping the program (Ctrl-C in the UI). Cheap
@@ -174,7 +225,13 @@ pub fn git_status_short(dir: &Path) -> String {
 /// Longest silence from a CLI before its turn is cut off, so a hung CLI cannot
 /// freeze the session (`CODE_IDLE_TIMEOUT_SECS`, default 900).
 pub fn idle_timeout_from_env() -> Duration {
-    let secs = std::env::var("CODE_IDLE_TIMEOUT_SECS").ok().and_then(|s| s.parse().ok()).unwrap_or(900);
+    idle_timeout(crate::envfile::lookup("CODE_IDLE_TIMEOUT_SECS").as_deref())
+}
+
+/// The pure half of [`idle_timeout_from_env`]: seconds as text; anything that is not a
+/// positive number leaves the default.
+pub fn idle_timeout(value: Option<&str>) -> Duration {
+    let secs = value.and_then(|s| s.trim().parse::<u64>().ok()).filter(|s| *s > 0).unwrap_or(900);
     Duration::from_secs(secs)
 }
 
@@ -182,6 +239,8 @@ pub fn idle_timeout_from_env() -> Duration {
 struct Chosen {
     spec: &'static ModelSpec,
     reason: String,
+    /// The same decision with its parts, for [`Ui::route_facts`].
+    facts: RouteFacts,
     /// The routing state after the decision; kept only if the attempt succeeds.
     state: RoutingState,
     /// Legacy mode only: the tier index, to feed back into [`Sticky`].
@@ -556,7 +615,12 @@ impl Engine {
                 Ok(c) => c,
                 Err(e) => {
                     let message = self.no_route_message(&e, now, &excluded);
-                    ui.note(&message);
+                    match &e {
+                        NoRoute::PinUnusable { what } => ui.no_route(&NoRouteInfo::Pin { what }, &message),
+                        NoRoute::NothingUsable { task } => {
+                            ui.no_route(&NoRouteInfo::Nothing { task: &task.to_string() }, &message)
+                        }
+                    }
                     if let Some((failed, err)) = last_failure {
                         self.record_failed(prompt, &failed, &err);
                     }
@@ -568,7 +632,7 @@ impl Engine {
                 // The state the first model starts from, so a failover's changes count too.
                 *before = self.snapshot_tree().await;
             }
-            ui.route(&chosen.reason);
+            ui.route_facts(&chosen.facts);
             let attempt = self.run_attempt(chosen, prompt, ui, cancel).await;
             self.log_attempt(&attempt, &jev, attempts, &notes);
             if attempt.cancelled {
@@ -590,7 +654,15 @@ impl Engine {
                     } else {
                         note
                     };
-                    ui.note(&note);
+                    ui.failover(&Failover {
+                        provider: spec.provider,
+                        model: spec.id,
+                        kind: &err.kind,
+                        message: &err.message,
+                        discarded: attempt.discarded,
+                        will_retry: true,
+                        text: &note,
+                    });
                     notes.push(note);
                     last_failure = Some((attempt, err));
                 }
@@ -600,7 +672,15 @@ impl Engine {
                         _ => String::new(),
                     };
                     let message = format!("[error] {} {} failed: {}{tail}", spec.provider, spec.id, err.message);
-                    ui.note(&message);
+                    ui.failover(&Failover {
+                        provider: spec.provider,
+                        model: spec.id,
+                        kind: &err.kind,
+                        message: &err.message,
+                        discarded: attempt.discarded,
+                        will_retry: false,
+                        text: &message,
+                    });
                     self.record_failed(prompt, &attempt, &err);
                     return TurnReport {
                         provider: Some(spec.provider),
@@ -643,7 +723,15 @@ impl Engine {
         let decision = routing::decide(&mut state, &input)?;
         let outcome = self.plan_orchestration(signals, &decision, &input, base);
         let (spec, reason, mcp) = self.apply_orchestration(outcome, &decision);
-        Ok(Chosen { spec, reason, state, legacy_tier: None, mcp })
+        let facts = RouteFacts {
+            provider: spec.provider.to_string(),
+            model: spec.id.to_string(),
+            task: decision.task.to_string(),
+            reason: reason.clone(),
+            switched_provider: decision.switched_provider,
+            dropped_tier: decision.dropped_tier,
+        };
+        Ok(Chosen { spec, reason, facts, state, legacy_tier: None, mcp })
     }
 
     /// Providers whose CLI can have the delegate tool attached. A backend is cheap to
@@ -719,7 +807,14 @@ impl Engine {
             }
         };
         let legacy_tier = LEGACY_TIERS.iter().position(|id| *id == spec.id);
-        Chosen { spec, reason: format!("{} {} — {why}{ignored}", spec.provider, spec.id), state: base.clone(), legacy_tier, mcp: None }
+        let reason = format!("{} {} — {why}{ignored}", spec.provider, spec.id);
+        let facts = RouteFacts {
+            provider: spec.provider.to_string(),
+            model: spec.id.to_string(),
+            reason: reason.clone(),
+            ..RouteFacts::default()
+        };
+        Chosen { spec, reason, facts, state: base.clone(), legacy_tier, mcp: None }
     }
 
     // ------------------------------------------------------------------ running
@@ -843,7 +938,7 @@ impl Engine {
     /// may be half changed. Nothing else moves: no failover, no cooldown, no routing state.
     fn cancelled_report(&mut self, prompt: &str, attempt: Option<&Attempt>, attempts: u32, ui: &mut dyn Ui) -> TurnReport {
         let message = "[cancelled] stopped by the user; the turn was not retried".to_string();
-        ui.note(&message);
+        ui.cancelled(&message);
         let Some(attempt) = attempt else { return TurnReport::ended(TurnStatus::Cancelled, message, attempts) };
         let spec = attempt.chosen.spec;
         self.sessions.record_failed(TurnRecord {
@@ -2158,5 +2253,77 @@ mod tests {
         assert_eq!(report.status, TurnStatus::Answered);
         assert!(r.engine.save_now().is_err());
         std::fs::remove_file(&blocker).ok();
+    }
+    /// A UI that overrides every structured callback and records what each one got.
+    #[derive(Default)]
+    struct Structured {
+        log: Vec<String>,
+    }
+
+    impl Ui for Structured {
+        fn route(&mut self, _: &str) {
+            self.log.push("route-string".into());
+        }
+        fn event(&mut self, _: &Event) {}
+        fn note(&mut self, line: &str) {
+            self.log.push(format!("note:{line}"));
+        }
+        fn route_facts(&mut self, f: &RouteFacts) {
+            self.log.push(format!("route:{}:{}:{}", f.provider, f.model, f.task));
+        }
+        fn failover(&mut self, f: &Failover) {
+            self.log.push(format!("failover:{}:{:?}:retry={}", f.provider, f.kind, f.will_retry));
+        }
+        fn no_route(&mut self, info: &NoRouteInfo, _: &str) {
+            self.log.push(match info {
+                NoRouteInfo::Pin { .. } => "no-route:pin".into(),
+                NoRouteInfo::Nothing { task } => format!("no-route:{task}"),
+            });
+        }
+        fn cancelled(&mut self, _: &str) {
+            self.log.push("cancelled".into());
+        }
+    }
+
+    #[tokio::test]
+    async fn structured_callbacks_carry_the_facts_and_replace_the_string_ones() {
+        let ready = [Claude, Codex];
+        let mut r = rig(&ready);
+        let a = first_choice(TaskType::Feature, &ready);
+        r.script(a, QUOTA);
+        let mut ui = Structured::default();
+        let report = r.engine.run_judged("add a retry", Judged::Providers(Some(want(TaskType::Feature))), &mut ui).await;
+        assert_eq!(report.status, TurnStatus::Answered);
+        let b = report.provider.unwrap();
+        assert_eq!(ui.log.len(), 3, "{:?}", ui.log);
+        assert!(ui.log[0].starts_with(&format!("route:{a}:")) && ui.log[0].ends_with(":feature"), "{:?}", ui.log);
+        assert_eq!(ui.log[1], format!("failover:{a}:Quota {{ resets_at: Some(\"1794853451\") }}:retry=true"));
+        assert!(ui.log[2].starts_with(&format!("route:{b}:")), "{:?}", ui.log);
+        assert!(!ui.log.iter().any(|l| l == "route-string"), "the string callback is not used when the structured one is overridden");
+    }
+
+    #[tokio::test]
+    async fn a_final_failure_and_a_missing_route_are_reported_structurally() {
+        let mut r = rig(&[Claude]);
+        r.script(Claude, OTHER);
+        let mut ui = Structured::default();
+        let report = r.engine.run_judged("add a retry", Judged::Providers(Some(want(TaskType::Feature))), &mut ui).await;
+        assert_eq!(report.status, TurnStatus::Failed);
+        assert_eq!(ui.log.last().unwrap(), "failover:claude:Other:retry=false");
+
+        let mut none = rig(&[]);
+        let mut ui = Structured::default();
+        let report = none.engine.run_judged("add a retry", Judged::Providers(Some(want(TaskType::Feature))), &mut ui).await;
+        assert_eq!(report.status, TurnStatus::NoRoute);
+        assert_eq!(ui.log, vec!["no-route:feature".to_string()]);
+    }
+
+    #[test]
+    fn idle_timeout_reads_positive_seconds_and_defaults_otherwise() {
+        assert_eq!(idle_timeout(None), Duration::from_secs(900));
+        assert_eq!(idle_timeout(Some(" 30 ")), Duration::from_secs(30));
+        for bad in ["", "abc", "0", "-5", "1.5"] {
+            assert_eq!(idle_timeout(Some(bad)), Duration::from_secs(900), "{bad:?}");
+        }
     }
 }

@@ -1,209 +1,377 @@
-//! Code mode: a routed coding agent. Each turn runs one provider's coding CLI
-//! (Claude Code, Codex, Gemini, DeepSeek through Claude Code, Grok) in your project
-//! with tools on. Jev says what kind of task the turn is; the router picks the best
-//! model among the providers you can really use, catches it up on what the others
-//! did, and fails over to the next one on a limit or error. All of that lives in
-//! `jev_router::turn`; this file only reads lines and prints.
+//! `jev-code`: a routed coding agent. Each turn runs one provider's coding CLI (Claude Code,
+//! Codex, Gemini, DeepSeek through Claude Code, Grok) in your project with tools on. Jev says
+//! what kind of task the turn is; the router picks the best model among the providers you can
+//! really use, catches it up on what the others did, and fails over to the next one on a limit
+//! or an error.
 //!
-//!   TYPESAFE_API_KEY=... cargo run --bin code [project-dir]
+//! This file only wires the terminal to the library: arguments (`jev_router::cli`), the line
+//! editor (`lineedit`), output (`console`), commands and turns (`repl`), screens (`views`).
+//! Every exit goes through `run`'s return value, so the terminal guard always runs.
+//!
+//!   jev-code [dir]            interactive session
+//!   jev-code -p "prompt"      one turn, only the answer on stdout
+//!   jev-code doctor           check the setup
 
-use std::io::{self, Write};
-use std::path::PathBuf;
+use std::io::{IsTerminal, Read};
+use std::path::{Path, PathBuf};
+use std::time::Instant;
 
-use anyhow::{bail, Context, Result};
-
-use jev_router::backend::{Event, Usage};
-use jev_router::commands::{self, Command};
+use jev_router::cli::{self, Action, Args, PromptSource};
+use jev_router::commands;
+use jev_router::console::{Console, ConsoleConfig};
+use jev_router::envfile;
+use jev_router::handoff;
+use jev_router::lineedit::{self, Input, InterruptGuard};
+use jev_router::log;
 use jev_router::orchestrate::{self, Setup};
 use jev_router::providers::Runtime;
+use jev_router::repl::{Confirm, Flow, Interrupt, Io, Repl, SigInt};
 use jev_router::router::{Router, CODE_STRONG_THRESHOLD};
-use jev_router::turn::{Engine, TurnStatus, Ui};
+use jev_router::terminal::{self, TerminalGuard};
+use jev_router::turn::Engine;
 use jev_router::typesafe::TypeSafe;
+use jev_router::uifmt::{self, Style};
+use jev_router::views;
 
-const HELP: &str = "jev-code: a coding agent that routes each turn across the AI coding tools you have
-
-USAGE:
-  jev-code [project-dir]     start in project-dir (default: current directory)
-
-IN SESSION:
-  /model auto                let the router choose (default)
-  /model <provider>          pin a provider: claude, codex, gemini, grok, deepseek
-  /model <provider>:<model>  pin one model, e.g. codex:gpt-6.1-sol
-  /model sonnet|opus|haiku   shorthand for the Claude model of that name
-  /model                     show the current pin
-  /provider auto|off         routing across providers on (default) or off (Claude only)
-  /orchestrate on|off        a planner model splits a big task and delegates pieces to cheaper
-                             workers (any provider, each in its own git worktree); off by default.
-                             Only when the request splits into parts AND the normal route would
-                             use a top model. Jev picks every worker; claude, codex and deepseek
-                             can plan (gemini and grok cannot take the delegate tool yet)
-  /providers                 what was detected, what is cooling down, what was refused
-  /providers refresh         probe again (after logging in or adding a key)
-  /new                       start a fresh session on every provider
-  /quit                      exit (or Ctrl-D)
-
-A provider is used only if it is installed and logged in (or has its key), is not
-cooling down after a usage limit, and its billing is allowed. When a turn hits a limit
-or fails, the next best model gets the same prompt; the failed attempt's output is
-never shown as an answer. Security work never goes to DeepSeek or Grok.
-
-ENVIRONMENT:
-  Jev key                    TYPESAFE_API_KEY or JEV_API_KEY, else ~/.jev-router.env
-  JEV_ORCHESTRATE            on starts with orchestration on; default off
-  JEV_DELEGATE_BIN           the delegate_mcp binary (default: next to jev-code)
-  JEV_DELEGATE_LOG           orchestration log (default <state dir>/orchestration.jsonl)
-  JEV_PROVIDERS              off starts with routing off (Claude only); default on
-  JEV_ALLOW_CREDITS          1 allows models billed as extra credits (e.g. Claude Fable); default off
-  JEV_CHAINS                 JSON file replacing the model order per task type
-  DEEPSEEK_API_KEY           enables DeepSeek (billed per token; used through the claude CLI)
-  JEV_TIMEOUT_MS             longest wait for Jev before routing without it (default 3000)
-  CODE_IDLE_TIMEOUT_SECS     stop a turn when the CLI prints nothing for this long (default 900)
-  JEV_CODE_LOG               turn log file (default <state dir>/code-turns.jsonl)
-  CODE_PERMISSION_MODE       Claude Code permission mode (default acceptEdits)
-  CODE_ALLOWED_TOOLS         extra tools Claude Code may use, e.g. \"Bash(cargo test) Bash(git status)\"
-  CLAUDE_BIN, CODEX_BIN, GROK_BIN, CODEX_SANDBOX   binary paths and the Codex sandbox
-  CODE_STRONG_THRESHOLD      with routing off: Jev reasoning confidence for Opus (default 0.85)
-  DOWNGRADE_AFTER            with routing off: easier turns before stepping back to Sonnet (default 2)
-
-Edits are applied without asking, so use it inside a git repo.";
-
-fn env_f64(key: &str, default: f64) -> f64 {
-    std::env::var(key).ok().and_then(|s| s.parse().ok()).unwrap_or(default)
+/// What is known about the terminals before anything is printed.
+struct Term {
+    stdin_tty: bool,
+    stdout_tty: bool,
+    out_style: Style,
+    err_style: Style,
+    width: usize,
 }
 
-/// Prints a turn as it streams: tool calls and notes on stderr, assistant text on stdout.
-struct Console;
-
-impl Ui for Console {
-    fn route(&mut self, line: &str) {
-        eprintln!("  [route] {line}");
+impl Term {
+    fn detect(no_color: bool) -> Self {
+        let (stdin_tty, stdout_tty, stderr_tty) =
+            (std::io::stdin().is_terminal(), std::io::stdout().is_terminal(), std::io::stderr().is_terminal());
+        let style = |tty: bool| if no_color { Style::off() } else { Style::detect(tty) };
+        // A width only means something on a terminal; elsewhere lines are never cut.
+        let width = if stdout_tty || stderr_tty { terminal::width() } else { 4096 };
+        Self { stdin_tty, stdout_tty, out_style: style(stdout_tty), err_style: style(stderr_tty), width }
     }
 
-    fn event(&mut self, e: &Event) {
-        match e {
-            Event::Tool(summary) => eprintln!("  \u{23fa} {summary}"),
-            // Permission hints start with \u{2717}; they are diagnostics, so they stay on stderr.
-            Event::Text(t) if t.starts_with('\u{2717}') => eprintln!("  {t}"),
-            Event::Text(t) => println!("{t}\n"),
-            _ => {}
-        }
+    /// Whether this is a person at a keyboard: the line editor, the banner hints and the
+    /// first-run hint are for them only.
+    fn interactive(&self) -> bool {
+        self.stdin_tty && self.stdout_tty
     }
 
-    fn note(&mut self, line: &str) {
-        for l in line.lines() {
-            eprintln!("  {l}");
-        }
+    /// The live status line needs a terminal on stderr that takes escape sequences.
+    fn live(&self) -> bool {
+        std::io::stderr().is_terminal() && self.err_style.enabled
     }
 }
 
-fn report_usage(u: &Usage) {
-    eprintln!(
-        "  [usage] context {}K \u{b7} turn total: in {}K (cached {}K), out {}\n",
-        u.context_tokens.unwrap_or(0) / 1000,
-        u.input_tokens / 1000,
-        u.cached_input_tokens / 1000,
-        u.output_tokens
-    );
-}
-
-fn on_off(on: bool) -> &'static str {
-    if on {
-        "on"
-    } else {
-        "off"
-    }
-}
-
-fn indented(text: &str) -> String {
-    text.lines().map(|l| format!("  {l}")).collect::<Vec<_>>().join("\n")
+fn console_for(term: &Term, project: &Path, stream_answers: bool) -> Console {
+    Console::stdio(ConsoleConfig {
+        out_style: term.out_style,
+        err_style: term.err_style,
+        width: term.width,
+        live: term.live(),
+        project: project.to_path_buf(),
+        stream_answers,
+    })
 }
 
 #[tokio::main]
-async fn main() -> Result<()> {
-    if let Some(flag) = std::env::args().nth(1).filter(|a| a.starts_with('-')) {
-        match flag.as_str() {
-            "-h" | "--help" => {
-                println!("{HELP}");
-                return Ok(());
-            }
-            "-V" | "--version" => {
-                println!("jev-code {}", env!("CARGO_PKG_VERSION"));
-                return Ok(());
-            }
-            other => bail!("unknown option {other} (try --help)"),
+async fn main() {
+    let code = run().await;
+    // Every guard is dropped by now. Leave without waiting for a thread blocked on stdin.
+    std::process::exit(code);
+}
+
+async fn run() -> i32 {
+    let args = match cli::parse(std::env::args().skip(1)) {
+        Ok(a) => a,
+        Err(e) => {
+            eprintln!("jev-code: {e}\n{}", cli::USAGE);
+            return 2;
         }
+    };
+    match args.action {
+        Action::Help => {
+            println!("{}", cli::HELP);
+            return 0;
+        }
+        Action::Version => {
+            println!("jev-code {}", env!("CARGO_PKG_VERSION"));
+            return 0;
+        }
+        _ => {}
     }
-    let dir = match std::env::args().nth(1) {
-        Some(d) => PathBuf::from(d),
-        None => std::env::current_dir()?,
+    let term = Term::detect(args.no_color);
+    let _terminal = TerminalGuard::install();
+    let state_dir = log::state_dir();
+    terminal::install_panic_hook(state_dir.as_ref().map(|d| d.join("panic.log")));
+
+    let dir = match project_dir(&args) {
+        Ok(d) => d,
+        Err(e) => {
+            eprintln!("{e}");
+            return 2;
+        }
+    };
+    let console = console_for(&term, &dir, !matches!(args.action, Action::Print(_)));
+    match &args.action {
+        Action::Doctor => doctor(&dir, &console).await,
+        Action::Print(source) => print_mode(&args, source, &dir, &term, console, state_dir).await,
+        _ => session(&args, &dir, &term, console, state_dir).await,
     }
-    .canonicalize()
-    .context("project dir")?;
-    // The strong threshold only matters with routing off (the Claude-only tier rule).
-    let router = Router::new(TypeSafe::from_env()?, 1.0)
-        .with_strong_threshold(env_f64("CODE_STRONG_THRESHOLD", CODE_STRONG_THRESHOLD));
-    eprintln!("detecting providers...");
+}
+
+/// The project directory, or the message that says why it cannot be used.
+fn project_dir(args: &Args) -> Result<PathBuf, String> {
+    let given = match &args.dir {
+        Some(d) => d.clone(),
+        None => std::env::current_dir().map_err(|e| format!("jev-code: cannot tell the current directory: {e}"))?,
+    };
+    given.canonicalize().map_err(|e| {
+        let style = Style::detect(std::io::stderr().is_terminal());
+        let steps = ["Check the path, or start jev-code without one to use the current directory".to_string()];
+        uifmt::problem_block("Can't open the project folder", &[format!("{}: {e}", given.display())], &steps, style)
+    })
+}
+
+// ------------------------------------------------------------------------ setup
+
+/// The Jev client, or the message that says how to get a key.
+fn jev_client(style: Style) -> Result<TypeSafe, String> {
+    TypeSafe::from_env().map_err(|_| {
+        let steps = [
+            "Add JEV_API_KEY=... to ~/.jev-router.env (copy .jev-router.env.example and `chmod 600` it)".to_string(),
+            "Or export JEV_API_KEY (or TYPESAFE_API_KEY) in your shell".to_string(),
+            "Then check everything with `jev-code doctor`".to_string(),
+        ];
+        uifmt::problem_block("No Jev key found", &["jev-code asks Jev to judge each task, so it needs a key.".to_string()], &steps, style)
+    })
+}
+
+/// Probe the providers, with a one-line notice on a terminal (the probe can take seconds).
+async fn start_runtime(console: &Console) -> Runtime {
+    let live = console.err_style().enabled && std::io::stderr().is_terminal();
+    if live {
+        eprint!("{}", console.err_style().dim("checking providers..."));
+    }
     let runtime = Runtime::start().await;
-    let mut engine = Engine::new(runtime, router, dir)
-        .with_enabled(commands::routing_enabled(std::env::var("JEV_PROVIDERS").ok().as_deref()))
-        .with_orchestrate(orchestrate::enabled_from_env(std::env::var("JEV_ORCHESTRATE").ok().as_deref()))
+    if live {
+        eprint!("{}", uifmt::clear_line());
+    }
+    runtime
+}
+
+/// Settings come from the environment or `~/.jev-router.env`, like every other setting.
+fn engine_for(runtime: Runtime, router: Router, dir: PathBuf) -> Engine {
+    Engine::new(runtime, router, dir)
+        .with_enabled(commands::routing_enabled(envfile::lookup("JEV_PROVIDERS").as_deref()))
+        .with_orchestrate(orchestrate::enabled_from_env(envfile::lookup("JEV_ORCHESTRATE").as_deref()))
         .with_orch_setup(Setup::detect())
-        .with_downgrade_after(env_f64("DOWNGRADE_AFTER", 2.0) as u32);
+        .with_downgrade_after(envfile::lookup_f64("DOWNGRADE_AFTER", 2.0) as u32)
+}
 
-    println!("jev-code \u{2014} {}", engine.dir().display());
-    println!("{}", indented(&engine.summary_text()));
-    println!(
-        "  routing: {} \u{b7} orchestrate: {} \u{b7} /model auto|<provider>[:<model>] \u{b7} /provider auto|off \u{b7} /orchestrate on|off \u{b7} /providers [refresh] \u{b7} /new \u{b7} /quit\n",
-        if engine.enabled() { "on" } else { "off (Claude only)" },
-        on_off(engine.orchestrate())
-    );
+// ----------------------------------------------------------------------- doctor
 
-    let stdin = io::stdin();
-    let mut ui = Console;
-    loop {
-        print!("> ");
-        io::stdout().flush()?;
-        let mut line = String::new();
-        if stdin.read_line(&mut line)? == 0 {
-            break;
+/// `jev-code doctor`: the report on stdout; exit 1 when something is a Problem.
+async fn doctor(dir: &Path, console: &Console) -> i32 {
+    let runtime = start_runtime(console).await;
+    let inputs = jev_router::doctor::gather(&runtime, dir).await;
+    let report = jev_router::doctor::diagnose(&inputs);
+    console.out(&views::doctor_text(&report, console.out_style(), console.width()));
+    i32::from(views::has_problem(&report))
+}
+
+// --------------------------------------------------------------------- one-shot
+
+/// `jev-code -p`: one turn. The answer alone on stdout; exit 0 answered, 1 failed, 130 stopped.
+async fn print_mode(args: &Args, source: &PromptSource, dir: &Path, term: &Term, console: Console, state_dir: Option<PathBuf>) -> i32 {
+    let prompt = match source {
+        PromptSource::Text(t) => t.clone(),
+        PromptSource::Stdin => {
+            let mut text = String::new();
+            if let Err(e) = std::io::stdin().read_to_string(&mut text) {
+                eprintln!("jev-code: cannot read the prompt from stdin: {e}");
+                return 2;
+            }
+            text
         }
-        match commands::parse(&line) {
-            Command::Empty => {}
-            Command::Quit => break,
-            Command::New => {
-                engine.new_session();
-                println!("  new session\n");
+    };
+    if prompt.trim().is_empty() {
+        eprintln!("jev-code: no prompt given (nothing on stdin)\n{}", cli::USAGE);
+        return 2;
+    }
+    let router = match jev_client(term.err_style) {
+        Ok(ts) => router_for(ts),
+        Err(message) => {
+            eprintln!("{message}");
+            return 1;
+        }
+    };
+    let runtime = start_runtime(&console).await;
+    // A one-shot starts a fresh conversation and leaves the saved session alone, unless -c asks to continue it.
+    let persist = if args.resume { state_dir } else { None };
+    let engine = engine_for(runtime, router, dir.to_path_buf()).with_persistence(persist);
+    let mut repl = Repl::new(engine, console.clone(), std::env::var("HOME").ok(), false);
+    if args.resume {
+        resume_quietly(&mut repl, &console);
+    }
+    let mut sigint = match SigInt::install() {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("jev-code: cannot listen for Ctrl-C: {e}");
+            return 1;
+        }
+    };
+    repl.one_shot(&prompt, &mut sigint).await
+}
+
+fn router_for(ts: TypeSafe) -> Router {
+    // The strong threshold only matters with routing off (the Claude-only tier rule).
+    Router::new(ts, 1.0).with_strong_threshold(envfile::lookup_f64("CODE_STRONG_THRESHOLD", CODE_STRONG_THRESHOLD))
+}
+
+/// `-c`: load the saved session and say so on stderr; nothing to continue is not an error.
+fn resume_quietly(repl: &mut Repl, console: &Console) {
+    let style = console.err_style();
+    match repl.engine.resume() {
+        Ok(info) => console.err(&format!("  {}", views::resumed_line(&info, log::now_ms(), style))),
+        Err(e) => console.err(&format!("  {}", style.dim(&format!("starting fresh: {e}")))),
+    }
+}
+
+// ---------------------------------------------------------------------- session
+
+/// Lets `/undo` ask its question through the line editor.
+struct EditorConfirm<'a>(&'a mut lineedit::LineEditor);
+
+impl Confirm for EditorConfirm<'_> {
+    fn confirm(&mut self, question: &str) -> bool {
+        tokio::task::block_in_place(|| lineedit::confirm(self.0, question))
+    }
+}
+
+async fn session(args: &Args, dir: &Path, term: &Term, console: Console, state_dir: Option<PathBuf>) -> i32 {
+    let router = match jev_client(term.err_style) {
+        Ok(ts) => router_for(ts),
+        Err(message) => {
+            eprintln!("{message}");
+            return 1;
+        }
+    };
+    let runtime = start_runtime(&console).await;
+    let engine = engine_for(runtime, router, dir.to_path_buf()).with_persistence(state_dir.clone());
+    let home = std::env::var("HOME").ok();
+    let mut repl = Repl::new(engine, console.clone(), home.clone(), term.stdout_tty);
+    startup(&mut repl, args, term, &console, state_dir.as_deref(), home.as_deref());
+
+    let mut sigint = match SigInt::install() {
+        Ok(s) => s,
+        Err(e) => {
+            console.err(&format!("jev-code: cannot listen for Ctrl-C: {e}"));
+            return 1;
+        }
+    };
+    let code = if term.interactive() {
+        edit_loop(&mut repl, term, &console, state_dir.as_deref(), &mut sigint).await
+    } else {
+        pipe_loop(&mut repl, &mut sigint).await
+    };
+    if let Err(e) = repl.engine.save_now() {
+        console.err(&format!("  could not save the session: {e}"));
+    }
+    code
+}
+
+/// The banner, the offer to resume (or the resume itself), and the one-time hint.
+fn startup(repl: &mut Repl, args: &Args, term: &Term, console: &Console, state_dir: Option<&Path>, home: Option<&str>) {
+    let (style, width, now) = (term.out_style, term.width, log::now_ms());
+    let rows = views::avail_rows(&repl.engine.runtime, now);
+    console.out(&views::banner(repl.engine.dir(), home, repl.engine.enabled(), &rows, style, width));
+    if args.resume {
+        match repl.engine.resume() {
+            Ok(info) => console.out(&views::resumed_line(&info, now, style)),
+            Err(e) => console.out(&style.dim(&format!("no session to continue ({e}); starting fresh"))),
+        }
+    } else if let Some(info) = state_dir.and_then(|d| handoff::saved_session_info_in(d, repl.engine.dir(), now)) {
+        console.out(&views::previous_session_line(&info, now, style));
+    }
+    if term.interactive() {
+        if let Some(hint) = views::first_run_hint_once(&repl.engine.runtime.avail, state_dir) {
+            for line in hint.lines() {
+                console.out(&style.dim(line));
             }
-            Command::ShowModel => println!("  model: {}\n", engine.pin()),
-            Command::SetPin(pin) => {
-                println!("  model: {pin}\n");
-                engine.set_pin(pin);
-            }
-            Command::SetRouting(on) => {
-                engine.set_enabled(on);
-                println!("  routing: {}\n", if on { "on" } else { "off (Claude only)" });
-            }
-            Command::SetOrchestrate(on) => {
-                engine.set_orchestrate(on);
-                println!("  orchestrate: {}\n", on_off(on));
-            }
-            Command::ShowOrchestrate => println!("  orchestrate: {}\n", on_off(engine.orchestrate())),
-            Command::Providers { refresh } => {
-                if refresh {
-                    engine.refresh_providers().await;
+            console.out(&style.dim("Run /doctor for the full check and the exact commands."));
+        }
+    }
+}
+
+/// The interactive loop: the line editor, one message or command at a time.
+async fn edit_loop(repl: &mut Repl, term: &Term, console: &Console, state_dir: Option<&Path>, sigint: &mut SigInt) -> i32 {
+    let history = state_dir.map(lineedit::history_path);
+    let mut editor = match lineedit::build_editor(term.out_style, history.as_deref()) {
+        Ok(e) => e,
+        Err(e) => {
+            console.err(&format!("jev-code: cannot start the line editor: {}", lineedit::describe(&e)));
+            return pipe_loop(repl, sigint).await;
+        }
+    };
+    let mut guard = InterruptGuard::default();
+    loop {
+        let label = views::prompt_label(repl.engine.pin(), repl.engine.enabled());
+        let plain = views::plain_prompt(label.as_deref());
+        let styled = views::styled_prompt(label.as_deref(), term.out_style);
+        let ctx = views::complete_ctx(&repl.engine, log::now_ms());
+        match tokio::task::block_in_place(|| lineedit::read(&mut editor, &plain, &styled, ctx)) {
+            Input::Line(line) => {
+                guard.reset();
+                lineedit::remember(&mut editor, &line, history.as_deref());
+                let mut confirm = EditorConfirm(&mut editor);
+                let mut io = Io { interrupt: sigint, confirm: Some(&mut confirm) };
+                match repl.handle(commands::parse(&line), &mut io).await {
+                    Flow::Continue => {}
+                    Flow::Quit => return 0,
+                    Flow::Aborted => return 130,
                 }
-                println!("{}\n", indented(&engine.providers_text()));
             }
-            Command::Invalid(message) => println!("  {message}\n"),
-            Command::Prompt(prompt) => {
-                let report = engine.run(&prompt, &mut ui).await;
-                match (report.status, &report.usage) {
-                    (TurnStatus::Answered, Some(usage)) => report_usage(usage),
-                    // Errors and "nothing usable" were already printed as notes; the session stays alive.
-                    _ => println!(),
-                }
+            Input::Interrupted => match guard.on_interrupt(Instant::now()) {
+                lineedit::Interrupt::Warn => console.err(&format!("\n{}", term.err_style.dim(lineedit::EXIT_HINT))),
+                lineedit::Interrupt::Exit => return 0,
+            },
+            Input::Eof => {
+                console.out("");
+                return 0;
+            }
+            Input::Failed(message) => {
+                console.err(&format!("jev-code: {message}"));
+                return 1;
             }
         }
     }
-    Ok(())
+}
+
+/// Lines from a pipe: one message or command per line, no prompt, no editing. Ctrl-C while
+/// waiting for the next line ends the session.
+async fn pipe_loop(repl: &mut Repl, sigint: &mut SigInt) -> i32 {
+    use tokio::io::AsyncBufReadExt;
+    let mut lines = tokio::io::BufReader::new(tokio::io::stdin()).lines();
+    loop {
+        let next = tokio::select! {
+            line = lines.next_line() => line,
+            _ = sigint.wait() => return 130,
+        };
+        let line = match next {
+            Ok(Some(line)) => line,
+            Ok(None) => return 0,
+            Err(e) => {
+                repl.console.err(&format!("jev-code: cannot read input: {e}"));
+                return 1;
+            }
+        };
+        let mut io = Io { interrupt: sigint, confirm: None };
+        match repl.handle(commands::parse(&line), &mut io).await {
+            Flow::Continue => {}
+            Flow::Quit => return 0,
+            Flow::Aborted => return 130,
+        }
+    }
 }

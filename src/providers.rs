@@ -262,6 +262,11 @@ impl Runtime {
         usable_from(&unblocked, &cooldowns, &self.unusable_models, now_ms)
     }
 
+    /// How long `p` is still cooling down after a usage limit, in ms; `None` when it is not.
+    pub fn cooldown_left(&self, p: ProviderId, now_ms: u64) -> Option<u64> {
+        self.current_cooldowns().active(p, now_ms)
+    }
+
     /// Skip `p` until its limit resets, and remember that across runs and processes:
     /// the save merges with the file, and the merged result (which includes limits
     /// other processes saved) becomes this process's set. A failed save costs only the

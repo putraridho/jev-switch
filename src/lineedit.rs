@@ -1,0 +1,417 @@
+//! The line editor of the interactive session: history that survives restarts, Tab
+//! completion and an inline hint from the command table in [`crate::uifmt`], a prompt that
+//! shows the routing state, Alt-Enter for a new line, and the "Ctrl-C twice to exit" rule.
+//!
+//! The decisions (what completes, what the hint says, whether this Ctrl-C exits) are pure
+//! and tested; the [`rustyline`] glue around them is thin.
+
+use std::borrow::Cow;
+use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
+
+use rustyline::completion::{Completer, Pair};
+use rustyline::error::ReadlineError;
+use rustyline::highlight::Highlighter;
+use rustyline::hint::Hinter;
+use rustyline::history::{DefaultHistory, History};
+use rustyline::validate::Validator;
+use rustyline::{Cmd, ColorMode, CompletionType, Config, Context, Editor, Helper, KeyEvent};
+
+use crate::uifmt::{self, CompleteCtx, Style};
+
+/// Lines kept in the history file.
+pub const HISTORY_MAX: usize = 2000;
+
+/// A second Ctrl-C within this long of the first exits.
+pub const INTERRUPT_WINDOW: Duration = Duration::from_secs(2);
+
+/// What the first Ctrl-C at the prompt says.
+pub const EXIT_HINT: &str = "(press Ctrl-C again or Ctrl-D to exit)";
+
+// ------------------------------------------------------------------- Ctrl-C rule
+
+/// What a Ctrl-C at the prompt should do.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Interrupt {
+    /// The first one (or one after a pause): clear the line and say how to exit.
+    Warn,
+    /// A second one within [`INTERRUPT_WINDOW`]: exit.
+    Exit,
+}
+
+/// Remembers when the last Ctrl-C at the prompt was. Time is passed in, so the rule is a
+/// plain unit test.
+#[derive(Debug, Default)]
+pub struct InterruptGuard {
+    last: Option<Instant>,
+}
+
+impl InterruptGuard {
+    pub fn on_interrupt(&mut self, now: Instant) -> Interrupt {
+        let exit = self.last.is_some_and(|t| now.saturating_duration_since(t) <= INTERRUPT_WINDOW);
+        self.last = Some(now);
+        if exit {
+            Interrupt::Exit
+        } else {
+            Interrupt::Warn
+        }
+    }
+
+    /// Anything the user typed and sent since: the next Ctrl-C is a first one again.
+    pub fn reset(&mut self) {
+        self.last = None;
+    }
+}
+
+// ---------------------------------------------------------------------- helper
+
+/// Completion, hint and prompt colouring for the editor.
+pub struct JevHelper {
+    ctx: CompleteCtx,
+    style: Style,
+    plain_prompt: String,
+    styled_prompt: String,
+}
+
+impl JevHelper {
+    pub fn new(style: Style) -> Self {
+        Self { ctx: CompleteCtx::default(), style, plain_prompt: String::new(), styled_prompt: String::new() }
+    }
+
+    /// What Tab may offer from now on (refreshed before every prompt).
+    pub fn set_ctx(&mut self, ctx: CompleteCtx) {
+        self.ctx = ctx;
+    }
+
+    /// The prompt for the next line: `plain` is what the editor measures, `styled` what it draws.
+    pub fn set_prompt(&mut self, plain: &str, styled: &str) {
+        self.plain_prompt = plain.to_string();
+        self.styled_prompt = styled.to_string();
+    }
+}
+
+/// The completions of the word before the cursor: where that word starts, and the
+/// candidates. Pure, so Tab behaviour is tested without a terminal.
+pub fn completions_for(line: &str, pos: usize, ctx: &CompleteCtx) -> (usize, Vec<Pair>) {
+    let upto = line.get(..pos).unwrap_or(line);
+    let candidates = uifmt::complete(upto, ctx)
+        .into_iter()
+        .map(|c| Pair { display: c.display, replacement: c.replacement })
+        .collect();
+    (uifmt::completion_start(upto), candidates)
+}
+
+impl Completer for JevHelper {
+    type Candidate = Pair;
+
+    fn complete(&self, line: &str, pos: usize, _: &Context<'_>) -> rustyline::Result<(usize, Vec<Pair>)> {
+        Ok(completions_for(line, pos, &self.ctx))
+    }
+}
+
+impl Hinter for JevHelper {
+    type Hint = String;
+
+    /// The faint rest of a command, only when the cursor is at the end of the line.
+    fn hint(&self, line: &str, pos: usize, _: &Context<'_>) -> Option<String> {
+        if pos < line.len() {
+            return None;
+        }
+        uifmt::hint(line)
+    }
+}
+
+impl Highlighter for JevHelper {
+    fn highlight_prompt<'b, 's: 'b, 'p: 'b>(&'s self, prompt: &'p str, default: bool) -> Cow<'b, str> {
+        if default && self.style.enabled && prompt == self.plain_prompt && !self.styled_prompt.is_empty() {
+            Cow::Borrowed(&self.styled_prompt)
+        } else {
+            Cow::Borrowed(prompt)
+        }
+    }
+
+    fn highlight_hint<'h>(&self, hint: &'h str) -> Cow<'h, str> {
+        if self.style.enabled {
+            Cow::Owned(self.style.dim(hint))
+        } else {
+            Cow::Borrowed(hint)
+        }
+    }
+}
+
+impl Validator for JevHelper {}
+impl Helper for JevHelper {}
+
+// --------------------------------------------------------------------- history
+
+/// `<state dir>/history`.
+pub fn history_path(state_dir: &Path) -> PathBuf {
+    state_dir.join("history")
+}
+
+/// Create the history file readable by its owner only, before anything is written to it:
+/// prompts can be private.
+pub fn prepare_history_file(path: &Path) {
+    let mut opts = std::fs::OpenOptions::new();
+    opts.create(true).append(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut opts, 0o600);
+    let _ = opts.open(path);
+    restrict(path);
+}
+
+fn restrict(path: &Path) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
+    }
+    #[cfg(not(unix))]
+    let _ = path;
+}
+
+/// The editor type of the session.
+pub type LineEditor = Editor<JevHelper, DefaultHistory>;
+
+/// Build the editor: history loaded from `history` (when given), Tab completion that lists
+/// the choices, Alt-Enter for a new line, bracketed paste (multi-line text pastes as one
+/// message) and no history entry unless [`remember`] adds one.
+pub fn build_editor(style: Style, history: Option<&Path>) -> rustyline::Result<LineEditor> {
+    let config = Config::builder()
+        .max_history_size(HISTORY_MAX)?
+        .history_ignore_dups(true)?
+        .auto_add_history(false)
+        .completion_type(CompletionType::List)
+        .color_mode(if style.enabled { ColorMode::Forced } else { ColorMode::Disabled })
+        .bracketed_paste(true)
+        .build();
+    let mut editor: LineEditor = Editor::with_config(config)?;
+    editor.set_helper(Some(JevHelper::new(style)));
+    editor.bind_sequence(KeyEvent::alt('\r'), Cmd::Newline);
+    if let Some(path) = history {
+        prepare_history_file(path);
+        let _ = editor.load_history(path);
+    }
+    Ok(editor)
+}
+
+/// Add `line` to the history and write it to the file. Blank lines are not kept.
+pub fn remember(editor: &mut LineEditor, line: &str, history: Option<&Path>) {
+    if line.trim().is_empty() {
+        return;
+    }
+    if editor.add_history_entry(line).unwrap_or(false) {
+        if let Some(path) = history {
+            let _ = editor.append_history(path);
+            restrict(path);
+        }
+    }
+}
+
+// ------------------------------------------------------------------- one prompt
+
+/// What one prompt produced.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Input {
+    Line(String),
+    /// Ctrl-C: the line was thrown away.
+    Interrupted,
+    /// Ctrl-D on an empty line.
+    Eof,
+    /// The terminal failed; the message is for the user.
+    Failed(String),
+}
+
+/// Read one message. `plain` and `styled` are the prompt without and with colour; `ctx`
+/// is what Tab may offer.
+pub fn read(editor: &mut LineEditor, plain: &str, styled: &str, ctx: CompleteCtx) -> Input {
+    if let Some(h) = editor.helper_mut() {
+        h.set_ctx(ctx);
+        h.set_prompt(plain, styled);
+    }
+    match editor.readline(plain) {
+        Ok(line) => Input::Line(line),
+        Err(ReadlineError::Interrupted) => Input::Interrupted,
+        Err(ReadlineError::Eof) => Input::Eof,
+        Err(e) => Input::Failed(describe(&e)),
+    }
+}
+
+/// A line-editor failure in plain words, never a `Debug` dump.
+pub fn describe(e: &ReadlineError) -> String {
+    match e {
+        ReadlineError::Io(io) => format!("the terminal failed: {io}"),
+        ReadlineError::Errno(errno) => format!("the terminal failed: {errno}"),
+        other => format!("the terminal failed: {other}"),
+    }
+}
+
+/// Ask a yes/no question; anything but `y`/`yes` (including Ctrl-C and Ctrl-D) is no.
+pub fn confirm(editor: &mut LineEditor, question: &str) -> bool {
+    if let Some(h) = editor.helper_mut() {
+        h.set_ctx(CompleteCtx::default());
+        h.set_prompt("", "");
+    }
+    matches!(editor.readline(question), Ok(answer) if is_yes(&answer))
+}
+
+/// Whether an answer to a `[y/N]` question is a yes.
+pub fn is_yes(answer: &str) -> bool {
+    matches!(answer.trim().to_ascii_lowercase().as_str(), "y" | "yes")
+}
+
+/// How many entries the editor remembers (for tests and `/status`-style checks).
+pub fn history_len(editor: &LineEditor) -> usize {
+    editor.history().len()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_second_ctrl_c_within_two_seconds_exits() {
+        let mut g = InterruptGuard::default();
+        let t0 = Instant::now();
+        assert_eq!(g.on_interrupt(t0), Interrupt::Warn);
+        assert_eq!(g.on_interrupt(t0 + Duration::from_millis(1900)), Interrupt::Exit);
+    }
+
+    #[test]
+    fn a_pause_longer_than_the_window_starts_over() {
+        let mut g = InterruptGuard::default();
+        let t0 = Instant::now();
+        assert_eq!(g.on_interrupt(t0), Interrupt::Warn);
+        assert_eq!(g.on_interrupt(t0 + Duration::from_millis(2500)), Interrupt::Warn);
+        assert_eq!(g.on_interrupt(t0 + Duration::from_millis(3000)), Interrupt::Exit, "the window counts from the latest one");
+    }
+
+    #[test]
+    fn sending_a_message_between_two_ctrl_cs_resets_the_rule() {
+        let mut g = InterruptGuard::default();
+        let t0 = Instant::now();
+        assert_eq!(g.on_interrupt(t0), Interrupt::Warn);
+        g.reset();
+        assert_eq!(g.on_interrupt(t0 + Duration::from_millis(100)), Interrupt::Warn);
+    }
+
+    fn ctx() -> CompleteCtx {
+        CompleteCtx {
+            ready_providers: vec!["claude".into(), "codex".into()],
+            models: vec!["codex:gpt-6.1-sol".into()],
+            changed_files: vec!["src/a.rs".into()],
+        }
+    }
+
+    #[test]
+    fn tab_completes_commands_and_their_arguments() {
+        let (start, c) = completions_for("/mod", 4, &ctx());
+        assert_eq!(start, 0);
+        assert_eq!(c.iter().map(|p| p.replacement.as_str()).collect::<Vec<_>>(), ["/model"]);
+
+        let (start, c) = completions_for("/model co", 9, &ctx());
+        assert_eq!(start, 7, "only the word being completed is replaced");
+        assert_eq!(c.iter().map(|p| p.replacement.as_str()).collect::<Vec<_>>(), ["codex", "codex:gpt-6.1-sol"]);
+
+        let (_, c) = completions_for("/diff ", 6, &ctx());
+        assert_eq!(c.iter().map(|p| p.replacement.as_str()).collect::<Vec<_>>(), ["src/a.rs"]);
+    }
+
+    #[test]
+    fn prose_and_a_cursor_in_the_middle_are_handled() {
+        assert!(completions_for("fix the bug", 11, &ctx()).1.is_empty());
+        // The cursor sits after "/mo": the rest of the line is not part of the word.
+        let (start, c) = completions_for("/model auto", 3, &ctx());
+        assert_eq!(start, 0);
+        assert!(c.iter().all(|p| p.replacement.starts_with("/mo")));
+        // A position past the end (or inside a multi-byte char) never panics.
+        let _ = completions_for("é/mod", 99, &ctx());
+    }
+
+    #[test]
+    fn the_hint_is_dim_only_when_styled() {
+        let h = JevHelper::new(Style::off());
+        assert_eq!(h.highlight_hint("el"), "el");
+        assert_eq!(JevHelper::new(Style::on()).highlight_hint("el"), "\x1b[2mel\x1b[0m");
+    }
+
+    #[test]
+    fn the_prompt_is_coloured_only_when_it_is_ours_and_colour_is_on() {
+        let mut h = JevHelper::new(Style::on());
+        h.set_prompt("› ", "\x1b[36m›\x1b[0m ");
+        assert_eq!(h.highlight_prompt("› ", true), "\x1b[36m›\x1b[0m ");
+        assert_eq!(h.highlight_prompt("› ", false), "› ", "an incremental-search prompt stays plain");
+        assert_eq!(h.highlight_prompt("(reverse-i-search)`': ", true), "(reverse-i-search)`': ");
+        let mut off = JevHelper::new(Style::off());
+        off.set_prompt("› ", "x");
+        assert_eq!(off.highlight_prompt("› ", true), "› ");
+    }
+
+    #[test]
+    fn yes_means_y_or_yes_and_nothing_else() {
+        for yes in ["y", "Y", "yes", " YES "] {
+            assert!(is_yes(yes), "{yes:?}");
+        }
+        for no in ["", "n", "no", "yep", "ye", "1"] {
+            assert!(!is_yes(no), "{no:?}");
+        }
+    }
+
+    fn temp(name: &str) -> PathBuf {
+        let d = std::env::temp_dir().join(format!("jev-lineedit-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    #[test]
+    fn history_is_a_private_file_that_remembers_lines_across_editors() {
+        let dir = temp("history");
+        let path = history_path(&dir);
+        let mut first = build_editor(Style::off(), Some(&path)).unwrap();
+        remember(&mut first, "fix the bug", Some(&path));
+        remember(&mut first, "   ", Some(&path));
+        remember(&mut first, "fix the bug", Some(&path));
+        remember(&mut first, "/model codex", Some(&path));
+        assert_eq!(history_len(&first), 2, "blank lines and consecutive duplicates are not kept");
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(std::fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o600);
+        }
+        let second = build_editor(Style::off(), Some(&path)).unwrap();
+        let last: Vec<String> = second.history().iter().cloned().collect();
+        assert_eq!(last, ["fix the bug", "/model codex"]);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn multi_line_messages_survive_in_history() {
+        let dir = temp("multiline");
+        let path = history_path(&dir);
+        let mut first = build_editor(Style::off(), Some(&path)).unwrap();
+        remember(&mut first, "line one\nline two", Some(&path));
+        let second = build_editor(Style::off(), Some(&path)).unwrap();
+        assert_eq!(second.history().iter().next().map(String::as_str), Some("line one\nline two"));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn the_history_is_capped() {
+        let dir = temp("cap");
+        let path = history_path(&dir);
+        let mut e = build_editor(Style::off(), Some(&path)).unwrap();
+        for i in 0..HISTORY_MAX + 10 {
+            remember(&mut e, &format!("message {i}"), Some(&path));
+        }
+        assert_eq!(history_len(&e), HISTORY_MAX);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_failure_of_the_editor_is_described_in_words() {
+        let e = ReadlineError::Io(std::io::Error::other("boom"));
+        assert_eq!(describe(&e), "the terminal failed: boom");
+    }
+}

@@ -222,46 +222,134 @@ records `fallback_from` (model, status, error) on the usage row.
 
 ### Code mode (`jev-code`)
 
+A coding agent that uses whichever AI coding tools you already have (Claude Code, Codex,
+Gemini, Grok, and DeepSeek through Claude Code). Every turn runs one provider's CLI in your
+project with tools on. Jev says what kind of task the turn is (security, hard debugging,
+review, feature, frontend, docs, explain, current info, simple edit, unclear); a catalog maps
+that to an ordered list of models; the router takes the first one you can use right now, and
+moves to the next one if it hits a limit.
+
+#### Install
+
 ```bash
-./scripts/install.sh          # builds release, installs ~/.local/bin/jev-code and jev-chat
-cd ~/some-project && jev-code # or: jev-code /path/to/project; jev-code --help
+./scripts/install.sh          # builds release; installs jev-code, jev-ask, jev-delegate-mcp,
+                              # jev-chat, jev-gateway and jev-claude into ~/.local/bin
+cp .jev-router.env.example ~/.jev-router.env && chmod 600 ~/.jev-router.env
+$EDITOR ~/.jev-router.env     # put your Jev key on the JEV_API_KEY= line
 ```
 
-The Jev key is read from `TYPESAFE_API_KEY` / `JEV_API_KEY`, or from
-`~/.jev-router.env` (`JEV_API_KEY=...`), so it works from any directory. Copy
-[`.jev-router.env.example`](.jev-router.env.example) there and `chmod 600` it: it lists every
-key and setting, and you only need the Jev key to start. Re-run
-`scripts/install.sh` after changing the code.
+`jev-delegate-mcp` is the tool `/orchestrate` hands to a planner model; `jev-code` finds it next
+to itself (or at `JEV_DELEGATE_BIN`). Re-run `scripts/install.sh` after changing the code.
 
-A routed coding agent. Every turn runs one provider's coding CLI in your project with
-tools on. Jev says what kind of task the turn is (security, hard debugging, review,
-feature, frontend, docs, explain, current info, simple edit, unclear); a catalog maps
-that to an ordered list of models; the router takes the first one you can use.
+#### First run
 
-**Providers and what each needs**
+```bash
+cd ~/some-project && jev-code     # inside a git repository: edits are applied without asking
+jev-code doctor                   # checks the setup, says exactly what to run for each gap
+```
 
-| provider | needs | billing |
-|---|---|---|
-| claude | `claude` installed and logged in | your plan; Fable only with `JEV_ALLOW_CREDITS=1` |
-| codex | `codex` installed and logged in (ChatGPT plan) | your plan |
-| gemini | `gemini` with auth configured, else `agy` (Antigravity) | your plan |
-| grok | Grok Build installed | your plan |
-| deepseek | `claude` installed and `DEEPSEEK_API_KEY` (env or `~/.jev-router.env`) | per token; setting the key is the opt-in |
+You need the Jev key and at least one provider that is installed and logged in; you do not
+need all of them. The first time you start with fewer than two providers ready, a short hint
+says what to run; it is shown once per machine (marker file `first-run-done` in the state
+directory) and `/doctor` always has the full story. Start-up is two lines: the project and
+whether routing is on, then each provider as a glyph (`●` ready, `○` not logged in or no key,
+`✕` not installed, `◐` cooling down after a limit, `?` could not tell).
+
+#### Using it
+
+Type a request and press Enter. While a model works there is one live line under the output
+(`⠹ codex · gpt-6.1-sol · 12s · Bash cargo test`); tool calls are listed as they happen; the
+answer follows, then a dim summary (provider, model, time, tokens, plan use, files changed).
+When files changed, `/diff` shows them and `/undo` puts them back.
+
+| command | what it does |
+|---|---|
+| `/model [target]` | pin a model or provider, or `auto` to let the router choose. `target` is `auto`, `<provider>`, `<provider>:<model>` or `sonnet`/`opus`/`haiku`; with no argument, show the pin. Pins are never silently overridden |
+| `/provider auto\|off` | route across providers (default), or Claude only |
+| `/orchestrate [on\|off]` | let a planner split a big task across cheaper workers (below) |
+| `/new` | start a fresh session on every provider (and forget the saved one) |
+| `/resume` | pick up the saved session of this folder |
+| `/diff [file]` | show what the last turn changed, coloured, through `$PAGER` (default `less -R`) when it is long and you are on a terminal |
+| `/undo` | revert the last turn's file changes; lists the files and asks `Revert N files? [y/N]` first; refuses without a terminal, and refuses if you edited those files since |
+| `/quit` | exit (also `/exit`) |
+| `/help` | commands and keys |
+| `/status` | project, routing, pin, ready providers with plan use, cooldowns, last turn |
+| `/providers [refresh]` | what was detected and why each provider can or cannot run; `refresh` probes again |
+| `/doctor` | the setup check, inside the session |
+
+A mistyped command (`/provders`) is never sent to the model: it says so and suggests the closest one.
+
+| key | what it does |
+|---|---|
+| Tab | complete a command, or its argument (providers, `provider:model`, changed files for `/diff`); a faint hint after the cursor shows the arguments |
+| Ctrl-C | while a turn runs: stop it (the model CLI and everything it started are killed) and carry on; at the prompt: clear the line, press again within 2 s to exit |
+| Ctrl-D | exit (on an empty line) |
+| Alt-Enter | a new line inside your message; pasting several lines works too |
+| ↑ / ↓ | earlier messages, kept across runs in `<state dir>/history` (private, 2000 lines) |
+
+Piped input still works (`printf 'explain src/lib.rs\n/quit\n' | jev-code`): one line per
+message, no prompt, no colours, no live line.
+
+**One-shot and scripting.** `jev-code -p "what does this repo do?"` runs one turn and prints
+only the answer on stdout; the route, tool calls and summary go to stderr. `jev-code -p -`
+reads the prompt from stdin. Exit code 0 answered, 1 failed, 130 stopped with Ctrl-C (2 for a
+bad command line). A one-shot starts a fresh conversation and leaves your saved session alone.
+`-c` / `--continue` resumes the saved session of the folder (in a session, or with `-p`).
+`--no-color` or `NO_COLOR=1` turns colours and the live line off. `jev-code doctor` exits 1 when
+something is a Problem.
+
+**Saved sessions.** The session is saved after every turn under `<state dir>/sessions/`
+(`~/.local/state/jev-router`, or `$XDG_STATE_HOME/jev-router`), kept 14 days. On start, an
+earlier session of the folder is offered with a dim line (`previous session: 12 turns, 2h ago ·
+/resume`); `/new` deletes it.
+
+**Settings.** Everything configurable is a `KEY=VALUE` line in `~/.jev-router.env` (or the
+file named by `JEV_ROUTER_ENV`) or an environment variable, which wins. The example file
+[`.jev-router.env.example`](.jev-router.env.example) lists every key and setting, and you only
+need the Jev key to start: `JEV_API_KEY` (or `TYPESAFE_API_KEY`), `JEV_PROVIDERS`,
+`JEV_ORCHESTRATE`, `JEV_ALLOW_CREDITS`, `JEV_TIMEOUT_MS`, `CODE_IDLE_TIMEOUT_SECS`,
+`DEEPSEEK_API_KEY`, `CODE_PERMISSION_MODE`, `CODE_ALLOWED_TOOLS`, binary paths, and more.
+`JEV_TYPESAFE_URL` points the Jev client at a proxy or a test server. `jev-code --help` lists them.
+
+**Providers: what each needs, and how far to trust it**
+
+| provider | needs | log in with | billing | tried against the real CLI |
+|---|---|---|---|---|
+| claude | `claude` installed and logged in | `claude auth login` | your plan; Fable only with `JEV_ALLOW_CREDITS=1` (automatic on Max/Ultra) | yes |
+| codex | `codex` installed and logged in (ChatGPT plan); it needs a git repository | `codex login` | your plan | yes |
+| gemini | `gemini` with auth configured, else `agy` (Antigravity) | `gemini` (choose a login) | your plan | no, from documentation only |
+| grok | Grok Build installed (never executed by the probe) | `grok` (sign in) | your plan | no, from documentation only |
+| deepseek | `claude` installed and `DEEPSEEK_API_KEY` in the env or `~/.jev-router.env` | add the key | per token; setting the key is the opt-in | key check yes; that it really bypasses your Claude login and reaches DeepSeek is unverified |
+
+The login commands are written once (`src/doctor.rs`) and used by `doctor`, the first-run
+hint and every error message, so they cannot drift apart. `/providers` marks the unverified
+adapters; expect corrections on first real use of gemini, agy and grok.
 
 **Never routes to a provider you cannot use.** At startup each provider is probed
-(installed? logged in? key present?) and only ready ones print. A probe that cannot
+(installed? logged in? key present?) and only ready ones are used. A probe that cannot
 tell counts as not ready. `/providers` shows everything with the reason, plus
 cooldowns, refused models and billing allowances; `/providers refresh` probes again.
-If nothing usable fits a turn, it says so in plain words and starts nothing; a pinned
-provider that is unusable is reported, never swapped for another.
+If nothing usable fits a turn, it says so in plain words, with what to fix, and starts nothing;
+a pinned provider that is unusable is reported, never swapped for another.
 
-**Failover and cooldown.** A usage limit puts that provider on a cooldown (until its
-reset time when the CLI gives one, else an hour; saved across runs) and the same
-prompt goes to the next model. A model your plan does not include is dropped for the
-run. A login failure cools the provider and tells you which tool to log in to again.
-An empty answer or a stall skips that model for this turn only. Any other error stops
-the turn, since it would likely recur everywhere. At most 6 models are tried per
-turn, and a failed attempt's output is never shown as an answer.
+**Failover and cooldown, as you see it.** A usage limit puts that provider on a cooldown
+(until its reset time when the CLI gives one, else an hour; saved across runs) and the same
+prompt goes to the next model:
+
+```
+  → claude · claude-opus-5-5   hard_debug · first turn
+  ⏺ Read src/lib.rs
+  ⚠ claude hit its limit (resets 5pm) → trying codex · gpt-6.1-sol
+  → codex · gpt-6.1-sol   hard_debug · switched from claude
+  ...answer...
+  ✓ codex · gpt-6.1-sol · 41s · in 52K (cached 40K) · out 1.1K · 2 files +31 −4
+```
+
+A model your plan does not include is dropped for the run. A login failure blocks the provider
+for the session and tells you which command to run. An empty answer or a stall skips that model
+for this turn only. Any other error stops the turn, since it would likely recur everywhere, and
+is shown as a titled block with the CLI's message and the steps to try. At most 6 models are
+tried per turn, and a failed attempt's output is never shown as an answer.
 
 **Switching providers.** Each CLI keeps its own session, so when the turn goes to a
 provider that missed earlier turns, a short catch-up (your prompts, shrunk replies,
@@ -273,30 +361,17 @@ downgrade is held for a few turns (the prompt cache).
 **Hard security rule.** Security work (strong keywords, a high `security_review`, or
 auth/session edits) overrides Jev's task label and never goes to DeepSeek or Grok.
 
-**Commands.** `/model auto` | `<provider>` | `<provider>:<model>` | `sonnet|opus|haiku`
-(pins are never silently overridden), `/provider auto|off`, `/providers [refresh]`,
-`/new`, `/quit`.
-
-**Environment.** `JEV_PROVIDERS=off` starts with routing off; `JEV_ALLOW_CREDITS=1`
-allows credit-billed models; `JEV_CHAINS` is a JSON file replacing the model order per
-task type; `DEEPSEEK_API_KEY`; `JEV_TIMEOUT_MS` (Jev wait, default 3000; past it the
-turn is routed without Jev's judgment); `CODE_IDLE_TIMEOUT_SECS` (default 900);
-`JEV_CODE_LOG` (turn log, one row per attempt with the decision reason, Jev's signals,
-attempt number and failover notes). `jev-code --help` lists the rest.
-
 **Permissions.** Edits are auto-accepted on Claude (`CODE_PERMISSION_MODE=acceptEdits`);
 its commands need your Claude Code allowlist or `CODE_ALLOWED_TOOLS="Bash(cargo test) Bash(git status)"`.
 Codex runs in a workspace-write sandbox (`CODEX_SANDBOX`, never full access). Denied
 actions are reported, never silently skipped. Use it inside a git repo.
 
-**How far to trust each adapter.** Verified against real recorded CLI output: claude
-and codex (`tests/fixtures/{claude,codex}`). Built from the vendors' documentation only,
-never run against a logged-in CLI, so expect corrections on first real use: gemini and
-agy (`tests/fixtures/{gemini,agy}`) and grok (`tests/fixtures/grok`). DeepSeek runs the
-`claude` CLI with `ANTHROPIC_BASE_URL` pointed at DeepSeek: the key check is real, but
-that this really bypasses your Claude login and talks to DeepSeek is unverified. Model
-names, tiers and chains in the catalog come from the vendors' pages as of 2026-11-17;
-the task-to-model chains are defaults, not calibrated on your work.
+**Logs.** `JEV_CODE_LOG` (turn log, one row per attempt with the decision reason, Jev's
+signals, attempt number and failover notes). A crash writes a short note to
+`<state dir>/panic.log`; the terminal is restored first and no Rust message is printed.
+
+**Provider names, tiers and chains** in the catalog come from the vendors' pages as of
+2026-11-17; the task-to-model chains are defaults, not calibrated on your work.
 
 **Orchestration across providers** (`/orchestrate on|off`, or `JEV_ORCHESTRATE=on`; off by
 default). A request that Jev scores multi-part (`multi_part` at `ORCH_TRIGGER_P`, 0.70) AND
@@ -379,10 +454,18 @@ beat any guess. Re-run `tune` when prompts, models, or request mix change.
 - `src/bin/tune.rs` — threshold calibration (the sweep).
 - `src/bin/gateway.rs` — local gateway that adds the Jev Code model to Claude Code.
 - `scripts/jev-claude` — launcher: starts the gateway and opens Claude Code on Jev Code.
-- `src/bin/code.rs` — thin REPL for the routed coding agent; `src/turn.rs` runs one turn
+- `src/bin/code.rs` — thin shell for the routed coding agent (arguments, terminal, the loop);
+  `src/cli.rs` parses arguments, `src/repl.rs` runs commands and turns (Ctrl-C included),
+  `src/console.rs` prints a turn and the live status line, `src/lineedit.rs` is the line editor
+  (history, Tab, hint), `src/views.rs` builds each screen's facts, `src/uifmt.rs` formats every string,
+  `src/terminal.rs` restores the terminal; `src/turn.rs` runs one turn
   (Jev, choose, hand off, run, fail over), `src/routing.rs` picks the model, `src/catalog.rs`
   lists the models and chains, `src/providers.rs` and `src/availability.rs` know who is
-  usable, `src/handoff.rs` writes the catch-up, `src/backend/` has one adapter per CLI.
+  usable, `src/doctor.rs` checks the setup (and holds the login commands), `src/handoff.rs`
+  writes the catch-up and saves sessions, `src/changes.rs` backs `/diff` and `/undo`,
+  `src/backend/` has one adapter per CLI.
+- `scripts/test_pty_ux.py` — hermetic end-to-end test of the terminal UX over a pseudo-terminal
+  (fake model CLI, fake Jev, temp home): `cargo build --bin code && python3 -I scripts/test_pty_ux.py`.
 - `src/delegate.rs`, `src/orchestrate.rs`, `src/bin/delegate_mcp.rs` — cross-provider orchestration:
   worker choice and worktrees, planner choice and tool attachment, the MCP server.
 - `src/bin/orch_tune.rs` — scores logged prompts with `multi_part` to pick `ORCH_TRIGGER_P`.

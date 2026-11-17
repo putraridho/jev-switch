@@ -214,33 +214,67 @@ fn fix_steps(provider: ProviderId, state: State, env_path: &str) -> Vec<String> 
     }
 }
 
-fn install_steps(provider: ProviderId) -> Vec<String> {
+/// How to install the CLI behind `provider`: the one source of install hints.
+pub fn install_hint(provider: ProviderId) -> &'static str {
     match provider {
         // DeepSeek is the claude CLI pointed at another API.
-        ProviderId::Claude | ProviderId::DeepSeek => {
-            steps(&["Install Claude Code: https://code.claude.com/docs/en/quickstart"])
+        ProviderId::Claude | ProviderId::DeepSeek => "Install Claude Code: https://code.claude.com/docs/en/quickstart",
+        ProviderId::Codex => "npm i -g @openai/codex (or see the vendor's install page)",
+        ProviderId::Gemini => "npm i -g @google/gemini-cli",
+        ProviderId::Grok => {
+            "Install the Grok CLI: see the vendor's install page (if `grok` is a lazy mise wrapper, running `grok` once installs it)"
         }
-        ProviderId::Codex => steps(&["npm i -g @openai/codex (or see the vendor's install page)"]),
-        ProviderId::Gemini => steps(&["npm i -g @google/gemini-cli"]),
-        ProviderId::Grok => steps(&[
-            "Install the Grok CLI: see the vendor's install page (if `grok` is a lazy mise wrapper, running `grok` once installs it)",
-        ]),
     }
 }
 
-fn login_steps(provider: ProviderId, env_path: &str) -> Vec<String> {
+/// The command that logs in to `provider`: the one source of login commands, used by
+/// `doctor`, the first-run hint and every error message. `None` for DeepSeek, which has
+/// no login: it takes an API key in the env file. Only `claude auth login` and `codex
+/// login` were tried against the real CLIs ([`login_verified`]).
+pub fn login_command(provider: ProviderId) -> Option<&'static str> {
     match provider {
-        ProviderId::Claude => steps(&["claude auth login"]),
-        ProviderId::Codex => steps(&["codex login", "codex login --device-auth (if this machine is headless)"]),
+        ProviderId::Claude => Some("claude auth login"),
+        ProviderId::Codex => Some("codex login"),
+        // Running the CLI starts its own sign-in flow.
+        ProviderId::Gemini => Some("gemini"),
+        ProviderId::Grok => Some("grok"),
+        ProviderId::DeepSeek => None,
+    }
+}
+
+/// Whether [`login_command`] for `provider` was run against the real CLI.
+pub fn login_verified(provider: ProviderId) -> bool {
+    matches!(provider, ProviderId::Claude | ProviderId::Codex)
+}
+
+/// [`login_command`] as one sentence for a message: `run `codex login``.
+pub fn login_instruction(provider: ProviderId) -> String {
+    match (provider, login_command(provider)) {
+        (ProviderId::Gemini, Some(cmd)) => format!("run `{cmd}` and choose a login"),
+        (ProviderId::Grok, Some(cmd)) => format!("run `{cmd}` and sign in"),
+        (_, Some(cmd)) => format!("run `{cmd}`"),
+        (_, None) => format!("add `DEEPSEEK_API_KEY` to {DEFAULT_ENV_PATH}"),
+    }
+}
+
+fn install_steps(provider: ProviderId) -> Vec<String> {
+    vec![install_hint(provider).to_string()]
+}
+
+fn login_steps(provider: ProviderId, env_path: &str) -> Vec<String> {
+    let cmd = login_command(provider).unwrap_or_default();
+    match provider {
+        ProviderId::Claude => vec![cmd.to_string()],
+        ProviderId::Codex => vec![cmd.to_string(), format!("{cmd} --device-auth (if this machine is headless)")],
         ProviderId::Gemini => vec![
-            "Run `gemini` once and choose a login".to_string(),
+            format!("Run `{cmd}` once and choose a login"),
             format!("or set GEMINI_API_KEY=<key> in {env_path} (unverified: the probe reads an exported GEMINI_API_KEY today; if Gemini stays not ready, `export GEMINI_API_KEY=<key>` in your shell)"),
             "unverified: Antigravity users run `agy` and sign in".to_string(),
         ],
-        ProviderId::Grok => steps(&[
-            "grok (first run installs it, which can take minutes)",
-            "Sign in when it asks (unverified; needs SuperGrok or X Premium+, the $8 plan likely lacks the CLI)",
-        ]),
+        ProviderId::Grok => vec![
+            format!("{cmd} (first run installs it, which can take minutes)"),
+            "Sign in when it asks (unverified; needs SuperGrok or X Premium+, the $8 plan likely lacks the CLI)".to_string(),
+        ],
         ProviderId::DeepSeek => vec![format!("Add DEEPSEEK_API_KEY=<key> to {env_path} (billed per token)")],
     }
 }
@@ -882,5 +916,37 @@ mod tests {
         assert!(block_reason_text(Codex, BlockReason::UnusableHere).contains("git repository"));
         assert!(block_reason_text(Gemini, BlockReason::UnusableHere).contains("trusted workspace"));
         assert!(block_reason_text(Claude, BlockReason::Auth).contains("/providers refresh"));
+    }
+
+    #[test]
+    fn login_commands_have_one_source_and_the_verified_ones_are_named() {
+        assert_eq!(login_command(Claude), Some("claude auth login"));
+        assert_eq!(login_command(Codex), Some("codex login"));
+        assert_eq!(login_command(Gemini), Some("gemini"));
+        assert_eq!(login_command(Grok), Some("grok"));
+        assert_eq!(login_command(DeepSeek), None);
+        for p in ALL_PROVIDERS {
+            assert_eq!(login_verified(p), matches!(p, Claude | Codex), "{p}");
+        }
+    }
+
+    #[test]
+    fn doctor_steps_and_messages_use_the_same_login_command() {
+        for p in ALL_PROVIDERS {
+            let steps = login_steps(p, "~/.jev-router.env").join("\n");
+            let sentence = login_instruction(p);
+            match login_command(p) {
+                Some(cmd) => {
+                    assert!(steps.contains(cmd), "{p}: {steps}");
+                    assert!(sentence.contains(&format!("`{cmd}`")), "{p}: {sentence}");
+                    // The uifmt wording is built from the same sentence.
+                    assert_eq!(crate::uifmt::next_steps_for(&crate::backend::ErrorKind::Auth, p.as_str())[0].to_lowercase(), sentence.to_lowercase());
+                }
+                None => {
+                    assert!(steps.contains("DEEPSEEK_API_KEY") && sentence.contains("DEEPSEEK_API_KEY"));
+                }
+            }
+            assert!(!install_hint(p).is_empty());
+        }
     }
 }

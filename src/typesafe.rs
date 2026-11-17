@@ -27,6 +27,12 @@ const TYPESAFE_URL: &str = "https://api.typesafe.ai/v1/systemone";
 /// (`Router::jev_timeout`); batch tools (`route`, `tune`) rely on this one.
 const HTTP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
 
+/// The Jev endpoint: `JEV_TYPESAFE_URL` (environment or env file) when it is set, for a
+/// proxy or a test server; otherwise the public API.
+pub fn endpoint(override_url: Option<&str>) -> String {
+    override_url.map(str::trim).filter(|u| !u.is_empty()).unwrap_or(TYPESAFE_URL).to_string()
+}
+
 fn http_client() -> reqwest::Client {
     reqwest::Client::builder().timeout(HTTP_TIMEOUT).build().unwrap_or_default()
 }
@@ -35,7 +41,8 @@ impl TypeSafe {
     pub fn from_env() -> Result<Self> {
         let key = key_lookup()
             .context("Jev key not found: set TYPESAFE_API_KEY or JEV_API_KEY, or put JEV_API_KEY=... in ~/.jev-router.env")?;
-        Ok(Self { key, url: TYPESAFE_URL.into(), http: http_client() })
+        let url = endpoint(crate::envfile::lookup("JEV_TYPESAFE_URL").as_deref());
+        Ok(Self { key, url, http: http_client() })
     }
 
     /// A client for a different endpoint (tests, proxies).
@@ -160,6 +167,14 @@ mod tests {
         assert_eq!(decode_noul(&answers, "b").unwrap(), 0.25);
         assert!(decode_choice(&answers, "missing").is_err());
         assert!(decode_noul(&answers, "a").is_err(), "a choice is not a noul");
+    }
+
+    #[test]
+    fn the_endpoint_defaults_to_the_public_api_and_can_be_overridden() {
+        assert_eq!(endpoint(None), TYPESAFE_URL);
+        assert_eq!(endpoint(Some("")), TYPESAFE_URL);
+        assert_eq!(endpoint(Some("  ")), TYPESAFE_URL);
+        assert_eq!(endpoint(Some(" http://127.0.0.1:9/v1/systemone ")), "http://127.0.0.1:9/v1/systemone");
     }
 
     #[test]

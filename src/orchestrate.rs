@@ -26,6 +26,8 @@ use crate::router::ORCH_TRIGGER_P;
 pub const MCP_NAME: &str = "jev";
 /// The binary that serves the delegate tool (`src/bin/delegate_mcp.rs`).
 pub const DELEGATE_BIN: &str = "delegate_mcp";
+/// The name `scripts/install.sh` gives it next to `jev-code`; [`Setup::detect`] finds both.
+pub const DELEGATE_BIN_INSTALLED: &str = "jev-delegate-mcp";
 
 /// Whether a prompt is orchestrated, as far as the numbers go.
 #[derive(Debug, PartialEq)]
@@ -130,10 +132,10 @@ impl Setup {
     /// `cargo build` and `install.sh` put it). The config goes in the state dir.
     pub fn detect() -> Option<Self> {
         let config_dir = crate::log::state_dir()?;
-        let bin = crate::envfile::lookup("JEV_DELEGATE_BIN")
-            .map(PathBuf::from)
-            .or_else(|| std::env::current_exe().ok().map(|e| e.with_file_name(DELEGATE_BIN)))
-            .filter(|p| p.is_file());
+        let bin = match crate::envfile::lookup("JEV_DELEGATE_BIN") {
+            Some(path) => Some(PathBuf::from(path)).filter(|p| p.is_file()),
+            None => std::env::current_exe().ok().and_then(|exe| beside(&exe)),
+        };
         Some(Self { bin, config_dir })
     }
 
@@ -142,6 +144,12 @@ impl Setup {
         let bin = self.bin.as_ref()?;
         Some(attachment(bin, project, planner, &self.config_dir, std::process::id()))
     }
+}
+
+/// The delegate binary next to `exe`: [`DELEGATE_BIN`] (where `cargo build` puts it)
+/// or [`DELEGATE_BIN_INSTALLED`] (where `scripts/install.sh` puts it), whichever exists.
+pub fn beside(exe: &Path) -> Option<PathBuf> {
+    [DELEGATE_BIN, DELEGATE_BIN_INSTALLED].iter().map(|name| exe.with_file_name(name)).find(|p| p.is_file())
 }
 
 /// The server entry for one planner. `instance` (the process id) keeps two `jev-code`
@@ -273,6 +281,19 @@ mod tests {
         assert_eq!(a.config_path, Path::new("/state/mcp-delegate-42.json"));
         let setup = Setup { bin: None, config_dir: "/state".into() };
         assert!(setup.attachment(Path::new("/repo"), opus).is_none());
+    }
+
+    #[test]
+    fn the_delegate_binary_is_found_beside_jev_code_under_either_name() {
+        let dir = std::env::temp_dir().join(format!("jev-orch-beside-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let exe = dir.join("jev-code");
+        assert_eq!(beside(&exe), None, "nothing installed");
+        std::fs::write(dir.join(DELEGATE_BIN_INSTALLED), "").unwrap();
+        assert_eq!(beside(&exe), Some(dir.join(DELEGATE_BIN_INSTALLED)), "the installed name");
+        std::fs::write(dir.join(DELEGATE_BIN), "").unwrap();
+        assert_eq!(beside(&exe), Some(dir.join(DELEGATE_BIN)), "the cargo build name wins");
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

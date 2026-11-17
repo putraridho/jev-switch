@@ -1,8 +1,10 @@
 //! What one line typed into `jev-code` means. Pure, so the REPL binary only maps
 //! each [`Command`] onto the [`crate::turn::Engine`] and every spelling rule is a
-//! unit test.
+//! unit test. The names come from the one command table in [`crate::uifmt`], which also
+//! drives `/help` and Tab completion.
 
 use crate::routing::Pin;
+use crate::uifmt;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Command {
@@ -26,12 +28,66 @@ pub enum Command {
     Providers { refresh: bool },
     /// A command that was recognised but whose argument was not; the text says what is accepted.
     Invalid(String),
+    /// `/help`.
+    Help,
+    /// `/status`.
+    Status,
+    /// `/doctor`: the setup check, inside the session.
+    Doctor,
+    /// `/diff [file]`: what the last turn changed.
+    Diff(Option<String>),
+    /// `/undo`: put back what the last turn changed.
+    Undo,
+    /// `/resume`: pick up the saved session of this folder.
+    Resume,
+    /// A slash word that is no command, with the closest real one when there is one. Never
+    /// sent to the model: a typo must not cost a turn.
+    Unknown { typed: String, suggestion: Option<&'static str> },
 }
 
 /// Whether provider routing starts on: `JEV_PROVIDERS=off` (also `0`, `false`, `no`)
 /// starts it off, anything else, including unset, leaves the default (on).
 pub fn routing_enabled(env: Option<&str>) -> bool {
     !env.is_some_and(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "off" | "0" | "false" | "no"))
+}
+
+/// Levenshtein distance between two short words, in characters.
+pub fn edit_distance(a: &str, b: &str) -> usize {
+    let b: Vec<char> = b.chars().collect();
+    let mut row: Vec<usize> = (0..=b.len()).collect();
+    for (i, ca) in a.chars().enumerate() {
+        let mut diag = row[0];
+        row[0] = i + 1;
+        for (j, cb) in b.iter().enumerate() {
+            let above = row[j + 1];
+            row[j + 1] = (diag + usize::from(ca != *cb)).min(above + 1).min(row[j] + 1);
+            diag = above;
+        }
+    }
+    row[b.len()]
+}
+
+/// The command a mistyped one most likely meant: one that starts with what was typed
+/// (`/mod` is `/model`), else the nearest by edit distance when it is close enough to be
+/// a typo and not a different word (`/provders` is `/providers`, `/xyz` is nothing).
+pub fn closest_command(typed: &str) -> Option<&'static str> {
+    let typed = typed.to_ascii_lowercase();
+    let names = uifmt::command_names();
+    if typed.len() > 2 {
+        if let Some(prefixed) = names.iter().find(|n| n.starts_with(&typed)) {
+            return Some(prefixed);
+        }
+    }
+    names
+        .into_iter()
+        .map(|n| (edit_distance(&typed, n), n))
+        .filter(|(d, _)| *d <= 2 && *d < typed.chars().count())
+        .min_by_key(|(d, _)| *d)
+        .map(|(_, n)| n)
+}
+
+fn usage_error(name: &str) -> Command {
+    Command::Invalid(format!("usage: {}", uifmt::command_usage(name).unwrap_or_else(|| name.to_string())))
 }
 
 /// Read one input line.
@@ -42,9 +98,22 @@ pub fn parse(line: &str) -> Command {
     let arg = words.next();
     let extra = words.next().is_some();
     let invalid = |usage: &str| Command::Invalid(usage.to_string());
+    let lower = head.to_ascii_lowercase();
+    let head = lower.as_str();
     match head {
         "/quit" | "/exit" => Command::Quit,
         "/new" => Command::New,
+        "/help" | "/status" | "/doctor" | "/undo" | "/resume" if arg.is_some() => usage_error(head),
+        "/help" => Command::Help,
+        "/status" => Command::Status,
+        "/doctor" => Command::Doctor,
+        "/undo" => Command::Undo,
+        "/resume" => Command::Resume,
+        "/diff" => {
+            // The rest of the line is one path, so a name with spaces works.
+            let path = line[head.len()..].trim();
+            Command::Diff((!path.is_empty()).then(|| path.to_string()))
+        }
         "/model" => match (arg, extra) {
             (None, _) => Command::ShowModel,
             (Some(a), false) => Pin::parse(a).map_or_else(Command::Invalid, Command::SetPin),
@@ -67,7 +136,9 @@ pub fn parse(line: &str) -> Command {
             _ => invalid("usage: /providers [refresh]"),
         },
         // A typo'd command must not cost a model turn; a path like `/etc/hosts` is still a prompt.
-        h if h.starts_with('/') && !h[1..].contains('/') => Command::Invalid(format!("unknown command {h}")),
+        h if h.starts_with('/') && !h[1..].contains('/') => {
+            Command::Unknown { typed: head.to_string(), suggestion: closest_command(head) }
+        }
         _ => Command::Prompt(line.to_string()),
     }
 }
@@ -148,6 +219,62 @@ mod tests {
 
     #[test]
     fn unknown_slash_command_is_reported_not_sent() {
-        assert!(matches!(parse("/provders"), Command::Invalid(m) if m.contains("/provders")));
+        assert_eq!(parse("/provders"), Command::Unknown { typed: "/provders".into(), suggestion: Some("/providers") });
+        assert_eq!(parse("/xyzzy"), Command::Unknown { typed: "/xyzzy".into(), suggestion: None });
+    }
+
+    #[test]
+    fn session_and_info_commands() {
+        assert_eq!(parse("/help"), Command::Help);
+        assert_eq!(parse("/status"), Command::Status);
+        assert_eq!(parse("/doctor"), Command::Doctor);
+        assert_eq!(parse("/undo"), Command::Undo);
+        assert_eq!(parse("/resume"), Command::Resume);
+        assert_eq!(parse("/HELP"), Command::Help, "commands are not case sensitive");
+        assert_eq!(parse("/help me"), Command::Invalid("usage: /help".into()));
+        assert_eq!(parse("/undo now"), Command::Invalid("usage: /undo".into()));
+    }
+
+    #[test]
+    fn diff_takes_the_rest_of_the_line_as_one_path() {
+        assert_eq!(parse("/diff"), Command::Diff(None));
+        assert_eq!(parse("/diff src/main.rs"), Command::Diff(Some("src/main.rs".into())));
+        assert_eq!(parse("/diff  my notes/a b.md "), Command::Diff(Some("my notes/a b.md".into())));
+    }
+
+    #[test]
+    fn every_command_in_the_table_is_understood() {
+        // The table in uifmt drives help and completion; parsing must know each of its names.
+        for name in uifmt::command_names() {
+            assert!(!matches!(parse(name), Command::Unknown { .. } | Command::Prompt(_)), "{name}");
+        }
+    }
+
+    #[test]
+    fn edit_distance_counts_single_character_edits() {
+        assert_eq!(edit_distance("", ""), 0);
+        assert_eq!(edit_distance("abc", "abc"), 0);
+        assert_eq!(edit_distance("", "abc"), 3);
+        assert_eq!(edit_distance("kitten", "sitting"), 3);
+        assert_eq!(edit_distance("/provders", "/providers"), 1);
+        assert_eq!(edit_distance("/hlep", "/help"), 2);
+    }
+
+    #[test]
+    fn the_closest_command_is_a_prefix_or_a_near_typo_and_never_a_stretch() {
+        for (typed, want) in [
+            ("/mod", Some("/model")),
+            ("/prov", Some("/provider")),
+            ("/provders", Some("/providers")),
+            ("/hlep", Some("/help")),
+            ("/dif", Some("/diff")),
+            ("/staus", Some("/status")),
+            ("/Model", Some("/model")),
+            ("/xyzzy", None),
+            ("/", None),
+            ("/q", None),
+        ] {
+            assert_eq!(closest_command(typed), want, "{typed}");
+        }
     }
 }

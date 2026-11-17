@@ -49,9 +49,30 @@ pub fn lookup(name: &str) -> Option<String> {
     from_env(name).or_else(|| from_file_any(&[name]))
 }
 
+/// A number setting: `name` from the environment or the key file, parsed; `default` when
+/// it is unset or not a number.
+pub fn lookup_f64(name: &str, default: f64) -> f64 {
+    parse_f64(lookup(name).as_deref(), default)
+}
+
+/// The pure half of [`lookup_f64`].
+pub fn parse_f64(value: Option<&str>, default: f64) -> f64 {
+    value.and_then(|v| v.trim().parse::<f64>().ok()).filter(|v| v.is_finite()).unwrap_or(default)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn number_settings_fall_back_to_the_default_when_unset_or_not_a_number() {
+        assert_eq!(parse_f64(None, 0.85), 0.85);
+        assert_eq!(parse_f64(Some(" 0.9 "), 0.85), 0.9);
+        assert_eq!(parse_f64(Some("2"), 0.0), 2.0);
+        for bad in ["", "abc", "NaN", "inf"] {
+            assert_eq!(parse_f64(Some(bad), 7.0), 7.0, "{bad:?}");
+        }
+    }
 
     #[test]
     fn parses_plain_export_and_quoted_lines() {

@@ -19,7 +19,7 @@
 use std::path::Path;
 use std::time::Duration;
 
-use crate::backend::ErrorKind;
+use crate::backend::{ErrorKind, ProviderId};
 
 /// Narrowest width the layout formatters plan for.
 pub const MIN_WIDTH: usize = 20;
@@ -814,14 +814,11 @@ fn reset_label(resets_at: Option<&str>) -> Option<String> {
     (!r.is_empty() && !r.chars().all(|c| c.is_ascii_digit())).then_some(r)
 }
 
+/// How to log in to `provider`, from the one table in [`crate::doctor`].
 fn login_hint(provider: &str) -> String {
-    match provider {
-        "codex" => "run `codex login`".into(),
-        "claude" => "run `claude` and sign in with /login".into(),
-        "gemini" => "run `gemini` and sign in".into(),
-        "grok" => "run `grok` and sign in".into(),
-        "deepseek" => "set `DEEPSEEK_API_KEY`".into(),
-        other => format!("log in to {other}"),
+    match provider.parse::<ProviderId>() {
+        Ok(p) => crate::doctor::login_instruction(p),
+        Err(_) => format!("log in to {provider}"),
     }
 }
 
@@ -1359,6 +1356,24 @@ fn usage(c: &Cmd) -> String {
     }
 }
 
+/// Every slash command name (`/model`, ...), from the one table that help, completion and
+/// parsing share.
+pub fn command_names() -> Vec<&'static str> {
+    COMMANDS.iter().map(|c| c.name).collect()
+}
+
+/// `/diff [file]`: the command with its argument synopsis, or `None` for a name that is
+/// not in the table.
+pub fn command_usage(name: &str) -> Option<String> {
+    COMMANDS.iter().find(|c| c.name == name).map(usage)
+}
+
+/// A boxed message in the shape of every fatal message: a red title, dim detail lines and
+/// a "Try:" list of steps. For callers that have their own wording.
+pub fn problem_block(title: &str, details: &[String], steps: &[String], style: Style) -> String {
+    block(title, details, steps, style)
+}
+
 /// The `/help` screen: commands in three groups, each with a line and, where it takes
 /// an argument, an example; then the keys.
 pub fn help_text(style: Style) -> String {
@@ -1467,6 +1482,18 @@ fn status_glyph(status: ProviderStatus, cooling: bool, style: Style) -> String {
         (ProviderStatus::NotInstalled, _) => style.dim("✕"),
         (ProviderStatus::Unknown, _) => style.dim("?"),
     }
+}
+
+/// The providers on one line, each as its status glyph and name: `● claude  ○ codex  ✕ gemini`
+/// (the same glyphs as [`providers_table`]), cut to `width`. For the startup banner.
+pub fn provider_glyphs(rows: &[AvailRow], style: Style, width: usize) -> String {
+    let th = Theme::new(style);
+    let line = rows
+        .iter()
+        .map(|r| format!("{} {}", status_glyph(r.status, r.cooldown.is_some(), style), th.provider(&r.provider, &r.provider)))
+        .collect::<Vec<_>>()
+        .join("  ");
+    truncate_to_width(&line, clamp_width(width))
 }
 
 /// `/providers`: one aligned row per provider: glyph (● ready, ○ not logged in, ✕ not
@@ -2354,8 +2381,8 @@ mod tests {
             (ErrorKind::Quota { resets_at: Some("1794853451".into()) }, "claude", "opus", None, false, "⚠ claude hit its limit"),
             (ErrorKind::NotEntitled, "claude", "opus", to, false, "⚠ claude:opus is not on your plan → trying codex · gpt-6.1-sol"),
             (ErrorKind::Auth, "codex", "gpt", None, false, "⚠ codex needs a login: run `codex login`"),
-            (ErrorKind::Auth, "claude", "x", Some(("codex", "g")), false, "⚠ claude needs a login: run `claude` and sign in with /login → trying codex · g"),
-            (ErrorKind::Auth, "deepseek", "x", None, false, "⚠ deepseek needs a valid API key: set `DEEPSEEK_API_KEY`"),
+            (ErrorKind::Auth, "claude", "x", Some(("codex", "g")), false, "⚠ claude needs a login: run `claude auth login` → trying codex · g"),
+            (ErrorKind::Auth, "deepseek", "x", None, false, "⚠ deepseek needs a valid API key: add `DEEPSEEK_API_KEY` to ~/.jev-router.env"),
             (ErrorKind::Empty, "codex", "gpt", to, false, "⚠ codex:gpt gave an empty answer → trying codex · gpt-6.1-sol"),
             (ErrorKind::Stalled, "codex", "gpt", to, false, "⚠ codex:gpt stopped answering → trying codex · gpt-6.1-sol"),
             (ErrorKind::UnusableHere, "codex", "gpt", Some(("claude", "sonnet")), false, "⚠ codex can't run in this directory: it needs a git repository here (run `git init`, or work in a repo) → trying claude · sonnet"),
@@ -2444,7 +2471,7 @@ mod tests {
         let s = no_route_message("feature", &rows(), OFF);
         assert_eq!(
             s,
-            "✗ Nothing can take this feature turn\n  No provider is ready to run it.\n  claude: cooling down after a usage limit (2h 10m left)\n  codex: not logged in\n  gemini: not installed\n  deepseek: no API key\n  grok: could not be checked\n  Try:\n    • See why each one can't run: `/providers`\n    • Wait for claude's limit to reset, or use another provider\n    • Run `codex login`\n    • Set `DEEPSEEK_API_KEY`\n    • Then run `/providers refresh` and send it again\n    • Check the whole setup: `jev-code doctor`"
+            "✗ Nothing can take this feature turn\n  No provider is ready to run it.\n  claude: cooling down after a usage limit (2h 10m left)\n  codex: not logged in\n  gemini: not installed\n  deepseek: no API key\n  grok: could not be checked\n  Try:\n    • See why each one can't run: `/providers`\n    • Wait for claude's limit to reset, or use another provider\n    • Run `codex login`\n    • Add `DEEPSEEK_API_KEY` to ~/.jev-router.env\n    • Then run `/providers refresh` and send it again\n    • Check the whole setup: `jev-code doctor`"
         );
         let sec = no_route_message("security", &rows(), OFF);
         assert!(sec.contains("Security work never goes to deepseek or grok."));
@@ -3209,6 +3236,30 @@ mod tests {
         no_esc(&doctor_report(&[item(Severity::Fail, "t", "d", &["c"])], OFF, 80));
         no_esc(&doctor_summary(&[item(Severity::Fail, "t", "d", &["c"])], OFF));
         no_esc(&status_line("m", Duration::from_secs(1), Some("a"), 40, OFF));
+    }
+
+    #[test]
+    fn provider_glyphs_fit_on_one_line_and_use_the_table_glyphs() {
+        let line = provider_glyphs(&rows(), OFF, 80);
+        assert_eq!(line, "◐ claude  ○ codex  ✕ gemini  ○ deepseek  ? grok");
+        assert!(display_width(&provider_glyphs(&rows(), OFF, 20)) <= 20);
+        assert_eq!(strip_ansi(&provider_glyphs(&rows(), ON, 80)), line);
+        assert!(provider_glyphs(&rows(), ON, 80).contains("\x1b["), "coloured when styled");
+    }
+
+    #[test]
+    fn the_command_table_gives_names_and_usage_to_parsing() {
+        let names = command_names();
+        assert!(names.contains(&"/model") && names.contains(&"/help") && names.contains(&"/undo"));
+        assert_eq!(command_usage("/diff").as_deref(), Some("/diff [file]"));
+        assert_eq!(command_usage("/new").as_deref(), Some("/new"));
+        assert_eq!(command_usage("/nope"), None);
+    }
+
+    #[test]
+    fn a_problem_block_has_a_title_details_and_steps() {
+        let s = problem_block("Title", &["why".to_string()], &["Do `x`".to_string()], OFF);
+        assert_eq!(s, "✗ Title\n  why\n  Try:\n    • Do `x`");
     }
 
     #[test]
