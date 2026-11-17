@@ -93,6 +93,41 @@ pub fn orchestration_score(multi_part_p: f64, sequential_p: f64) -> f64 {
     }
 }
 
+/// Jev's judgment of whether a request should be orchestrated: the two raw answers and
+/// the score derived from them. Keeping the raw `multi_part_p` next to the score is what
+/// lets a log show a 0.95 multi-part prompt that the sequence veto held back.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Orchestration {
+    /// What the trigger compares to the cutoff (see [`orchestration_score`]).
+    pub score: f64,
+    /// Jev's `multi_part` answer, before any veto.
+    pub multi_part_p: f64,
+    /// Jev's `sequential` answer.
+    pub sequential_p: f64,
+}
+
+impl Orchestration {
+    pub fn new(multi_part_p: f64, sequential_p: f64) -> Self {
+        Self { score: orchestration_score(multi_part_p, sequential_p), multi_part_p, sequential_p }
+    }
+
+    /// The sequence veto lowered the score: a multi-part request left on one thread.
+    pub fn vetoed(&self) -> bool {
+        self.score < self.multi_part_p
+    }
+
+    /// The fields of an orchestrate check's log row and response; all null when Jev gave
+    /// no answer (`None`).
+    pub fn fields(judgment: Option<&Self>) -> Value {
+        json!({
+            "orch_score": judgment.map(|j| j.score),
+            "multi_part_p": judgment.map(|j| j.multi_part_p),
+            "sequential_p": judgment.map(|j| j.sequential_p),
+            "vetoed": judgment.map(Self::vetoed),
+        })
+    }
+}
+
 /// Default of the gateway's `FABLE_THRESHOLD` environment variable (the one name users
 /// set; this constant says "top" because it is the top tier, whatever model fills it):
 /// `very_hard` probability at or above which a turn that would go to Opus goes to
@@ -335,21 +370,15 @@ impl Router {
         self.ts.noul_question(request_state(request, recent_context), very_hard_question()).await
     }
 
-    /// Orchestrate mode: probability that `request` is a large task that splits into
-    /// separate pieces of work (several files, layers or systems, each a step of its
-    /// own), so a planner can hand the pieces to cheaper workers. Questions, single
-    /// fixes and short follow-ups should score low.
-    pub async fn multi_part(&self, request: &str, recent_context: &str) -> Result<f64> {
-        self.ts.noul_question(request_state(request, recent_context), multi_part_question()).await
-    }
-
-    /// Orchestrate mode's trigger score, from ONE Jev request asking both `multi_part`
-    /// and `sequential` (see [`orchestration_score`]). Returns (score, multi_part, sequential).
-    pub async fn orchestration_p(&self, request: &str, recent_context: &str) -> Result<(f64, f64, f64)> {
+    /// Orchestrate mode's judgment, from ONE Jev request asking both `multi_part` (is
+    /// `request` a large task that splits into separate pieces of work, so a planner can
+    /// hand them to cheaper workers; questions, single fixes and short follow-ups score
+    /// low) and `sequential` (see [`orchestration_score`]). The only way to ask
+    /// `multi_part` for orchestration, so no caller can skip the sequence veto.
+    pub async fn orchestration_p(&self, request: &str, recent_context: &str) -> Result<Orchestration> {
         let questions = json!({ Q_MULTI_PART: multi_part_question(), Q_SEQUENTIAL: sequential_question() });
         let answers = self.ts.ask_many(request_state(request, recent_context), questions).await?;
-        let (multi, seq) = (decode_noul(&answers, Q_MULTI_PART)?, decode_noul(&answers, Q_SEQUENTIAL)?);
-        Ok((orchestration_score(multi, seq), multi, seq))
+        Ok(Orchestration::new(decode_noul(&answers, Q_MULTI_PART)?, decode_noul(&answers, Q_SEQUENTIAL)?))
     }
 
     /// Outcome signal: probability that `request` reacts to the previous answer as
@@ -679,16 +708,15 @@ fn decode_provider_want(answers: &Value, request: &str, with_previous: bool) -> 
     let security_p = decode_noul(answers, Q_SECURITY)?;
     let edit_p = decode_noul(answers, Q_EDIT)?;
     let continues_p = decode_noul(answers, Q_CONTINUES)?;
-    let multi_part_raw = decode_noul(answers, Q_MULTI_PART)?;
-    let sequential_p = decode_noul(answers, Q_SEQUENTIAL)?;
-    let multi_part_p = orchestration_score(multi_part_raw, sequential_p);
+    let orchestration = Orchestration::new(decode_noul(answers, Q_MULTI_PART)?, decode_noul(answers, Q_SEQUENTIAL)?);
+    let multi_part_p = orchestration.score;
     let correction_p = if with_previous { Some(decode_noul(answers, Q_CORRECTION)?) } else { None };
     let security_keywords = security_level(request);
     let signals = json!({
         "task": task.as_str(), "task_confidence": task_answer.confidence,
         "very_hard_p": very_hard_p, "security_p": security_p, "edit_p": edit_p,
-        "continues_p": continues_p, "multi_part_p": multi_part_p, "multi_part_raw_p": multi_part_raw,
-        "sequential_p": sequential_p, "correction_p": correction_p,
+        "continues_p": continues_p, "multi_part_p": multi_part_p, "multi_part_raw_p": orchestration.multi_part_p,
+        "sequential_p": orchestration.sequential_p, "correction_p": correction_p,
         "security": format!("{security_keywords:?}").to_lowercase(),
     });
     Ok(ProviderWant {
@@ -1056,6 +1084,47 @@ mod tests {
         assert_eq!(questions["multi_part"], multi_part_question(), "the batch sends the shared definition");
         assert!(!questions.contains_key("is_correction"));
         assert!(seen[0]["state"].get("previous_request").is_none());
+    }
+
+    /// A multi-part request that is also a sequence: the veto holds it back.
+    fn multi_part_but_sequential(req: &Value) -> (u16, String) {
+        let mut answers = serde_json::Map::new();
+        for name in req["questions"].as_object().unwrap().keys() {
+            let p = match name.as_str() {
+                "multi_part" => 0.95,
+                "sequential" => 0.9,
+                _ => 0.1,
+            };
+            answers.insert(name.clone(), json!({ "noul": p }));
+        }
+        (200, json!({ "answers": answers }).to_string())
+    }
+
+    #[tokio::test]
+    async fn orchestration_p_keeps_the_raw_multi_part_judgment_beside_the_vetoed_score() {
+        let (url, seen) = fake_jev(multi_part_but_sequential).await;
+        let j = router_at(&url, 2000).orchestration_p("do 1, then 2, then 3", "").await.expect("answered");
+        assert_eq!((j.multi_part_p, j.sequential_p), (0.95, 0.9));
+        assert_eq!(j.score, VETOED_SCORE, "the score is what the veto left");
+        assert!(j.vetoed());
+        let fields = Orchestration::fields(Some(&j));
+        assert_eq!(fields["multi_part_p"], 0.95, "the log keeps the raw judgment, not the vetoed score");
+        assert_eq!(fields["orch_score"], VETOED_SCORE);
+        assert_eq!((fields["sequential_p"].clone(), fields["vetoed"].clone()), (json!(0.9), json!(true)));
+        assert_eq!(seen.lock().unwrap().len(), 1, "one request carries both questions");
+    }
+
+    #[test]
+    fn a_parallel_request_is_not_vetoed_and_no_answer_logs_nulls() {
+        let j = Orchestration::new(0.9, 0.2);
+        assert_eq!((j.score, j.vetoed()), (0.9, false));
+        assert_eq!(Orchestration::fields(Some(&j))["vetoed"], false);
+        // A multi-part score already below the veto cap is not "vetoed": nothing was lowered.
+        assert!(!Orchestration::new(0.1, 0.99).vetoed());
+        let none = Orchestration::fields(None);
+        for key in ["orch_score", "multi_part_p", "sequential_p", "vetoed"] {
+            assert!(none[key].is_null(), "{key}");
+        }
     }
 
     #[test]
