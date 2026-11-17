@@ -671,6 +671,23 @@ impl Engine {
     pub fn resume(&mut self) -> Result<handoff::SessionInfo, ResumeError> {
         let state = self.persist.as_ref().ok_or(ResumeError::Disabled)?;
         let (path, saved) = handoff::load_latest(state, &self.dir, (self.now)(), self.session_file.as_deref())?;
+        Ok(self.adopt(path, saved))
+    }
+
+    /// The saved sessions of this folder that `/resume` can pick up, newest first, without
+    /// the one that is running.
+    pub fn resumable(&self) -> Result<Vec<handoff::SessionEntry>, ResumeError> {
+        let state = self.persist.as_ref().ok_or(ResumeError::Disabled)?;
+        Ok(handoff::list_sessions(state, &self.dir, (self.now)(), self.session_file.as_deref()))
+    }
+
+    /// Resume the session saved in `path`, one of [`Engine::resumable`].
+    pub fn resume_from(&mut self, path: &std::path::Path) -> Result<handoff::SessionInfo, ResumeError> {
+        let saved = handoff::load_path(&self.dir, path)?;
+        Ok(self.adopt(path.to_path_buf(), saved))
+    }
+
+    fn adopt(&mut self, path: std::path::PathBuf, saved: handoff::SavedSession) -> handoff::SessionInfo {
         self.session_file = Some(path);
         let info = saved.info();
         self.previous = saved.sessions.last_answered().map(|(p, r)| (p.to_string(), r.to_string()));
@@ -679,7 +696,7 @@ impl Engine {
         self.routing.current = saved.current;
         self.last_context_tokens = 0;
         self.last_changes = None;
-        Ok(info)
+        info
     }
 
     /// The text of `/providers`.
@@ -2525,6 +2542,35 @@ mod tests {
         // With only two sessions, the running one is always skipped, so it alternates.
         r.engine.resume().unwrap();
         assert_eq!(r.engine.session_path(), Some(recent.as_path()));
+    }
+
+    #[tokio::test]
+    async fn the_resume_list_is_newest_first_named_by_the_first_message_and_any_can_be_picked() {
+        let (repo, state) = (Repo::new("persist-list", false), StateDir::new("persist-list"));
+        session_of(&repo, &state, &["fix the parser", "and its tests"], NOW).await;
+        session_of(&repo, &state, &["rename the crate"], NOW + 1000).await;
+        let mut r = persisting(&repo, &state, &[Claude]);
+        r.clock.store(NOW + 2000, Ordering::SeqCst);
+        let list = r.engine.resumable().unwrap();
+        let shown: Vec<_> = list.iter().map(|e| (e.title.as_str(), e.info.turns)).collect();
+        assert_eq!(shown, vec![("rename the crate", 1), ("fix the parser", 2)]);
+        // The older one, not the newest, is taken; and it is continued in place.
+        let info = r.engine.resume_from(&list[1].path).unwrap();
+        assert_eq!(info.turns, 2);
+        assert_eq!(r.engine.session_path(), Some(list[1].path.as_path()));
+        // The running session is not offered again.
+        let after: Vec<_> = r.engine.resumable().unwrap().iter().map(|e| e.title.clone()).collect();
+        assert_eq!(after, vec!["rename the crate".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn the_resume_list_leaves_out_other_folders_and_missing_files_fail_cleanly() {
+        let (repo, other, state) = (Repo::new("persist-list-a", false), Repo::new("persist-list-b", false), StateDir::new("persist-list-ab"));
+        session_of(&other, &state, &["someone else's work"], NOW).await;
+        let mut r = persisting(&repo, &state, &[Claude]);
+        assert!(r.engine.resumable().unwrap().is_empty());
+        let gone = state.0.join("sessions").join("nothing.json");
+        assert_eq!(r.engine.resume_from(&gone).unwrap_err(), ResumeError::NotFound);
     }
 
     #[tokio::test]

@@ -144,6 +144,11 @@ impl Sessions {
         self.log.len()
     }
 
+    /// What the person first asked, one line: the name of the session in a list.
+    pub fn first_prompt(&self) -> Option<String> {
+        self.log.iter().map(|r| r.prompt.trim()).find(|p| !p.is_empty()).map(|p| p.split_whitespace().collect::<Vec<_>>().join(" "))
+    }
+
     /// Providers that ran a turn, in the order they first appeared.
     pub fn providers_used(&self) -> Vec<ProviderId> {
         let mut out: Vec<ProviderId> = Vec::new();
@@ -503,6 +508,15 @@ impl SavedSession {
     }
 }
 
+/// One saved session as the `/resume` list shows it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SessionEntry {
+    pub path: PathBuf,
+    pub info: SessionInfo,
+    /// What the person first asked.
+    pub title: String,
+}
+
 /// The project folder as it is keyed on disk: canonical when it can be.
 pub fn project_key(dir: &Path) -> String {
     std::fs::canonicalize(dir).unwrap_or_else(|_| dir.to_path_buf()).to_string_lossy().into_owned()
@@ -610,6 +624,28 @@ pub fn load_latest(
         }
     }
     best.ok_or(broken.unwrap_or(ResumeError::NotFound))
+}
+
+/// Every usable saved session of `project_dir` other than `current`, newest first: the
+/// list `/resume` offers. Expired, empty, damaged and other projects' files are left out.
+pub fn list_sessions(state_dir: &Path, project_dir: &Path, now_ms: u64, current: Option<&Path>) -> Vec<SessionEntry> {
+    let mut found: Vec<(u64, SessionEntry)> = session_files(state_dir, project_dir)
+        .into_iter()
+        .filter(|p| Some(p.as_path()) != current)
+        .filter_map(|path| {
+            let saved = read_session(&path, project_dir).ok().filter(|s| !s.expired(now_ms) && s.sessions.turns() > 0)?;
+            let title = saved.sessions.first_prompt().unwrap_or_else(|| "(no message)".to_string());
+            Some((saved.saved_ms, SessionEntry { info: saved.info(), title, path }))
+        })
+        .collect();
+    // Equal times (a coarse clock): the later file name is the newer session.
+    found.sort_by(|(a, x), (b, y)| (b, &y.path).cmp(&(a, &x.path)));
+    found.into_iter().map(|(_, e)| e).collect()
+}
+
+/// Load one session file of the project, as chosen from [`list_sessions`].
+pub fn load_path(project_dir: &Path, path: &Path) -> Result<SavedSession, ResumeError> {
+    read_session(path, project_dir)
 }
 
 /// Keep at most [`SAVED_KEEP`] sessions of the project: delete the oldest, never `current`.

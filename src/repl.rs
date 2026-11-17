@@ -17,6 +17,7 @@ use crate::doctor;
 use crate::handoff::ResumeError;
 use crate::log;
 use crate::permissions::{self, PermissionsCmd};
+use crate::picker;
 use crate::routing::Pin as ModelPin;
 use crate::terminal;
 use crate::turn::{Cancel, Engine, TurnReport, TurnStatus};
@@ -317,7 +318,7 @@ impl Repl {
             Command::Config => self.page_out(&self.config_text()),
             Command::TerminalSetup { install } => self.terminal_setup(install, io),
             Command::Shell(command) => self.shell(&command),
-            Command::Resume => self.resume(),
+            Command::Resume(query) => self.resume(query.as_deref()),
             Command::Permissions(cmd) => self.permissions(cmd),
             Command::Diff(path) => self.diff(path.as_deref()),
             Command::Undo => self.undo(io).await,
@@ -483,19 +484,67 @@ impl Repl {
         }
     }
 
-    fn resume(&mut self) {
+    /// `/resume [number | words]`: continue one of this folder's saved sessions. With
+    /// several to choose from, a terminal gets the list to pick from; any other output gets
+    /// it numbered, and `/resume 2` takes one.
+    fn resume(&mut self, query: Option<&str>) {
         let style = self.out_style();
-        match self.engine.resume() {
+        let all = match self.engine.resumable() {
+            Ok(all) => all,
+            Err(e) => return self.resume_failed(&e),
+        };
+        if all.is_empty() {
+            return self.resume_failed(&ResumeError::NotFound);
+        }
+        let now = self.now();
+        let candidates = match query.map(|q| (q, q.parse::<usize>())) {
+            Some((_, Ok(n))) => match n.checked_sub(1).and_then(|i| all.get(i)) {
+                Some(one) => vec![one.clone()],
+                None => {
+                    let text = format!("There is no session {n}; there are {}.", all.len());
+                    return self.console.out(&format!("  {}", style.dim(&text)));
+                }
+            },
+            Some((words, Err(_))) => {
+                let found: Vec<_> = all.iter().filter(|e| picker::matches(e, words)).cloned().collect();
+                if found.is_empty() {
+                    return self.console.out(&format!("  {}", style.dim(&format!("No saved session matches \"{words}\"."))));
+                }
+                found
+            }
+            None => all,
+        };
+        let chosen = if candidates.len() == 1 {
+            Some(0)
+        } else if self.paging && std::io::IsTerminal::is_terminal(&std::io::stdin()) {
+            picker::run(candidates.clone(), now, style, terminal::rows(), terminal::width())
+        } else {
+            let mut lines = picker::numbered(&candidates, now, terminal::width(), style);
+            lines.push(style.dim("  Resume one with /resume <number>, or narrow the list with /resume <words>."));
+            self.console.out(&lines.join("\n"));
+            return;
+        };
+        let Some(entry) = chosen.and_then(|i| candidates.get(i)) else {
+            return self.console.out(&format!("  {}", style.dim("Resume cancelled.")));
+        };
+        match self.engine.resume_from(&entry.path) {
             Ok(info) => {
                 self.last_summary = None;
                 self.log.clear();
                 self.carry.clear();
                 self.console.out(&views::resumed_line(&info, self.now(), style));
             }
-            Err(e @ (ResumeError::NotFound | ResumeError::Disabled)) => {
+            Err(e) => self.resume_failed(&e),
+        }
+    }
+
+    fn resume_failed(&self, e: &ResumeError) {
+        let style = self.out_style();
+        match e {
+            ResumeError::NotFound | ResumeError::Disabled => {
                 self.console.out(&format!("  {}", style.dim(&format!("Nothing to resume: {e}"))));
             }
-            Err(e) => {
+            _ => {
                 let steps = ["Start fresh with `/new`".to_string()];
                 self.console.out(&uifmt::problem_block("The saved session can't be read", &[e.to_string()], &steps, style));
             }

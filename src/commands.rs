@@ -53,7 +53,7 @@ pub enum Command {
     /// `/undo`: put back what the last turn changed.
     Undo,
     /// `/resume`: pick up the saved session of this folder.
-    Resume,
+    Resume(Option<String>),
     /// `/permissions [allow <rule> | remove <rule> | dir <path>]`.
     Permissions(PermissionsCmd),
     /// `/clear`: clear the screen and start a fresh session.
@@ -156,7 +156,7 @@ pub fn parse(line: &str) -> Command {
     match head {
         "/quit" | "/exit" => Command::Quit,
         "/new" => Command::New,
-        "/help" | "/status" | "/doctor" | "/undo" | "/resume" | "/clear" | "/context" | "/cost" | "/usage" | "/why" | "/copy" | "/edit"
+        "/help" | "/status" | "/doctor" | "/undo" | "/clear" | "/context" | "/cost" | "/usage" | "/why" | "/copy" | "/edit"
         | "/init" | "/memory" | "/config"
             if arg.is_some() =>
         {
@@ -183,7 +183,7 @@ pub fn parse(line: &str) -> Command {
         "/status" => Command::Status,
         "/doctor" => Command::Doctor,
         "/undo" => Command::Undo,
-        "/resume" => Command::Resume,
+        "/resume" => Command::Resume(rest()),
         "/diff" => {
             // The rest of the line is one path, so a name with spaces works.
             let path = line[head.len()..].trim();
@@ -335,7 +335,8 @@ mod tests {
         assert_eq!(parse("/status"), Command::Status);
         assert_eq!(parse("/doctor"), Command::Doctor);
         assert_eq!(parse("/undo"), Command::Undo);
-        assert_eq!(parse("/resume"), Command::Resume);
+        assert_eq!(parse("/resume"), Command::Resume(None));
+        assert_eq!(parse("/resume fix parser"), Command::Resume(Some("fix parser".into())));
         assert_eq!(parse("/HELP"), Command::Help, "commands are not case sensitive");
         assert_eq!(parse("/help me"), Command::Invalid("usage: /help".into()));
         assert_eq!(parse("/undo now"), Command::Invalid("usage: /undo".into()));
