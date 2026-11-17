@@ -125,8 +125,9 @@ struct Inner {
     cursor_hidden: bool,
     /// The terminal itself, when there is one to ask; `None` in tests and pipes.
     screen: Option<Box<dyn Screen>>,
-    /// Typed keys are not echoed while the status line is up.
-    echo_off: bool,
+    /// Typed keys are not echoed while the status line is up; this is what the terminal had
+    /// before the turn (`None`: not a terminal, or no turn running), put back at the end.
+    echo_before: Option<bool>,
     /// Notices that arrived while the user was at the prompt, printed at the next input.
     deferred: Vec<String>,
     /// A failure whose "→ trying X" part is not known until the next route is chosen.
@@ -155,7 +156,7 @@ impl Console {
             asking: None,
             cursor_hidden: false,
             screen: None,
-            echo_off: false,
+            echo_before: None,
             deferred: Vec::new(),
             pending: None,
             no_route_task: None,
@@ -392,8 +393,12 @@ impl Inner {
         }
         self.live = Some(Live { label: "routing".into(), activity: None, started: Instant::now(), drawn: false });
         if let Some(screen) = &self.screen {
-            screen.set_echo(false);
-            self.echo_off = true;
+            // Remember what the terminal had, so `end` puts back exactly that: a person who
+            // runs with echo already off must not find it switched on.
+            self.echo_before = screen.echo();
+            if self.echo_before == Some(true) {
+                screen.set_echo(false);
+            }
         }
         self.refresh();
     }
@@ -407,8 +412,8 @@ impl Inner {
             terminal::note_cursor_hidden(false);
             let _ = self.err.write_all(uifmt::show_cursor().as_bytes());
         }
-        if std::mem::take(&mut self.echo_off) {
-            if let Some(screen) = &self.screen {
+        if let (Some(was_on), Some(screen)) = (self.echo_before.take(), &self.screen) {
+            if was_on {
                 screen.set_echo(true);
             }
         }
@@ -913,12 +918,20 @@ mod tests {
     #[derive(Clone)]
     struct FakeScreen {
         cols: Arc<AtomicUsize>,
+        /// The echo switches made, in order.
         echo: Arc<Mutex<Vec<bool>>>,
+        /// Whether the terminal echoes now (it follows the switches).
+        echoing: Arc<Mutex<Option<bool>>>,
     }
 
     impl FakeScreen {
         fn new(cols: usize) -> Self {
-            Self { cols: Arc::new(AtomicUsize::new(cols)), echo: Arc::default() }
+            Self { cols: Arc::new(AtomicUsize::new(cols)), echo: Arc::default(), echoing: Arc::new(Mutex::new(Some(true))) }
+        }
+
+        fn starting_with_echo(self, echo: Option<bool>) -> Self {
+            *self.echoing.lock().unwrap() = echo;
+            self
         }
     }
 
@@ -926,8 +939,12 @@ mod tests {
         fn columns(&self) -> Option<usize> {
             Some(self.cols.load(Ordering::SeqCst))
         }
+        fn echo(&self) -> Option<bool> {
+            *self.echoing.lock().unwrap()
+        }
         fn set_echo(&self, on: bool) {
             self.echo.lock().unwrap().push(on);
+            *self.echoing.lock().unwrap() = Some(on);
         }
     }
 
@@ -993,6 +1010,29 @@ mod tests {
         plain.begin_turn();
         plain.end_turn();
         assert!(quiet.echo.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn the_end_of_a_turn_restores_the_echo_the_terminal_had_not_always_on() {
+        // Echo was already off (a `stty -echo` shell, a password-style wrapper): it stays off,
+        // and the turn never touches it.
+        let (c, _, err) = console(true, Style::off(), true);
+        let off = FakeScreen::new(80).starting_with_echo(Some(false));
+        let c = c.with_screen(Box::new(off.clone()));
+        c.begin_turn();
+        c.end_turn();
+        assert!(off.echo.lock().unwrap().is_empty(), "no switch at all: {:?}", off.echo.lock().unwrap());
+        assert_eq!(off.echo(), Some(false));
+        drop(err);
+
+        // Not a terminal: nothing to switch, nothing to restore.
+        let (c, _, _) = console(true, Style::off(), true);
+        let none = FakeScreen::new(80).starting_with_echo(None);
+        let c = c.with_screen(Box::new(none.clone()));
+        c.begin_turn();
+        c.end_turn();
+        assert!(none.echo.lock().unwrap().is_empty());
+        assert_eq!(none.echo(), None);
     }
 
     #[test]

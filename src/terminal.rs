@@ -80,6 +80,9 @@ pub fn width() -> usize {
 pub trait Screen: Send {
     /// Live window columns, when the OS says; `None` leaves the caller its own fallback.
     fn columns(&self) -> Option<usize>;
+    /// Whether typed keys are echoed right now; `None` when stdin is not a terminal (so there
+    /// is nothing to switch and nothing to restore).
+    fn echo(&self) -> Option<bool>;
     fn set_echo(&self, on: bool);
 }
 
@@ -91,9 +94,28 @@ impl Screen for StdScreen {
         ioctl_size().map(|(cols, _)| cols).filter(|c| *c > 0)
     }
 
+    fn echo(&self) -> Option<bool> {
+        stdin_echo()
+    }
+
     fn set_echo(&self, on: bool) {
         set_stdin_echo(on);
     }
+}
+
+#[cfg(unix)]
+fn stdin_echo() -> Option<bool> {
+    // SAFETY: `termios` is plain data; `tcgetattr` fills it and fails (-1) when stdin is not
+    // a terminal, in which case there is no state to report.
+    unsafe {
+        let mut t: libc::termios = std::mem::zeroed();
+        (libc::tcgetattr(libc::STDIN_FILENO, &mut t) == 0).then_some(t.c_lflag & libc::ECHO != 0)
+    }
+}
+
+#[cfg(not(unix))]
+fn stdin_echo() -> Option<bool> {
+    None
 }
 
 #[cfg(unix)]
