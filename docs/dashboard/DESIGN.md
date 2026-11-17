@@ -1,6 +1,6 @@
 # Flashboard (the Jev usage dashboard): design
 
-Status: design for v1. The user's decisions are recorded in section 1a; the questions still open are in section 17. Normative for every task in `TASKS.md`.
+Status: design for v1. The user's decisions are recorded in section 1a; section 17 has no open user question. Normative for every task in `TASKS.md`.
 Date: 2026-11-17. Lead and reviewer: Fable 5.2. Implementation: parallel workers.
 
 Words used precisely here: **MUST / MUST NOT** are review-blocking rules. **Verified** means
@@ -50,7 +50,29 @@ These answer the open questions and override any earlier default in this documen
   live-region announcements of threshold changes that are not spammy, status never by colour
   alone, target sizes, zoom to 200 % without loss), automated accessibility checks in the test
   plan, and a manual screen-reader pass in the definition of done. Sections 9, 10 and 11.5 and
-  tasks T07, T09, T10 and T13 implement this.
+  tasks T07, T09, T10, T13 and T14 implement this.
+- **Type safety ("strictest codebase ever"):** every type is defined; nothing is typed
+  loosely, in either language, in hand-written **or generated** code.
+  *TypeScript*: no `any`, `unknown` or `never` written anywhere; no type assertion (`x as T`,
+  `<T>x`; `as const` and `satisfies` are not assertions and are allowed); no non-null `!`; no
+  `@ts-ignore`, `@ts-expect-error` or `@ts-nocheck`; no `Function`, `Object` or `{}` types;
+  no `catch` binding (so no `unknown` error value ever exists: failures arrive as typed
+  `Outcome` values from the IPC layer and the UI never catches); exhaustiveness through
+  `satisfies Record<Union, …>` tables and the switch-exhaustiveness lint, never a `never`
+  check; every Svelte component is `lang="ts"` with typed props; all IPC types are generated
+  from Rust. *Rust* (the three app crates): no `serde_json::Value` or `json!` outside tests
+  (typed structs and enums at every boundary), no `unwrap`/`expect` outside tests,
+  `#![forbid(unsafe_code)]` in all three crates, strict clippy in CI. Sections 7.3, 7.4, 10
+  and 11.1 specify it; T00 and T12 enforce it.
+- **WebDriver end-to-end tests:** the user installs the driver themselves
+  (`sudo pacman -S webkitgtk-6.0`; that Arch package ships `/usr/bin/WebKitWebDriver`,
+  verified against the package file list; `webkit2gtk-4.1` ships no binary). The real-app
+  WebDriver stage is therefore **in scope and required**: it must pass in `ci.sh --release`.
+  Until the driver is installed the stage reports **NOT RUN**, which is never a pass and
+  never satisfies the definition of done (11.4, 11.5).
+- **Screen-reader pass:** the user installs Orca (`sudo pacman -S orca`) and takes part in
+  the manual pass: the lead writes the script of checks per screen and state, the user
+  confirms what Orca announces. That pass is part of the definition of done (11.5).
 - **Process rule:** every task is validated by the lead with its own tests and reviews, and review rounds repeat until a full round finds nothing. A task is not done while any review finding is open.
 
 ## 2. Goals, non-goals, user stories
@@ -125,8 +147,17 @@ These answer the open questions and override any earlier default in this documen
 - The spike ran with the shell's full environment and working directory. Running under the
   scrubbed environment and empty working directory of section 8.6 is **assumed** to work and
   is checked once, by hand, in T04 (this call is free and sends no prompt).
-- `codex` and `claude` on this machine are mise command-wrappers (small ELF launchers in
-  `~/.local/share/mise/command-wrappers/bin`) that start the installed tool.
+- `codex` and `claude` on this machine are mise command-wrappers: symbolic links to
+  `/usr/bin/mise` in `~/.local/share/mise/command-wrappers/bin` (first on `PATH`). The
+  system mise configuration declares both tools `lazy = true, auto_update = "4h"` and routes
+  them through `omarchy-agent-account-exec`, which picks the active subscription's home
+  (`CODEX_HOME`, `CLAUDE_CONFIG_DIR`) and then starts the real binary under
+  `~/.local/share/mise/installs/<tool>/<version>/`. So **running either name can start a
+  download** (first-run install, or the four-hourly self-update), and bypassing the wrapper
+  could read the wrong account. Section 8.6 handles both. mise maps settings to environment
+  variables (verified: `MISE_OFFLINE=1`, `MISE_AUTO_INSTALL=false`,
+  `MISE_EXEC_AUTO_INSTALL=false`, `MISE_NOT_FOUND_AUTO_INSTALL=false` are reported back by
+  `mise settings get`, mise 2026.11.8).
 - `account/usage/read` returns `{"summary":{"lifetimeTokens":0,"peakDailyTokens":0,
   "longestRunningTurnSec":null,"currentStreakDays":0,"longestStreakDays":0},
   "dailyUsageBuckets":[],"threadUsage":null}`. Not needed for v1.
@@ -136,7 +167,10 @@ These answer the open questions and override any earlier default in this documen
   turns run by that same server. The dashboard runs no turns, so it polls with a short-lived
   process instead of keeping a server resident.
 - Protocol schema: `codex app-server generate-json-schema --out DIR`.
-- `codex login status` prints `Logged in using ChatGPT` (already used by the engine's probe).
+- `codex login status` prints `Logged in using ChatGPT` on **stderr** (stdout is empty) and
+  exits 0. `claude auth status` prints a 16-line JSON object on stdout whose keys include
+  `loggedIn`, `planTier`, `subscriptionType` and also `email`, `orgId`, `orgName` and
+  `configDirectory` (key names checked; values not recorded).
 
 ### 3.2 Claude gateway log (verified)
 - `~/.local/state/jev-router/usage.jsonl`: one JSON object per line, about 2.8 KB per line
@@ -160,14 +194,17 @@ These answer the open questions and override any earlier default in this documen
   |---|---|---|
   | `5h-utilization`, `7d-utilization` | `"0.5"`, `"0.37"` | fraction used, 0..1 |
   | `5h-reset`, `7d-reset` | `"1794898800"` | epoch seconds |
-  | `5h-status`, `7d-status` | `"allowed"`, `"allowed_warning"` | window status |
+  | `5h-status`, `7d-status` | `"allowed"`, `"allowed_warning"`, `"rejected"` | window status |
   | `5h-surpassed-threshold` | `"0.9"` (only with `allowed_warning`) | not used in v1 |
   | `status`, `reset` | `"allowed"`, `"1794898800"` | overall; not used in v1 |
   | `fallback`, `upgrade-paths` | `"available"`, `"upgrade_plan,overage"` | not used in v1 |
   | `representative-claim` | `"five_hour"` | which window binds |
   | `fallback-percentage` | `"0.5"` | not used in v1 |
   | `overage-status`, `overage-disabled-reason` | `"rejected"`, `"org_level_disabled"` | not used in v1 |
-  | `7d_oi-utilization/-reset/-status` | on 45 of 10 528 rows, never on consecutive runs | an extra window; meaning unknown; **present only on some rows** |
+  | `slow-offer`, `slow-max-wait`, `slow-retry-after` | on 3 rows | not used in v1 (no attribute the key rule of 6.1 reads) |
+| `7d_oi-utilization/-reset/-status` | on 45 of 10 528 rows (88 of 11 051 at the second check), never on consecutive runs | an extra window; meaning unknown; **present only on some rows** |
+
+  A `retry-after` key without the prefix also occurs (3 rows) and is ignored.
 
 - Other top-level keys in a row include `cwd`, `project`, `session`, `prompt_id`,
   `message_id`, `request_id`, `model`, `params`, `usage`, `error`, `tools_called`. These are
@@ -204,17 +241,19 @@ github.com/steipete/CodexBar docs/xai.md.
   Playwright does not support Arch for WebKit.
 - NOT installed, installable without root by `scripts/ci.sh --bootstrap`: `cargo-deny`,
   `cargo-audit`, `cargo-llvm-cov`, `cargo-fuzz` (plus a nightly toolchain), `tauri-driver`.
-- NOT installed and needing `pacman` (root, so a user decision, section 17): `WebKitWebDriver`
-  (not in the Arch `webkit2gtk-4.1` package) and the `orca` screen reader. Section 11
-  handles each.
+- NOT installed and needing `pacman` (root; the user installs both, 1a): `WebKitWebDriver`
+  (shipped by Arch's `webkitgtk-6.0`, not by `webkit2gtk-4.1`; both packages are WebKitGTK
+  2.54.1) and the `orca` screen reader. `dbus-run-session` and `desktop-file-validate` are
+  installed. Section 11 handles each.
 
 ### 3.5 Incident during the spike (disclosed)
 Running `agy --help` under a 15 s timeout started a mise download of `antigravity-cli@1.5.9`
 (the brief warned only about `grok`; `agy` is the same kind of lazy shim). The timeout killed
 it at about 7 of 99 MB. It left an empty directory
-`~/.local/share/mise/installs/antigravity-cli/1.5.9`, which was not removed. Rule added to
-the design: **never execute `agy` or `grok`; gate every subprocess on the engine's
-availability probe, which decides from the filesystem** (section 8.6).
+`~/.local/share/mise/installs/antigravity-cli/1.5.9`, which the lead has since removed. Rule
+added to the design: **never execute `agy`, `grok` or `gemini`; never start `codex` or
+`claude` unless a real install exists on disk; and switch mise's installers off in every
+child's environment** (section 8.6).
 
 ## 4. Domain model (normative)
 
@@ -253,8 +292,10 @@ impl Money { pub fn parse_decimal(s: &str) -> Option<Self>; pub fn micros(self) 
 
 // label.rs
 /// The ONLY free-form string in the domain. 1..=40 bytes of [a-z0-9_]. Used for plan names
-/// ("max_5x", "free") and unknown window names ("7d_oi"). Too short and too restricted to
-/// carry a prompt, a key, an e-mail or a path.
+/// ("max_5x", "free") and unknown window names ("7d_oi"). It cannot hold a prompt, an
+/// e-mail, a path or a URL (no space, `@`, `/`, `.` or upper case). It CAN hold 40
+/// characters of lower-case identifier, so the rule that protects identity is positional:
+/// a `Label` is only ever read from a field that names a plan or a window (8.3).
 #[derive(Clone, Eq, PartialEq, Hash, Debug)]
 pub struct Label(Box<str>);
 impl Label { pub fn parse(s: &str) -> Option<Self>; pub fn as_str(&self) -> &str; }
@@ -275,7 +316,7 @@ not depend on the engine.
 ```rust
 // meter.rs
 #[derive(Clone, Eq, PartialEq, Hash, Debug)]                                              // IPC
-pub enum WindowKind { FiveHour, SevenDay, Monthly, Rolling { minutes: u32 }, Named(Label) }
+pub enum WindowKind { FiveHour, SevenDay, Monthly, Rolling { minutes: u32 }, Named { label: Label } }
 impl WindowKind { pub fn from_minutes(m: u64) -> Self; }   // 300, 10080, 43200 map to the named kinds
 
 #[derive(Clone, Eq, PartialEq, Hash, Debug)]
@@ -285,6 +326,8 @@ impl MeterId {
     pub fn key(&self) -> String;
     pub fn parse_key(s: &str) -> Option<Self>;             // exact inverse of key()
 }
+// MeterId serialises as its key (hand-written Serialize/Deserialize through key()/parse_key()),
+// so it is the type of every `id`/`meter_id` IPC field and no `String` field is needed.
 
 #[derive(Copy, Clone, Eq, PartialEq, Hash, Debug)]                                        // IPC
 pub enum LimitStatus { Allowed, Warning, Rejected, Unknown }
@@ -327,13 +370,17 @@ pub enum Usage {
     Unsupported,
 }
 #[derive(Copy, Clone, Eq, PartialEq, Debug)]                                              // IPC
-pub enum StaleCause { Quiet, Failing(Unavailable) }  // Quiet: passive source saw nothing new
+pub enum StaleCause { Quiet, Failing { reason: Unavailable } }  // Quiet: passive source saw nothing new
 #[derive(Copy, Clone, Eq, PartialEq, Debug)]                                              // IPC
 pub enum Unavailable { NotInstalled, NotLoggedIn, Offline, Timeout, RateLimited,
                        Unauthorized, ServerError, Protocol, Io, Internal }
 #[derive(Copy, Clone, Eq, PartialEq, Debug)]                                              // IPC
 pub enum Setup { UseGateway, AddDeepSeekKey }
 ```
+`Named` and `Failing` are struct variants because the IPC enums are internally tagged
+(7.4) and a tagged newtype variant does not serialise as `{kind, field}` (verified: with a
+string inside it is an error, with an enum inside it produces a wrong shape); the prose of
+this document writes `Named(x)` and `Failing(x)` for short.
 One concept, one representation: a missing CLI or a missing login is
 `Unavailable::NotInstalled`/`NotLoggedIn` (it follows backoff and keeps the last reading as
 `Stale`); `Setup` is only for a provider that has never been set up and has nothing to retry
@@ -347,7 +394,13 @@ is a pure function over what the service remembers **per provider** (the merge o
 (`SourceState { last_good: Option<Reading>, last_failure: Option<(UnixMillis, SourceError)>, attempted: bool }`).
 Rules: nothing attempted → `Pending`; a failure newer than `last_good` → `Stale{Failing}` when
 there is a reading, else `Unavailable`/`NotConfigured`/`Unsupported` from the error; a reading
-older than `fresh_for` with no newer failure → `Stale{Quiet}`. **Clock skew**: ages are
+older than `fresh_for` with no newer failure → `Stale{Quiet}`. Only
+`SourceError::Unavailable` is a failure: `NotConfigured` and `Unsupported` are answers, they
+are shown only while the provider has no reading and never displace one. A failure of a
+`Trigger::Manual` source (the live check) is never written to `last_failure` when the
+provider holds a reading: it is reported as `RefreshView.live_check_error` (7.4), so a failed
+check does not make the passive reading look broken. `fresh_for` is the
+`SourceDescriptor.fresh_for` of the source that produced `last_good`. **Clock skew**: ages are
 saturating differences, and the service clamps a reading's `observed_at` to `now` when it
 arrives from the future (a gateway row stamped ahead of the wall clock, or a clock set
 back), so a reading can never look fresh for longer than its policy and no sample is stored
@@ -356,7 +409,7 @@ with a future time.
 ### 4.4 Ports (traits core defines, io implements)
 ```rust
 // port.rs
-#[derive(Copy, Clone, Eq, PartialEq, Hash, Debug)]
+#[derive(Copy, Clone, Eq, PartialEq, Hash, Debug)]                                        // IPC
 pub enum SourceId { ClaudeGatewayLog, ClaudeLive, CodexAppServer, DeepSeekBalance,
                     GeminiNone, AntigravityNone, GrokNone }
 #[derive(Copy, Clone, Eq, PartialEq, Debug)]
@@ -370,10 +423,15 @@ pub enum Trigger {
     /// Fetch only when the user asks.
     Manual,
 }
-#[derive(Copy, Clone, Eq, PartialEq, Debug)] pub enum Cost { Free, SpendsQuota }          // IPC
+#[derive(Copy, Clone, Eq, PartialEq, Debug)] pub enum Cost { Free, SpendsQuota }
 #[derive(Copy, Clone, Debug)]
 pub struct SourceDescriptor { pub id: SourceId, pub provider: ProviderKey,
-                              pub trigger: Trigger, pub cost: Cost, pub timeout: Duration }
+                              pub trigger: Trigger, pub cost: Cost, pub timeout: Duration,
+                              /// How long a reading of this source counts as current (7.7).
+                              pub fresh_for: Duration,
+                              /// True when the source starts a CLI that needs a login: the
+                              /// service probes the login first when it is not known `Ready` (7.2).
+                              pub needs_login: bool }
 #[derive(Copy, Clone, Eq, PartialEq, Debug)]
 pub enum SourceError { NotConfigured(Setup), Unavailable(Unavailable), Unsupported }
 
@@ -395,13 +453,14 @@ pub trait HistoryStore: Send + Sync {
     fn load_alerts(&self) -> Result<AlertMemory, StoreError>;
     fn save_alerts(&self, memory: &AlertMemory) -> Result<(), StoreError>;
     fn prune(&self, now: UnixSeconds) -> Result<(), StoreError>;
+    fn stats(&self) -> Result<StoreStats, StoreError>;      // file bytes and sample count, for Diagnostics
 }
 pub trait SettingsStore: Send + Sync {
     fn load(&self) -> Settings;                              // defaults when missing or invalid
     fn save(&self, s: &Settings) -> Result<(), StoreError>;
 }
 /// MUST NOT block: an implementation hands the alert to its own worker and returns.
-pub trait Notifier: Send + Sync { fn notify(&self, alert: &Alert); }
+pub trait Notifier: Send + Sync { fn notify(&self, alert: &Alert, hour: HourCycle); }   // the service passes the current setting
 ```
 `HistoryStore` and `SettingsStore` are synchronous and do file IO; the service calls every
 method of both through `spawn_blocking`.
@@ -416,7 +475,7 @@ holds is dropped.
   an elapsed or absent meter. A balance meter is `Critical` when `usable` is false, else `Ok`.
 - `alerts::step(memory, provider, reading, now, settings) -> (AlertMemory, Vec<Alert>)`:
   section 7.6.
-- `summary::headline(&[ (ProviderKey, Usage) ], now, thresholds) -> Option<Headline>`: the
+- `summary::headline(&[ (ProviderKey, Usage) ], now, &Settings) -> Option<Headline>`: the
   window meter with the highest `used` among `Known` and non-elapsed `Stale` readings of
   enabled providers.
 - `history::should_store(last_stored, candidate) -> bool`, `history::downsample(points, max)`,
@@ -424,7 +483,8 @@ holds is dropped.
   `resets_at` into one mark per window instance: a new mark needs a jump of at least half the
   window length, or 1 hour for a window of unknown length; at most 64 marks),
   `history::gap_for(bucket) -> Duration` (`max(75 min, 2.5 x bucket)`: the longest hole the
-  chart bridges; 75 min is 2.5 x the longest polling interval).
+  chart bridges; 75 min is 2.5 x the longest polling interval, the same figure as the
+  longest `fresh_for`).
 - `text::*`: the only place tray and notification strings are built (section 9.9).
 - `settings::Settings::validated(raw) -> Settings`.
 
@@ -434,13 +494,16 @@ holds is dropped.
 | Single responsibility | One module, one reason to change: each `parse::*` knows one wire format; `assess` knows freshness; `alerts` knows thresholds; `tail` knows files; `store` knows SQL; `tray` knows the tray. |
 | Open/closed | New provider = new `UsageSource` + one registry line + one `ProviderKey` variant. The service, store, IPC and UI render from `Meter` generically. |
 | Liskov | Every `UsageSource` returns the same `Reading`/`SourceError`; the service never matches on `SourceId` to behave differently. Test: the service test-suite runs against a fake source and every real adapter driven by fixtures. |
-| Interface segregation | Four small ports in core (`UsageSource`, `HistoryStore`, `SettingsStore`, `Notifier`) plus `Clock`; three in io for its own IO seams (`WallTimer`, `EngineProbe`, `Jitter`). The UI gets one read model (`Snapshot`). |
+| Interface segregation | Four small ports in core (`UsageSource`, `HistoryStore`, `SettingsStore`, `Notifier`) plus `Clock`; three in io for its own IO seams (`WallTimer`, `LoginProbe`, `Jitter`). The UI gets one read model (`Snapshot`). |
 | Dependency inversion | `core` defines ports and depends on nothing but serde. `io` implements them. The Tauri shell wires them. Nothing in core or io knows Tauri exists. |
 
 DRY rules: one parser per wire format; one formatter per language with shared test vectors
 (`dashboard/fixtures/format-vectors.json`, consumed by Rust `text` tests and TS `format`
 tests); TypeScript IPC types are generated from Rust, never hand-written; engine facts
-(state dir, env file path, env parsing, availability probes) come from `jev_router::embed`.
+(state dir, env file path, env parsing, the Codex login-status rule, the login commands) come
+from `jev_router::embed`. One deliberate exception, for privacy: the dashboard has its own
+allow-list parser for `claude auth status` (5.1), because the engine's parser builds a
+generic JSON value of the whole output, e-mail included.
 
 ## 5. Repository and crate structure
 
@@ -488,6 +551,7 @@ Layout (ownership per task is in `TASKS.md`):
 ```
 Cargo.toml                         root manifest (+ workspace table)
 src/embed.rs                       engine facade for embedding apps (new, re-exports only)
+src/availability.rs                one word changes: `pub` on `parse_codex_login` (5.1)
 deny.toml                          cargo-deny policy (whole workspace)
 scripts/install.sh                 unchanged
 scripts/ci.sh                      one command that runs every gate (section 11)
@@ -501,45 +565,49 @@ dashboard/
   packaging/                       dev.jev.flashboard.desktop
   fuzz/                            cargo-fuzz targets (optional stage; excluded from the workspace)
   e2e/                             Playwright (mock IPC), the real-binary smoke test, and optional WebDriver tests
-  scripts/                         install.sh, measure-idle.sh
+  scripts/                         install.sh, measure-idle.sh, check-types.ts
   package.json, pnpm-lock.yaml, .npmrc, vite.config.ts, vitest.config.ts, playwright.config.ts, tsconfig.json
 ```
 
 ### 5.1 Engine facade: `jev_router::embed`
 A new module in the engine crate containing **re-exports only** (no logic), so the app's
-dependency on the engine is one named, reviewable surface, and the later chat window gets the
-rest through the same door:
+dependency on the engine is one named, reviewable surface. It exports exactly what v1 uses;
+the later chat window adds its own exports (`Runtime`, turn execution) through the same door:
 ```rust
 //! The engine surface an embedding application may use.
 pub use crate::backend::ProviderId;
-pub use crate::providers::{Runtime, ALL_PROVIDERS};
-pub use crate::availability::{probe_all, Availability, State as AvailabilityState};
-pub use crate::log::{state_dir, path_from_env};
+pub use crate::log::state_dir;
 pub use crate::envfile::{env_file_path, parse as parse_env};
-pub use crate::doctor::{install_hint, login_command};
+pub use crate::availability::parse_codex_login;      // pure: (exit ok, text) -> Option<bool>
+pub use crate::doctor::login_command;                // the one source of "codex login" etc.
 ```
 The dashboard crates MUST import engine items only through `jev_router::embed` (enforced by
-an architecture test). The engine's other code is not modified.
+an architecture test). The only other change to engine code is the word `pub` on
+`availability::parse_codex_login` (a pure function that keeps nothing); behaviour and tests
+of the engine are unchanged.
 
-What these engine functions really do (read from the source, and the reason for the honest
-limits in 8.3, 8.5 and 8.6):
-- `state_dir()` **creates** `~/.local/state/jev-router` when it is missing. Harmless (the
-  gateway would create the same directory) and, after `hardening::apply`, created 0700.
-- `path_from_env` returns a `String` and looks the variable up in the process environment,
-  then in the env file, which it reads whole into an ordinary `String`.
-- `probe_all()` probes all five engine providers: it runs `claude auth status` and
-  `codex login status` with the app's **own environment and working directory** (not the
-  scrubbed ones of 8.6) and captures their stdout and stderr; it parses the JSON of
-  `claude auth status` (which contains the account e-mail) and keeps `loggedIn` and the plan;
-  it reads `~/.codex/auth.json` and decodes the `id_token` claims to get the plan name; it
-  reads `~/.codex/models_cache.json` and `~/.gemini/settings.json`; it looks the provider keys
-  up through the env file. `Availability` carries free strings (`detail`, `models`, `plan`).
-  `EngineFacts::from_availability` keeps exactly two things per provider, the `State` and the
-  plan as a `Label`, and drops the rest before anything else can see it.
-- `claude` and `codex` are found through `PATH`. Under a mise command-wrapper for a tool that
-  is listed but not installed, running the status command would start mise's installer; the
-  probe kills it after 5 s. This is existing engine behaviour that the dashboard inherits,
-  which is why the dashboard re-probes rarely (7.2).
+`state_dir()` **creates** `~/.local/state/jev-router` when it is missing. Harmless (the
+gateway would create the same directory) and, after `hardening::apply`, created 0700.
+
+**What the dashboard deliberately does not call**, and why (read from `src/availability.rs`,
+`src/log.rs`, `src/envfile.rs` and observed on this machine):
+- `availability::probe_all()` probes all five engine providers. It runs `claude auth status`
+  and `codex login status` with the caller's **whole environment and working directory**;
+  its `kill_on_drop` reaches only the direct child, so a launcher's grandchild (a mise
+  installer) survives the 5 s cap; it turns the whole `claude auth status` output (e-mail,
+  org id and org name included, 3.1) into a generic JSON value; it reads
+  `~/.codex/auth.json` and decodes the `id_token` claims, reads `~/.codex/models_cache.json`
+  and `~/.gemini/settings.json`, checks `~/.gemini/oauth_creds.json`,
+  `~/.gemini/antigravity-cli` and `~/.grok`, and looks every provider key up through the env
+  file. None of that is acceptable for a resident app that promises 1a and 8.3.
+- `log::path_from_env` reads the whole env file into an ordinary `String`.
+
+Instead the dashboard has **its own narrow login probe** (`io::probe::CliProbe`, specified
+in 8.6) and its own zeroizing env-file reader (`io::envfile`), and takes only pure rules
+from the engine. The usage-log path is: the `JEV_USAGE_LOG` process variable, else that key
+in the env file (read by `io::envfile`, parsed by `embed::parse_env`), else
+`embed::state_dir()/usage.jsonl`: the same order as the engine's `path_from_env`, proven
+equal by a test over a temp home.
 
 Known cost: `jev-router` as a library pulls `axum` and `rustyline` into the app's build
 (unused code is dropped at link time). Splitting a lean `jev-engine` crate out of
@@ -548,19 +616,21 @@ Known cost: `jev-router` as a library pulls `axum` and `rustyline` into the app'
 ### 5.2 Module ownership
 ```
 jev-usage-core            jev-usage-io                     jev-dashboard (shell)
-  time quantity label       engine_bridge  (embed → core)    main      (wiring only)
+  time quantity label       engine_bridge  (embed → paths)   app       (wiring only; lib.rs lists modules, main.rs calls run)
   provider meter usage      clock          (SystemClock)     commands  (6 commands)
   port                      fsutil         (0600, atomic)    events    (emit snapshot)
   secret                    diag           (typed log)       tray      (menu + icon swap)
-  parse::claude_log         tail, watch    (file tail)       tray_icon (pure rasteriser)
-  parse::claude_event       proc           (subprocess)      notifier  (Notifier impl)
-  parse::codex              http           (the one client)  window    (create/hide/destroy)
-  parse::deepseek           secrets        (key loading)     autostart (XDG entry text)
-  assess alerts summary     sources::{claude_log, claude_live, codex, deepseek, placeholder}
-  history text settings     store          (SQLite)          hardening (umask, dumpable, panic hook)
-  view ipc                  settings_file                    bus       (the one D-Bus user: tray host)
-                            timer          (wall-clock timer) localtime (LocalTime impl)
-                            registry       (source list)     cli       (--hidden)
+  parse::claude_log         envfile        (zeroizing read)  tray_icon (pure rasteriser)
+  parse::claude_event       tail, watch    (file tail)       notifier  (Notifier impl)
+  parse::claude_auth        proc           (subprocess)      window    (create/hide/destroy)
+  parse::codex              probe          (login probe)     autostart (XDG entry text)
+  parse::deepseek           http           (the one client)  hardening (umask, dumpable, panic hook)
+  assess alerts summary     secrets        (key loading)     bus       (the one D-Bus user: tray host)
+  history text settings     sources::{claude_log, claude_live, codex, deepseek, placeholder}
+  view ipc                  store          (SQLite)          localtime (LocalTime impl)
+                            settings_file                    cli       (--hidden)
+                            timer          (wall-clock timer)
+                            registry       (source list)
                             service        (the one loop)
 ```
 
@@ -569,13 +639,14 @@ jev-usage-core            jev-usage-io                     jev-dashboard (shell)
 | source | trigger | cost | reads | never touches |
 |---|---|---|---|---|
 | `ClaudeGatewayLogSource` | signal: file change on `usage.jsonl` | free | `ts_ms` and the allow-listed `ratelimit` keys | every other key; `gateway.jsonl`, `turns.jsonl`, `history`, `sessions/` |
-| `ClaudeLiveSource` | manual, opt-in, off by default | **spends a tiny request** | `rate_limit_event` lines of one `claude -p` run | the answer text (discarded unparsed), `claude auth status` output |
-| `CodexAppServerSource` | interval 5 min visible / 15 min hidden | free | `account/rateLimits/read` result | `account/read`; `~/.codex/*` (the engine's probe does read two files there, 5.1) |
+| `ClaudeLiveSource` | manual, opt-in, off by default | **spends a tiny request** | `rate_limit_event` lines of one `claude -p` run | the answer text (discarded unparsed) |
+| `CodexAppServerSource` | interval 5 min visible / 15 min hidden | free | `account/rateLimits/read` result | `account/read`; any file under `~/.codex` |
 | `DeepSeekBalanceSource` | interval 10 min visible / 30 min hidden | free | `GET /user/balance` body | anything else on the network |
 | `PlaceholderSource` (Gemini, Antigravity, Grok) | never | free | nothing | everything (returns `Unsupported`) |
 
 ### 6.1 Claude gateway log
-- Path from `embed::path_from_env("JEV_USAGE_LOG", "usage.jsonl")`, resolved once at start;
+- Path from `engine_bridge::usage_log_path()` (5.1: the engine's rule, re-stated without its
+  file reader), resolved once at start;
   previous generation at `<path>.1`. Opened read-only. The source never creates, truncates,
   locks or writes either file.
 - **Row order**: rows are not in `ts_ms` order (3.2). "Newest" always means the greatest
@@ -615,7 +686,7 @@ jev-usage-core            jev-usage-io                     jev-dashboard (shell)
   unparsable `reset` leaves `resets_at: None`.
 - Window names: `5h` → `FiveHour`, `7d` → `SevenDay`, anything else → `Named(label)` when it
   passes `Label::parse` (so `7d_oi` is shown as a named meter), otherwise dropped. The plan
-  comes from the engine's availability probe (`max_5x`), not from the log.
+  comes from the login probe (`planTier` of `claude auth status`: `max_5x`), not from the log.
 - **First-run backfill** (once, recorded in the store's `meta`): stream `<path>.1` then
   `<path>` on a blocking thread and insert history samples in batches (`record_all`) under
   the normal write rule of 7.5, which drops rows older than the last stored one. It runs
@@ -656,16 +727,18 @@ a decimal string; it was `null` here) becomes a `Balance(Usd)` meter only when `
 is true, `unlimited` is false and the string parses. A response with no usable window and no
 balance is `Protocol`. A JSON-RPC `error` response is `ServerError`; a malformed response is
 `Protocol`.
-Gate: spawn only when the engine's probe says Codex is `Ready`. Otherwise, without spawning
-anything: `NotInstalled` → `Unavailable(NotInstalled)`, `NotLoggedIn` →
+Gate (`needs_login`): spawn only when the login probe (8.6) says Codex is `Ready`. Otherwise,
+without spawning anything: `NotInstalled` → `Unavailable(NotInstalled)`, `NotLoggedIn` →
 `Unavailable(NotLoggedIn)`, `Unknown` (the probe timed out or could not read the status) →
-`Unavailable(Timeout)`, and the next attempt re-probes first (7.2).
+`Unavailable(Timeout)`, and the next attempt re-probes first (7.2). The Codex plan is the
+response's `planType`; the probe supplies no plan for Codex.
 
 ### 6.4 DeepSeek balance
 `GET https://api.deepseek.com/user/balance`, `Authorization: Bearer <key>`. Documented body:
 `{"is_available":true,"balance_infos":[{"currency":"CNY","total_balance":"110.00",
 "granted_balance":"10.00","topped_up_balance":"100.00"}]}`. One `Balance` meter per currency,
-amounts parsed exactly by `Money::parse_decimal`. No key → `NotConfigured(AddDeepSeekKey)`
+amounts parsed exactly by `Money::parse_decimal` (a second entry that maps to an id already
+present, for example two unknown currencies, is dropped). No key → `NotConfigured(AddDeepSeekKey)`
 with no network call. 401/403 → `Unauthorized`. Unverified until the user has a key.
 
 ### 6.5 Placeholders and the path to real adapters
@@ -687,7 +760,7 @@ so every behaviour is testable with fakes:
 pub struct ServiceDeps {
     pub clock: Arc<dyn Clock>, pub timer: Arc<dyn WallTimer>, pub jitter: Arc<dyn Jitter>,
     pub sources: Vec<Arc<dyn UsageSource>>,
-    pub probe: Arc<dyn EngineProbe>, pub facts: Arc<FactsCell>,       // engine availability (io::engine_bridge)
+    pub probe: Arc<dyn LoginProbe>, pub facts: Arc<FactsCell>,       // CLI logins (io::probe, 8.6)
     pub store: Arc<dyn HistoryStore>, pub settings: Arc<dyn SettingsStore>,
     pub notifier: Arc<dyn Notifier>, pub signals: mpsc::Receiver<SourceId>,
     pub backfill: Option<Backfill>,                                    // None when already done
@@ -711,7 +784,9 @@ impl ServiceHandle {
     /// Cancels in-flight fetches (killing their process groups) and stops the task. Bounded: 2 s.
     pub async fn shutdown(&self);
 }
-pub fn spawn(deps: ServiceDeps) -> ServiceHandle;
+/// `rt` is the runtime the task runs on. The shell passes Tauri's (`tauri::async_runtime`),
+/// because Tauri's `setup` hook is not inside a runtime and a bare `tokio::spawn` would panic.
+pub fn spawn(deps: ServiceDeps, rt: &tokio::runtime::Handle) -> ServiceHandle;
 
 // io::timer: the one place that waits for a wall-clock instant
 pub enum Wake { Due, ClockChanged }
@@ -736,13 +811,18 @@ clock is set (NTP step, manual change), so it recomputes every deadline from `cl
 Fetch timeouts stay on tokio's monotonic timer, which is the right clock for a duration.
 
 ### 7.2 Refresh strategy
-- **Event-driven first**: `watch` uses inotify (`notify` crate) on the log's parent directory
-  (so rotation by rename, deletion and re-creation are seen), filtered to the log's file
-  name, and coalesces a burst into at most one signal per 1.5 s (trailing edge). No polling
-  of the log, ever. An inotify queue overflow counts as a change. If the directory does not
-  exist yet, or the watch is lost (directory removed), the watcher re-arms itself at
-  1, 2, 4 … 15 minute intervals until it succeeds, signals once when it does, and emits
-  `DiagEvent::WatchLost`; no fetch loop is involved.
+- **Event-driven first**: `watch` uses inotify (the `inotify` crate on the runtime's
+  reactor: no watcher thread) with **two narrow watches**: the log file itself for
+  `MODIFY`, and its parent directory for `CREATE | MOVED_TO | MOVED_FROM | DELETE` only (so
+  rotation by rename, deletion and re-creation are seen, and the file watch is moved to the
+  new file). The gateway's other logs live in the same directory and are written far more
+  often; with these masks their writes wake nothing. Directory events are filtered to the
+  log's file name. **Throttle, not debounce**: the first event arms a 1.5 s timer and the
+  signal is sent when it fires, so a continuous stream of writes signals every 1.5 s and can
+  never starve the reader. No polling of the log, ever. An inotify queue overflow counts as
+  a change. If the directory does not exist yet, or the watch is lost (directory removed),
+  the watcher re-arms itself at 1, 2, 4 … 15 minute intervals until it succeeds, signals
+  once when it does, and emits `DiagEvent::WatchLost`; no fetch loop is involved.
 - **Signal sources** are also fetched once at start and once whenever the window becomes
   visible (a `stat`, in case a signal was lost).
 - **Intervals** only for sources with no push channel (Codex, DeepSeek), longer while the
@@ -761,13 +841,14 @@ Fetch timeouts stay on tokio's monotonic timer, which is the right clock for a d
   fetches are queued; progress is `RefreshView.in_flight` in the snapshot.
 - **One fetch per source at a time**, each under its descriptor's timeout. Dropping a fetch
   (timeout, shutdown, provider hidden) kills its child process group (8.6).
-- **Engine probe** (`EngineProbe`, which runs `claude auth status` and `codex login status`):
-  (a) once at start; (b) before a gated fetch when the cached readiness of that provider is
-  not `Ready` and the cached facts are older than 60 s, so a probe that timed out during a
-  busy login is retried on the source's backoff schedule **even while the window is
-  hidden**; (c) on a manual refresh, at most once per 60 s; (d) otherwise when the facts are
-  older than 6 hours, piggy-backed on a fetch that is due anyway (no timer of its own). The
-  probe never runs more often than once per 60 s.
+- **Login probe** (`LoginProbe`; the real one, `CliProbe`, runs `claude auth status` and
+  `codex login status` under the rules of 8.6, and only for providers that are not hidden):
+  (a) once at start; (b) before a fetch of a `needs_login` source when the cached readiness
+  of that provider is not `Ready` and the cached facts are older than 60 s, so a probe that
+  timed out during a busy login is retried on the source's backoff schedule **even while
+  the window is hidden**; (c) on a manual refresh, at most once per 60 s; (d) otherwise when
+  the facts are older than 6 hours, piggy-backed on a fetch that is due anyway (no timer of
+  its own). The probe never runs more often than once per 60 s.
 - **Suspend/resume and clock jumps**: handled by the wall-clock timer (7.1). Every wake
   recomputes deadlines from the injected clock; deadlines found in the past run once each
   (no catch-up storm).
@@ -777,16 +858,30 @@ Fetch timeouts stay on tokio's monotonic timer, which is the right clock for a d
 
 ### 7.3 Tauri command surface (complete)
 All in `jev-dashboard::commands`. Arguments and results are the generated types of section
-7.4. Errors are the closed enum `CommandError`; no command returns a string.
+7.4. Errors are the closed enum `CommandError` inside `Outcome`; no command returns a string.
 
 | command | args | result | notes |
 |---|---|---|---|
-| `get_snapshot` | none | `Snapshot` | synchronous read of the latest state |
-| `refresh` | `target: RefreshTarget` | `Result<(), CommandError>` | returns when queued (7.2); the result arrives as a `snapshot` event |
-| `get_history` | `query: HistoryQuery` | `Result<HistorySeries, CommandError>` | at most 600 points |
-| `get_settings` | none | `Settings` | |
-| `update_settings` | `patch: SettingsPatch` | `Result<Settings, CommandError>` | validated in core; the shell then applies the autostart entry (9.13) |
-| `get_diagnostics` | none | `Diagnostics` | async; version, per-source state, store size |
+| `get_snapshot` | none | `Outcome<Snapshot>` | read of the latest state; always `ok` |
+| `refresh` | `target: RefreshTarget` | `Outcome<null>` | returns when queued (7.2); the result arrives as a `snapshot` event |
+| `get_history` | `query: HistoryQuery` | `Outcome<HistorySeries>` | at most 600 points |
+| `get_settings` | none | `Outcome<Settings>` | always `ok` |
+| `update_settings` | `patch: SettingsPatch` | `Outcome<Settings>` | validated in core; the shell then applies the autostart entry (9.13) |
+| `get_diagnostics` | none | `Outcome<Diagnostics>` | version, per-source state, store size |
+
+**Every command resolves; none rejects on purpose.** The result is the generated envelope
+`Outcome<T>` (7.4), so the UI receives a fully typed value on success *and* on failure and
+never has to inspect a rejection, whose type in TypeScript would be `any` (1a). In Rust the
+async commands are declared `Result<Outcome<T>, CommandError>` only because Tauri requires a
+`Result` from an async command that borrows state; they always return `Ok`.
+
+An argument that does not deserialise (an unknown provider, a meter id that
+`MeterId::parse_key` rejects) is refused by Tauri before the command runs; that is the one
+case in which the promise rejects (the UI's types make it unreachable). `ipc/tauri.ts`
+attaches a rejection handler **with no parameter** that returns the constant
+`{ status: "error", error: { code: "invalid_argument" } }`, so the rejection's untyped value
+is never bound to a name. Values that deserialise but are out of range (thresholds) are
+refused by core with the same code.
 
 Events (Rust → UI only): `snapshot` (payload `Snapshot`, emitted when it changes) and
 `navigate` (payload `Route`, from the tray menu). The UI emits no events. There is no
@@ -800,6 +895,8 @@ a `&`-separated list of `key=value` pairs from a closed vocabulary: `view`
 (`overview` | `settings` | `provider`), `provider` (a `ProviderKey`) and `theme` (a `Theme`),
 for example `index.html#view=provider&provider=codex&theme=dark`. The UI reads it once at
 boot and ignores anything else; `navigate` is used only for a window that already exists.
+That `WebviewUrl::App` keeps a fragment is **assumed** (checked in T11); the fallback is an
+initialisation script that sets one frozen global from the same closed vocabulary.
 
 ### 7.4 IPC types: exactly what crosses the boundary
 Defined in `jev-usage-core::ipc`, `#[serde(rename_all = "snake_case")]`, tagged enums with
@@ -807,6 +904,10 @@ Defined in `jev-usage-core::ipc`, `#[serde(rename_all = "snake_case")]`, tagged 
 `dashboard/src/lib/ipc/bindings/` and checked for drift in CI. `u64`/`i64` fields carry
 `#[ts(type = "number")]` (all values are far below 2^53). The block below shows the shapes;
 where `ts-rs` prints an equivalent type differently, the generated files are authoritative.
+The generator is `ts-rs` (verified on a scratch crate with these shapes, version 10: tagged
+enums, struct variants, `Option`, `Vec`, the generic `Outcome<T>`, `()` as `null`, optional
+fields; the output contains no `any`, `unknown` or `never`). The type check of section 10
+runs over the generated files too, so a future generator version cannot slip one in.
 `SettingsPatch` fields carry `#[serde(default)]` and `#[ts(optional)]`, so an absent key
 means "unchanged".
 
@@ -838,9 +939,10 @@ type UsageView =
   | { state: "unavailable"; reason: Unavailable }
   | { state: "not_configured"; setup: Setup }
   | { state: "unsupported" };
-type ManualRefresh = "free" | "spends_quota" | "none";
-type RefreshView  = { in_flight: boolean; last_attempt_at: number | null;
-                      next_at: number | null; manual: ManualRefresh };
+type RefreshView  = { in_flight: boolean; last_attempt_at: number | null; next_at: number | null;
+                      free_refresh: boolean;                  // has a free source that a manual refresh starts
+                      live_check: boolean;                    // has a spending source AND the setting is on
+                      live_check_error: Unavailable | null }; // why the last live check failed; null after a success
 type ProviderView = { provider: ProviderKey; enabled: boolean; usage: UsageView; refresh: RefreshView };
 type Headline     = { provider: ProviderKey; meter_id: string; used_bp: number;
                       severity: Severity; resets_at: number | null };
@@ -854,7 +956,7 @@ type HistoryPoint  = { t: number /* epoch s */; v: number; lo: number; hi: numbe
 type HistorySeries = { provider: ProviderKey; meter_id: string; from: number; to: number;
                        unit: "basis_points" | "micros"; points: HistoryPoint[];
                        gap_s: number;       // a hole longer than this is drawn as a gap (history::gap_for)
-                       resets: number[] };  // window ends inside the range (epoch s), at most 64; empty for month and quarter
+                       resets: number[] };  // window ends inside the range (epoch s), at most 64; may be empty (7.5)
 
 type Theme     = "system" | "light" | "dark";
 type HourCycle = "auto" | "h12" | "h24";
@@ -862,21 +964,26 @@ type Settings  = { version: number /* 1 */; warn_bp: number; critical_bp: number
                    notifications: boolean;              // master switch (also the tray checkbox)
                    notify_warn: boolean; notify_critical: boolean;
                    theme: Theme; hour_cycle: HourCycle;
+                   zoom_pct: number;                    // 100 | 125 | 150 | 175 | 200 (9.10)
                    close_to_tray: boolean; autostart: boolean; shortcuts: boolean;
                    claude_live_check: boolean; first_run_seen: boolean;
                    hidden_providers: ProviderKey[] };
 type SettingsPatch = Partial<Omit<Settings, "version">>;
 type CommandError  = { code: "invalid_argument" | "busy" | "not_enabled" | "store_unavailable" | "io" | "internal" };
-type SourceDiag    = { source: string /* closed SourceId name */; provider: ProviderKey;
+type Outcome<T>    = { status: "ok"; value: T } | { status: "error"; error: CommandError };   // generated (generic), 7.3
+type SourceId      = "claude_gateway_log" | "claude_live" | "codex_app_server" | "deepseek_balance"
+                   | "gemini_none" | "antigravity_none" | "grok_none";
+type SourceDiag    = { source: SourceId; provider: ProviderKey;
                        last_ok_at: number | null; last_error: Unavailable | null; failures: number };
 type Diagnostics   = { app_version: string /* semver */; sources: SourceDiag[];
                        history_bytes: number; history_samples: number; tray_available: boolean };
 type Route         = { name: "overview" } | { name: "provider"; provider: ProviderKey } | { name: "settings" };
 ```
 **String-typed leaves that cross the boundary, exhaustively**: `plan` and `WindowKind.label`
-(both `Label`: `[a-z0-9_]{1,40}`), `id`/`meter_id` (`MeterId::key()`: a fixed prefix plus
-digits or a `Label`), `source` (a `SourceId` variant name), `app_version` (compile-time
-constant). Every other field is a number, a boolean or a closed enum. There is no field that
+(both `Label`: `[a-z0-9_]{1,40}`), `id`/`meter_id` (`MeterId`, serialised as its key: a fixed
+prefix plus digits or a `Label`), `app_version` (`&'static str`, a compile-time constant).
+Every other field is a number, a boolean or a closed enum. In Rust none of these is a
+`String` field: they are `Label`, `MeterId` and one `&'static str`. There is no field that
 could hold a prompt, key, token, e-mail, account id, path, hostname, URL or error message.
 `dashboard/fixtures/ipc-allowlist.txt` lists every key name; a test fails on any other
 (section 8.10). `Diagnostics.sources[].last_ok_at == null` is how an adapter that has never
@@ -925,14 +1032,21 @@ The data is tiny but long-lived and must survive crashes and upgrades. The cost 
   from the last stored sample, or when 15 minutes have passed since it (a heartbeat, so the
   chart can tell "flat" from "no data").
 - `series`: aggregation to at most `max_points` buckets is done **in SQL** (`GROUP BY` bucket
-  with min, max and last), so a query never loads the raw rows of a range into memory. It
-  returns the points, the bucket width, and the reset marks: the distinct `resets_at_s` of
-  raw samples inside the range, collapsed by `history::reset_marks`. Marks come from raw
-  samples only, so the month and quarter ranges return none.
+  with min, max and last), so a query never loads the raw rows of a range into memory. Day,
+  week and month are served from `sample` alone (all inside raw retention); quarter is
+  `rollup_hour` for the part older than raw retention plus `sample` for the rest, without
+  overlap. It returns the points, the bucket width, and the reset marks. Marks are also
+  bounded in SQL: the `resets_at_s` of raw samples in range are grouped into buckets of half
+  the window length (1 hour when the length is unknown) and at most 130 groups are read;
+  `history::reset_marks` then collapses neighbours. `resets` is **empty** for the quarter
+  range (rollups carry no reset time) and whenever more than 64 marks would result (a 5-hour
+  window over a month): a partial set of marks would mislead.
+- Rollups are written only by the prune: raw samples older than raw retention are folded
+  into `rollup_hour` (`lo/hi/last` per hour) and deleted in the same transaction.
 - `meta` also holds the shell's last window size (`MetaKey::WindowWidth`,
   `MetaKey::WindowHeight`): two integers, no new file and no new IPC field.
-- Retention: raw samples 45 days (covers the 30-day Codex window); hourly rollups
-  (`lo/hi/last`) 400 days; prune at start and every 24 h in one transaction, then
+- Retention: raw samples 45 days (covers the 30-day Codex window and the month range);
+  hourly rollups (`lo/hi/last`) 400 days; prune at start and every 24 h in one transaction, then
   `PRAGMA incremental_vacuum`. Expected size: well under 5 MB.
 - Migration: `PRAGMA user_version`; an ordered list of `(version, sql)` applied in one
   transaction; a database newer than the binary is opened read-only for charts and not
@@ -968,8 +1082,10 @@ screen-reader user hears what a sighted user sees change, once. No extra IPC is 
   poll, so the **tray** does not rebuild on every snapshot: it compares its own derived
   value (menu row strings plus `IconSpec`) and touches the menu or icon only when that
   changes.
-- A failure never erases a good reading: `Known` → `Stale{Failing(reason)}`. Freshness per
-  source: gateway log 10 min; interval sources 2.5 x their current interval.
+- A failure never erases a good reading: `Known` → `Stale{Failing(reason)}`. Freshness is
+  the descriptor's `fresh_for`: gateway log and live check 10 min; interval sources 2.5 x
+  their **hidden** interval (Codex 37.5 min, DeepSeek 75 min), one fixed value per source, so
+  opening the window never makes a reading that was current a moment ago look stale.
 - Startup: every provider is `Pending` until its first source answers or fails; the gateway
   log answers in milliseconds, Codex in about 3 s.
 
@@ -1010,8 +1126,8 @@ screen-reader user hears what a sighted user sees change, once. No extra IPC is 
 | A dependency is malicious or vulnerable | Section 8.8. |
 | Another local process of the same user reads our files or memory | Out of scope in general (same-uid processes can read `~/.jev-router.env` directly). We still write 0600/0700, disable core dumps and ptrace-attach (`PR_SET_DUMPABLE 0`), and keep secrets out of files. |
 | The app spends quota or disturbs the gateway | Read-only on gateway files; no request through the gateway; the single spending path (`ClaudeLive`) is opt-in, manual, labelled. |
-| A lazy installer shim runs (mise wrappers for `grok`, `agy`) | 8.6. |
-| Secrets inherited by a child process | Children the dashboard spawns get a scrubbed, allow-listed environment (8.6). Honest limit: the engine's probe runs `claude auth status` and `codex login status` with the app's own environment (5.1); these are the user's own two CLIs. |
+| A lazy installer or self-updater runs (mise wrappers: `grok`, `agy`, and `codex`/`claude` themselves, 3.1) | 8.6: no variant for the first two; an install-on-disk check before any start; mise's installers switched off in the child environment; process-group kill. |
+| Secrets inherited by a child process | Every child, the two login-status commands included, gets a scrubbed, allow-listed environment (8.6). The dashboard never calls the engine's unscrubbed probe (5.1). |
 | Network exfiltration or tracking | One HTTP client, one allowed host, HTTPS only, no redirects, no proxy, no telemetry, no updater; the web view has `connect-src` limited to IPC. |
 
 ### 8.3 What is never read
@@ -1023,24 +1139,26 @@ screen-reader user hears what a sighted user sees change, once. No extra IPC is 
   through a private read buffer and the JSON tokenizer. Those buffers are reused, never
   logged, never copied out, and zeroized when the tail reader is dropped. Nothing but the
   parsed numbers leaves `parse_line`.
-- OAuth/token files of any CLI (`~/.claude*`, `~/.codex`, `~/.gemini`, `~/.grok`): never
-  opened by dashboard code (architecture test). **Honest limit, from the engine source
-  (5.1):** the engine's probe, which the dashboard calls, does read `~/.codex/auth.json` and
-  decodes the `id_token` claims in memory to find the plan name (it does not verify, store
-  or forward the token), reads `~/.codex/models_cache.json` and `~/.gemini/settings.json`,
-  and checks that `~/.gemini/oauth_creds.json` and `~/.grok` exist.
-- `claude auth status` output (JSON that includes the account e-mail) is read only by the
-  engine's existing parser, which keeps the logged-in flag and the plan and drops the rest.
-  The e-mail therefore passes through engine heap memory for a moment (ordinary, not
-  zeroized buffers). It never reaches a dashboard type: `EngineFacts` holds a `State` and a
-  `Label` per provider and nothing else, so it cannot be displayed, stored, logged or sent
-  over IPC, which is what 1a requires.
+- OAuth/token files and homes of any CLI (`~/.claude*`, `~/.codex`, `~/.gemini`, `~/.grok`):
+  never opened, listed or stat-ed by the dashboard (architecture test), and the engine's
+  probe, which does read some of them, is never called (5.1). The only path the dashboard
+  inspects outside its own files, the log and the env file is mise's `installs/<tool>/`
+  directory, to see that an install exists (8.6): directory names only.
+- `claude auth status` output (JSON that includes the account e-mail, org id and org name)
+  is read by the login probe into one zeroizing buffer of at most 64 KiB and parsed by
+  `core::parse::claude_auth`, a serde struct with exactly three fields (`loggedIn`,
+  `planTier`, `subscriptionType`); every other key is skipped without being materialised,
+  and the buffer is zeroized when the probe returns. `LoginFacts` holds a `Readiness` and a
+  `Label` per provider and nothing else, so the e-mail cannot be displayed, stored, logged
+  or sent over IPC, which is what 1a requires. **Label positions, exhaustively** (the only
+  places a free string is ever taken from): `planTier`/`subscriptionType` of
+  `claude auth status`, `planType` of the Codex rate-limit response, and the window part of
+  an `anthropic-ratelimit-unified-*` key.
 - Codex `account/read` is never called.
-- From `~/.jev-router.env`: the dashboard's own reader keeps only the `DEEPSEEK_API_KEY`
-  line's value; the file text lives in a zeroizing buffer for the duration of the parse.
-  Honest limit: the engine functions the dashboard calls (`path_from_env`, `probe_all`) read
-  the same file into ordinary strings to look up their own settings and to see whether keys
-  exist (5.1); those copies are dropped, not zeroized.
+- From `~/.jev-router.env`: `io::envfile` reads the file into a zeroizing buffer, hands it to
+  the engine's pure `embed::parse_env` for one named key (`DEEPSEEK_API_KEY` at fetch time,
+  `JEV_USAGE_LOG` once at start) and zeroizes the buffer. The engine's own file readers
+  (`envfile::lookup`, `path_from_env`) are never called.
 
 ### 8.4 What is never stored, logged or sent
 - **Stored** (history.db, settings.json): numbers, booleans, closed-vocabulary keys. Nothing
@@ -1071,7 +1189,8 @@ screen-reader user hears what a sighted user sees change, once. No extra IPC is 
 - **Notifications and tray**: provider name, window name, percentage, reset time. Built only
   by `core::text` from typed inputs.
 - **Clipboard**: written only by the Copy buttons, only with constant command strings from
-  `copy.ts` (`codex login`, `jev-claude`, `DEEPSEEK_API_KEY=`); never read.
+  `copy.ts` (`codex login`, `claude auth login`, `jev-claude`, `DEEPSEEK_API_KEY=`; a test
+  keeps the two login commands equal to the engine's `embed::login_command`); never read.
 - **Network**: only what 8.7 lists.
 
 ### 8.5 Secrets in memory
@@ -1093,44 +1212,70 @@ impl<T: Zeroize> Drop for Secret<T> { /* zeroize */ }
   ends. It is not cached between fetches and never placed in a struct that outlives the call.
 - It is read by `io::secrets::deepseek_key(&KeySources) -> Option<Secret<String>>` (the
   sources are injected, so tests never touch the real environment or home): process environment
-  first, else the env file read into a `Zeroizing<String>` and parsed with the engine's pure
-  `embed::parse_env` (DRY: same parsing rules as the engine).
+  first, else the env file through `io::envfile` (a `Zeroizing<String>` parsed with the
+  engine's pure `embed::parse_env`; DRY: same parsing rules as the engine).
 - The header value is marked sensitive (`HeaderValue::set_sensitive(true)`), so the HTTP
   stack will not print it.
 - Honest limits: the allocator may have left copies in freed memory before zeroization of
   intermediate buffers we do not own (the engine's parser returns a `String` we move, not
-  copy; `std::env::var` returns a copy we own and zeroize). The engine's own probe looks the
-  same key up to decide availability and drops it without zeroizing (5.1). The TLS stack
+  copy; `std::env::var` returns a copy we own and zeroize). The TLS stack
   holds the header bytes until the request is written. Swap is outside our control.
 
 ### 8.6 Subprocesses
 One module, `io::proc`, is the only place `std::process`/`tokio::process` may be used
 (architecture test). Rules:
 - Program names come from a closed enum (`Program::Codex`, `Program::Claude`). There is no
-  variant for `grok`, `agy`, `gemini` or `mise`, so they cannot be run.
-- A program is spawned only if the engine's probe reports its provider `Ready` (the probe
-  decides from files and from `claude auth status`/`codex login status`, and never runs
-  `grok`, `agy` or `gemini`).
+  variant for `grok`, `agy` or `gemini`, so they cannot be run.
+- **Resolution, without running anything** (`proc::resolve(Program) -> Resolved`): take the
+  first executable file of that name on the app's `PATH`. If it is a mise launcher (its
+  path has a `command-wrappers` or `shims` component, or it resolves through symbolic links
+  to a file named `mise`), the tool counts as installed only when
+  `<mise data>/installs/<tool>/` contains at least one version directory that has entries
+  (`<mise data>` is `$MISE_DATA_DIR`, else `$XDG_DATA_HOME/mise`, else
+  `~/.local/share/mise`). No hit, or a launcher with no install on disk, is `NotInstalled`
+  and **no process is started**, so a first-run installer can never be triggered.
+- The program is then started **by the name `PATH` gave**, wrapper included, because on this
+  machine the wrapper is what selects the active account (3.1). The four-hourly self-update
+  and any other install are switched off for the child with the constants
+  `MISE_OFFLINE=1`, `MISE_AUTO_INSTALL=false`, `MISE_EXEC_AUTO_INSTALL=false` and
+  `MISE_NOT_FOUND_AUTO_INSTALL=false` (that mise maps them to its settings is verified, 3.1;
+  that a wrapper run then never downloads is **assumed** and checked in T04 by comparing
+  mise's `installs/` and `downloads/` listings before and after a real status run). The
+  process-group kill below is the backstop if that assumption is false.
 - Arguments are constant arrays. No shell, no string interpolation.
 - Environment: `env_clear()` then exactly these, each only if set in the parent: `HOME`,
   `USER`, `LOGNAME`, `PATH`, `LANG`, `LC_ALL`, `XDG_CONFIG_HOME`, `XDG_DATA_HOME`,
   `XDG_STATE_HOME`, `XDG_CACHE_HOME`, `XDG_RUNTIME_DIR`, `DBUS_SESSION_BUS_ADDRESS` (a CLI
   that keeps its login in the session keyring needs the bus), `CODEX_HOME`,
   `CLAUDE_CONFIG_DIR`, `MISE_DATA_DIR`, `MISE_CONFIG_DIR` (so the child finds the same login
-  and the same installed tool the engine's unscrubbed probe saw; all four are directory
-  paths, not secrets); plus the constant `TERM=dumb`. No `*_API_KEY`, `*_TOKEN` or proxy
-  variable ever reaches a child. For `ClaudeLive`, `ANTHROPIC_BASE_URL` is not set, so it
-  does not go through the gateway.
-- Scope: these rules bind every process the **dashboard** spawns. The engine's probe spawns
-  its two status commands itself, with the app's environment (5.1); that is disclosed, not
-  hidden, and the child-environment test covers `io::proc` only.
+  and the same installed tool the user's shell does; all four are directory paths, not
+  secrets); plus the constants `TERM=dumb` and the four `MISE_*` switches above. No
+  `*_API_KEY`, `*_TOKEN` or proxy variable ever reaches a child. For `ClaudeLive`,
+  `ANTHROPIC_BASE_URL` is not set, so it does not go through the gateway.
 - Working directory: `<state_dir>/dashboard/run` (empty, 0700), so no project config is read.
-- stdin/stdout piped, **stderr discarded**. Output caps (1 MiB per line, 4 MiB total).
-  The child is the leader of its own process group. The group is killed (`SIGKILL`) on the
-  deadline **and whenever the run is dropped** (service timeout, shutdown), by a guard that
-  is disarmed once the child has been reaped; `kill_on_drop` alone would leave the real tool
-  running behind its launcher (`codex` and `claude` are wrappers here).
+- stdin/stdout piped. **stderr is discarded**, with one exception: the two login-status
+  specs merge it into stdout (`Stderr::Merge`), because `codex login status` answers on
+  stderr (3.1). Output caps: 1 MiB per line, 4 MiB total (64 KiB total for the status
+  commands). The child is the leader of its own process group. The group is killed
+  (`SIGKILL`) on the deadline **and whenever the run is dropped** (service timeout,
+  shutdown), by a guard that is disarmed once the child has been reaped; `kill_on_drop`
+  alone would leave the real tool running behind its launcher (`codex` and `claude` are
+  wrappers here). If the app itself is killed, a `codex app-server` child ends on its own
+  when its stdin closes (3.1).
 - Child output is parsed by an allow-list parser and never logged or stored raw.
+- **The login probe** (`io::probe::CliProbe`, the only `LoginProbe` used in production),
+  for Codex and Claude only, and only for a provider that is not hidden:
+  1. `proc::resolve`; `NotInstalled` ends here with nothing run.
+  2. Run `codex login status` or `claude auth status` through `proc` under every rule
+     above, deadline 5 s, output collected into one zeroizing buffer.
+  3. Codex: `embed::parse_codex_login(exit_ok, text)` (the engine's pure rule; non-UTF-8
+     output is `Unknown`). Claude: `core::parse::claude_auth::parse(&[u8])`, the three-field
+     allow-list of 8.3, with the engine's text fallback re-stated on bytes (contains
+     "not logged in" or "not authenticated" → logged out; else contains "logged in" →
+     logged in; else unknown). The plan is `planTier`, else `subscriptionType`,
+     lower-cased, `-` and space turned into `_`, through `Label::parse`.
+  4. `true` → `Ready`, `false` → `NotLoggedIn`, unreadable or timed out → `Unknown`.
+  It opens no file of any CLI and never looks at DeepSeek, Gemini or Grok.
 
 ### 8.7 Network
 - One module, `io::http`, is the only place `reqwest` may be used (architecture test). It
@@ -1148,7 +1293,14 @@ One module, `io::proc`, is the only place `std::process`/`tokio::process` may be
 ### 8.8 Tauri hardening
 - Plugins compiled in: `tauri-plugin-single-instance` only, registered first. Because the
   service is created in Tauri's `setup` hook, which runs after plugin initialisation, a
-  second process exits before it opens the store, the log or a child. **Not** compiled in:
+  second process exits before it opens the store, the log or a child. The plugin's lock is
+  a name on the session bus derived from the identifier, so a debug build or a test run
+  would be swallowed by the user's resident Flashboard (autostart is on by default).
+  Therefore: `pnpm dev` passes `--config` with the identifier `dev.jev.flashboard.dev`, debug
+  builds keep their files in `<state_dir>/dashboard-dev`, and every automated launch of the
+  real binary (11.4 stages 10 and 13, `measure-idle.sh`) runs under `dbus-run-session`,
+  which gives it a private bus (no clash, and its notifications and tray item never reach
+  the user's desktop). **Not** compiled in:
   shell, opener, fs, http, dialog, clipboard, notification, updater, process, os,
   global-shortcut, window-state, autostart.
 - Notifications are sent from Rust with `notify-rust` (the library the Tauri plugin wraps on
@@ -1170,7 +1322,8 @@ One module, `io::proc`, is the only place `std::process`/`tokio::process` may be
   No `core:default`, no window, webview, path, menu, tray, image or resources permissions.
 - `tauri.conf.json`: `app.windows: []` (the `main` window is created in code, so `--hidden`
   creates no web view at all); `app.withGlobalTauri: false`;
-  `app.security.freezePrototype: true`;
+  `app.security.freezePrototype: true` (that Svelte 5's runtime works with a frozen
+  `Object.prototype` is **assumed**; T00 checks it on the scaffold window and reports);
   `app.security.dangerousDisableAssetCspModification: false`; no `assetProtocol`; no remote
   URLs in `capabilities`; CSP:
   ```
@@ -1192,14 +1345,25 @@ One module, `io::proc`, is the only place `std::process`/`tokio::process` may be
   on Linux). A reload is harmless anyway: the UI rebuilds itself from `get_snapshot`.
 - Exit: `RunEvent::ExitRequested` is prevented only when it has no exit code (the last window
   closed while the tray is alive); an explicit `app.exit(0)` from the tray's Quit goes
-  through, after `ServiceHandle::shutdown()`.
+  through, after `ServiceHandle::shutdown()`. `SIGTERM`, `SIGINT` and `SIGHUP` (logout, the
+  session unit stopping) take the same path through a tokio signal listener: shutdown, then
+  `app.exit(0)`; without it a signal would leave a child's process group behind.
+- Zoom (9.10) is applied from Rust with `WebviewWindow::set_zoom` from `settings.zoom_pct`,
+  at window creation and on change. Tauri's own zoom hot keys stay off: on Linux they are a
+  script polyfill that needs a webview permission, which this capability does not grant.
 - At start (`hardening::apply`), before any thread or child exists: `umask(0o077)`, core
   dumps off (`RLIMIT_CORE = 0`), `PR_SET_DUMPABLE=0`, the panic hook. Uses safe wrappers from
-  `rustix`; `unsafe` is forbidden in core and io and denied in the shell. Children inherit
+  `rustix`; `unsafe` is forbidden (`#![forbid(unsafe_code)]`) in all three app crates (1a).
+  That Tauri's `generate_context!`/`generate_handler!` expansions and the `rustix` calls
+  compile under it is **assumed** and confirmed by T00 on the scaffold; if one does not, the
+  lead brings it to the user instead of relaxing the rule. Children inherit
   the umask (their files become private, which is harmless). `PR_SET_DUMPABLE=0` makes
   `/proc/<pid>` owned by root; if the T11 manual check finds that this breaks a portal
-  lookup or WebKit's sandbox helper on this machine, it is dropped and `RLIMIT_CORE = 0`
-  stays (risk in section 14).
+  lookup, WebKit's sandbox helper or its accessibility bridge on this machine, it is dropped
+  and `RLIMIT_CORE = 0` stays (risk in section 14). Honest limit of that fallback: with a
+  piped `core_pattern` (systemd-coredump, as here) the kernel still calls the handler, which
+  honours the zero limit by storing no memory image but does log the crash with a stack
+  trace of function names.
 
 ### 8.9 Dependency and supply-chain policy
 - Rust: lockfile committed, every command `--locked`. `deny.toml`: advisories = deny
@@ -1208,7 +1372,8 @@ One module, `io::proc`, is the only place `std::process`/`tokio::process` may be
   `cargo audit` as a second advisory source.
 - Direct Rust dependencies, complete list (additions need lead approval):
   core: `serde`, `serde_json`, `zeroize`, `ts-rs` (dev/bindings feature); dev: `proptest`,
-  `static_assertions`. io: `tokio`, `notify`, `rusqlite` (bundled), `reqwest` (rustls),
+  `static_assertions`, `syn` (feature `full`, for the type-file test). io: `tokio`, `inotify`
+  (feature `stream`), `rusqlite` (bundled), `reqwest` (rustls),
   `rustix`, `zeroize`, `serde_json`, `jev-router`; dev: `tempfile`, `proptest`. shell:
   `tauri` (feature `tray-icon` added to the defaults; dev: feature `test`), `tauri-build`,
   `tauri-plugin-single-instance`, `notify-rust` (default features off, `z` only: the zbus
@@ -1219,7 +1384,8 @@ One module, `io::proc`, is the only place `std::process`/`tokio::process` may be
   explicit allow-list (`esbuild`), `minimumReleaseAge` of 7 days for new versions;
   `pnpm audit --prod` must be clean. Runtime dependencies: `svelte`, `@tauri-apps/api`, two
   font packages (assets only). Everything else is a dev dependency (Vite, `svelte-check`,
-  Vitest, Testing Library, `axe-core`, `@axe-core/playwright`, `@playwright/test`, ESLint,
+  Vitest, Testing Library, `axe-core`, `@axe-core/playwright`, `@playwright/test`, ESLint with
+  `typescript-eslint` and `eslint-plugin-svelte`, `typescript`,
   stylelint, Prettier, `@tauri-apps/cli`).
 - No CDN, no remote font, no remote script: everything is bundled and served from the app.
 - Build tools fetched at install time (`@tauri-apps/cli`) are pinned in the lockfile.
@@ -1227,13 +1393,13 @@ One module, `io::proc`, is the only place `std::process`/`tokio::process` may be
 ### 8.10 Tests that prove the rules
 | rule | proof |
 |---|---|
-| No prompt can surface from the log parser | **Canary fixture**: `dashboard/fixtures/claude-gateway/canary.jsonl` has the canary string `JEVCANARY_9f3c1b7e_DO_NOT_SURFACE` in every non-allow-listed key, as extra keys, inside allow-listed keys' values, and as a window name. Test: `format!("{:?}")` and the JSON of everything `parse_line` returns contain no `JEVCANARY`. Property test: for arbitrary JSON rows with the canary at arbitrary depth, the same holds. |
-| No secret or identity crosses any adapter | Every adapter test feeds canary-laced input (Codex `account_read.response.json` with `canary-email@example.invalid`, a DeepSeek response with the canary as an extra field, the canary as the DeepSeek key) and asserts the canary is absent from the returned `Reading`/error Debug output. |
+| No prompt can surface from the log parser | **Canary fixture**: `dashboard/fixtures/claude-gateway/canary.jsonl` has the canary string `JEVCANARY_9f3c1b7e_DO_NOT_SURFACE` in every non-allow-listed key, as extra keys, inside allow-listed keys' values, and as a window name. Test: `format!("{:?}")` and the JSON of everything `parse_line` returns contain no `JEVCANARY`. Property test: for arbitrary JSON rows with the canary at arbitrary depth, the same holds. Because that canary is upper-case and `Label` would reject it anyway, the fixture and the property test also carry a **Label-shaped canary** (`jevcanary_9f3c1b7e`) in every position that is not a label position of 8.3: it must never surface, which proves the allow-list of positions and not just the character set. One documented test shows the converse (the same string as a window name does surface, by design). |
+| No secret or identity crosses any adapter | Every adapter test feeds canary-laced input (Codex `account_read.response.json` with `canary-email@example.invalid`, a synthetic `claude auth status` output with the canary e-mail, org id and org name, a DeepSeek response with the canary as an extra field, the canary as the DeepSeek key) and asserts the canary is absent from the returned `Reading`/error Debug output. |
 | End to end: nothing leaks to IPC, store, settings, logs | `io` integration test: a service wired with canary-fed sources and a temp state dir runs a full cycle; then every emitted `Snapshot` (JSON), every file under the temp dir (raw bytes, including SQLite WAL), and captured `diag` output are searched for `JEVCANARY`, the canary e-mail and the canary key. The real-binary smoke test (11.4) repeats the search over its whole temp tree, including `XDG_DATA_HOME`, `XDG_CACHE_HOME`, `XDG_CONFIG_HOME` and `XDG_RUNTIME_DIR`, and over the binary's stderr. |
 | IPC carries only allowed fields | Test serialises generated values (proptest strategies for every IPC type) and walks the JSON: every key must be in `ipc-allowlist.txt`; no key matches `(?i)email|token|secret|password|prompt|message|content|account|session|cwd|path|url|auth|key$`; every string leaf must match a closed-vocabulary set or `^[a-z0-9_:.+-]{1,48}$`. The same walk runs over the generated `.ts` bindings' property names. |
 | `Secret` cannot be printed/cloned/serialised | `static_assertions::assert_not_impl_any!(Secret<String>: Debug, Display, Clone, Serialize, PartialEq)`. |
-| One exit for secrets, one HTTP client, one process spawner, one D-Bus user | Architecture test (plain Rust test that scans `dashboard/**/*.rs`, tests excluded where noted): `expose_secret(` only in `io/src/http.rs`; `reqwest` only in `io/src/http.rs`; `process::Command` only in `io/src/proc.rs`; `zbus` only in `src-tauri/src/bus.rs`; `notify_rust` only in `src-tauri/src/notifier.rs`; `jev_router::` only as `jev_router::embed`; forbidden file names (8.3) nowhere; no `println!`/`eprintln!`/`dbg!`; no `String`, `&str`, `Box<str>` or `Cow` in the core type files (`time quantity label provider meter usage port secret ipc`) except `label.rs`; `text.rs` builds display strings from typed inputs only and is not a type file. |
-| Children the dashboard spawns get no secrets | Test spawns a stub program through `proc` with `DEEPSEEK_API_KEY=JEVCANARY...` in the parent environment; the stub prints its environment; assert no canary and only allow-listed names. (The engine probe's two status commands are outside this rule, 8.6.) |
+| One exit for secrets, one HTTP client, one process spawner, one D-Bus user | Architecture test (plain Rust test that scans `dashboard/**/*.rs`, tests excluded where noted): `expose_secret(` only in `io/src/http.rs`; `reqwest` only in `io/src/http.rs`; `process::Command` only in `io/src/proc.rs`; `zbus` only in `src-tauri/src/bus.rs`; `notify_rust` only in `src-tauri/src/notifier.rs`; `jev_router::` only as `jev_router::embed`; forbidden file names (8.3) nowhere; no `println!`/`eprintln!`/`dbg!`; no `serde_json::Value`, `json!` or `unwrap`/`expect` outside tests, and `#![forbid(unsafe_code)]` at the top of all three crate roots (1a); the **type-file rule**: a `syn`-based test walks every struct field and enum variant field in the core type files (`time quantity label provider meter usage port secret ipc`) and fails on any field whose type mentions `String`, `str`, `Cow`, `OsString`, `PathBuf`, `Vec<u8>` or `Value`, with exactly two exceptions: `Label`'s own `Box<str>` and `Diagnostics.app_version: &'static str`. (Function signatures such as `MeterId::key() -> String` are not fields and are allowed.) `text.rs` builds display strings from typed inputs only and is not a type file. |
+| Children the dashboard spawns get no secrets | Test spawns a stub program through `proc` with `DEEPSEEK_API_KEY=JEVCANARY...` in the parent environment; the stub prints its environment; assert no canary and only allow-listed names plus the constants of 8.6. The login probe's two status commands go through the same `proc` and are covered by the same test. |
 | Files are private | Test asserts 0700 on the directory and 0600 on `history.db`, `-wal`, `-shm`, `settings.json`, with a process umask of 022. |
 | The web view stores nothing | ESLint bans `localStorage`, `sessionStorage`, `indexedDB`, `document.cookie`, `caches`; the smoke test finds no WebKit data directory in its temp tree. |
 | The panic hook leaks no path | Test in a child process: a panic with a canary payload prints a base name and a line, no `/`, no canary. |
@@ -1327,7 +1493,12 @@ quiet line at the bottom.
   opens the detail view; a click anywhere on the card does the same for pointer users. Each
   meter row is its own tab stop (that is how the keyboard reaches level 1), and inner
   controls (Copy, Retry) are separate tab stops too. Interactive elements are never nested
-  inside one another.
+  inside one another. A meter row is an element with `role="meter"`, an accessible name
+  ("Claude 5-hour") and `tabindex="0"`; Svelte's `a11y_no_noninteractive_tabindex` warning is
+  suppressed on that one element with a written reason (the lead-approved exception: the
+  focus is what gives keyboard users level 1). `aria-valuenow` is clamped to 0..100 while
+  the text carries the real figure. A row with no number (elapsed, no data) is not a meter:
+  it is plain text in the same tab stop ("5-hour: no data since the reset at 14:00").
 - The plan is shown by its display name ("Max 5x", "Free"): `copy.ts` maps the known plan
   labels and falls back to the label with `_` as spaces and the first letter capitalised.
 - Balance meters (DeepSeek) show the amount as the hero (`¥110.00`) with "granted ¥10.00 ·
@@ -1366,10 +1537,14 @@ quiet line at the bottom.
   fill, vertical hairlines at window resets, dashed threshold lines labelled in text, gaps
   drawn as gaps (never interpolated across missing data). Rollup ranges draw the `lo..hi`
   band. Hand-written SVG, no chart library.
-- Chart accessibility: `role="img"` with a generated summary ("5-hour usage over the last
-  day: peak 72 % at 09:40, now 50 %, 3 resets"); a visually hidden data table of the points;
-  keyboard: focus the plot, Left/Right move a crosshair between points, the value is
-  announced through a polite live region. Pointer: hover or drag shows the same readout.
+- Chart accessibility: the plot is `role="img"` with a generated summary ("5-hour usage over
+  the last day: peak 72 % at 09:40, now 50 %, 3 resets") and a visually hidden data table of
+  the points. Keyboard: a separate crosshair control with `role="slider"` (named "Inspect
+  history", `aria-valuemin/max/now` = point index, `aria-valuetext` = "09:40, 72 percent")
+  moves between points with Left/Right, Home and End; a screen reader speaks a focused
+  slider's value by itself, so the readout does **not** go through the app's live region
+  (whose 2 s merging would garble fast key presses). Pointer: hover shows the same readout;
+  nothing needs a drag.
 - Range control is a radio group (arrow keys). The meter selector appears only when the
   provider has more than one meter.
 - Balance history uses the same chart with a currency axis and no thresholds.
@@ -1438,6 +1613,7 @@ No error codes, no stack traces, no "Something went wrong".
 │ Appearance                                                   │
 │   Theme   (•) System  ( ) Light  ( ) Dark                    │
 │   Clock   (•) Auto    ( ) 12-hour ( ) 24-hour                │
+│   Size    (•) 100%  ( ) 125%  ( ) 150%  ( ) 175%  ( ) 200%   │
 │ Behaviour                                                    │
 │   [x] Keep running in the tray when the window closes        │
 │   [x] Start at login, hidden in the tray                     │
@@ -1458,7 +1634,8 @@ same value as the tray's checkbox); the two level switches are disabled, with th
 kept, while it is off. Turning on "Claude live check" opens a confirmation dialog. "Keep
 running in the tray" is disabled with an explanation when no tray host exists. "Start at
 login" is on by default (1a); if writing or removing the entry fails, the switch returns to
-its previous state and says why (`CommandError` `io`). "About and diagnostics" is the About
+its previous state and says why (`CommandError` `io`). "Size" is the zoom of 9.10
+(`zoom_pct`; also Ctrl + plus, minus and zero). "About and diagnostics" is the About
 screen of 1a: the name Flashboard, the version, and the typed diagnostics.
 
 ### 9.7 Design system (tokens)
@@ -1468,7 +1645,9 @@ component styles).
 
 **Type.** Geist Variable for text, Geist Mono Variable for every number, time and command
 (both OFL, self-hosted, latin subset, `font-display: block` since they are local). Fallback
-`system-ui`, `ui-monospace`. All numerals `font-variant-numeric: tabular-nums`.
+`system-ui`, `ui-monospace`. All numerals `font-variant-numeric: tabular-nums`. Sizes are
+authored in `rem` (the table gives them in px at the 16 px default), so a larger default
+font size scales all text.
 
 | token | size / line | weight | use |
 |---|---|---|---|
@@ -1557,8 +1736,8 @@ Rules (one implementation per language, shared vectors in `format-vectors.json`)
   side by side in the detail view; on an overview row the countdown is visible and the
   absolute time is in the level-1 detail and in the row's accessible text.
 - **Age**: "just now" (< 1 min), "5m ago", "2h 05m ago", "yesterday 21:10", then a date.
-- **Money**: `Intl.NumberFormat` currency style, two decimals, unknown currency as a plain
-  number with its code.
+- **Money**: `Intl.NumberFormat` currency style, two decimals; `Currency::Other` (no code is
+  kept) as a plain two-decimal number with the word "balance".
 - **Window names**: "5-hour", "7-day", "30-day", "N-hour"/"N-day" for rolling windows,
   the raw label in mono for named windows.
 - **Tone**: plain, specific, calm. Sentence case. State the fact, then the next step.
@@ -1595,10 +1774,15 @@ blocks the task.
   not repeated within 60 s. Level changes use the wording of the notification (7.6), once.
   `role="alert"` is used only for an error that needs the user's action, once.
 - **Pointer** (2.5.7, 2.5.8): targets ≥ 32 x 32 px; nothing needs a drag (sliders have a
-  number field and arrow keys; the chart crosshair has arrow keys).
-- **Reflow and zoom** (1.4.4, 1.4.10, 1.4.12): usable at 200 % zoom and at a 320 px wide
-  window with no horizontal scroll and no clipped text; text respects the system font scale
-  and user text spacing.
+  number field and arrow keys; the chart crosshair is a slider with arrow keys, 9.4).
+- **Reflow and zoom** (1.4.4, 1.4.10, 1.4.12): a desktop web view has no browser zoom of its
+  own, so the app provides it: `settings.zoom_pct` (100 to 200 % in steps of 25; Settings,
+  and Ctrl + plus / minus / zero in the UI, which only call `update_settings`), applied by
+  the shell to the whole web view (8.8) and remembered. Usable at 200 % and at a 320 px wide
+  window with no horizontal scroll and no clipped text; sizes are in `rem`; user text
+  spacing is respected.
+- **Page** (2.4.2, 3.1.1): `<html lang="en">`; the document title names the view
+  ("Flashboard: Overview", "Flashboard: Codex", "Flashboard: Settings").
 - **Motion** (2.3.3): everything in 9.7 stops under `prefers-reduced-motion`; nothing
   flashes; nothing loops.
 - **Forced colours**: usable under `forced-colors: active`.
@@ -1609,7 +1793,10 @@ test and on every screen x state x theme in Playwright; the contrast test; keybo
 tests (Tab order per screen, every shortcut, focus return); live-region tests (a level
 change is announced once; twenty number updates announce nothing). Manual, in the definition
 of done (11.5): a keyboard-only walk-through and a screen-reader pass with Orca against a
-written script that lists what must be heard on each screen.
+written script that lists what must be heard on each screen; the user takes part in that
+pass (1a). Whether WebKitGTK exposes `role="meter"` with `aria-valuetext` to Orca is
+**assumed**; the pass checks it first, and the fallback is the same text in a visually
+hidden element referenced by `aria-describedby`.
 
 ### 9.11 Tray
 - Icon: a ring gauge drawn at run time (pure function, RGBA, 64 px, cached per 5 %-step and
@@ -1623,7 +1810,9 @@ written script that lists what must be heard on each screen.
   Claude · 5-hour 50% · resets 14:00          (a row opens that provider's detail view)
   Claude · 7-day 37% · resets Thu 02:00
   Codex · 30-day 4% · resets 16 Dec
-  Codex · 30-day 4% · as of 12:31             (a stale reading says so instead of the reset)
+  Codex · 30-day 4% · as of 16 Dec 12:31      (a stale reading says so instead of the reset)
+  Claude · 5-hour · no data since reset       (an elapsed window shows no number)
+  Codex · not signed in                       (no reading: one row from a closed phrase table)
   ─────────────────────────────
   Open dashboard
   Refresh now
@@ -1633,7 +1822,11 @@ written script that lists what must be heard on each screen.
   ```
   Rows use absolute reset times in a form that stays true without a timer: a reset within
   the next 24 hours is "HH:MM", within 6 days "Thu HH:MM", later "16 Dec" (no "today" or
-  "tomorrow", which would go wrong at midnight). Rows are enabled items (disabled items are
+  "tomorrow", which would go wrong at midnight). A stale row's "as of" is always date and
+  time, which stays true however long the row is not rebuilt. A provider without a reading
+  has one row whose phrase comes from a closed table in `core::text` keyed by `Unavailable`
+  and `Setup` ("checking" while pending); hidden and unsupported providers have no row.
+  Rows are enabled items (disabled items are
   greyed out and hard to read in most hosts). The "Notifications" checkbox is the master
   switch `settings.notifications`. The menu and icon are rebuilt only when their own content
   changes (7.7).
@@ -1647,7 +1840,7 @@ written script that lists what must be heard on each screen.
 ### 9.12 Notifications
 - Only threshold crossings (section 7.6). Title "Claude 5-hour at 80%"; body "Resets today
   14:00." (absolute time only: a notification can stay on screen, and "in 2h 14m" would go
-  stale). Application name "Flashboard", `desktop-entry` hint `dev.jev.flashboard`. Warn
+  stale; when the window has no reset time the body is omitted). Application name "Flashboard", `desktop-entry` hint `dev.jev.flashboard`. Warn
   uses normal urgency, critical the critical urgency hint. No sound request, no actions.
   Sending happens on a blocking thread and never stalls the service loop; a failure is a
   `DiagEvent`, nothing else.
@@ -1668,8 +1861,13 @@ written script that lists what must be heard on each screen.
   the shell reconciles the file with it at every start and on every change: on →
   `~/.config/autostart/dev.jev.flashboard.desktop` exists with
   `Exec=<absolute path of this binary> --hidden` (rewritten when the path changed); off → the
-  file does not exist. Pure text generation, atomic write, 0600. Debug builds never write
-  it. The first run tells the user and offers the switch (9.5). This session honours XDG
+  file does not exist. Pure text generation, atomic write, 0600. The binary's path is taken
+  **once, at start** (`current_exe`; later it could read "… (deleted)" after a reinstall),
+  must be valid UTF-8 and an existing file, and is quoted for `Exec=` as the Desktop Entry
+  specification requires (double quotes; `"`, `` ` ``, `$` and `\` escaped; `%` doubled).
+  If the entry cannot be written at start, the shell sets `autostart` to off through the
+  service (so the switch tells the truth) and emits `DiagEvent::AutostartFailed`. Debug
+  builds never write it. The first run tells the user and offers the switch (9.5). This session honours XDG
   autostart (verified, 3.4). Documented alternative for a Hyprland session without it:
   `exec-once = jev-dashboard --hidden`. The app never edits Hyprland's configuration; the
   README offers an optional `windowrule` snippet (float, size) for users who want a floating
@@ -1684,14 +1882,52 @@ written script that lists what must be heard on each screen.
 
 | choice | decision | why |
 |---|---|---|
-| Framework | **Svelte 5** (runes) + TypeScript strict | Compiles to small direct DOM code, about a third of a React bundle here; fine-grained updates suit a few live numbers; scoped styles; no runtime CSP issues. |
+| Framework | **Svelte 5** (runes) + TypeScript at the strictness of 1a (every component `lang="ts"`, typed `$props()`) | Compiles to small direct DOM code, about a third of a React bundle here; fine-grained updates suit a few live numbers; scoped styles; no runtime CSP issues. |
 | Build | Vite, static output (no SSR, no router package), `build.assetsInlineLimit: 0` | Tauri serves static files; nothing is inlined as `data:` (8.8). |
 | State | One `usage` store (a rune-based class) fed by `get_snapshot` + the `snapshot` event; `settings` store; a tiny in-memory router. Files that use runes outside a component are named `*.svelte.ts` (Svelte 5 compiles runes only there) | The backend owns the state; the UI holds a read model. No state library. |
-| IPC | `@tauri-apps/api` `invoke`/`listen`, wrapped once in `src/lib/ipc/client.ts` behind an `IpcClient` interface with a mock implementation for tests | One seam; components never import Tauri. |
+| IPC | `@tauri-apps/api` `invoke`/`listen`, wrapped once in `src/lib/ipc/client.ts` behind an `IpcClient` interface (every method returns `Promise<Outcome<T>>`) with a mock implementation for tests | One seam; components never import Tauri and never see a rejection. |
 | Chart | Hand-written SVG component (`Chart.svelte`, about 250 lines) | Full control of accessibility, theming, step rendering and gaps; no dependency. |
 | Styles | Plain CSS with custom properties, scoped per component | No CSS framework, no runtime. |
 | Icons | Inline SVG sprites (about 12 icons, own set) | No icon package. |
 | Fonts | `@fontsource-variable/geist` and `geist-mono`, latin subset | Local, consistent numerals. |
+
+**Type discipline (1a), enforced three times.**
+1. *Compiler*: `tsconfig.json` has `strict`, `noUncheckedIndexedAccess`,
+   `exactOptionalPropertyTypes`, `noImplicitOverride`, `noPropertyAccessFromIndexSignature`,
+   `noImplicitReturns`, `noFallthroughCasesInSwitch`, `noUnusedLocals`, `noUnusedParameters`,
+   `allowUnreachableCode: false`, `verbatimModuleSyntax`, `allowJs: false`.
+   `useUnknownInCatchVariables` stays on as part of `strict`, and can never matter because
+   catch bindings are banned (below).
+2. *Lint* (`typescript-eslint` `strictTypeChecked` and `stylisticTypeChecked`, with type
+   information, over `.ts`, `.svelte.ts` and `.svelte`; run with `--no-inline-config` and
+   `--max-warnings 0`, so no rule can be switched off in a file): `no-explicit-any`,
+   the `no-unsafe-*` family, `consistent-type-assertions` set to `never`,
+   `no-non-null-assertion`, `ban-ts-comment` (all directives, no descriptions accepted),
+   `no-restricted-types` for `Function`, `Object` and `{}`, `switch-exhaustiveness-check`,
+   `explicit-module-boundary-types`, and `no-restricted-syntax` for the AST nodes
+   `TSAnyKeyword`, `TSUnknownKeyword`, `TSNeverKeyword`, `TSTypeAssertion`, `TSAsExpression`
+   (except `as const`), `TSNonNullExpression` and `CatchClause[param]`.
+3. *Independent check* (`dashboard/scripts/check-types.ts`, TypeScript compiler API, no
+   ESLint involved): walks every source file, the generated bindings, the tests, the e2e
+   specs and the config files (all TypeScript), plus the script blocks of every `.svelte`
+   file, and fails on any `any`/`unknown`/`never` keyword node, any assertion, any non-null
+   `!`, any `@ts-` directive comment, any `<script>` without `lang="ts"`, and any `.js` file
+   outside `node_modules`. It is syntax-tree based, so the word "never" in a sentence of
+   `copy.ts` is not a finding.
+
+Patterns that make this workable:
+- **No value of unknown type is ever created.** IPC results are `Outcome<T>` (7.3);
+  `invoke` and `listen` are called with generated type arguments in `ipc/tauri.ts` only.
+  That is the one trust boundary, and it is covered from the Rust side (the command tests
+  compare the payload JSON with the bindings). The UI never calls `JSON.parse`, never reads
+  a rejection value and has no `try`/`catch` outside `ipc/tauri.ts` and the clipboard helper,
+  where the handlers take no parameter.
+- **Exhaustiveness without `never`**: lookup tables typed
+  `satisfies Record<Unavailable, Copy>` (a missing variant is a compile error) and the
+  switch-exhaustiveness lint for tagged unions.
+- **Narrowing instead of asserting**: DOM values are narrowed with `instanceof`; optional
+  values with explicit checks; array reads go through `noUncheckedIndexedAccess`.
+- Third-party declaration files in `node_modules` are not source and are outside the rule.
 
 Budgets: JavaScript ≤ 70 KB gzip, CSS ≤ 12 KB gzip, fonts ≤ 120 KB (checked in CI from the
 build output); no request other than the app origin and IPC at run time (Playwright); first
@@ -1712,8 +1948,8 @@ Frontend tests:
   **Chromium** (present on this machine; Playwright's WebKit does not run on Arch). These
   baselines guard against regressions; they do not prove WebKitGTK renders the same, which
   is what the manual check list of T11 and T13 covers.
-- **Real binary**: the driver-free smoke test of 11.4 always; `tauri-driver` +
-  `WebKitWebDriver` end-to-end tests in addition when the driver is installed.
+- **Real binary**: the driver-free smoke test of 11.4, and the `tauri-driver` +
+  `WebKitWebDriver` end-to-end tests on the real WebKitGTK view (required, 1a).
 
 ## 11. Quality gates
 
@@ -1726,11 +1962,15 @@ and that nothing merges without the gates below and a lead review.
   lints: `clippy::all`, `pedantic` (selected allow-list written in the manifest),
   `unwrap_used`, `expect_used`, `panic`, `indexing_slicing`, `arithmetic_side_effects`,
   `as_conversions`, `print_stdout`, `print_stderr`, `dbg_macro`, `todo`, `unimplemented`
-  denied outside tests; `unsafe_code` forbidden (core, io) / denied (shell);
-  `missing_docs` warned on public items.
-- TypeScript: `tsc --noEmit` strict (`noUncheckedIndexedAccess`, `exactOptionalPropertyTypes`),
-  `svelte-check`, ESLint (security rules of 8.10), stylelint (token rule), Prettier check.
-- Generated bindings up to date (`git diff --exit-code` after regeneration).
+  denied outside tests; `unsafe_code` **forbidden in all three crates**; no
+  `serde_json::Value` or `json!` outside tests (`clippy::disallowed_types`/`disallowed_macros`
+  and the architecture test); `missing_docs` warned on public items.
+- TypeScript: the three layers of section 10 ("Type discipline"): `tsc --noEmit` and
+  `svelte-check` with zero errors and zero warnings, ESLint (type-checked strict rules plus
+  the security rules of 8.10, no inline configuration), `check-types.ts`; stylelint (token
+  rule); Prettier check.
+- Generated bindings up to date (`git diff --exit-code` after regeneration) and free of
+  `any`/`unknown`/`never` (`check-types.ts` covers them).
 
 ### 11.2 Tests
 | level | what | tool |
@@ -1741,34 +1981,41 @@ and that nothing merges without the gates below and a lead review.
 | adapter | each source against recorded fixtures and failure cases (timeout, garbage, truncated, huge line, non-zero exit, 401, 429, 500, offline) using a stub program and a local stub HTTP server | `cargo test` |
 | integration | service loop with fake clock, fake timer and fake sources: scheduling, backoff, visibility, suspend jump, clock set, alerts once, canary end to end | `cargo test` with `FakeClock`/`FakeTimer` (and tokio paused time for fetch timeouts) |
 | component / screen / visual / a11y | section 10 | Vitest, Playwright, axe |
-| real binary | smoke test without a driver (always); WebDriver e2e (when the driver exists) | 11.4 |
+| real binary | smoke test without a driver; WebDriver e2e (required; NOT RUN until the user has installed the driver, 1a) | 11.4 |
 | security | section 8.10 | all of the above |
 
 ### 11.3 Coverage and budgets
 - Line coverage (`cargo llvm-cov`): core ≥ 95 %, io ≥ 85 %; the shell is glue and is covered
   by e2e. Vitest: `src/lib` logic ≥ 95 %, components ≥ 85 %.
 - Resource budgets, measured by `dashboard/scripts/measure-idle.sh` on the release build,
-  hidden and idle for 10 minutes against a temp tree, summed over the **whole process
-  tree** (the app and any WebKit helper that is still alive) and over all threads
-  (`/proc/<pid>/task/*/`): CPU time < 0.5 s, average wakeups (voluntary context switches)
-  < 2 per minute, RSS ≤ 60 MB; binary ≤ 15 MB. That destroying the window really ends
-  WebKit's helper processes is assumed (16) and this measurement is what checks it.
+  started hidden under `dbus-run-session` against a temp tree with stub CLIs. The window
+  measured is the 10 minutes from 60 s to 660 s after launch, which contains **no due
+  fetch** (the start-up fetches are over and the next hidden Codex poll is at 15 min).
+  Summed over the **whole process tree** (the app and any WebKit helper that is still alive)
+  and over all threads (`/proc/<pid>/task/*/`): CPU time < 0.5 s, average wakeups (voluntary
+  context switches) < 2 per minute, RSS ≤ 60 MB; binary ≤ 15 MB. The script also reports,
+  without a budget, the CPU time and context switches of one stub Codex poll. That
+  destroying the window really ends WebKit's helper processes is assumed (16) and this
+  measurement is what checks it.
 
 ### 11.4 `scripts/ci.sh`
 One script, fail-fast, prints a table of stages. Stages: (1) engine: `cargo build
---all-targets --locked` and `cargo test --locked` at the root (the 650 existing tests must
-stay green); (2) fmt, clippy; (3) dashboard Rust tests incl. property tests at CI case
+--all-targets --locked` and `cargo test --locked` at the root (every existing engine test
+must stay green); (2) fmt, clippy; (3) dashboard Rust tests incl. property tests at CI case
 counts; (4) bindings drift; (5) `cargo deny check`, `cargo audit`; (6) `pnpm install
---frozen-lockfile`, lint, typecheck, unit and component tests (with axe), `pnpm audit
---prod`; (7) UI build and bundle budgets; (8) Playwright screens, visual, accessibility,
+--frozen-lockfile`, lint, typecheck, `check-types.ts` (1a), unit and component tests (with
+axe), `pnpm audit --prod`; (7) UI build and bundle budgets; (8) Playwright screens, visual, accessibility,
 keyboard, no-network; (9) release build (`--profile dist`) and manifest snapshot tests;
-(10) **real-binary smoke test** (no driver needed): start the `dist` binary in the current
-graphical session with `HOME` and every `XDG_*_HOME` pointing at a temp tree that holds a
-synthetic `usage.jsonl`, and a `PATH` that contains only stub `codex` and `claude` programs;
-read its stderr `diag` lines and assert `Started`, a successful Claude-log and Codex fetch,
-`WindowReady` within budget, a new sample within 3 s of an appended row, rows in
-`history.db`, no canary anywhere in the temp tree or on stderr, no file outside the temp
-tree touched, and a clean exit on SIGTERM; (11) coverage thresholds; (12) fuzz (60 s per
+(10) **real-binary smoke test** (no driver needed): start the `dist` binary on the current
+Wayland display but isolated from the user's session: under `dbus-run-session` (8.8), with
+`HOME`, every `XDG_*_HOME` and `XDG_RUNTIME_DIR` pointing into a temp tree (0700) that holds
+a synthetic `usage.jsonl`, `WAYLAND_DISPLAY` set to the **absolute path** of the real socket
+(it is otherwise looked up in `XDG_RUNTIME_DIR`), and a `PATH` that contains only stub
+`codex` and `claude` programs; read its stderr `diag` lines and assert `Started`, a
+successful Claude-log and Codex fetch, `WindowReady` within budget, a new sample within 3 s
+of an appended row, rows in `history.db`, no canary anywhere in the temp tree or on stderr,
+no new file under the real state, config and data directories, and a clean exit on SIGTERM
+with no child left; (11) coverage thresholds; (12) fuzz (60 s per
 target, nightly); (13) WebDriver end-to-end on the real build (`tauri-driver` +
 `WebKitWebDriver`).
 
@@ -1776,12 +2023,15 @@ Tools: `scripts/ci.sh --bootstrap` installs, at pinned versions, with `--locked`
 root: `cargo-deny`, `cargo-audit`, `cargo-llvm-cov`, `cargo-fuzz`, a pinned nightly toolchain
 (through `rustup`, which is present), `tauri-driver`, and Playwright's Chromium (already
 cached here). A stage whose tool is missing prints **SKIPPED (reason, how to install)**
-loudly and the summary lists it; no stage is ever skipped silently. `scripts/ci.sh --release`
-treats a skipped stage as a failure, with one exception that is printed as **NOT RUN (needs
-root)** and listed in the summary: stage 13, because `WebKitWebDriver` is not packaged with
-Arch's `webkit2gtk-4.1` and installing it needs `pacman` (a user decision, section 17). Once
-the driver exists, stage 13 is required like the others. Stage 10 needs a graphical session
-and is SKIPPED (a failure under `--release`) without one.
+loudly and the summary lists it; no stage is ever skipped silently. Stage 13 without
+`WebKitWebDriver` prints **NOT RUN (the user installs it: `sudo pacman -S webkitgtk-6.0`)**,
+because that one tool needs root. `scripts/ci.sh --release` treats SKIPPED **and NOT RUN**
+as failures: per 1a the WebDriver stage is required, and NOT RUN is never a pass. Stages 10
+and 13 need a graphical session. Stage 13 runs the same isolated launch as stage 10 through
+`tauri-driver`; that the 2.54.1 driver from `webkitgtk-6.0` drives a `webkit2gtk-4.1` app of
+the same version, and that automation works with the incognito web view, are **assumed**
+and checked the first time the stage runs (the fallback for the second is a non-incognito
+web view in the WebDriver run only, with its data directory inside the temp tree).
 
 ### 11.5 Definition of done (per task and for v1)
 1. The task's acceptance tests exist and pass; `scripts/ci.sh` is green (no new SKIPPED).
@@ -1796,12 +2046,13 @@ and is SKIPPED (a failure under `--release`) without one.
    present and level 1 is reachable by keyboard.
 7. Lead review passed against the task's checklist, and review rounds repeated until a full
    round finds nothing (1a). A task with an open finding is not done.
-For v1 as a whole, additionally: `ci.sh --release` green on this machine (stage 13 may be
-NOT RUN, 11.4), the idle budgets measured, a manual run beside a live `jev-claude` session
-for one day with no gateway interference, the manual check lists of T04, T11 and T13, and a
-**manual screen-reader pass with Orca** over every screen and state against the written
-script (9.10). Orca is not installed here and needs `pacman`; v1 is not done until the pass
-has been made (section 17, Q2).
+For v1 as a whole, additionally: `ci.sh --release` green on this machine **with stage 13
+passing** (NOT RUN is not green, 1a), the idle budgets measured, a manual run beside a live
+`jev-claude` session for one day with no gateway interference, the manual check lists of
+T04, T11 and T13, and the **manual screen-reader pass with Orca** over every screen and
+state: the lead supplies the written script (what must be heard, in order), the user runs
+Orca and confirms each line or reports what was said instead; every difference is a finding
+and v1 is not done while one is open (1a).
 
 ## 12. Packaging, install, versioning
 - Build: `pnpm --dir dashboard install --frozen-lockfile && pnpm --dir dashboard tauri build
@@ -1809,7 +2060,8 @@ has been made (section 17, Q2).
   `target/dist/jev-dashboard`, which needs only the system's webkit2gtk-4.1, gtk3 and
   libayatana-appindicator (all present).
 - `dashboard/scripts/install.sh [dest]` (default `~/.local/bin`): installs the binary as
-  `jev-dashboard`, `dev.jev.flashboard.desktop` (`Name=Flashboard`, `Exec=` the absolute
+  `jev-dashboard` (written beside the target and renamed over it, so a running instance
+  keeps its old file and is never half-replaced), `dev.jev.flashboard.desktop` (`Name=Flashboard`, `Exec=` the absolute
   installed path) into `~/.local/share/applications`, and icons (named `dev.jev.flashboard`)
   into `~/.local/share/icons/hicolor/{32x32,128x128,scalable}/apps`; `--uninstall` removes
   exactly those, and also the autostart entry the app may have written
@@ -1828,18 +2080,20 @@ has been made (section 17, Q2).
 
 ## 13. Performance design notes
 - Idle hidden: no web view, no timers except the next source deadline (one timerfd), inotify
-  blocked in the kernel. The watched directory also holds the gateway's other logs; events
-  for other file names are dropped by name in the watcher thread and never reach the service.
+  blocked in the kernel. The watched directory also holds the gateway's other logs; the
+  directory watch asks only for create, move and delete events and the modify watch is on
+  the one log file, so writes to the other logs wake nothing (7.2).
 - A burst of gateway writes costs one 1.5 s-coalesced tail read of the new bytes only, with a
   cheap byte pre-filter (`"ratelimit":{"`, which a row with an empty `ratelimit` object
   does not contain) before JSON parsing.
 - A Codex poll is one short-lived process (about 2.7 s wall, almost all waiting) every
-  5/15 minutes; nothing stays resident.
+  5/15 minutes; nothing stays resident. Through the mise wrapper each start also costs
+  mise's own launch; its self-update is switched off for our children (8.6).
 - Snapshots are emitted only on change. Tray icons are cached and the tray is touched only
   when its own content changes. History queries return at most 600 points, aggregated in SQL
   (7.5), so memory per query is bounded by 600 points whatever the range.
-- The engine probe (two CLI starts) runs at start and then only when needed (7.2), never on
-  a fixed short timer.
+- The login probe (two short CLI starts) runs at start and then only when needed (7.2),
+  never on a fixed short timer.
 - One multi-thread runtime is already owned by Tauri; the service uses it and spawns no
   threads of its own beyond `spawn_blocking` for SQLite and the first-run backfill.
 
@@ -1851,11 +2105,11 @@ has been made (section 17, Q2).
 | Claude usage outside the gateway makes the number low | certain | honest "as of" labelling, `Elapsed` state, optional live check |
 | Tray host behaviour differs between shells | medium | menu-only interaction model; no-tray fallback decided when the window closes; tested on this machine's host (quickshell) |
 | WebKitGTK quirks (clipboard, fonts, compositing on Wayland, `prefers-color-scheme` not following the desktop) | medium | Copy falls back to selecting the text; fonts bundled; the Theme setting overrides the OS; manual check list in T11/T13 on the real web view, because the visual tests run in Chromium |
-| `WebKitWebDriver` unavailable on Arch | certain here | Playwright-on-mock covers the UI; the Rust integration suite covers the core; the driver-free smoke test (11.4 stage 10) covers the real binary; WebDriver e2e runs once the user installs the driver |
-| `PR_SET_DUMPABLE=0` upsets a portal or WebKit's sandbox helper | low | checked by hand in T11; fallback is `RLIMIT_CORE=0` only (8.8) |
+| `WebKitWebDriver` is not in Arch's `webkit2gtk-4.1` | certain here | the user installs `webkitgtk-6.0`, which ships it (1a); until then stage 13 is NOT RUN and v1 is not done; if that driver cannot drive the 4.1 app the lead reports it and the user decides |
+| `PR_SET_DUMPABLE=0` upsets a portal, WebKit's sandbox helper or its accessibility bridge | low | checked by hand in T11; fallback is `RLIMIT_CORE=0` only (8.8) |
 | A session `PATH` without `codex`/`claude` (autostart on another setup) | low here (verified, 3.4) | exact copy on the card, README section, never guess directories |
-| A mise command-wrapper for a listed but uninstalled tool starts an installer when the engine probe runs its status command | low | probe is rare (7.2) and the engine kills it after 5 s; a proper fix belongs in the engine's probe (lead item, section 17) |
-| The scrubbed child environment breaks `codex app-server` or `claude` (login not found) | medium | allow-list includes the home, bus and tool-home variables (8.6); one real, free Codex run under the scrubbed environment in T04's manual list |
+| A mise wrapper starts an install or the four-hourly self-update when we run `codex`/`claude` (both are `lazy`, `auto_update = "4h"` here) | medium | 8.6: install-on-disk check before any start; `MISE_OFFLINE=1` and the three auto-install switches in the child environment; process-group kill as backstop; before/after listing check in T04 |
+| The scrubbed child environment breaks `codex app-server` or `claude` (login or account wrapper not found; `MISE_OFFLINE` refused) | medium | allow-list includes the home, bus and tool-home variables (8.6); one real, free Codex run and both status commands under the scrubbed environment in T04's manual list |
 | `notify-rust`/`zbus` API or version drift | low | pinned; one module each; the Notifier and tray-host checks are behind traits with fakes |
 | The engine library drags heavy dependencies into the app | certain, low impact | link-time removal; split `jev-engine` later |
 | Web view memory when open (WebKit processes, 100 MB+) | certain | web view destroyed when the window is closed; that its helper processes exit is measured by `measure-idle.sh` over the process tree |
@@ -1863,14 +2117,14 @@ has been made (section 17, Q2).
 | Shared `Cargo.lock` churn for the engine | low | `default-members`, `--locked`, engine tests in stage 1 |
 
 ## 15. Designing for the later chat window (not built)
-- The engine is reached only through `jev_router::embed`, which already exports `Runtime`;
-  the chat feature adds turn execution exports there and a `jev-chat-io` crate beside
+- The engine is reached only through `jev_router::embed`; the chat feature adds `Runtime`
+  and turn execution exports there and a `jev-chat-io` crate beside
   `jev-usage-io`. The usage service is unaffected.
 - Turns run by the chat engine yield `PlanUsage`/rate-limit events; a `ChatTurnSource`
   implementing `UsageSource` with `Trigger::OnSignal` keeps the latest event and signals the
   service through the same `signals` channel the file watcher uses, so Claude usage becomes
   live while chatting with no new UI and **no change to the trait, the service or the IPC**.
-- `Notifier`, `HistoryStore`, `SettingsStore`, `WallTimer` and `EngineProbe` are unaffected by
+- `Notifier`, `HistoryStore`, `SettingsStore`, `WallTimer` and `LoginProbe` are unaffected by
   chat. `Settings` gains fields through its `version` and migration, not a new store.
 - The IPC rule changes for chat (prompts and answers must cross). That will be a **separate
   window label with a separate capability file and separate commands**, so the dashboard
@@ -1881,10 +2135,12 @@ has been made (section 17, Q2).
 **Verified** (section 3): Codex app-server transport, sequence, timings, exit behaviour and
 free-plan shapes; `usage.jsonl` field names, value types, freshness and line size; tray and
 notification hosts present; Tauri CLI `info` output; toolchain versions; which tools are
-missing; `gemini --help` has no usage command; engine probes never run `grok`/`agy`;
+missing; `gemini --help` has no usage command; `codex`/`claude` are lazy, self-updating mise
+wrappers that select the account, which stream each status command answers on, and mise's
+environment switches (3.1); `webkitgtk-6.0` ships `WebKitWebDriver` (3.4);
 `ts_ms` order, the `ratelimit` key set and the sporadic `7d_oi` window (3.2); log rotation by
 rename; XDG autostart is honoured by this session and its `PATH` finds `codex` and `claude`
-(3.4); what the engine's probe reads and runs (5.1).
+(3.4); what the engine's probe reads and runs, which is why it is not called (5.1).
 
 **Assumed**: paid Codex plans report 300- and 10080-minute windows (schema only);
 `account/rateLimits/updated` is not pushed without turns; meaning of Claude's `7d_oi`
@@ -1899,7 +2155,11 @@ Codex `usedPercent` may be fractional and `credits.balance` is a decimal string;
 destroying the window ends WebKit's helper processes; `incognito(true)` leaves no WebKit
 directory on disk; WebKitGTK follows the desktop's light/dark preference here;
 `PR_SET_DUMPABLE=0` does not disturb portals or WebKit; `WebKitWebDriver` from Arch's
-`webkitgtk-6.0` package can drive a `webkit2gtk-4.1` app. Each of these has a named check in
+`webkitgtk-6.0` package can drive a `webkit2gtk-4.1` app, also with an incognito web view;
+the four `MISE_*` switches stop every download when a wrapper runs; `WebviewUrl::App` keeps a
+URL fragment; Svelte 5 runs under `freezePrototype`; Tauri's macros compile under
+`#![forbid(unsafe_code)]`; WebKitGTK exposes `role="meter"` with
+`aria-valuetext` to Orca. Each of these has a named check in
 the task that depends on it, and none blocks the design if it turns out false (the fallback
 is written where the assumption is used).
 
@@ -1907,16 +2167,13 @@ is written where the assumption is used).
 Answered by the user on 2026-11-17 (section 1a): the name, the Claude live check, start at
 login, the account e-mail, what comes after v1, and the UI quality bar.
 
-Still for the user (none blocks the start of implementation):
-- Q1. `WebKitWebDriver` is not installed and needs root: install it (`sudo pacman -S
-  webkitgtk-6.0`, assumed to provide the driver) so the WebDriver end-to-end stage can run,
-  or accept v1 with the driver-free smoke test and that stage reported as NOT RUN (11.4)?
-- Q2. The manual screen-reader pass (1a, 11.5) needs Orca, which is not installed and needs
-  root (`sudo pacman -S orca`). May it be installed, or will the user run the pass?
-- Q3. The interrupted `antigravity-cli@1.5.9` download left an empty directory under
-  `~/.local/share/mise/installs/antigravity-cli/`: remove it or let `agy` finish installing?
+Also answered on 2026-11-17 (1a): the user installs `WebKitWebDriver` (`webkitgtk-6.0`) and
+Orca, the WebDriver stage is required, and the user takes part in the screen-reader pass.
+The interrupted `antigravity-cli` directory has been removed by the lead.
+
+Still for the user: none.
 
 For the lead (resolved during implementation, not user-owned): split of `jev-engine` from
-`jev-router`; a narrower engine probe for embedders (one provider at a time, scrubbed
-environment, no installer start through a mise wrapper, no token file read: see 5.1);
-whether to store a last reading for instant cold-start display; PKGBUILD.
+`jev-router`; moving the engine's own `probe_all` onto the narrow probe of 8.6 (it has the
+same wrapper and token-file behaviour, outside this project's scope); whether to store a
+last reading for instant cold-start display; PKGBUILD.
