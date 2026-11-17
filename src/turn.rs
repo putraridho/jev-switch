@@ -160,7 +160,14 @@ struct EngineApprover<'a> {
 
 impl EngineApprover<'_> {
     async fn answer(&self, req: &PermissionRequest) -> Decision {
-        let offer = permissions::always_plan(&req.tool, &req.input, req.blocked_path.as_deref(), &Places::from_env(self.dir));
+        let places = Places::from_env(self.dir);
+        // Every rule this call needs was saved before ("always"): not asked again, in any mode
+        // that asks at all. Plan mode never reaches here for writes (Claude Code refuses them).
+        if permissions::remembered(&req.tool, &req.input, req.blocked_path.as_deref(), &places).is_some() {
+            lock_ui(self.ui).event(&Event::Hint(uifmt::remembered_allowed(&req.summary)));
+            return Decision::Allow;
+        }
+        let offer = permissions::always_plan(&req.tool, &req.input, req.blocked_path.as_deref(), &places);
         // Auto answers exactly what would be offered to remember for good: nothing that
         // deletes, pushes, installs or sends data, and nothing outside the project's reach.
         if self.mode == Mode::Auto && offer.is_ok() {
@@ -2724,7 +2731,7 @@ mod tests {
             self.notes.push(line.into());
         }
         fn ask_permission(&mut self, req: &PermissionRequest, offer: &Offer) -> Answer {
-            let rule = offer.as_ref().ok().and_then(|a| a.rule.clone());
+            let rule = offer.as_ref().ok().and_then(|a| a.rules.first().cloned());
             self.questions.push((req.tool.clone(), req.summary.clone(), rule));
             let answer = self.answers.pop_front().expect("an answer was planned");
             Box::pin(std::future::ready(answer))
@@ -2823,7 +2830,7 @@ mod tests {
         let saved = permissions::load(&permissions::local_settings_path(&dir)).unwrap();
         assert_eq!(saved.list(permissions::List::Allow), ["Bash(cargo test:*)"]);
         assert!(ui.notes.is_empty(), "{:?}", ui.notes);
-        let always = permissions::Always { rule: Some("Bash(cargo test:*)".into()), folder: None };
+        let always = permissions::Always { rules: vec!["Bash(cargo test:*)".into()], folder: None };
         assert_eq!(ui.settled, [Settled::Remembered(always)], "the UI hears what was saved, after the save");
         let _ = std::fs::remove_dir_all(&dir);
     }

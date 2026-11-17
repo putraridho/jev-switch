@@ -639,8 +639,12 @@ def ask(p, text, answer=ANSWER, timeout=20):
     p.expect("› ", timeout, "the next prompt")
 
 
+MODE_HINT = re.compile(r"\s*\[(ask|edit|plan|auto) mode \u00b7 shift-tab to change\]\s*$")
+
+
 def at_empty_prompt(p):
-    return p.visible().rstrip("\n").split("\n")[-1].strip() == "›"
+    # An empty prompt shows the permission mode as a dim hint after it.
+    return MODE_HINT.sub("", p.visible().rstrip("\n").split("\n")[-1]).strip() == "›"
 
 
 def quit_with_ctrl_d(p):
@@ -859,12 +863,13 @@ def tab_completes_a_command(w):
     p = Pty(w, [w.repo], "tab")
     try:
         prompt_ready(p)
-        p.send("/mod\t")
+        # `/mod` is ambiguous since /mode exists; `/stat` has one completion.
+        p.send("/stat\t")
         p.settle(0.4)
         p.send("\r")
-        p.expect("model: auto", 10, "`/mod` + Tab to run as /model")
+        p.expect("Orchestrate", 10, "`/stat` + Tab to run as /status")
         if "unknown command" in p.visible():
-            raise Fail("Tab did not complete /mod to /model")
+            raise Fail("Tab did not complete /stat to /status")
         quit_with_ctrl_d(p)
     finally:
         p.close()

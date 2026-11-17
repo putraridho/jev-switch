@@ -145,6 +145,11 @@ pub fn auto_allowed(summary: &str) -> String {
     format!("\u{2713} auto-allowed {}", one_line(summary))
 }
 
+/// The hint for a call every rule of which was saved before ("always"): allowed unasked.
+pub fn remembered_allowed(summary: &str) -> String {
+    format!("\u{2713} allowed (remembered) {}", one_line(summary))
+}
+
 /// The `/permissions` screen: the project's rules and folders, then the user-level rules.
 pub fn permissions_text(l: &crate::permissions::Listing, style: Style, project_dir: &Path) -> String {
     let show = |path: &Path| relativize_paths(&path.display().to_string(), project_dir);
@@ -289,7 +294,7 @@ mod tests {
     fn answered_questions_and_the_non_interactive_hint_read_plainly() {
         use crate::permissions::{Always, SettingsError};
         assert_eq!(permission_answered(&Settled::Allowed, OFF), "✓ allowed");
-        let always = Always { rule: Some("Bash(ls:*)".into()), folder: None };
+        let always = Always { rules: vec!["Bash(ls:*)".into()], folder: None };
         assert_eq!(permission_answered(&Settled::Remembered(always), OFF), "✓ allowed, and always in this project: Bash(ls:*)");
         let failed = permission_answered(&Settled::NotSaved(SettingsError("/p/.claude/settings.local.json: cannot write it".into())), OFF);
         assert_eq!(failed, "✓ allowed\n[permissions] /p/.claude/settings.local.json: cannot write it; allowed this once, nothing was saved");
