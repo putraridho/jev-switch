@@ -150,7 +150,7 @@ pub struct TurnError {
 }
 
 impl TurnError {
-    fn new(kind: ErrorKind, message: impl Into<String>) -> Self {
+    pub(crate) fn new(kind: ErrorKind, message: impl Into<String>) -> Self {
         Self { kind, message: message.into() }
     }
 }
@@ -559,9 +559,52 @@ pub async fn run_turn(
     idle_timeout: Duration,
     on_event: &mut (dyn FnMut(&Event) + Send),
 ) -> Result<TurnOutcome, TurnError> {
-    let result = run_child(backend, req, idle_timeout, on_event).await;
-    backend.cleanup();
-    result
+    // A guard, not a call after the await: a cancelled turn drops this future, and the
+    // backend's files must go then too.
+    let _cleanup = CleanupOnDrop(backend);
+    run_child(backend, req, idle_timeout, on_event).await
+}
+
+/// Runs [`Backend::cleanup`] when the turn ends or its future is dropped.
+struct CleanupOnDrop<'a>(&'a dyn Backend);
+
+impl Drop for CleanupOnDrop<'_> {
+    fn drop(&mut self) {
+        self.0.cleanup();
+    }
+}
+
+/// The negative process-group id `kill(2)` takes to signal a whole group. `None` for
+/// a pid that would signal something else: `kill(-0)` is `kill(0)`, our own group.
+fn group_signal_target(pid: u32) -> Option<i32> {
+    i32::try_from(pid).ok().filter(|p| *p > 0).map(|p| -p)
+}
+
+/// Owns the process group of a running CLI. The CLIs spawn helpers (shells, test
+/// runs, MCP servers) and `kill_on_drop` reaches only the direct child, so when the
+/// turn ends badly or is cancelled (the future dropped) the whole group gets SIGKILL.
+/// A turn that finished cleanly [`disarm`](Self::disarm)s it: background work an
+/// agent started on purpose is not ours to kill. Off unix there are no groups and
+/// the direct-child kill remains.
+struct GroupKill(Option<u32>);
+
+impl GroupKill {
+    fn disarm(&mut self) {
+        self.0 = None;
+    }
+}
+
+impl Drop for GroupKill {
+    fn drop(&mut self) {
+        #[cfg(unix)]
+        if let Some(target) = self.0.and_then(group_signal_target) {
+            // SAFETY: plain `kill(2)` on a negative pid, which is a process group this
+            // runner created with `process_group(0)`; no memory is involved.
+            unsafe {
+                libc::kill(target, libc::SIGKILL);
+            }
+        }
+    }
 }
 
 async fn run_child(
@@ -572,9 +615,13 @@ async fn run_child(
 ) -> Result<TurnOutcome, TurnError> {
     let mut cmd = backend.command(req);
     cmd.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).kill_on_drop(true);
+    // Its own process group, so the whole tree can be killed (see [`GroupKill`]).
+    #[cfg(unix)]
+    cmd.process_group(0);
     let program = cmd.as_std().get_program().to_string_lossy().into_owned();
     let other = |m: String| TurnError::new(ErrorKind::Other, m);
     let mut child = cmd.spawn().map_err(|e| other(format!("failed to run `{program}` (is it installed?): {e}")))?;
+    let mut group = GroupKill(if cfg!(unix) { child.id() } else { None });
     let stdout = child.stdout.take().ok_or_else(|| other(format!("`{program}` gave no stdout")))?;
     feed_stdin(child.stdin.take(), backend.stdin_payload(req));
     let stderr = collect_stderr(child.stderr.take());
@@ -593,16 +640,30 @@ async fn run_child(
             Err(classified(message))
         }
         Ok(Ended::Finished(finish)) => {
-            reap(&mut child).await;
+            if reap(&mut child).await.is_some() {
+                group.disarm();
+            }
             judge(finish, plan)
         }
         Ok(Ended::Eof) => Err(classified(explain_eof(&mut child, stderr).await)),
     }
 }
 
+/// Alive means running: a killed process that nobody has reaped yet is a zombie. Linux only (reads `/proc`).
+#[cfg(test)]
+pub(crate) fn process_alive(pid: i32) -> bool {
+    match std::fs::read_to_string(format!("/proc/{pid}/stat")) {
+        Ok(stat) => !stat.rsplit(')').next().unwrap_or("").trim_start().starts_with('Z'),
+        Err(_) => false,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
+
+    use super::process_alive as alive;
 
     /// A backend whose "CLI" is a shell script printing canned lines, so the runner
     /// is tested without any real CLI. Line grammar: `FIN:text`, `FAIL:message`,
@@ -679,6 +740,172 @@ mod tests {
         let (r, _) = run("echo TEXT:start; exec sleep 30", 300).await;
         assert_eq!(r.unwrap_err().kind, ErrorKind::Stalled);
         assert!(started.elapsed() < Duration::from_secs(10));
+    }
+
+    /// A backend whose script is built at run time (it needs a scratch path).
+    struct Owned(String);
+
+    impl Backend for Owned {
+        fn provider(&self) -> ProviderId {
+            ProviderId::Claude
+        }
+        fn command(&self, req: &TurnRequest) -> Command {
+            let mut c = Command::new("sh");
+            c.arg("-c").arg(&self.0).current_dir(&req.dir);
+            c
+        }
+        fn parse_line(&self, line: &str) -> Vec<Event> {
+            match line.trim_end().split_once(':') {
+                Some(("FIN", t)) => vec![Event::Finished(Finish { text: t.into(), session_id: None, usage: Usage::default() })],
+                _ => vec![],
+            }
+        }
+        fn classify_error(&self, _: &str) -> ErrorKind {
+            ErrorKind::Other
+        }
+    }
+
+    async fn read_pid(path: &Path) -> i32 {
+        for _ in 0..200 {
+            if let Some(pid) = std::fs::read_to_string(path).ok().and_then(|s| s.trim().parse().ok()) {
+                return pid;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        panic!("{path:?} never written");
+    }
+
+    async fn all_dead(pids: &[i32]) -> bool {
+        for _ in 0..200 {
+            if pids.iter().all(|p| !alive(*p)) {
+                return true;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        false
+    }
+
+    /// A shell that starts a sleeping grandchild and waits for it; both pids go to files.
+    fn shell_with_grandchild(dir: &Path) -> (String, PathBuf, PathBuf) {
+        std::fs::create_dir_all(dir).unwrap();
+        let (shell, child) = (dir.join("shell.pid"), dir.join("child.pid"));
+        let script = format!("sleep 60 & echo $! > {c}; echo $$ > {s}; wait", c = child.display(), s = shell.display());
+        (script, shell, child)
+    }
+
+    #[tokio::test]
+    async fn dropping_the_turn_kills_the_cli_and_its_children() {
+        let dir = scratch_dir("group-drop");
+        let (script, shell_file, child_file) = shell_with_grandchild(&dir);
+        let backend = Owned(script);
+        let request = req();
+        let mut on_event = |_: &Event| {};
+        let turn = run_turn(&backend, &request, Duration::from_secs(60), &mut on_event);
+        let pids = async { (read_pid(&shell_file).await, read_pid(&child_file).await) };
+        let (shell, child) = tokio::select! {
+            _ = turn => panic!("the turn cannot end by itself"),
+            pids = pids => pids,
+        };
+        // The select dropped the turn: the shell and the sleep it started must both go.
+        assert!(all_dead(&[shell, child]).await, "shell alive: {}, grandchild alive: {}", alive(shell), alive(child));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn a_stalled_cli_takes_its_children_with_it() {
+        let dir = scratch_dir("group-stall");
+        let (script, shell_file, child_file) = shell_with_grandchild(&dir);
+        let request = req();
+        let r = run_turn(&Owned(script), &request, Duration::from_millis(300), &mut |_| {}).await;
+        assert_eq!(r.unwrap_err().kind, ErrorKind::Stalled);
+        let pids = [read_pid(&shell_file).await, read_pid(&child_file).await];
+        assert!(all_dead(&pids).await);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn a_failing_cli_takes_its_children_with_it() {
+        let dir = scratch_dir("group-fail");
+        std::fs::create_dir_all(&dir).unwrap();
+        let child_file = dir.join("child.pid");
+        let script = format!("sleep 60 & echo $! > {}; echo 'FAIL:boom'; wait", child_file.display());
+        struct Fails(Owned);
+        impl Backend for Fails {
+            fn provider(&self) -> ProviderId {
+                ProviderId::Claude
+            }
+            fn command(&self, req: &TurnRequest) -> Command {
+                self.0.command(req)
+            }
+            fn parse_line(&self, line: &str) -> Vec<Event> {
+                match line.trim_end().split_once(':') {
+                    Some(("FAIL", m)) => vec![Event::Failed { message: m.into() }],
+                    _ => vec![],
+                }
+            }
+            fn classify_error(&self, _: &str) -> ErrorKind {
+                ErrorKind::Other
+            }
+        }
+        let request = req();
+        let r = run_turn(&Fails(Owned(script)), &request, Duration::from_secs(5), &mut |_| {}).await;
+        assert!(r.is_err());
+        assert!(all_dead(&[read_pid(&child_file).await]).await);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn a_clean_finish_leaves_background_work_the_agent_started_alone() {
+        let dir = scratch_dir("group-clean");
+        std::fs::create_dir_all(&dir).unwrap();
+        let child_file = dir.join("child.pid");
+        let script = format!("sleep 30 >/dev/null 2>&1 & echo $! > {}; echo FIN:ok", child_file.display());
+        let request = req();
+        let r = run_turn(&Owned(script), &request, Duration::from_secs(5), &mut |_| {}).await;
+        assert_eq!(r.unwrap().text, "ok");
+        let child = read_pid(&child_file).await;
+        assert!(alive(child), "a finished turn does not kill its group");
+        // SAFETY: tidying our own test process.
+        unsafe { libc::kill(child, libc::SIGKILL) };
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_group_signal_never_targets_our_own_group_or_everything() {
+        assert_eq!(group_signal_target(4242), Some(-4242));
+        assert_eq!(group_signal_target(0), None);
+        assert_eq!(group_signal_target(u32::MAX), None);
+    }
+
+    #[tokio::test]
+    async fn a_dropped_turn_still_cleans_up_the_backends_files() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        struct Flag(Arc<AtomicBool>);
+        impl Backend for Flag {
+            fn provider(&self) -> ProviderId {
+                ProviderId::Claude
+            }
+            fn command(&self, req: &TurnRequest) -> Command {
+                let mut c = Command::new("sh");
+                c.arg("-c").arg("sleep 30").current_dir(&req.dir);
+                c
+            }
+            fn parse_line(&self, _: &str) -> Vec<Event> {
+                vec![]
+            }
+            fn classify_error(&self, _: &str) -> ErrorKind {
+                ErrorKind::Other
+            }
+            fn cleanup(&self) {
+                self.0.store(true, Ordering::SeqCst);
+            }
+        }
+        let cleaned = Arc::new(AtomicBool::new(false));
+        let request = req();
+        let backend = Flag(cleaned.clone());
+        let gone = tokio::time::timeout(Duration::from_millis(100), run_turn(&backend, &request, Duration::from_secs(60), &mut |_| {})).await;
+        assert!(gone.is_err(), "the turn was still running when it was dropped");
+        assert!(cleaned.load(Ordering::SeqCst));
     }
 
     #[tokio::test]

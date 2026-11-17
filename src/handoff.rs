@@ -7,6 +7,10 @@
 //! that the caller prepends to the next prompt.
 
 use std::collections::HashMap;
+use std::io::Write as _;
+use std::path::{Path, PathBuf};
+
+use serde_json::{json, Value};
 
 use crate::backend::ProviderId;
 
@@ -121,6 +125,43 @@ impl Sessions {
         chars / CHARS_PER_TOKEN
     }
 
+    /// Number of logged turns (answered, failed, interrupted, and undo notes).
+    pub fn turns(&self) -> usize {
+        self.log.len()
+    }
+
+    /// Providers that ran a turn, in the order they first appeared.
+    pub fn providers_used(&self) -> Vec<ProviderId> {
+        let mut out: Vec<ProviderId> = Vec::new();
+        for r in &self.log {
+            if !out.contains(&r.provider) {
+                out.push(r.provider);
+            }
+        }
+        out
+    }
+
+    /// The prompt and reply of the last turn that was answered, for Jev's correction question.
+    pub fn last_answered(&self) -> Option<(&str, &str)> {
+        self.log.iter().rev().find(|r| r.ok).map(|r| (r.prompt.as_str(), r.reply.as_str()))
+    }
+
+    /// Note that the user undid the changes of the previous turn. Unlike
+    /// [`Sessions::record_failed`] this marks nobody as caught up, not even the provider
+    /// that ran the turn: its own CLI session still believes the files are as it left
+    /// them, so its next prompt carries this note and tells it to look again.
+    pub fn record_undo(&mut self) {
+        let (provider, model) = self.log.last().map_or((ProviderId::Claude, String::new()), |r| (r.provider, r.model.clone()));
+        self.log.push(TurnRecord {
+            prompt: "/undo".into(),
+            provider,
+            model,
+            reply: UNDO_NOTE.into(),
+            tools: Vec::new(),
+            ok: false,
+        });
+    }
+
     /// Forget everything (`/new`): sessions, what was seen, and the log.
     pub fn reset(&mut self) {
         *self = Self::default();
@@ -138,6 +179,15 @@ impl Sessions {
             .join("\n")
     }
 }
+
+/// What the next catch-up says about an undone turn.
+pub const UNDO_NOTE: &str = "(the user undid the changes of the previous turn)";
+
+/// What a turn that the user cancelled says in the next catch-up.
+pub const INTERRUPTED_NOTE: &str = "(interrupted by the user before it finished; files may be partly changed)";
+
+/// Longest reply kept in a saved session; the catch-up shrinks replies far below this anyway.
+pub const SAVED_REPLY_CHARS: usize = 4_000;
 
 /// Tokens are estimated as characters / 4 everywhere in this module.
 const CHARS_PER_TOKEN: usize = 4;
@@ -285,6 +335,221 @@ fn render(missed: &[TurnRecord], you: &str, git_status: &str, level: &Level) -> 
     let git = if git.is_empty() { "(no changes)".to_string() } else { git };
     out.push_str(&format!("git status:\n{git}\n\nNow the user says:\n"));
     out
+}
+
+// ---------------------------------------------------------------------- saved sessions
+
+impl Sessions {
+    /// The session as JSON for saving: CLI session ids, how far each provider has seen,
+    /// and the turn log with every reply cut to [`SAVED_REPLY_CHARS`].
+    pub fn to_json(&self) -> Value {
+        let ids: serde_json::Map<String, Value> = self.ids.iter().map(|(p, id)| (p.as_str().into(), json!(id))).collect();
+        let seen: serde_json::Map<String, Value> = self.seen.iter().map(|(p, n)| (p.as_str().into(), json!(n))).collect();
+        let log: Vec<Value> = self
+            .log
+            .iter()
+            .map(|r| {
+                json!({
+                    "prompt": r.prompt,
+                    "provider": r.provider.as_str(),
+                    "model": r.model,
+                    "reply": truncate_chars(&r.reply, SAVED_REPLY_CHARS),
+                    "tools": r.tools,
+                    "ok": r.ok,
+                })
+            })
+            .collect();
+        json!({ "ids": ids, "seen": seen, "log": log })
+    }
+
+    /// Read what [`Sessions::to_json`] wrote. Tolerant: a field that is missing or the
+    /// wrong type is skipped, and an entry that cannot be read is dropped, so a damaged
+    /// file gives a shorter session rather than an error.
+    pub fn from_json(v: &Value) -> Self {
+        let provider = |s: &str| s.parse::<ProviderId>().ok();
+        let mut out = Self::default();
+        if let Some(entries) = v.get("log").and_then(Value::as_array) {
+            for e in entries {
+                let text = |k: &str| e.get(k).and_then(Value::as_str);
+                let (Some(prompt), Some(p)) = (text("prompt"), text("provider").and_then(provider)) else { continue };
+                out.log.push(TurnRecord {
+                    prompt: prompt.to_string(),
+                    provider: p,
+                    model: text("model").unwrap_or_default().to_string(),
+                    reply: text("reply").unwrap_or_default().to_string(),
+                    tools: e
+                        .get("tools")
+                        .and_then(Value::as_array)
+                        .map(|t| t.iter().filter_map(Value::as_str).map(String::from).collect())
+                        .unwrap_or_default(),
+                    ok: e.get("ok").and_then(Value::as_bool).unwrap_or(false),
+                });
+            }
+        }
+        if let Some(ids) = v.get("ids").and_then(Value::as_object) {
+            for (k, id) in ids {
+                if let (Some(p), Some(id)) = (provider(k), id.as_str().filter(|s| !s.is_empty())) {
+                    out.ids.insert(p, id.to_string());
+                }
+            }
+        }
+        if let Some(seen) = v.get("seen").and_then(Value::as_object) {
+            for (k, n) in seen {
+                if let (Some(p), Some(n)) = (provider(k), n.as_u64()) {
+                    out.seen.insert(p, (n as usize).min(out.log.len()));
+                }
+            }
+        }
+        out
+    }
+}
+
+/// A session saved to disk is ignored once it is older than this.
+pub const SAVED_MAX_AGE_MS: u64 = 14 * 24 * 60 * 60 * 1000;
+
+/// What is stored for one project: the conversation plus where routing stood.
+#[derive(Debug, Clone)]
+pub struct SavedSession {
+    pub project: String,
+    pub saved_ms: u64,
+    pub sessions: Sessions,
+    /// The model the last turn ran on.
+    pub current: Option<(ProviderId, String)>,
+}
+
+/// What the UI shows to offer resuming.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SessionInfo {
+    pub turns: usize,
+    pub last_used_ms: u64,
+    pub providers: Vec<ProviderId>,
+    /// The model the last turn ran on.
+    pub current: Option<(ProviderId, String)>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ResumeError {
+    /// Persistence is switched off for this engine.
+    Disabled,
+    /// Nothing saved for this project (or it is older than 14 days, or for another project).
+    NotFound,
+    /// The file is not a saved session.
+    Corrupt(String),
+    Io(String),
+}
+
+impl std::fmt::Display for ResumeError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Disabled => f.write_str("saving sessions is switched off"),
+            Self::NotFound => f.write_str("no saved session for this folder (sessions are kept for 14 days)"),
+            Self::Corrupt(m) => write!(f, "the saved session is unreadable: {m}"),
+            Self::Io(m) => write!(f, "could not read the saved session: {m}"),
+        }
+    }
+}
+
+impl std::error::Error for ResumeError {}
+
+impl SavedSession {
+    pub fn to_json(&self) -> Value {
+        json!({
+            "version": 1,
+            "project": self.project,
+            "saved_ms": self.saved_ms,
+            "current": self.current.as_ref().map(|(p, m)| json!({ "provider": p.as_str(), "model": m })),
+            "sessions": self.sessions.to_json(),
+        })
+    }
+
+    /// `Err` only when the value is not a saved session at all (no project or time).
+    pub fn from_json(v: &Value) -> Result<Self, String> {
+        let project = v.get("project").and_then(Value::as_str).ok_or("no project")?.to_string();
+        let saved_ms = v.get("saved_ms").and_then(Value::as_u64).ok_or("no save time")?;
+        let current = v.get("current").and_then(|c| {
+            let provider = c.get("provider")?.as_str()?.parse::<ProviderId>().ok()?;
+            Some((provider, c.get("model")?.as_str()?.to_string()))
+        });
+        let sessions = Sessions::from_json(v.get("sessions").unwrap_or(&Value::Null));
+        Ok(Self { project, saved_ms, sessions, current })
+    }
+
+    pub fn info(&self) -> SessionInfo {
+        SessionInfo {
+            turns: self.sessions.turns(),
+            last_used_ms: self.saved_ms,
+            providers: self.sessions.providers_used(),
+            current: self.current.clone(),
+        }
+    }
+
+    /// Is this too old to offer at time `now_ms`?
+    pub fn expired(&self, now_ms: u64) -> bool {
+        now_ms.saturating_sub(self.saved_ms) > SAVED_MAX_AGE_MS
+    }
+}
+
+/// The project folder as it is keyed on disk: canonical when it can be.
+pub fn project_key(dir: &Path) -> String {
+    std::fs::canonicalize(dir).unwrap_or_else(|_| dir.to_path_buf()).to_string_lossy().into_owned()
+}
+
+/// FNV-1a, 64 bit: a hash that is the same on every machine and every Rust version,
+/// which `DefaultHasher` does not promise.
+fn fnv1a(bytes: &[u8]) -> u64 {
+    bytes.iter().fold(0xcbf2_9ce4_8422_2325, |h, b| (h ^ u64::from(*b)).wrapping_mul(0x0100_0000_01b3))
+}
+
+/// `<state_dir>/sessions/<hash of the canonical project folder>.json`.
+pub fn session_file(state_dir: &Path, project_dir: &Path) -> PathBuf {
+    state_dir.join("sessions").join(format!("{:016x}.json", fnv1a(project_key(project_dir).as_bytes())))
+}
+
+/// Write `text` to `path` through a temp file and a rename, so a crash never leaves half a
+/// file; owner-only, because prompts can be private.
+pub fn write_atomic(path: &Path, text: &str) -> std::io::Result<()> {
+    let dir = path.parent().unwrap_or(Path::new("."));
+    std::fs::create_dir_all(dir)?;
+    let tmp = path.with_extension(format!("tmp-{}", std::process::id()));
+    let mut opts = std::fs::OpenOptions::new();
+    opts.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut opts, 0o600);
+    let written = opts.open(&tmp).and_then(|mut f| f.write_all(text.as_bytes()).and_then(|()| f.sync_all()));
+    match written.and_then(|()| std::fs::rename(&tmp, path)) {
+        Ok(()) => Ok(()),
+        Err(e) => {
+            let _ = std::fs::remove_file(&tmp);
+            Err(e)
+        }
+    }
+}
+
+/// Load the saved session for `project_dir`. A session older than 14 days, or one that
+/// belongs to another project (a hash collision), is [`ResumeError::NotFound`].
+pub fn load_saved(state_dir: &Path, project_dir: &Path, now_ms: u64) -> Result<SavedSession, ResumeError> {
+    let text = match std::fs::read_to_string(session_file(state_dir, project_dir)) {
+        Ok(t) => t,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Err(ResumeError::NotFound),
+        Err(e) => return Err(ResumeError::Io(e.to_string())),
+    };
+    let value: Value = serde_json::from_str(&text).map_err(|e| ResumeError::Corrupt(e.to_string()))?;
+    let saved = SavedSession::from_json(&value).map_err(ResumeError::Corrupt)?;
+    if saved.project != project_key(project_dir) || saved.expired(now_ms) {
+        return Err(ResumeError::NotFound);
+    }
+    Ok(saved)
+}
+
+/// What there is to resume for `project_dir` in `state_dir`, if anything usable.
+pub fn saved_session_info_in(state_dir: &Path, project_dir: &Path, now_ms: u64) -> Option<SessionInfo> {
+    load_saved(state_dir, project_dir, now_ms).ok().map(|s| s.info()).filter(|i| i.turns > 0)
+}
+
+/// [`saved_session_info_in`] for the default state directory and the real clock, for
+/// the UI to offer resuming at startup.
+pub fn saved_session_info(project_dir: &Path) -> Option<SessionInfo> {
+    saved_session_info_in(&crate::log::state_dir()?, project_dir, crate::log::now_ms())
 }
 
 #[cfg(test)]
@@ -523,5 +788,169 @@ mod tests {
         s.mark_seen(ProviderId::Claude);
         s.record_failed(rec(ProviderId::Claude, false));
         assert_eq!(s.missed_turns(ProviderId::Claude), 0);
+    }
+
+    #[test]
+    fn sessions_round_trip_through_json_and_cap_long_replies() {
+        let mut s = Sessions::new();
+        s.set_session_id(ProviderId::Claude, "abc".into());
+        s.set_session_id(ProviderId::Codex, "xyz".into());
+        s.record(rec(ProviderId::Claude, "one", "r1", &["Edit src/a.rs"], true));
+        s.record(rec(ProviderId::Codex, "two", &"r".repeat(SAVED_REPLY_CHARS + 500), &[], false));
+        let back = Sessions::from_json(&s.to_json());
+        assert_eq!(back.session_id(ProviderId::Claude), Some("abc"));
+        assert_eq!(back.session_id(ProviderId::Codex), Some("xyz"));
+        assert_eq!(back.turns(), 2);
+        assert_eq!(back.missed_turns(ProviderId::Codex), 0);
+        assert_eq!(back.missed_turns(ProviderId::Claude), 1, "who has seen what survives");
+        assert_eq!(back.log[0], s.log[0]);
+        assert!(!back.log[1].ok);
+        assert_eq!(back.log[1].reply.chars().count(), SAVED_REPLY_CHARS + 1, "capped, with an ellipsis");
+        assert_eq!(back.providers_used(), [ProviderId::Claude, ProviderId::Codex]);
+        assert_eq!(back.last_answered(), Some(("one", "r1")));
+    }
+
+    #[test]
+    fn from_json_survives_garbage_and_missing_fields() {
+        for v in [json!(null), json!(7), json!("x"), json!([]), json!({}), json!({ "log": "no", "ids": 3, "seen": [1] })] {
+            let s = Sessions::from_json(&v);
+            assert_eq!((s.turns(), s.session_id(ProviderId::Claude)), (0, None), "{v}");
+        }
+        let v = json!({
+            "log": [
+                { "prompt": "ok", "provider": "claude" },
+                { "prompt": "unknown provider", "provider": "nope" },
+                { "provider": "claude" },
+                7,
+                { "prompt": "tools are junk", "provider": "codex", "tools": [1, "Edit a", null], "ok": "yes", "reply": 5 },
+            ],
+            "ids": { "claude": "", "codex": "c1", "nope": "x", "grok": 5 },
+            "seen": { "claude": 99, "codex": "many", "nope": 1 },
+        });
+        let s = Sessions::from_json(&v);
+        assert_eq!(s.turns(), 2);
+        assert_eq!(s.log[1].tools, ["Edit a"]);
+        assert!(!s.log[1].ok && s.log[1].reply.is_empty());
+        assert_eq!(s.session_id(ProviderId::Claude), None);
+        assert_eq!(s.session_id(ProviderId::Codex), Some("c1"));
+        assert_eq!(s.missed_turns(ProviderId::Claude), 0, "a seen count past the end is clamped");
+    }
+
+    #[test]
+    fn an_undo_is_told_to_every_provider_including_the_one_that_ran_the_turn() {
+        let mut s = Sessions::new();
+        s.record(rec(ProviderId::Claude, "change it", "done", &["Edit a.rs"], true));
+        assert_eq!(s.missed_turns(ProviderId::Claude), 0);
+        s.record_undo();
+        assert_eq!(s.missed_turns(ProviderId::Claude), 1);
+        let text = s.catch_up(ProviderId::Claude, "", 1000).unwrap();
+        assert!(text.contains("the user undid the changes of the previous turn"), "{text}");
+        assert!(text.contains("FAILED"));
+        assert_eq!(s.last_answered(), Some(("change it", "done")), "an undo note is not an answer");
+    }
+
+    struct TempState(PathBuf);
+
+    impl TempState {
+        fn new(name: &str) -> Self {
+            let p = std::env::temp_dir().join(format!("jev-sessions-{}-{name}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&p);
+            std::fs::create_dir_all(&p).unwrap();
+            Self(p)
+        }
+    }
+
+    impl Drop for TempState {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    const NOW: u64 = 1_760_000_000_000;
+    const DAY: u64 = 24 * 60 * 60 * 1000;
+
+    fn saved_for(dir: &Path, saved_ms: u64) -> SavedSession {
+        let mut sessions = Sessions::new();
+        sessions.set_session_id(ProviderId::Claude, "s1".into());
+        sessions.record(rec(ProviderId::Claude, "hi", "hello", &[], true));
+        SavedSession { project: project_key(dir), saved_ms, sessions, current: Some((ProviderId::Claude, "m1".into())) }
+    }
+
+    fn store(state: &Path, dir: &Path, saved: &SavedSession) {
+        write_atomic(&session_file(state, dir), &saved.to_json().to_string()).unwrap();
+    }
+
+    #[test]
+    fn a_saved_session_round_trips_through_its_file() {
+        let (state, project) = (TempState::new("rt-state"), TempState::new("rt-proj"));
+        let saved = saved_for(&project.0, NOW - 1000);
+        store(&state.0, &project.0, &saved);
+        let back = load_saved(&state.0, &project.0, NOW).unwrap();
+        assert_eq!((back.saved_ms, back.project.as_str()), (NOW - 1000, saved.project.as_str()));
+        assert_eq!(back.current, Some((ProviderId::Claude, "m1".into())));
+        assert_eq!(back.sessions.session_id(ProviderId::Claude), Some("s1"));
+        let info = saved_session_info_in(&state.0, &project.0, NOW).unwrap();
+        assert_eq!(info, SessionInfo { turns: 1, last_used_ms: NOW - 1000, providers: vec![ProviderId::Claude], current: back.current });
+        // Written atomically and privately: no temp file left, owner-only on unix.
+        let names: Vec<_> = std::fs::read_dir(state.0.join("sessions")).unwrap().flatten().map(|e| e.file_name()).collect();
+        assert_eq!(names.len(), 1, "{names:?}");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(session_file(&state.0, &project.0)).unwrap().permissions().mode();
+            assert_eq!(mode & 0o077, 0);
+        }
+    }
+
+    #[test]
+    fn a_garbage_or_foreign_file_is_an_error_not_a_session() {
+        let (state, project) = (TempState::new("bad-state"), TempState::new("bad-proj"));
+        assert_eq!(load_saved(&state.0, &project.0, NOW).unwrap_err(), ResumeError::NotFound);
+        let file = session_file(&state.0, &project.0);
+        for junk in ["not json at all", "[1,2,3]", "{}", r#"{"project":"x"}"#] {
+            write_atomic(&file, junk).unwrap();
+            assert!(matches!(load_saved(&state.0, &project.0, NOW), Err(ResumeError::Corrupt(_))), "{junk}");
+            assert_eq!(saved_session_info_in(&state.0, &project.0, NOW), None);
+        }
+        // A file that says it is for another project is not ours.
+        let mut other = saved_for(&project.0, NOW);
+        other.project = "/somewhere/else".into();
+        write_atomic(&file, &other.to_json().to_string()).unwrap();
+        assert_eq!(load_saved(&state.0, &project.0, NOW).unwrap_err(), ResumeError::NotFound);
+    }
+
+    #[test]
+    fn sessions_older_than_fourteen_days_are_ignored() {
+        let (state, project) = (TempState::new("age-state"), TempState::new("age-proj"));
+        store(&state.0, &project.0, &saved_for(&project.0, NOW - 13 * DAY));
+        assert!(saved_session_info_in(&state.0, &project.0, NOW).is_some());
+        store(&state.0, &project.0, &saved_for(&project.0, NOW - 15 * DAY));
+        assert_eq!(saved_session_info_in(&state.0, &project.0, NOW), None);
+        assert_eq!(load_saved(&state.0, &project.0, NOW).unwrap_err(), ResumeError::NotFound);
+    }
+
+    #[test]
+    fn each_project_has_its_own_file_and_the_name_is_stable() {
+        let state = TempState::new("iso-state");
+        let (a, b) = (TempState::new("iso-a"), TempState::new("iso-b"));
+        assert_ne!(session_file(&state.0, &a.0), session_file(&state.0, &b.0));
+        // A path spelled differently but the same folder keys the same file.
+        let roundabout = a.0.join("..").join(a.0.file_name().unwrap());
+        assert_eq!(session_file(&state.0, &a.0), session_file(&state.0, &roundabout));
+        store(&state.0, &a.0, &saved_for(&a.0, NOW));
+        assert!(saved_session_info_in(&state.0, &a.0, NOW).is_some());
+        assert_eq!(saved_session_info_in(&state.0, &b.0, NOW), None);
+        // FNV-1a test vector, so the file names never drift between releases.
+        assert_eq!(fnv1a(b""), 0xcbf2_9ce4_8422_2325);
+        assert_eq!(fnv1a(b"a"), 0xaf63_dc4c_8601_ec8c);
+    }
+
+    #[test]
+    fn a_saved_session_without_turns_is_not_offered() {
+        let (state, project) = (TempState::new("empty-state"), TempState::new("empty-proj"));
+        let mut saved = saved_for(&project.0, NOW);
+        saved.sessions = Sessions::new();
+        store(&state.0, &project.0, &saved);
+        assert_eq!(saved_session_info_in(&state.0, &project.0, NOW), None);
     }
 }

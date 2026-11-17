@@ -14,14 +14,17 @@
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};
+use tokio::sync::watch;
 
 use crate::anthropic::{MODEL_CHEAP, MODEL_MID, MODEL_STRONG};
-use crate::backend::{self, Backend, Event, McpAttachment, ProviderId, TurnError, TurnOutcome, TurnRequest, Usage};
+use crate::backend::{self, Backend, ErrorKind, Event, McpAttachment, ProviderId, TurnError, TurnOutcome, TurnRequest, Usage};
 use crate::catalog::{self, find, ModelSpec};
-use crate::handoff::{Sessions, TurnRecord};
+use crate::changes::{self, ChangeSummary, UndoError, UndoReport};
+use crate::handoff::{self, ResumeError, SavedSession, Sessions, TurnRecord};
 use crate::log;
 use crate::orchestrate::{self, Outcome, Setup};
 use crate::providers::{self, Runtime};
@@ -47,6 +50,46 @@ pub trait Ui: Send {
     fn note(&mut self, line: &str);
 }
 
+/// A switch that stops one turn without stopping the program (Ctrl-C in the UI). Cheap
+/// to clone; every clone sees the same state. Once cancelled it stays cancelled, so make
+/// a new one for each turn.
+#[derive(Clone, Debug)]
+pub struct Cancel {
+    tx: Arc<watch::Sender<bool>>,
+    rx: watch::Receiver<bool>,
+}
+
+impl Cancel {
+    pub fn new() -> Self {
+        let (tx, rx) = watch::channel(false);
+        Self { tx: Arc::new(tx), rx }
+    }
+
+    /// Ask the turn to stop. Safe to call more than once, from any thread.
+    pub fn cancel(&self) {
+        self.tx.send_replace(true);
+    }
+
+    pub fn is_cancelled(&self) -> bool {
+        *self.rx.borrow()
+    }
+
+    /// Resolves once [`Cancel::cancel`] has been called (at once if it already was).
+    pub async fn cancelled(&self) {
+        let mut rx = self.rx.clone();
+        if rx.wait_for(|c| *c).await.is_err() {
+            // Unreachable while `self` holds the sender; never report a cancel that did not happen.
+            std::future::pending::<()>().await;
+        }
+    }
+}
+
+impl Default for Cancel {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TurnStatus {
     /// A model answered; see [`TurnReport::text`].
@@ -55,6 +98,9 @@ pub enum TurnStatus {
     NoRoute,
     /// A model was started and failed in a way that ended the turn.
     Failed,
+    /// The user stopped the turn. Nothing was retried, routing and cooldowns are
+    /// unchanged, and the next turn is told this one was interrupted.
+    Cancelled,
 }
 
 #[derive(Debug, Clone)]
@@ -70,11 +116,15 @@ pub struct TurnReport {
     pub usage: Option<Usage>,
     /// Models started for this turn.
     pub attempts: u32,
+    /// What the turn changed in the working tree. `None` when the folder is not a git
+    /// repository, git is missing or failed, no model was started, or the turn changed
+    /// nothing (a summary kept here always lists at least one file).
+    pub changes: Option<ChangeSummary>,
 }
 
 impl TurnReport {
     fn ended(status: TurnStatus, message: String, attempts: u32) -> Self {
-        Self { status, text: String::new(), message, provider: None, model: None, usage: None, attempts }
+        Self { status, text: String::new(), message, provider: None, model: None, usage: None, attempts, changes: None }
     }
 }
 
@@ -148,6 +198,8 @@ struct Attempt {
     result: Result<TurnOutcome, TurnError>,
     /// The attempt failed after it had produced text, which was therefore never shown.
     discarded: bool,
+    /// The user cancelled it; `result` then holds a placeholder error that is never acted on.
+    cancelled: bool,
 }
 
 pub struct Engine {
@@ -175,6 +227,12 @@ pub struct Engine {
     orchestrate: bool,
     /// Where the delegate tool is; `None` means orchestration cannot attach it.
     orch_setup: Option<Setup>,
+    /// Snapshot the working tree around every turn (see [`crate::changes`]).
+    track_changes: bool,
+    /// What the last turn that started a model changed; consumed by an undo.
+    last_changes: Option<ChangeSummary>,
+    /// Where saved sessions live (the state directory); `None` means nothing is saved.
+    persist: Option<PathBuf>,
 }
 
 impl Engine {
@@ -200,7 +258,25 @@ impl Engine {
             downgrade_after: 2,
             orchestrate: false,
             orch_setup: None,
+            track_changes: true,
+            last_changes: None,
+            persist: None,
         }
+    }
+
+    /// Keep a summary of what each turn changed, for `/diff` and `/undo` (on by default;
+    /// it costs two `git` runs per turn and does nothing outside a repository).
+    pub fn with_track_changes(mut self, on: bool) -> Self {
+        self.track_changes = on;
+        self
+    }
+
+    /// Save the session after every turn under `state_dir/sessions/` so it can be resumed
+    /// after a restart. `None` (the default of the library) saves nothing; the binary
+    /// passes [`log::state_dir`].
+    pub fn with_persistence(mut self, state_dir: Option<PathBuf>) -> Self {
+        self.persist = state_dir;
+        self
     }
 
     /// Start with orchestration on or off (the binary reads `JEV_ORCHESTRATE`).
@@ -287,7 +363,81 @@ impl Engine {
         self.sticky = Sticky::default();
         self.previous = None;
         self.last_context_tokens = 0;
+        self.last_changes = None;
         self.runtime.forget_unusable_here();
+        if let Some(path) = self.session_path() {
+            let _ = std::fs::remove_file(path);
+        }
+    }
+
+    // ------------------------------------------------------------------ changes
+
+    /// What the last turn changed, if it changed anything in a git working tree.
+    pub fn last_changes(&self) -> Option<&ChangeSummary> {
+        self.last_changes.as_ref()
+    }
+
+    /// The text diff of the last turn, whole or for one repository-relative path; plain
+    /// text, for the UI to colour. `None` when there is no summary or git fails.
+    pub fn last_diff(&self, path: Option<&str>) -> Option<String> {
+        let c = self.last_changes.as_ref()?;
+        changes::diff_text(&self.dir, &c.before, &c.after, path)
+    }
+
+    /// Put back what the last turn changed, and only that, if nothing it touched was
+    /// edited since (see [`changes::undo`]). One level: the summary is consumed on
+    /// success. The conversation is told, so the next catch-up is truthful. Blocking
+    /// (a few git runs), like any user command.
+    pub fn undo_last(&mut self) -> Result<UndoReport, UndoError> {
+        let summary = self.last_changes.clone().ok_or(UndoError::NothingToUndo)?;
+        let report = changes::undo(&self.dir, &summary)?;
+        self.last_changes = None;
+        self.sessions.record_undo();
+        self.save_quietly();
+        Ok(report)
+    }
+
+    // ------------------------------------------------------------------ saved sessions
+
+    /// The file this engine saves to, when persistence is on.
+    pub fn session_path(&self) -> Option<PathBuf> {
+        self.persist.as_ref().map(|d| handoff::session_file(d, &self.dir))
+    }
+
+    /// Save the session now and say why not on failure. A session with no turns is not
+    /// written. Turns save themselves best-effort; this is for an explicit `/save`.
+    pub fn save_now(&self) -> std::io::Result<()> {
+        let Some(path) = self.session_path() else { return Ok(()) };
+        if self.sessions.turns() == 0 {
+            return Ok(());
+        }
+        let saved = SavedSession {
+            project: handoff::project_key(&self.dir),
+            saved_ms: (self.now)(),
+            sessions: self.sessions.clone(),
+            current: self.routing.current.clone(),
+        };
+        handoff::write_atomic(&path, &saved.to_json().to_string())
+    }
+
+    /// A failed save never fails a turn.
+    fn save_quietly(&self) {
+        let _ = self.save_now();
+    }
+
+    /// Load the saved session of this folder: the conversation, each provider's CLI
+    /// session, and where routing stood. Replaces the current conversation.
+    pub fn resume(&mut self) -> Result<handoff::SessionInfo, ResumeError> {
+        let state = self.persist.as_ref().ok_or(ResumeError::Disabled)?;
+        let saved = handoff::load_saved(state, &self.dir, (self.now)())?;
+        let info = saved.info();
+        self.previous = saved.sessions.last_answered().map(|(p, r)| (p.to_string(), r.to_string()));
+        self.sessions = saved.sessions;
+        self.routing = RoutingState::default();
+        self.routing.current = saved.current;
+        self.last_context_tokens = 0;
+        self.last_changes = None;
+        Ok(info)
     }
 
     /// The text of `/providers`.
@@ -305,10 +455,20 @@ impl Engine {
         self.runtime.refresh().await;
     }
 
-    /// Run one user turn.
+    /// Run one user turn that cannot be cancelled.
     pub async fn run(&mut self, prompt: &str, ui: &mut dyn Ui) -> TurnReport {
-        let judged = self.judge(prompt, ui).await;
-        self.run_judged(prompt, judged, ui).await
+        self.run_cancellable(prompt, ui, &Cancel::new()).await
+    }
+
+    /// Run one user turn that `cancel` can stop: the Jev call and the running CLI (with
+    /// everything it started) are dropped at once, and the report says
+    /// [`TurnStatus::Cancelled`].
+    pub async fn run_cancellable(&mut self, prompt: &str, ui: &mut dyn Ui, cancel: &Cancel) -> TurnReport {
+        let judged = tokio::select! {
+            j = self.judge(prompt, ui) => j,
+            _ = cancel.cancelled() => return self.cancelled_report(prompt, None, 0, ui),
+        };
+        self.run_judged_cancellable(prompt, judged, ui, cancel).await
     }
 
     /// Ask Jev. The only network call of a turn before the CLI starts.
@@ -333,6 +493,49 @@ impl Engine {
     /// fail over. Split from [`Engine::run`] so everything after the network call is
     /// testable with fake backends.
     pub async fn run_judged(&mut self, prompt: &str, judged: Judged, ui: &mut dyn Ui) -> TurnReport {
+        self.run_judged_cancellable(prompt, judged, ui, &Cancel::new()).await
+    }
+
+    /// [`Engine::run_judged`] that `cancel` can stop. Around the turn proper it takes
+    /// the working-tree snapshots (for [`TurnReport::changes`]) and saves the session.
+    pub async fn run_judged_cancellable(&mut self, prompt: &str, judged: Judged, ui: &mut dyn Ui, cancel: &Cancel) -> TurnReport {
+        let mut before: Option<String> = None;
+        let mut report = self.run_attempts(prompt, judged, ui, cancel, &mut before).await;
+        if report.attempts > 0 {
+            report.changes = self.changes_since(before).await;
+            self.last_changes = report.changes.clone();
+            self.save_quietly();
+        }
+        report
+    }
+
+    /// The working tree as a git tree id, or `None` (changes are not tracked, not a repo, git failed).
+    async fn snapshot_tree(&self) -> Option<String> {
+        if !self.track_changes {
+            return None;
+        }
+        let dir = self.dir.clone();
+        tokio::task::spawn_blocking(move || changes::snapshot(&dir)).await.ok().flatten()
+    }
+
+    /// What differs from the `before` snapshot now; `None` if there is no `before`, git
+    /// fails, or nothing changed.
+    async fn changes_since(&self, before: Option<String>) -> Option<ChangeSummary> {
+        let before = before?;
+        let after = self.snapshot_tree().await?;
+        let dir = self.dir.clone();
+        let summary = tokio::task::spawn_blocking(move || changes::summarize(&dir, &before, &after)).await.ok().flatten()?;
+        (!summary.is_empty()).then_some(summary)
+    }
+
+    async fn run_attempts(
+        &mut self,
+        prompt: &str,
+        judged: Judged,
+        ui: &mut dyn Ui,
+        cancel: &Cancel,
+        before: &mut Option<String>,
+    ) -> TurnReport {
         let signals = judged.signals();
         let jev = judged.log_signals();
         // Legacy mode is the old single-provider path: one attempt, no failover.
@@ -345,6 +548,9 @@ impl Engine {
         let mut last_failure: Option<(Attempt, TurnError)> = None;
         let mut attempts = 0;
         loop {
+            if cancel.is_cancelled() {
+                return self.cancelled_report(prompt, last_failure.as_ref().map(|(a, _)| a), attempts, ui);
+            }
             let now = (self.now)();
             let chosen = match self.choose(&judged, signals.as_ref(), prompt, &base, &excluded, now) {
                 Ok(c) => c,
@@ -358,9 +564,16 @@ impl Engine {
                 }
             };
             attempts += 1;
+            if attempts == 1 {
+                // The state the first model starts from, so a failover's changes count too.
+                *before = self.snapshot_tree().await;
+            }
             ui.route(&chosen.reason);
-            let attempt = self.run_attempt(chosen, prompt, ui).await;
+            let attempt = self.run_attempt(chosen, prompt, ui, cancel).await;
             self.log_attempt(&attempt, &jev, attempts, &notes);
+            if attempt.cancelled {
+                return self.cancelled_report(prompt, Some(&attempt), attempts, ui);
+            }
             let err = match attempt.result.clone() {
                 Ok(out) => return self.finish(prompt, attempt, out, attempts),
                 Err(err) => err,
@@ -527,7 +740,7 @@ impl Engine {
         }
     }
 
-    async fn run_attempt(&mut self, chosen: Chosen, prompt: &str, ui: &mut dyn Ui) -> Attempt {
+    async fn run_attempt(&mut self, chosen: Chosen, prompt: &str, ui: &mut dyn Ui, cancel: &Cancel) -> Attempt {
         let provider = chosen.spec.provider;
         let mut sent = self.prompt_for(provider, chosen.spec.id, prompt);
         let mut backend = (self.backend_factory)(provider);
@@ -566,8 +779,14 @@ impl Engine {
                     }
                 }
             };
-            backend::run_turn(&*backend, &req, idle, &mut on_event).await
+            // Dropping the turn future on a cancel kills the CLI and its children.
+            tokio::select! {
+                r = backend::run_turn(&*backend, &req, idle, &mut on_event) => Some(r),
+                _ = cancel.cancelled() => None,
+            }
         };
+        let cancelled = result.is_none();
+        let result = result.unwrap_or_else(|| Err(TurnError::new(ErrorKind::Other, "cancelled by the user")));
         let discarded = result.is_err() && !held.is_empty();
         if let Ok(out) = &result {
             let streamed = |t: &str| held.iter().any(|e| matches!(e, Event::Text(s) if !s.starts_with('\u{2717}') && s.trim() == t));
@@ -581,7 +800,7 @@ impl Engine {
                 ui.event(&Event::Text(answer.to_string()));
             }
         }
-        Attempt { chosen, tools, wall_ms: started.elapsed().as_millis() as u64, result, discarded }
+        Attempt { chosen, tools, wall_ms: started.elapsed().as_millis() as u64, result, discarded, cancelled }
     }
 
     // ------------------------------------------------------------------ outcomes
@@ -615,6 +834,30 @@ impl Engine {
             model: Some(spec.id.to_string()),
             usage: Some(out.usage),
             attempts,
+            changes: None,
+        }
+    }
+
+    /// End a turn the user stopped. If a model had been started, the turn is remembered
+    /// as interrupted so a later catch-up (or the same model's next prompt) knows files
+    /// may be half changed. Nothing else moves: no failover, no cooldown, no routing state.
+    fn cancelled_report(&mut self, prompt: &str, attempt: Option<&Attempt>, attempts: u32, ui: &mut dyn Ui) -> TurnReport {
+        let message = "[cancelled] stopped by the user; the turn was not retried".to_string();
+        ui.note(&message);
+        let Some(attempt) = attempt else { return TurnReport::ended(TurnStatus::Cancelled, message, attempts) };
+        let spec = attempt.chosen.spec;
+        self.sessions.record_failed(TurnRecord {
+            prompt: prompt.to_string(),
+            provider: spec.provider,
+            model: spec.id.to_string(),
+            reply: handoff::INTERRUPTED_NOTE.to_string(),
+            tools: attempt.tools.clone(),
+            ok: false,
+        });
+        TurnReport {
+            provider: Some(spec.provider),
+            model: Some(spec.id.to_string()),
+            ..TurnReport::ended(TurnStatus::Cancelled, message, attempts)
         }
     }
 
@@ -643,6 +886,10 @@ impl Engine {
         if let Value::Object(o) = &mut row {
             o.insert("attempt".into(), json!(attempt));
             o.insert("orchestrated".into(), json!(a.chosen.mcp.is_some()));
+            if a.cancelled {
+                o.insert("error_kind".into(), json!("cancelled"));
+                o.insert("cancelled".into(), json!(true));
+            }
             if !notes.is_empty() {
                 o.insert("failover_notes".into(), json!(notes));
             }
@@ -791,6 +1038,8 @@ mod tests {
         notes: Vec<String>,
         /// Everything in the order the Ui saw it: "route:", "tool:", "text:", "note:".
         seen: Vec<String>,
+        /// Cancel this as soon as a tool call is shown, which is deterministic where a timer is not.
+        cancel_on_tool: Option<Cancel>,
     }
 
     impl Ui for Recorder {
@@ -804,7 +1053,12 @@ mod tests {
                     self.texts.push(t.clone());
                     self.seen.push(format!("text:{t}"));
                 }
-                Event::Tool(t) => self.seen.push(format!("tool:{t}")),
+                Event::Tool(t) => {
+                    self.seen.push(format!("tool:{t}"));
+                    if let Some(c) = &self.cancel_on_tool {
+                        c.cancel();
+                    }
+                }
                 _ => {}
             }
         }
@@ -831,6 +1085,11 @@ mod tests {
     }
 
     fn rig_with(states: &[(ProviderId, State)], script: &'static str) -> Rig {
+        rig_in(std::env::temp_dir(), states, script)
+    }
+
+    /// A rig whose engine works in `dir`. Change tracking is off unless a test turns it on.
+    fn rig_in(dir: PathBuf, states: &[(ProviderId, State)], script: &'static str) -> Rig {
         let avail = states.iter().map(|(p, s)| availability(*p, *s)).collect();
         let router = Router::new(TypeSafe::with_url("k", "http://127.0.0.1:1"), 1.0);
         let scripts: Arc<Mutex<HashMap<ProviderId, &'static str>>> = Arc::new(Mutex::new(
@@ -850,7 +1109,9 @@ mod tests {
             clock.clone(),
             attempt_ms.clone(),
         );
-        let engine = Engine::new(Runtime::for_tests(avail), router, std::env::temp_dir())
+        let engine = Engine::new(Runtime::for_tests(avail), router, dir)
+            .with_track_changes(false)
+            .with_persistence(None)
             .with_backend_factory(Box::new(move |p| {
                 fc.lock().unwrap().push(p);
                 let script = s.lock().unwrap()[&p];
@@ -870,11 +1131,13 @@ mod tests {
         Rig { engine, scripts, started, attached, factory_calls, clock, attempt_ms, ui: Recorder::default() }
     }
 
-    fn rig(ready: &[ProviderId]) -> Rig {
+    fn states_for(ready: &[ProviderId]) -> Vec<(ProviderId, State)> {
         let all = [Claude, DeepSeek, Codex, Gemini, Grok];
-        let states: Vec<_> =
-            all.iter().map(|p| (*p, if ready.contains(p) { State::Ready } else { State::NotLoggedIn })).collect();
-        rig_with(&states, OK)
+        all.iter().map(|p| (*p, if ready.contains(p) { State::Ready } else { State::NotLoggedIn })).collect()
+    }
+
+    fn rig(ready: &[ProviderId]) -> Rig {
+        rig_with(&states_for(ready), OK)
     }
 
     impl Rig {
@@ -1480,5 +1743,420 @@ mod tests {
         let json: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
         assert_eq!(json["mcpServers"]["jev"]["command"], "/bin/delegate_mcp");
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    // ------------------------------------------------------------------ cancelling
+
+    /// Talks, then hangs: a turn that only a cancel can end quickly.
+    const HANGS: &str = "printf 'TOOL:Read a.rs\\nTEXT:half an answer\\n'; sleep 30";
+
+    #[tokio::test]
+    async fn a_cancel_token_is_shared_by_its_clones_and_resolves_once_cancelled() {
+        let c = Cancel::new();
+        let other = c.clone();
+        assert!(!c.is_cancelled());
+        assert!(tokio::time::timeout(Duration::from_millis(50), c.cancelled()).await.is_err(), "pending until cancelled");
+        other.cancel();
+        other.cancel();
+        assert!(c.is_cancelled());
+        tokio::time::timeout(Duration::from_secs(1), c.cancelled()).await.expect("resolves at once when already cancelled");
+        assert!(!Cancel::default().is_cancelled());
+    }
+
+    #[tokio::test]
+    async fn cancelling_a_running_turn_returns_quickly_without_retry_or_an_answer() {
+        let ready = [Claude, Codex];
+        let mut r = rig(&ready);
+        let a = first_choice(TaskType::Feature, &ready);
+        r.script(a, HANGS);
+        let cancel = Cancel::new();
+        r.ui.cancel_on_tool = Some(cancel.clone());
+        let log = std::env::temp_dir().join(format!("jev-cancel-log-{}.jsonl", std::process::id()));
+        let _ = std::fs::remove_file(&log);
+        r.engine.turn_log = Some(log.to_string_lossy().into_owned());
+        let routing_before = r.engine.routing.current.clone();
+
+        let started = Instant::now();
+        let report = r
+            .engine
+            .run_judged_cancellable("add a retry to the client", Judged::Providers(Some(want(TaskType::Feature))), &mut r.ui, &cancel)
+            .await;
+        assert!(started.elapsed() < Duration::from_secs(2), "{:?}", started.elapsed());
+        assert_eq!(report.status, TurnStatus::Cancelled);
+        assert_eq!((report.attempts, report.provider), (1, Some(a)));
+        assert!(report.text.is_empty() && report.usage.is_none());
+        assert!(report.message.contains("cancelled"));
+
+        // Nothing was retried on the other provider, and nothing else moved.
+        assert_eq!(r.started().len(), 1);
+        assert_eq!(r.engine.routing.current, routing_before);
+        assert!(r.engine.runtime.cooldowns.active(a, NOW).is_none());
+        assert!(r.engine.runtime.unusable_models.is_empty() && r.engine.runtime.blocked.is_empty());
+        // Half an answer was never shown as one; the tool progress was.
+        assert!(r.ui.texts.is_empty(), "{:?}", r.ui.texts);
+        assert!(r.ui.seen.contains(&"tool:Read a.rs".to_string()));
+        assert!(r.engine.sessions.session_id(a).is_none(), "a cancelled turn gives no session id");
+
+        // The next catch-up tells the model the turn was cut short.
+        let b = if a == Claude { Codex } else { Claude };
+        let text = r.engine.sessions.catch_up(b, "", 10_000).expect("recorded");
+        assert!(text.contains("add a retry to the client") && text.contains("FAILED"), "{text}");
+        assert!(text.contains("interrupted by the user before it finished; files may be partly changed"), "{text}");
+        assert!(!text.contains("half an answer"));
+        // The turn log row says so.
+        let row: Value = serde_json::from_str(std::fs::read_to_string(&log).unwrap().lines().next().unwrap()).unwrap();
+        assert_eq!((row["ok"].clone(), row["error_kind"].clone(), row["cancelled"].clone()), (json!(false), json!("cancelled"), json!(true)));
+        let _ = std::fs::remove_file(&log);
+
+        // The session goes on: the same model takes the next turn.
+        r.ui.cancel_on_tool = None;
+        r.script(a, OK);
+        let next = r.turn("try again", want(TaskType::Feature)).await;
+        assert_eq!((next.status, next.provider), (TurnStatus::Answered, Some(a)));
+        assert!(r.started()[1].prompt.contains("try again"));
+    }
+
+    #[tokio::test]
+    async fn a_token_cancelled_before_anything_starts_starts_nothing_and_records_nothing() {
+        let mut r = rig(&[Claude]);
+        let cancel = Cancel::new();
+        cancel.cancel();
+        let judged = Judged::Providers(Some(want(TaskType::Feature)));
+        let report = r.engine.run_judged_cancellable("hello there", judged, &mut r.ui, &cancel).await;
+        assert_eq!((report.status, report.attempts), (TurnStatus::Cancelled, 0));
+        assert!(r.factory_calls.lock().unwrap().is_empty());
+        assert_eq!(r.engine.sessions.turns(), 0, "no model saw the prompt, so there is nothing to tell the next one");
+    }
+
+    #[tokio::test]
+    async fn cancelling_while_jev_is_being_asked_ends_the_turn_too() {
+        let mut r = rig(&[Claude]);
+        let cancel = Cancel::new();
+        cancel.cancel();
+        let report = r.engine.run_cancellable("hello there", &mut r.ui, &cancel).await;
+        assert_eq!(report.status, TurnStatus::Cancelled);
+        assert!(r.factory_calls.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_cancelled_turn_takes_the_cli_and_its_helpers_with_it() {
+        let dir = std::env::temp_dir().join(format!("jev-cancel-kids-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let pidfile = dir.join("pid");
+        let script: &'static str =
+            Box::leak(format!("sleep 60 & echo $! > {}; echo 'TOOL:Read a.rs'; wait", pidfile.display()).into_boxed_str());
+        let mut r = rig(&[Claude]);
+        r.script(Claude, script);
+        let cancel = Cancel::new();
+        r.ui.cancel_on_tool = Some(cancel.clone());
+        let judged = Judged::Providers(Some(want(TaskType::Feature)));
+        let report = r.engine.run_judged_cancellable("go", judged, &mut r.ui, &cancel).await;
+        assert_eq!(report.status, TurnStatus::Cancelled);
+        let pid: i32 = std::fs::read_to_string(&pidfile).unwrap().trim().parse().unwrap();
+        for _ in 0..200 {
+            if !backend::process_alive(pid) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert!(!backend::process_alive(pid), "the helper process outlived the cancelled turn");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    // ------------------------------------------------------------------ changes and undo
+
+    fn git(dir: &Path, args: &[&str]) {
+        let ok = std::process::Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args(["-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false"])
+            .args(args)
+            .output()
+            .unwrap()
+            .status
+            .success();
+        assert!(ok, "git {args:?}");
+    }
+
+    struct Repo(PathBuf);
+
+    impl Repo {
+        fn new(name: &str, git_init: bool) -> Self {
+            let dir = std::env::temp_dir().join(format!("jev-turn-{}-{name}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).unwrap();
+            let dir = std::fs::canonicalize(dir).unwrap();
+            std::fs::write(dir.join("a.txt"), "one\ntwo\n").unwrap();
+            std::fs::write(dir.join("b.txt"), "bee\n").unwrap();
+            std::fs::write(dir.join(".gitignore"), "*.log\n").unwrap();
+            if git_init {
+                git(&dir, &["init", "-q"]);
+                git(&dir, &["add", "-A"]);
+                git(&dir, &["commit", "-q", "-m", "init"]);
+            }
+            Self(dir)
+        }
+        fn read(&self, f: &str) -> String {
+            std::fs::read_to_string(self.0.join(f)).unwrap()
+        }
+    }
+
+    impl Drop for Repo {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    /// A fake turn that edits a.txt, adds new.txt, deletes b.txt and writes an ignored file.
+    const EDITS: &str = "echo three >> a.txt; echo fresh > new.txt; rm b.txt; echo noise > debug.log; printf 'FIN:edited\\n'";
+
+    fn tracked(repo: &Repo, ready: &[ProviderId]) -> Rig {
+        let mut r = rig_in(repo.0.clone(), &states_for(ready), OK);
+        r.engine = r.engine.with_track_changes(true);
+        r
+    }
+
+    #[tokio::test]
+    async fn a_turn_reports_what_it_changed_and_the_engine_can_diff_and_undo_it() {
+        let repo = Repo::new("undo", true);
+        let mut r = tracked(&repo, &[Claude]);
+        r.script(Claude, EDITS);
+        let report = r.turn("edit things", want(TaskType::Feature)).await;
+        assert_eq!(report.status, TurnStatus::Answered);
+
+        let sum = report.changes.clone().expect("a git repo");
+        let mut paths: Vec<_> = sum.files.iter().map(|f| (f.path.as_str(), f.status)).collect();
+        paths.sort_by_key(|p| p.0);
+        use crate::changes::ChangeStatus::{Added, Deleted, Modified};
+        assert_eq!(paths, [("a.txt", Modified), ("b.txt", Deleted), ("new.txt", Added)], "ignored files are not changes");
+        assert_eq!(r.engine.last_changes(), Some(&sum));
+        let diff = r.engine.last_diff(None).unwrap();
+        assert!(diff.contains("+three") && diff.contains("+++ b/new.txt"), "{diff}");
+        assert!(!r.engine.last_diff(Some("new.txt")).unwrap().contains("a.txt"));
+
+        let undone = r.engine.undo_last().unwrap();
+        assert_eq!(undone.restored, ["a.txt"]);
+        assert_eq!(undone.recreated, ["b.txt"]);
+        assert_eq!(undone.removed, ["new.txt"]);
+        assert_eq!(repo.read("a.txt"), "one\ntwo\n");
+        assert_eq!(repo.read("b.txt"), "bee\n");
+        assert!(!repo.0.join("new.txt").exists());
+        assert_eq!(repo.read("debug.log"), "noise\n", "ignored files are left alone");
+
+        // One level only, and the conversation knows.
+        assert_eq!(r.engine.undo_last(), Err(UndoError::NothingToUndo));
+        assert!(r.engine.last_changes().is_none() && r.engine.last_diff(None).is_none());
+        let note = r.engine.sessions.catch_up(Claude, "", 10_000).expect("even the model that ran the turn is told");
+        assert!(note.contains("the user undid the changes of the previous turn"), "{note}");
+    }
+
+    #[tokio::test]
+    async fn undo_refuses_after_a_later_edit_and_keeps_the_summary_for_a_retry() {
+        let repo = Repo::new("later", true);
+        let mut r = tracked(&repo, &[Claude]);
+        r.script(Claude, EDITS);
+        r.turn("edit things", want(TaskType::Feature)).await;
+        std::fs::write(repo.0.join("a.txt"), "one\ntwo\nthree\nmine\n").unwrap();
+        assert_eq!(r.engine.undo_last(), Err(UndoError::ChangedSince(vec!["a.txt".into()])));
+        assert_eq!(repo.read("a.txt"), "one\ntwo\nthree\nmine\n");
+        assert!(!repo.0.join("b.txt").exists(), "nothing was undone");
+        assert_eq!(r.engine.sessions.turns(), 1, "a refused undo is not recorded");
+        assert!(r.engine.last_changes().is_some());
+    }
+
+    #[tokio::test]
+    async fn a_turn_that_changes_nothing_has_no_summary_and_leaves_nothing_to_undo() {
+        let repo = Repo::new("nothing", true);
+        let mut r = tracked(&repo, &[Claude]);
+        r.script(Claude, EDITS);
+        r.turn("edit things", want(TaskType::Feature)).await;
+        assert!(r.engine.last_changes().is_some());
+        r.script(Claude, OK);
+        let report = r.turn("just explain", want(TaskType::Feature)).await;
+        assert!(report.changes.is_none());
+        assert!(r.engine.last_changes().is_none(), "undo refers to the previous turn, which changed nothing");
+        assert_eq!(r.engine.undo_last(), Err(UndoError::NothingToUndo));
+    }
+
+    #[tokio::test]
+    async fn a_turn_that_never_started_a_model_keeps_the_earlier_undo() {
+        let repo = Repo::new("noroute", true);
+        let mut r = tracked(&repo, &[Claude]);
+        r.script(Claude, EDITS);
+        r.turn("edit things", want(TaskType::Feature)).await;
+        r.engine.runtime.cool_down(Claude, None, NOW);
+        let report = r.turn("more", want(TaskType::Feature)).await;
+        assert_eq!(report.status, TurnStatus::NoRoute);
+        assert!(r.engine.last_changes().is_some());
+    }
+
+    #[tokio::test]
+    async fn outside_a_git_repository_the_turn_works_and_just_has_no_changes() {
+        let repo = Repo::new("nogit", false);
+        let mut r = tracked(&repo, &[Claude]);
+        r.script(Claude, EDITS);
+        let report = r.turn("edit things", want(TaskType::Feature)).await;
+        assert_eq!(report.status, TurnStatus::Answered);
+        assert_eq!(report.text, "edited");
+        assert!(report.changes.is_none() && r.engine.last_changes().is_none());
+        assert_eq!(r.engine.last_diff(None), None);
+        assert_eq!(r.engine.undo_last(), Err(UndoError::NothingToUndo));
+        assert_eq!(repo.read("a.txt"), "one\ntwo\nthree\n");
+    }
+
+    #[tokio::test]
+    async fn change_tracking_can_be_switched_off() {
+        let repo = Repo::new("off", true);
+        let mut r = tracked(&repo, &[Claude]);
+        r.engine = r.engine.with_track_changes(false);
+        r.script(Claude, EDITS);
+        assert!(r.turn("edit things", want(TaskType::Feature)).await.changes.is_none());
+    }
+
+    #[tokio::test]
+    async fn a_cancelled_turn_still_reports_the_files_it_got_to_and_they_can_be_undone() {
+        let repo = Repo::new("cancel-edits", true);
+        let mut r = tracked(&repo, &[Claude]);
+        r.script(Claude, "echo partial > half.txt; echo 'TOOL:Write half.txt'; sleep 30");
+        let cancel = Cancel::new();
+        r.ui.cancel_on_tool = Some(cancel.clone());
+        let judged = Judged::Providers(Some(want(TaskType::Feature)));
+        let report = r.engine.run_judged_cancellable("start it", judged, &mut r.ui, &cancel).await;
+        assert_eq!(report.status, TurnStatus::Cancelled);
+        let files = report.changes.expect("a half-done turn is the one you most want to undo").files;
+        assert_eq!(files.iter().map(|f| f.path.as_str()).collect::<Vec<_>>(), ["half.txt"]);
+        r.engine.undo_last().unwrap();
+        assert!(!repo.0.join("half.txt").exists());
+    }
+
+    // ------------------------------------------------------------------ saved sessions
+
+    struct StateDir(PathBuf);
+
+    impl StateDir {
+        fn new(name: &str) -> Self {
+            let p = std::env::temp_dir().join(format!("jev-turn-state-{}-{name}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&p);
+            Self(p)
+        }
+    }
+
+    impl Drop for StateDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn persisting(repo: &Repo, state: &StateDir, ready: &[ProviderId]) -> Rig {
+        let mut r = rig_in(repo.0.clone(), &states_for(ready), OK);
+        r.engine = r.engine.with_persistence(Some(state.0.clone()));
+        r
+    }
+
+    #[tokio::test]
+    async fn a_session_is_saved_after_every_turn_and_resumed_by_a_new_engine() {
+        let (repo, state) = (Repo::new("persist", false), StateDir::new("persist"));
+        let mut r = persisting(&repo, &state, &[Claude]);
+        assert!(r.engine.save_now().is_ok(), "nothing to save yet is not an error");
+        assert!(!r.engine.session_path().unwrap().exists());
+        r.turn("first request", want(TaskType::Feature)).await;
+        r.turn("second request", want(TaskType::Feature)).await;
+        assert!(r.engine.session_path().unwrap().starts_with(state.0.join("sessions")));
+        assert!(r.engine.session_path().unwrap().exists());
+
+        // A fresh process: nothing in memory, same folder.
+        let mut again = persisting(&repo, &state, &[Claude]);
+        assert_eq!(again.engine.sessions.turns(), 0);
+        let info = again.engine.resume().unwrap();
+        assert_eq!((info.turns, info.providers.clone(), info.last_used_ms), (2, vec![Claude], NOW));
+        assert_eq!(info.current.as_ref().map(|c| c.0), Some(Claude));
+        assert_eq!(again.engine.routing.current, r.engine.routing.current);
+        assert_eq!(again.engine.sessions.session_id(Claude), Some("sess-claude"));
+        assert_eq!(again.engine.sessions.recent_context(2, 50), r.engine.sessions.recent_context(2, 50));
+        assert_eq!(handoff::saved_session_info_in(&state.0, &repo.0, NOW).unwrap().turns, 2);
+
+        // The CLI session is continued, not restarted.
+        again.turn("third request", want(TaskType::Feature)).await;
+        assert_eq!(again.started()[0].session.as_deref(), Some("sess-claude"));
+        assert_eq!(again.engine.sessions.turns(), 3);
+    }
+
+    #[tokio::test]
+    async fn cancelled_turns_are_saved_too() {
+        let (repo, state) = (Repo::new("persist-cancel", false), StateDir::new("persist-cancel"));
+        let mut r = persisting(&repo, &state, &[Claude]);
+        r.script(Claude, HANGS);
+        let cancel = Cancel::new();
+        r.ui.cancel_on_tool = Some(cancel.clone());
+        let judged = Judged::Providers(Some(want(TaskType::Feature)));
+        r.engine.run_judged_cancellable("start it", judged, &mut r.ui, &cancel).await;
+        let mut again = persisting(&repo, &state, &[Claude]);
+        assert_eq!(again.engine.resume().unwrap().turns, 1);
+        assert!(again.engine.sessions.catch_up(Codex, "", 1000).unwrap().contains("interrupted by the user"));
+    }
+
+    #[tokio::test]
+    async fn persistence_is_off_unless_asked_for() {
+        let repo = Repo::new("persist-off", false);
+        let mut r = rig_in(repo.0.clone(), &states_for(&[Claude]), OK);
+        r.turn("hello", want(TaskType::Feature)).await;
+        assert_eq!(r.engine.session_path(), None);
+        assert!(r.engine.save_now().is_ok());
+        assert_eq!(r.engine.resume().unwrap_err(), ResumeError::Disabled);
+    }
+
+    #[tokio::test]
+    async fn new_session_deletes_the_saved_file() {
+        let (repo, state) = (Repo::new("persist-new", false), StateDir::new("persist-new"));
+        let mut r = persisting(&repo, &state, &[Claude]);
+        r.turn("hello", want(TaskType::Feature)).await;
+        let path = r.engine.session_path().unwrap();
+        assert!(path.exists());
+        r.engine.new_session();
+        assert!(!path.exists());
+        assert_eq!(r.engine.resume().unwrap_err(), ResumeError::NotFound);
+        r.engine.new_session();
+    }
+
+    #[tokio::test]
+    async fn old_sessions_are_not_resumed_and_projects_do_not_see_each_other() {
+        let (repo, other, state) = (Repo::new("persist-age", false), Repo::new("persist-other", false), StateDir::new("persist-age"));
+        let mut r = persisting(&repo, &state, &[Claude]);
+        r.turn("hello", want(TaskType::Feature)).await;
+
+        let mut elsewhere = persisting(&other, &state, &[Claude]);
+        assert_eq!(elsewhere.engine.resume().unwrap_err(), ResumeError::NotFound);
+
+        let mut later = persisting(&repo, &state, &[Claude]);
+        later.clock.store(NOW + 15 * 24 * 60 * 60 * 1000, Ordering::SeqCst);
+        assert_eq!(later.engine.resume().unwrap_err(), ResumeError::NotFound);
+        later.clock.store(NOW + 13 * 24 * 60 * 60 * 1000, Ordering::SeqCst);
+        assert!(later.engine.resume().is_ok());
+    }
+
+    #[tokio::test]
+    async fn a_garbage_saved_file_is_reported_and_the_next_turn_overwrites_it() {
+        let (repo, state) = (Repo::new("persist-bad", false), StateDir::new("persist-bad"));
+        let mut r = persisting(&repo, &state, &[Claude]);
+        let path = r.engine.session_path().unwrap();
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, "{ this is not json").unwrap();
+        assert!(matches!(r.engine.resume(), Err(ResumeError::Corrupt(_))));
+        assert_eq!(r.turn("hello", want(TaskType::Feature)).await.status, TurnStatus::Answered);
+        assert_eq!(r.engine.resume().unwrap().turns, 1);
+    }
+
+    #[tokio::test]
+    async fn a_save_that_cannot_be_written_never_fails_the_turn_but_save_now_says_why() {
+        let repo = Repo::new("persist-ro", false);
+        // A regular file where the state directory should be.
+        let blocker = std::env::temp_dir().join(format!("jev-turn-blocker-{}", std::process::id()));
+        std::fs::write(&blocker, "x").unwrap();
+        let mut r = rig_in(repo.0.clone(), &states_for(&[Claude]), OK);
+        r.engine = r.engine.with_persistence(Some(blocker.join("state")));
+        let report = r.turn("hello", want(TaskType::Feature)).await;
+        assert_eq!(report.status, TurnStatus::Answered);
+        assert!(r.engine.save_now().is_err());
+        std::fs::remove_file(&blocker).ok();
     }
 }
