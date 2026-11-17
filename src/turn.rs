@@ -80,13 +80,25 @@ pub trait Ui: Send {
     }
 
     /// A tool call waits for the person's answer. `always` is the allow rule that
-    /// [`Decision::AllowAlways`] would save, when there is one. `None` means the person
-    /// interrupted (Ctrl-C), which stops the turn. A UI that cannot ask keeps this default,
-    /// so a run with no terminal denies at once and never waits for an answer nobody gives.
-    fn ask_permission(&mut self, _req: &PermissionRequest, _always: Option<&str>) -> Option<Decision> {
-        Some(Decision::Deny { reason: backend::NO_ONE_TO_ASK.to_string() })
+    /// [`Decision::AllowAlways`] would save, when there is one. The question is put on
+    /// screen by this call; the returned [`Answer`] resolves with what the person said
+    /// (`None` means they interrupted with Ctrl-C, which stops the turn). Dropping the
+    /// answer before it resolves abandons the question (the CLI withdrew it): the UI stops
+    /// listening for a key at once, and [`Ui::permission_withdrawn`] follows. A UI that
+    /// cannot ask keeps this default, so a run with no terminal denies at once and never
+    /// waits for an answer nobody gives.
+    fn ask_permission(&mut self, _req: &PermissionRequest, _always: Option<&str>) -> Answer {
+        Box::pin(std::future::ready(Some(Decision::Deny { reason: backend::NO_ONE_TO_ASK.to_string() })))
     }
+
+    /// The question asked for `req` was dropped unanswered: take it off the screen. Called
+    /// once per such question, never for one that was answered.
+    fn permission_withdrawn(&mut self, _req: &PermissionRequest) {}
 }
+
+/// The person's answer to a question, not yet given. It owns what it needs, so the UI is
+/// free to print while the person thinks.
+pub type Answer = std::pin::Pin<Box<dyn std::future::Future<Output = Option<Decision>> + Send>>;
 
 /// The UI as the event callback and the approver share it; they never run at once.
 type SharedUi<'a> = Mutex<&'a mut (dyn Ui + 'a)>;
@@ -105,9 +117,12 @@ struct EngineApprover<'a> {
 }
 
 impl EngineApprover<'_> {
-    fn answer(&self, req: &PermissionRequest) -> Decision {
+    async fn answer(&self, req: &PermissionRequest) -> Decision {
         let rule = permissions::allow_rule(&req.tool, &req.input, req.blocked_path.as_deref(), self.dir);
-        let asked = lock_ui(self.ui).ask_permission(req, rule.as_deref());
+        // The question goes up under the lock; the wait for the person does not hold it, so
+        // the turn's own events can still be shown, and dropping this future ends the wait.
+        let question = lock_ui(self.ui).ask_permission(req, rule.as_deref());
+        let asked = question.await;
         match asked {
             None => {
                 self.cancel.cancel();
@@ -134,7 +149,11 @@ impl EngineApprover<'_> {
 
 impl Approver for EngineApprover<'_> {
     fn decide<'a>(&'a self, req: &'a PermissionRequest) -> std::pin::Pin<Box<dyn std::future::Future<Output = Decision> + Send + 'a>> {
-        Box::pin(async move { self.answer(req) })
+        Box::pin(self.answer(req))
+    }
+
+    fn withdrawn(&self, req: &PermissionRequest) {
+        lock_ui(self.ui).permission_withdrawn(req);
     }
 }
 
@@ -2583,6 +2602,7 @@ mod tests {
                         blocked_path: None,
                     })]
                 }
+                Some(("WITHDRAW", id)) => vec![Event::PermissionWithdrawn { id: id.into() }],
                 Some(("FIN", t)) => vec![Event::Finished(backend::Finish { text: t.into(), session_id: None, usage: Usage::default() })],
                 _ => vec![],
             }
@@ -2617,9 +2637,10 @@ mod tests {
         fn note(&mut self, line: &str) {
             self.notes.push(line.into());
         }
-        fn ask_permission(&mut self, req: &PermissionRequest, always: Option<&str>) -> Option<Decision> {
+        fn ask_permission(&mut self, req: &PermissionRequest, always: Option<&str>) -> Answer {
             self.questions.push((req.tool.clone(), req.summary.clone(), always.map(String::from)));
-            self.answers.pop_front().expect("an answer was planned")
+            let answer = self.answers.pop_front().expect("an answer was planned");
+            Box::pin(std::future::ready(answer))
         }
     }
 
@@ -2640,6 +2661,10 @@ mod tests {
     }
 
     fn ask_engine(name: &str) -> (Engine, PathBuf) {
+        ask_engine_running(name, Box::new(|_| Box::new(AskFake(ASK_SCRIPT))))
+    }
+
+    fn ask_engine_running(name: &str, backend: BackendFactory) -> (Engine, PathBuf) {
         let dir = std::env::temp_dir().join(format!("jev-turn-ask-{}-{name}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
@@ -2647,7 +2672,7 @@ mod tests {
         let engine = Engine::new(Runtime::for_tests(vec![availability(Claude, State::Ready)]), router, dir.clone())
             .with_track_changes(false)
             .with_persistence(None)
-            .with_backend_factory(Box::new(|_| Box::new(AskFake(ASK_SCRIPT))))
+            .with_backend_factory(backend)
             .with_idle_timeout(Duration::from_secs(5))
             .with_turn_log(None);
         (engine, dir)
@@ -2739,5 +2764,72 @@ mod tests {
         let report = r.engine.run_judged("add a retry", Judged::Providers(Some(want(TaskType::Feature))), &mut ui).await;
         assert_eq!(report.status, TurnStatus::Answered);
         assert!(ui.questions.is_empty());
+    }
+
+    /// Records that the wait for the person's answer was dropped.
+    struct DropFlag(Arc<std::sync::atomic::AtomicBool>);
+
+    impl Drop for DropFlag {
+        fn drop(&mut self) {
+            self.0.store(true, Ordering::SeqCst);
+        }
+    }
+
+    /// A UI whose first question waits for a key that never comes (the person is thinking),
+    /// and which answers yes to any later one. It records the wait being dropped and the
+    /// withdrawal it was told about.
+    #[derive(Default)]
+    struct Waiting {
+        asked: usize,
+        dropped: Arc<std::sync::atomic::AtomicBool>,
+        withdrawn: Vec<String>,
+    }
+
+    impl Ui for Waiting {
+        fn route(&mut self, _: &str) {}
+        fn event(&mut self, _: &Event) {}
+        fn note(&mut self, _: &str) {}
+        fn ask_permission(&mut self, _: &PermissionRequest, _: Option<&str>) -> Answer {
+            self.asked += 1;
+            if self.asked > 1 {
+                return Box::pin(std::future::ready(Some(Decision::Allow)));
+            }
+            let flag = DropFlag(self.dropped.clone());
+            Box::pin(async move {
+                let _waiting = flag;
+                std::future::pending::<Option<Decision>>().await
+            })
+        }
+        fn permission_withdrawn(&mut self, req: &PermissionRequest) {
+            self.withdrawn.push(req.id.clone());
+        }
+    }
+
+    /// The CLI asks, the person has not answered yet, and the CLI withdraws the question.
+    const ASK_THEN_WITHDRAW: &str = r#"read p; echo "ASK:Bash:cargo test --quiet"; sleep 0.3; echo "WITHDRAW:q1"; sleep 0.1; echo "FIN:carried on""#;
+
+    #[tokio::test]
+    async fn a_question_the_cli_withdraws_while_the_person_is_still_deciding_is_dropped_and_the_next_turn_works() {
+        let turns = Arc::new(AtomicU64::new(0));
+        let counted = turns.clone();
+        let (mut engine, dir) = ask_engine_running(
+            "withdrawn",
+            Box::new(move |_| Box::new(AskFake(if counted.fetch_add(1, Ordering::SeqCst) == 0 { ASK_THEN_WITHDRAW } else { ASK_SCRIPT }))),
+        );
+        let mut ui = Waiting::default();
+        let started = Instant::now();
+        let report = ask_turn(&mut engine, &mut ui).await;
+        assert!(started.elapsed() < Duration::from_secs(4), "the turn must not wait for a key");
+        assert_eq!((report.status, report.text.as_str()), (TurnStatus::Answered, "carried on"));
+        assert_eq!(ui.asked, 1);
+        assert!(ui.dropped.load(Ordering::SeqCst), "the wait for a key was abandoned");
+        assert_eq!(ui.withdrawn, vec!["q1".to_string()], "the UI was told which question went away");
+        assert!(!permissions::local_settings_path(&dir).exists());
+
+        let report = ask_turn(&mut engine, &mut ui).await;
+        assert_eq!((report.status, report.text.as_str()), (TurnStatus::Answered, "ran"));
+        assert_eq!(ui.asked, 2);
+        assert_eq!(ui.withdrawn.len(), 1, "an answered question is never reported as withdrawn");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

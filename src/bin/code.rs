@@ -77,7 +77,7 @@ fn console_for(term: &Term, project: &Path, stream_answers: bool) -> Console {
         stream_answers,
     });
     if term.interactive() && stream_answers {
-        console.with_key_reader(std::sync::Arc::new(|always| tokio::task::block_in_place(|| lineedit::read_answer(always))))
+        console.with_key_reader(jev_router::console::terminal_keys())
     } else {
         console
     }

@@ -278,6 +278,10 @@ pub enum AnswerKey {
     Interrupt,
 }
 
+/// How long the wait for an approval key goes without looking at its cancel flag; also the
+/// longest a cancelled read takes to stop.
+pub const KEY_POLL_MS: i32 = 20;
+
 /// What one byte typed at the question means. `None` keeps waiting: Enter and stray
 /// letters never answer by accident, and `a` only counts when a rule could be saved.
 pub fn answer_for_byte(byte: u8, always_offered: bool) -> Option<AnswerKey> {
@@ -294,8 +298,33 @@ pub fn answer_for_byte(byte: u8, always_offered: bool) -> Option<AnswerKey> {
 /// question appeared is thrown away first, so a stray `y` typed ahead cannot approve a call
 /// the person never saw. Esc alone says no; an arrow key (Esc and more) says nothing. A
 /// stdin that is not a terminal, or is closed, says no at once: it must never hang.
+///
+/// The wait looks at `cancel` every [`KEY_POLL_MS`]; once it is set the read gives up with
+/// `None`, having put the terminal back as it found it and read nothing: a key typed after
+/// that stays in the terminal's queue for whoever reads next.
 #[cfg(unix)]
-pub fn read_answer(always_offered: bool) -> AnswerKey {
+pub fn read_answer(always_offered: bool, cancel: &std::sync::atomic::AtomicBool) -> Option<AnswerKey> {
+    use std::sync::atomic::Ordering;
+
+    /// True when a key can be read; false when `cancel` was set first (it wins over a key
+    /// that arrives at the same moment, which is left unread).
+    fn key_ready(fd: i32, cancel: &std::sync::atomic::AtomicBool) -> bool {
+        loop {
+            if cancel.load(Ordering::Acquire) {
+                return false;
+            }
+            let mut watched = libc::pollfd { fd, events: libc::POLLIN, revents: 0 };
+            // SAFETY: polls one live descriptor struct.
+            let n = unsafe { libc::poll(&mut watched, 1, KEY_POLL_MS) };
+            if n > 0 {
+                return !cancel.load(Ordering::Acquire);
+            }
+            if n < 0 && std::io::Error::last_os_error().kind() != std::io::ErrorKind::Interrupted {
+                // Let the read report what is wrong.
+                return true;
+            }
+        }
+    }
     fn read_byte(fd: i32) -> Option<u8> {
         let mut byte = 0u8;
         loop {
@@ -313,7 +342,7 @@ pub fn read_answer(always_offered: bool) -> AnswerKey {
     // SAFETY: termios is plain data; tcgetattr fills it or fails.
     let mut saved: libc::termios = unsafe { std::mem::zeroed() };
     if unsafe { libc::tcgetattr(fd, &mut saved) } != 0 {
-        return AnswerKey::No;
+        return Some(AnswerKey::No);
     }
     let mut raw = saved;
     raw.c_lflag &= !(libc::ICANON | libc::ECHO | libc::ISIG);
@@ -325,7 +354,10 @@ pub fn read_answer(always_offered: bool) -> AnswerKey {
         libc::tcsetattr(fd, libc::TCSANOW, &raw);
     }
     let answer = loop {
-        let Some(byte) = read_byte(fd) else { break AnswerKey::No };
+        if !key_ready(fd, cancel) {
+            break None;
+        }
+        let Some(byte) = read_byte(fd) else { break Some(AnswerKey::No) };
         if byte == 0x1b {
             // Wait a tenth of a second for the rest of an escape sequence.
             let mut quick = raw;
@@ -342,10 +374,10 @@ pub fn read_answer(always_offered: bool) -> AnswerKey {
             if sequence {
                 continue;
             }
-            break AnswerKey::No;
+            break Some(AnswerKey::No);
         }
         if let Some(answer) = answer_for_byte(byte, always_offered) {
-            break answer;
+            break Some(answer);
         }
     };
     // SAFETY: puts back what tcgetattr read.
@@ -355,8 +387,8 @@ pub fn read_answer(always_offered: bool) -> AnswerKey {
 
 /// Without a terminal API there is no key to wait for: say no.
 #[cfg(not(unix))]
-pub fn read_answer(_always_offered: bool) -> AnswerKey {
-    AnswerKey::No
+pub fn read_answer(_always_offered: bool, _cancel: &std::sync::atomic::AtomicBool) -> Option<AnswerKey> {
+    Some(AnswerKey::No)
 }
 
 #[cfg(test)]
@@ -391,7 +423,7 @@ mod tests {
     fn reading_a_key_without_a_terminal_never_waits() {
         use std::io::IsTerminal;
         if !std::io::stdin().is_terminal() {
-            assert_eq!(read_answer(true), AnswerKey::No);
+            assert_eq!(read_answer(true, &std::sync::atomic::AtomicBool::new(false)), Some(AnswerKey::No));
         }
     }
 
