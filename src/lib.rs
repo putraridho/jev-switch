@@ -15,6 +15,7 @@ pub mod catalog;
 pub mod commands;
 pub mod cooldown;
 pub mod delegate;
+pub mod doctor;
 pub mod envfile;
 pub mod handoff;
 pub mod log;
