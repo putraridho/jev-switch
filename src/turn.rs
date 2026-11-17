@@ -366,7 +366,10 @@ impl Engine {
                 Err(err) => err,
             };
             let spec = attempt.chosen.spec;
-            let retry_note = self.runtime.react(spec.provider, spec.id, &err, &mut excluded, now);
+            // A fresh reading: the attempt may have run for minutes, and "resets in 3h20m"
+            // counts from when the error arrived, not from when the attempt began.
+            let failed_at = (self.now)();
+            let retry_note = self.runtime.react(spec.provider, spec.id, &err, &mut excluded, failed_at);
             match retry_note {
                 Some(note) if attempts < max_attempts => {
                     let note = if attempt.discarded {
@@ -723,6 +726,9 @@ mod tests {
         script: &'static str,
         started: Arc<Mutex<Vec<Started>>>,
         attached: Arc<Mutex<Vec<(ProviderId, McpAttachment)>>>,
+        /// The rig's clock, and how long (ms) an attempt takes before it reports a failure.
+        clock: Arc<AtomicU64>,
+        attempt_ms: Arc<AtomicU64>,
     }
 
     #[derive(Debug, Clone)]
@@ -756,7 +762,10 @@ mod tests {
                     session_id: Some(format!("sess-{}", self.provider)),
                     usage: Usage { output_tokens: 7, context_tokens: Some(1000), ..Usage::default() },
                 }),
-                Some(("FAIL", m)) => Event::Failed { message: m.into() },
+                Some(("FAIL", m)) => {
+                    self.clock.fetch_add(self.attempt_ms.load(Ordering::SeqCst), Ordering::SeqCst);
+                    Event::Failed { message: m.into() }
+                }
                 Some(("TOOL", t)) => Event::Tool(t.into()),
                 Some(("TEXT", t)) => Event::Text(t.into()),
                 _ => return vec![],
@@ -812,6 +821,8 @@ mod tests {
         attached: Arc<Mutex<Vec<(ProviderId, McpAttachment)>>>,
         factory_calls: Arc<Mutex<Vec<ProviderId>>>,
         clock: Arc<AtomicU64>,
+        /// How long (ms on `clock`) a fake attempt runs before it reports a failure.
+        attempt_ms: Arc<AtomicU64>,
         ui: Recorder,
     }
 
@@ -829,19 +840,34 @@ mod tests {
         let attached = Arc::new(Mutex::new(Vec::new()));
         let factory_calls = Arc::new(Mutex::new(Vec::new()));
         let clock = Arc::new(AtomicU64::new(NOW));
-        let (s, st, fc, ck, at) =
-            (scripts.clone(), started.clone(), factory_calls.clone(), clock.clone(), attached.clone());
+        let attempt_ms = Arc::new(AtomicU64::new(0));
+        let (s, st, fc, ck, at, fk, am) = (
+            scripts.clone(),
+            started.clone(),
+            factory_calls.clone(),
+            clock.clone(),
+            attached.clone(),
+            clock.clone(),
+            attempt_ms.clone(),
+        );
         let engine = Engine::new(Runtime::for_tests(avail), router, std::env::temp_dir())
             .with_backend_factory(Box::new(move |p| {
                 fc.lock().unwrap().push(p);
                 let script = s.lock().unwrap()[&p];
-                Box::new(Fake { provider: p, script, started: st.clone(), attached: at.clone() })
+                Box::new(Fake {
+                    provider: p,
+                    script,
+                    started: st.clone(),
+                    attached: at.clone(),
+                    clock: fk.clone(),
+                    attempt_ms: am.clone(),
+                })
             }))
             .with_git_status(Box::new(|_| " M src/a.rs\n".to_string()))
             .with_clock(Box::new(move || ck.load(Ordering::SeqCst)))
             .with_idle_timeout(Duration::from_millis(300))
             .with_turn_log(None);
-        Rig { engine, scripts, started, attached, factory_calls, clock, ui: Recorder::default() }
+        Rig { engine, scripts, started, attached, factory_calls, clock, attempt_ms, ui: Recorder::default() }
     }
 
     fn rig(ready: &[ProviderId]) -> Rig {
@@ -1309,6 +1335,23 @@ mod tests {
         r.script(a, OK);
         let report = r.turn(LONG, new_task(TaskType::Feature)).await;
         assert_eq!(report.provider, Some(a));
+    }
+
+    #[tokio::test]
+    async fn a_duration_reset_counts_from_when_the_error_arrived_not_from_when_the_attempt_began() {
+        const MINUTE: u64 = 60_000;
+        const RESETS_IN_3H20: &str = "printf 'FAIL:You have hit your limit, resets in 3h20m\\n'";
+        let ready = [Claude, Codex];
+        let mut r = rig(&ready);
+        let a = first_choice(TaskType::Feature, &ready);
+        r.script(a, RESETS_IN_3H20);
+        r.attempt_ms.store(10 * MINUTE, Ordering::SeqCst); // the turn ran 10 minutes before failing
+
+        r.turn("add a retry to the client", want(TaskType::Feature)).await;
+        let reset = NOW + 10 * MINUTE + 200 * MINUTE;
+        assert_eq!(r.engine.runtime.cooldowns.active(a, NOW), Some(reset - NOW));
+        assert!(r.engine.runtime.cooldowns.active(a, reset - 1).is_some(), "not over 10 minutes early");
+        assert!(r.engine.runtime.cooldowns.active(a, reset).is_none());
     }
 
     #[test]

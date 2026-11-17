@@ -2,8 +2,9 @@
 //! until they reset instead of paying a failed turn to rediscover it.
 //!
 //! Time is always passed in (`now_ms`), wall-clock text is resolved through an
-//! injected [`Resolver`], and the file path is always a parameter, so every rule here
-//! is testable without a clock, `date`, or the real state directory.
+//! injected [`Resolver`], zone names are checked through an injected [`ZoneExists`],
+//! and the file path is always a parameter, so every rule here is testable without a
+//! clock, `date`, the zone database, or the real state directory.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -36,8 +37,15 @@ const MAX_TEXT_LEN: usize = 64;
 /// Injected so tests never run `date`; production passes [`system_date`].
 pub type Resolver<'a> = &'a dyn Fn(&str, Option<&str>) -> Option<u64>;
 
+/// Whether a zone name is a real IANA zone. Injected so tests need no zone database;
+/// production passes [`system_zone_exists`].
+pub type ZoneExists<'a> = &'a dyn Fn(&str) -> bool;
+
+/// Where the system keeps its IANA zone files.
+const ZONEINFO_DIR: &str = "/usr/share/zoneinfo";
+
 /// Milliseconds a provider should be skipped, given the CLI's reset text, resolving
-/// wall-clock forms with the system `date`. See [`cooldown_ms_with`].
+/// wall-clock forms with the system `date`. See [`cooldown_ms_in`].
 pub fn cooldown_ms(resets_at: Option<&str>, now_ms: u64) -> u64 {
     cooldown_ms_with(resets_at, now_ms, &system_date)
 }
@@ -47,17 +55,32 @@ pub fn cooldown_ms(resets_at: Option<&str>, now_ms: u64) -> u64 {
 /// Understood forms: epoch seconds or milliseconds as digits; a duration
 /// ("3h20m5s", "20m", "90 minutes", "2 hours"); a time of day or date and time
 /// ("5pm (Asia/Jakarta)", "Nov 20, 5pm (Asia/Jakarta)") and ISO-8601, both resolved
-/// by `resolve`. A bare time of day that is not in the future means tomorrow.
-/// Anything unreadable (or nothing) means [`DEFAULT_MS`]; any result is clamped to
-/// [1 minute, 8 days].
+/// by `resolve`. Zones are checked against the system zone database. See
+/// [`cooldown_ms_in`] for the rules.
 pub fn cooldown_ms_with(resets_at: Option<&str>, now_ms: u64, resolve: Resolver) -> u64 {
-    let reset_ms = resets_at.map(str::trim).filter(|s| !s.is_empty()).and_then(|s| reset_instant_ms(s, now_ms, resolve));
+    cooldown_ms_in(resets_at, now_ms, resolve, &system_zone_exists)
+}
+
+/// [`cooldown_ms_with`] with an injected zone check: a zone is accepted only if it is
+/// exactly `UTC`/`GMT` or `zone_exists` says it is a real IANA zone. An abbreviation
+/// such as `PST` is ambiguous (and `date` would silently read it as UTC), so it is as
+/// unreadable as any other unknown zone.
+///
+/// A bare time of day that is not in the future means tomorrow. A date with no year
+/// that is not in the future (said on Dec 31: "Jan 2 5pm") means next year, if that is
+/// within the 8-day cap. Anything unreadable (or nothing) means [`DEFAULT_MS`]; any
+/// result is clamped to [1 minute, 8 days].
+pub fn cooldown_ms_in(resets_at: Option<&str>, now_ms: u64, resolve: Resolver, zone_exists: ZoneExists) -> u64 {
+    let reset_ms = resets_at
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .and_then(|s| reset_instant_ms(s, now_ms, resolve, zone_exists));
     let wait = reset_ms.map_or(DEFAULT_MS, |r| r.saturating_sub(now_ms));
     wait.clamp(MIN_MS, MAX_MS)
 }
 
 /// The reset instant (epoch ms) the text names, by form: epoch, duration, wall clock.
-fn reset_instant_ms(text: &str, now_ms: u64, resolve: Resolver) -> Option<u64> {
+fn reset_instant_ms(text: &str, now_ms: u64, resolve: Resolver, zone_exists: ZoneExists) -> Option<u64> {
     if text.bytes().all(|b| b.is_ascii_digit()) {
         let n: u64 = text.parse().ok()?;
         return Some(if n >= MS_THRESHOLD { n } else { n.saturating_mul(1000) });
@@ -65,7 +88,7 @@ fn reset_instant_ms(text: &str, now_ms: u64, resolve: Resolver) -> Option<u64> {
     if let Some(d) = parse_duration_ms(text) {
         return Some(now_ms.saturating_add(d));
     }
-    wall_clock_ms(text, now_ms, resolve)
+    wall_clock_ms(text, now_ms, resolve, zone_exists)
 }
 
 /// "3h20m5s", "3h 20m", "20m", "90 minutes", "2 hours", "in 1 day": a sum of
@@ -140,24 +163,91 @@ fn normalize_for_date(body: &str) -> String {
     spaced.split_whitespace().filter(|w| !w.eq_ignore_ascii_case("at")).collect::<Vec<_>>().join(" ")
 }
 
+const MONTHS: [&str; 24] = [
+    "jan", "january", "feb", "february", "mar", "march", "apr", "april", "may", "jun", "june", "jul", "july", "aug",
+    "august", "sep", "sept", "september", "oct", "october", "nov", "november", "dec", "december",
+];
+
+/// A date that names a month but no four-digit year: "Jan 2 5pm", "November 20".
+fn names_date_without_year(body: &str) -> bool {
+    let words = || body.split_whitespace().map(|w| w.trim_end_matches('.'));
+    let has_year = words().any(|w| w.len() == 4 && w.bytes().all(|b| b.is_ascii_digit()));
+    !has_year && words().any(|w| MONTHS.contains(&w.to_ascii_lowercase().as_str()))
+}
+
+/// The UTC calendar year of an instant (days since 1970 to a civil year).
+fn utc_year(ms: u64) -> u64 {
+    let z = (ms / DAY_MS) as i64 + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097);
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let month = (5 * doy + 2) / 153; // 0 = March
+    (yoe + era * 400 + i64::from(month >= 10)) as u64
+}
+
+/// A yearless date that came out in the past, asked again for next year. Taken only
+/// if that is in the future and within [`MAX_MS`]: a stale date far ahead is more
+/// likely a misread than a real reset.
+fn next_year_instant(body: &str, zone: Option<&str>, now_ms: u64, resolve: Resolver) -> Option<u64> {
+    let next = resolve(&format!("{body} {}", utc_year(now_ms) + 1), zone)?.saturating_mul(1000);
+    (next > now_ms && next - now_ms <= MAX_MS).then_some(next)
+}
+
+/// Whether `zone` may be handed to `date`: exactly UTC or GMT, or a real IANA zone.
+fn zone_is_known(zone: &str, zone_exists: ZoneExists) -> bool {
+    matches!(zone, "UTC" | "GMT") || zone_exists(zone)
+}
+
 /// A wall-clock reset (time of day, date and time, ISO-8601) via `resolve`.
-fn wall_clock_ms(text: &str, now_ms: u64, resolve: Resolver) -> Option<u64> {
+fn wall_clock_ms(text: &str, now_ms: u64, resolve: Resolver, zone_exists: ZoneExists) -> Option<u64> {
     if !is_safe_text(text) {
         return None;
     }
     let (body, zone) = split_zone(text)?;
+    if zone.is_some_and(|z| !zone_is_known(z, zone_exists)) {
+        return None;
+    }
     let body = normalize_for_date(body);
-    let mut ms = resolve(&body, zone)?.saturating_mul(1000);
-    if ms <= now_ms && is_bare_time_of_day(&body) {
-        ms = ms.saturating_add(DAY_MS); // "resets 5pm" said after 5pm means tomorrow
+    let ms = resolve(&body, zone)?.saturating_mul(1000);
+    if ms > now_ms {
+        return Some(ms);
+    }
+    if is_bare_time_of_day(&body) {
+        return Some(ms.saturating_add(DAY_MS)); // "resets 5pm" said after 5pm means tomorrow
+    }
+    if names_date_without_year(&body) {
+        return Some(next_year_instant(&body, zone, now_ms, resolve).unwrap_or(ms));
     }
     Some(ms)
+}
+
+/// The production [`ZoneExists`]: `zone` is a TZif file under the system zone
+/// directory. See [`zone_in_dir`].
+pub fn system_zone_exists(zone: &str) -> bool {
+    zone_in_dir(Path::new(ZONEINFO_DIR), zone)
+}
+
+/// Whether `zone` names a real zone file under `root`: a safe name, a file that,
+/// symlinks followed, is still inside `root`, and that starts with the TZif magic (so
+/// `zone.tab` and friends are not zones). Without this check `date` reads an unknown
+/// `TZ` such as `PST` as UTC and exits 0.
+fn zone_in_dir(root: &Path, zone: &str) -> bool {
+    use std::io::Read;
+    if !is_safe_zone(zone) {
+        return false;
+    }
+    let (Ok(root), Ok(file)) = (root.canonicalize(), root.join(zone).canonicalize()) else { return false };
+    let mut magic = [0u8; 4];
+    file.starts_with(&root)
+        && std::fs::File::open(&file).and_then(|mut f| f.read_exact(&mut magic)).is_ok()
+        && &magic == b"TZif"
 }
 
 /// The production [`Resolver`]: GNU `date -d <text> +%s`, run directly (never through
 /// a shell) with the zone in `TZ`. Re-validates its input, so it is safe on its own.
 pub fn system_date(text: &str, zone: Option<&str>) -> Option<u64> {
-    if !is_safe_text(text) || text.contains(['(', ')']) || !zone.is_none_or(is_safe_zone) {
+    if !is_safe_text(text) || text.contains(['(', ')']) || !zone.is_none_or(|z| is_safe_zone(z) && zone_is_known(z, &system_zone_exists)) {
         return None;
     }
     let mut cmd = Command::new("date");
@@ -191,9 +281,14 @@ impl Cooldowns {
         self.until_ms.get(&p).and_then(|u| u.checked_sub(now_ms)).filter(|left| *left > 0)
     }
 
-    /// Forget a cooldown in memory, e.g. after a successful turn proves the provider
-    /// is back. Memory only: [`Cooldowns::save`] merges with the file, so another
-    /// process's entry for the provider would come back.
+    /// Forget a cooldown in this copy only. It does NOT lift a saved cooldown: once a
+    /// cooldown has been saved it cannot be forgiven, it can only expire. That is on
+    /// purpose. [`Cooldowns::save`] merges the file in (later expiry per provider
+    /// wins) and [`crate::providers::Runtime`] unions the file into what it reports,
+    /// because other processes share the file and one process must not erase a limit
+    /// another just learned. So after `clear` the entry comes back from disk on the
+    /// next save or read. Nothing in production calls this; it exists for tests and
+    /// for dropping a throwaway copy.
     pub fn clear(&mut self, p: ProviderId) {
         self.until_ms.remove(&p);
     }
@@ -316,6 +411,15 @@ mod tests {
         None
     }
 
+    /// Only these zones "exist" in tests, so no test depends on the machine's zone database.
+    fn fake_zones(zone: &str) -> bool {
+        matches!(zone, "Asia/Jakarta" | "America/Los_Angeles")
+    }
+
+    fn cooldown_in(text: Option<&str>, now_ms: u64, resolve: Resolver) -> u64 {
+        cooldown_ms_in(text, now_ms, resolve, &fake_zones)
+    }
+
     #[test]
     fn default_is_one_hour() {
         // "tomorrow 9am" is a real date expression, so the resolver here knows nothing.
@@ -382,7 +486,7 @@ mod tests {
     fn time_of_day_with_a_zone_goes_to_the_resolver() {
         let seen = RefCell::new(vec![]);
         let two_hours = fixed(NOW / 1000 + 7200, &seen);
-        assert_eq!(cooldown_ms_with(Some("5pm (Asia/Jakarta)"), NOW, &two_hours), 2 * HOUR_MS);
+        assert_eq!(cooldown_in(Some("5pm (Asia/Jakarta)"), NOW, &two_hours), 2 * HOUR_MS);
         assert_eq!(seen.borrow()[0], ("5pm".to_string(), Some("Asia/Jakarta".to_string())));
         assert_eq!(cooldown_ms_with(Some("5pm"), NOW, &two_hours), 2 * HOUR_MS);
         assert_eq!(seen.borrow()[1], ("5pm".to_string(), None));
@@ -393,7 +497,7 @@ mod tests {
         let seen = RefCell::new(vec![]);
         let an_hour_ago = fixed(NOW / 1000 - 3600, &seen);
         for text in ["5pm (Asia/Jakarta)", "5:30 pm", "17:00 (UTC)"] {
-            assert_eq!(cooldown_ms_with(Some(text), NOW, &an_hour_ago), 23 * HOUR_MS, "{text}");
+            assert_eq!(cooldown_in(Some(text), NOW, &an_hour_ago), 23 * HOUR_MS, "{text}");
         }
         // Exactly now is not in the future either.
         assert_eq!(cooldown_ms_with(Some("5pm"), NOW, &fixed(NOW / 1000, &seen)), DAY_MS);
@@ -403,11 +507,11 @@ mod tests {
     fn a_date_with_a_time_is_not_pushed_a_day() {
         let seen = RefCell::new(vec![]);
         let in_three_days = fixed(NOW / 1000 + 3 * 86_400, &seen);
-        assert_eq!(cooldown_ms_with(Some("Nov 20, 5pm (Asia/Jakarta)"), NOW, &in_three_days), 3 * DAY_MS);
+        assert_eq!(cooldown_in(Some("Nov 20, 5pm (Asia/Jakarta)"), NOW, &in_three_days), 3 * DAY_MS);
         assert_eq!(seen.borrow()[0], ("Nov 20 5pm".to_string(), Some("Asia/Jakarta".to_string())));
         // In the past it is not "tomorrow": it clamps like any stale timestamp.
         let past = fixed(NOW / 1000 - 3600, &seen);
-        assert_eq!(cooldown_ms_with(Some("Nov 20, 5pm (Asia/Jakarta)"), NOW, &past), MIN_MS);
+        assert_eq!(cooldown_in(Some("Nov 20, 5pm (Asia/Jakarta)"), NOW, &past), MIN_MS);
         // GNU date rejects the comma and "at"; both are dropped.
         cooldown_ms_with(Some("Nov 20 at 5pm"), NOW, &in_three_days);
         assert_eq!(seen.borrow().last().unwrap().0, "Nov 20 5pm");
@@ -424,9 +528,127 @@ mod tests {
         assert_eq!(cooldown_ms_with(Some("2030-01-01T00:00:00Z"), NOW, &fixed(NOW / 1000 + 400 * 86_400, &seen)), MAX_MS);
     }
 
+    /// 2026-12-31 12:00:00 UTC.
+    const NEW_YEARS_EVE: u64 = 1_798_718_400_000;
+
+    /// A resolver that behaves like `date` without a year: text with no year is read in
+    /// 2026, text ending in a year is read in that year. Records every call.
+    fn like_date(seen: &RefCell<Vec<String>>) -> impl Fn(&str, Option<&str>) -> Option<u64> + '_ {
+        const JAN_2_5PM_2026: u64 = 1_767_373_200;
+        const YEAR_SECS: u64 = 365 * 86_400;
+        move |text, _| {
+            seen.borrow_mut().push(text.to_string());
+            let years_on = text.rsplit(' ').next().and_then(|w| w.parse::<u64>().ok()).map_or(0, |y| y - 2026);
+            Some(JAN_2_5PM_2026 + years_on * YEAR_SECS)
+        }
+    }
+
+    #[test]
+    fn a_date_without_a_year_that_has_passed_means_next_year() {
+        // Said on Dec 31: `date` reads "Jan 2 5pm" as Jan 2 of THIS year, 364 days ago.
+        // Before the fix that clamped to one minute and the provider was retried every
+        // minute for two days.
+        let seen = RefCell::new(vec![]);
+        let resolve = like_date(&seen);
+        let want = 2 * DAY_MS + 5 * HOUR_MS; // Jan 2 17:00 minus Dec 31 12:00
+        assert_eq!(cooldown_in(Some("Jan 2 5pm (Asia/Jakarta)"), NEW_YEARS_EVE, &resolve), want);
+        assert_eq!(*seen.borrow(), ["Jan 2 5pm", "Jan 2 5pm 2027"]);
+        assert_eq!(cooldown_in(Some("January 2, 5pm (UTC)"), NEW_YEARS_EVE, &resolve), want);
+        assert_eq!(seen.borrow().last().unwrap(), "January 2 5pm 2027");
+    }
+
+    #[test]
+    fn next_year_is_taken_only_when_in_the_future_and_within_the_cap() {
+        let seen = RefCell::new(vec![]);
+        // Still in the past next year too (a resolver that ignores the year): stale, one minute.
+        let stale = fixed(NEW_YEARS_EVE / 1000 - 5, &seen);
+        assert_eq!(cooldown_in(Some("Jan 2 5pm (UTC)"), NEW_YEARS_EVE, &stale), MIN_MS);
+        // Next year but months away: not a reset anyone meant, not taken.
+        let far = |text: &str, _: Option<&str>| Some(if text.ends_with("2027") { NEW_YEARS_EVE / 1000 + 62 * 86_400 } else { 1_000 });
+        assert_eq!(cooldown_in(Some("Mar 3 5pm (UTC)"), NEW_YEARS_EVE, &far), MIN_MS);
+        // Just inside the cap it is taken.
+        let edge = |text: &str, _: Option<&str>| Some(if text.ends_with("2027") { NEW_YEARS_EVE / 1000 + 8 * 86_400 } else { 1_000 });
+        assert_eq!(cooldown_in(Some("Jan 8 5pm (UTC)"), NEW_YEARS_EVE, &edge), MAX_MS);
+    }
+
+    #[test]
+    fn a_date_that_names_its_year_or_is_not_a_date_is_not_asked_twice() {
+        let seen = RefCell::new(vec![]);
+        let past = fixed(NEW_YEARS_EVE / 1000 - 3600, &seen);
+        for text in ["Jan 2 2026 5pm (UTC)", "2026-01-02T17:00:00Z", "tomorrow 9am"] {
+            assert_eq!(cooldown_in(Some(text), NEW_YEARS_EVE, &past), MIN_MS, "{text}");
+        }
+        assert_eq!(seen.borrow().len(), 3, "one resolve each");
+        // A bare time of day keeps its plus-one-day rule, never a year.
+        assert_eq!(cooldown_in(Some("5pm (UTC)"), NEW_YEARS_EVE, &past), 23 * HOUR_MS);
+        assert_eq!(seen.borrow().len(), 4);
+    }
+
+    #[test]
+    fn year_of_an_instant_and_date_without_year_detection() {
+        assert_eq!(utc_year(0), 1970);
+        assert_eq!(utc_year(NEW_YEARS_EVE), 2026);
+        assert_eq!(utc_year(NEW_YEARS_EVE + 12 * HOUR_MS), 2027);
+        assert_eq!(utc_year(NEW_YEARS_EVE - 365 * DAY_MS), 2025);
+        assert_eq!(utc_year(951_782_400_000), 2000); // 2000-02-29
+        for yes in ["Jan 2 5pm", "January 2 17:00", "Nov 20 5:30pm", "Sept. 3 9am", "may 4 1pm"] {
+            assert!(names_date_without_year(yes), "{yes}");
+        }
+        for no in ["Jan 2 2027 5pm", "5pm", "17:00", "2026-11-20T17:00:00Z", "tomorrow 9am", "mayor 5pm", "Monday 5pm"] {
+            assert!(!names_date_without_year(no), "{no}");
+        }
+    }
+
+    #[test]
+    fn only_real_zones_are_accepted_abbreviations_and_unknown_names_are_the_default() {
+        let seen = RefCell::new(vec![]);
+        let two_hours = fixed(NOW / 1000 + 7200, &seen);
+        // `TZ=PST date ...` exits 0 reading UTC, 8 hours wrong, so PST is not a zone.
+        assert_eq!(cooldown_in(Some("5pm (PST)"), NOW, &two_hours), DEFAULT_MS);
+        assert_eq!(cooldown_in(Some("5pm (Not/AZone)"), NOW, &two_hours), DEFAULT_MS);
+        assert_eq!(cooldown_in(Some("5pm (EST)"), NOW, &two_hours), DEFAULT_MS);
+        assert!(seen.borrow().is_empty(), "an unknown zone never reaches the resolver");
+        assert_eq!(cooldown_in(Some("5pm (Asia/Jakarta)"), NOW, &two_hours), 2 * HOUR_MS);
+        // Exactly UTC and GMT need no zone file.
+        for zone in ["UTC", "GMT"] {
+            assert_eq!(cooldown_ms_in(Some(&format!("5pm ({zone})")), NOW, &two_hours, &|_| false), 2 * HOUR_MS, "{zone}");
+        }
+        for zone in ["utc", "Utc", "UTC+3", "Z"] {
+            assert_eq!(cooldown_ms_in(Some(&format!("5pm ({zone})")), NOW, &two_hours, &|_| false), DEFAULT_MS, "{zone}");
+        }
+        // No zone at all is local time and still goes to the resolver.
+        assert_eq!(cooldown_in(Some("5pm"), NOW, &two_hours), 2 * HOUR_MS);
+    }
+
+    #[test]
+    fn a_zone_must_be_a_tzif_file_inside_the_zone_directory() {
+        let dir = temp_dir("zones");
+        let root = dir.join("zoneinfo");
+        std::fs::create_dir_all(root.join("Asia")).unwrap();
+        std::fs::write(root.join("Asia/Jakarta"), b"TZif2 rest of the file").unwrap();
+        std::fs::write(root.join("zone.tab"), b"# not a zone").unwrap();
+        std::fs::write(dir.join("outside"), b"TZif2 but outside").unwrap();
+        std::os::unix::fs::symlink(dir.join("outside"), root.join("Escape")).unwrap();
+        std::os::unix::fs::symlink(root.join("Asia/Jakarta"), root.join("Alias")).unwrap();
+        for ok in ["Asia/Jakarta", "Alias"] {
+            assert!(zone_in_dir(&root, ok), "{ok}");
+        }
+        for bad in ["PST", "Not/AZone", "Asia", "zone.tab", "Escape", "../outside", "/etc/passwd", "", "Asia/../zone.tab"] {
+            assert!(!zone_in_dir(&root, bad), "{bad}");
+        }
+        assert!(!zone_in_dir(&dir.join("missing"), "Asia/Jakarta"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_real_resolver_refuses_abbreviations_and_unknown_zones() {
+        assert_eq!(system_date("5pm", Some("PST")), None);
+        assert_eq!(system_date("5pm", Some("Not/AZone")), None);
+    }
+
     #[test]
     fn what_the_resolver_cannot_read_is_the_default() {
-        assert_eq!(cooldown_ms_with(Some("5pm (Asia/Jakarta)"), NOW, &unresolvable), DEFAULT_MS);
+        assert_eq!(cooldown_in(Some("5pm (Asia/Jakarta)"), NOW, &unresolvable), DEFAULT_MS);
     }
 
     #[test]
@@ -489,6 +711,10 @@ mod tests {
         // The forms Claude Code prints, after normalizing, are ones GNU date accepts.
         for text in ["5pm (Asia/Jakarta)", "Nov 20, 5pm (Asia/Jakarta)", "Nov 20 at 5:30pm (UTC)"] {
             let (body, zone) = split_zone(text).unwrap();
+            if zone.is_some_and(|z| !zone_is_known(z, &system_zone_exists)) {
+                eprintln!("skipped {text}: no zone database on this machine");
+                continue;
+            }
             assert!(system_date(&normalize_for_date(body), zone).is_some(), "{text}");
         }
     }
