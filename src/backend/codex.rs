@@ -283,7 +283,7 @@ mod tests {
     }
 
     fn req(session: Option<&str>) -> TurnRequest {
-        TurnRequest { dir: "/tmp/proj".into(), model: "gpt-x".into(), prompt: "hi".into(), session_id: session.map(String::from) }
+        TurnRequest { dir: "/tmp/proj".into(), model: "gpt-x".into(), prompt: "hi".into(), session_id: session.map(String::from), mode: Default::default() }
     }
 
     #[test]

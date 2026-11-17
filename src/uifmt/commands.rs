@@ -21,7 +21,7 @@ pub(super) struct Cmd {
     pub(super) hint: &'static str,
 }
 
-pub(super) const COMMANDS: [Cmd; 13] = [
+pub(super) const COMMANDS: [Cmd; 14] = [
     Cmd { name: "/model", args: "[target]", group: Group::Model, about: "Pin a model or provider, or `auto` to let the router choose", example: "/model codex:gpt-6.1-sol", hint: "auto|codex|claude:..." },
     Cmd { name: "/provider", args: "auto|off", group: Group::Model, about: "Route across providers (auto), or use Claude only (off)", example: "/provider off", hint: "auto|off" },
     Cmd { name: "/orchestrate", args: "[on|off]", group: Group::Model, about: "Let a planner split a big task across cheaper workers", example: "/orchestrate on", hint: "on|off" },
@@ -29,6 +29,7 @@ pub(super) const COMMANDS: [Cmd; 13] = [
     Cmd { name: "/resume", args: "", group: Group::Session, about: "Pick up a previous session", example: "", hint: "" },
     Cmd { name: "/diff", args: "[file]", group: Group::Session, about: "Show what the agent changed, all files or one", example: "/diff src/main.rs", hint: "[file]" },
     Cmd { name: "/undo", args: "", group: Group::Session, about: "Undo the file changes of the last turn", example: "", hint: "" },
+    Cmd { name: "/mode", args: "[ask|edit|plan|auto]", group: Group::Session, about: "Set how much the agent may do without asking (Shift-Tab cycles it)", example: "/mode auto", hint: "ask|edit|plan|auto" },
     Cmd { name: "/permissions", args: "[allow|remove|dir <x>]", group: Group::Session, about: "Show or change which tool calls are allowed without asking", example: "/permissions allow Bash(cargo test:*)", hint: "allow|remove|dir" },
     Cmd { name: "/quit", args: "", group: Group::Session, about: "Exit (also /exit, or Ctrl-D)", example: "", hint: "" },
     Cmd { name: "/help", args: "", group: Group::Info, about: "Show this help", example: "", hint: "" },
@@ -37,12 +38,13 @@ pub(super) const COMMANDS: [Cmd; 13] = [
     Cmd { name: "/doctor", args: "", group: Group::Info, about: "Check the setup and show how to fix problems", example: "", hint: "" },
 ];
 
-pub(super) const KEYS: [(&str, &str); 5] = [
+pub(super) const KEYS: [(&str, &str); 6] = [
     ("Ctrl-C", "stop the running turn"),
     ("Ctrl-D", "exit (on an empty line)"),
     ("Alt-Enter", "newline inside your message"),
     ("↑ / ↓", "earlier and later messages"),
     ("Tab", "complete a command or its argument"),
+    ("Shift-Tab", "cycle the mode: ask, edit, plan, auto"),
 ];
 
 pub(super) fn usage(c: &Cmd) -> String {

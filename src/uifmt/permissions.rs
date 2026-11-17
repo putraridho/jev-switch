@@ -140,6 +140,11 @@ pub fn denied_without_asking(tool: &str) -> String {
     )
 }
 
+/// The line shown when auto mode allowed a call without asking.
+pub fn auto_allowed(summary: &str) -> String {
+    format!("\u{2713} auto-allowed {}", one_line(summary))
+}
+
 /// The `/permissions` screen: the project's rules and folders, then the user-level rules.
 pub fn permissions_text(l: &crate::permissions::Listing, style: Style, project_dir: &Path) -> String {
     let show = |path: &Path| relativize_paths(&path.display().to_string(), project_dir);

@@ -436,6 +436,7 @@ mod tests {
             model: "m-1".into(),
             prompt: "do the thing".into(),
             session_id: session.map(String::from),
+            mode: Default::default(),
         }
     }
 

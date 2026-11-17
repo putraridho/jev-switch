@@ -3,6 +3,7 @@
 //! unit test. The names come from the one command table in [`crate::uifmt`], which also
 //! drives `/help` and Tab completion.
 
+use crate::mode::Mode;
 use crate::permissions::{self, PermissionsCmd};
 use crate::routing::Pin;
 use crate::uifmt;
@@ -25,6 +26,10 @@ pub enum Command {
     SetOrchestrate(bool),
     /// `/orchestrate` with no argument: show whether it is on.
     ShowOrchestrate,
+    /// `/mode` with no argument: show the mode.
+    ShowMode,
+    /// `/mode <name>`.
+    SetMode(Mode),
     /// `/providers [refresh]`.
     Providers { refresh: bool },
     /// A command that was recognised but whose argument was not; the text says what is accepted.
@@ -134,6 +139,11 @@ pub fn parse(line: &str) -> Command {
             (Some("off"), false) => Command::SetOrchestrate(false),
             _ => invalid("usage: /orchestrate on|off"),
         },
+        "/mode" => match (arg, extra) {
+            (None, _) => Command::ShowMode,
+            (Some(word), false) => word.parse().map_or_else(|e: crate::mode::UnknownMode| Command::Invalid(e.to_string()), Command::SetMode),
+            _ => invalid("usage: /mode [ask|edit|plan|auto]"),
+        },
         "/providers" => match (arg, extra) {
             (None, _) => Command::Providers { refresh: false },
             (Some("refresh"), false) => Command::Providers { refresh: true },
@@ -217,6 +227,11 @@ mod tests {
         assert_eq!(parse("/orchestrate on"), Command::SetOrchestrate(true));
         assert_eq!(parse("/orchestrate off"), Command::SetOrchestrate(false));
         assert_eq!(parse("/orchestrate"), Command::ShowOrchestrate);
+        assert_eq!(parse("/mode"), Command::ShowMode);
+        assert_eq!(parse("/mode auto"), Command::SetMode(Mode::Auto));
+        assert_eq!(parse("/mode acceptEdits"), Command::SetMode(Mode::Edit));
+        assert!(matches!(parse("/mode yolo"), Command::Invalid(m) if m.contains("ask, edit, plan or auto")));
+        assert!(matches!(parse("/mode auto plan"), Command::Invalid(_)));
         assert!(matches!(parse("/orchestrate maybe"), Command::Invalid(m) if m.contains("on|off")));
         assert!(matches!(parse("/orchestrate on now"), Command::Invalid(_)));
     }

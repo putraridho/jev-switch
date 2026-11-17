@@ -1319,7 +1319,7 @@ impl Delegator {
     /// Run the worker CLI in its worktree. Plan usage it reports feeds the spreading.
     async fn run_worker(&self, spec: &'static ModelSpec, dir: &Path, prompt: String) -> (Result<TurnOutcome, TurnError>, Vec<String>) {
         let backend = (self.backend_factory)(spec.provider);
-        let req = TurnRequest { dir: dir.to_path_buf(), model: spec.id.to_string(), prompt, session_id: None };
+        let req = TurnRequest { dir: dir.to_path_buf(), model: spec.id.to_string(), prompt, session_id: None, mode: Default::default() };
         let mut tools: Vec<String> = Vec::new();
         let mut on_event = |e: &Event| match e {
             Event::Tool(summary) => tools.push(summary.clone()),

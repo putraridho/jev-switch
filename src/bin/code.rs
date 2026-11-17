@@ -23,6 +23,7 @@ use jev_router::envfile;
 use jev_router::handoff;
 use jev_router::lineedit::{self, Input, InterruptGuard};
 use jev_router::log;
+use jev_router::mode;
 use jev_router::orchestrate::{self, Setup};
 use jev_router::providers::{self, Runtime};
 use jev_router::repl::{Confirm, Flow, Interrupt, Io, Repl, SigInt};
@@ -176,6 +177,7 @@ fn engine_for(runtime: Runtime, router: Router, dir: PathBuf, can_ask: bool) -> 
     Engine::new(runtime, router, dir)
         .with_backend_factory(Box::new(providers::run_backends(can_ask)))
         .with_enabled(commands::routing_enabled(envfile::lookup("JEV_PROVIDERS").as_deref()))
+        .with_mode(mode::initial(envfile::lookup("CODE_PERMISSION_MODE").as_deref()))
         .with_orchestrate(orchestrate::enabled_from_env(envfile::lookup("JEV_ORCHESTRATE").as_deref()))
         .with_orch_setup(Setup::detect())
         .with_downgrade_after(envfile::lookup_f64("DOWNGRADE_AFTER", 2.0) as u32)
@@ -336,7 +338,9 @@ fn startup(repl: &mut Repl, args: &Args, term: &Term, console: &Console, state_d
 /// The interactive loop: the line editor, one message or command at a time.
 async fn edit_loop(repl: &mut Repl, term: &Term, console: &Console, state_dir: Option<&Path>, sigint: &mut SigInt) -> i32 {
     let history = state_dir.map(lineedit::history_path);
-    let mut editor = match lineedit::build_editor(term.out_style, history.as_deref()) {
+    // Shift-Tab changes this while a prompt is open; it is read back after every line.
+    let shared_mode = mode::SharedMode::new(repl.engine.mode());
+    let mut editor = match lineedit::build_editor(term.out_style, history.as_deref(), shared_mode.clone()) {
         Ok(e) => e,
         Err(e) => {
             console.err(&format!("jev-code: cannot start the line editor: {}", lineedit::describe(&e)));
@@ -346,11 +350,18 @@ async fn edit_loop(repl: &mut Repl, term: &Term, console: &Console, state_dir: O
     let mut guard = InterruptGuard::default();
     loop {
         settle_late_probes(repl);
+        shared_mode.set(repl.engine.mode());
         let label = views::prompt_label(repl.engine.pin(), repl.engine.enabled());
         let plain = views::plain_prompt(label.as_deref());
         let styled = views::styled_prompt(label.as_deref(), term.out_style);
         let ctx = views::complete_ctx(&repl.engine, log::now_ms());
-        match tokio::task::block_in_place(|| lineedit::read(&mut editor, &plain, &styled, ctx)) {
+        let input = tokio::task::block_in_place(|| lineedit::read(&mut editor, &plain, &styled, ctx));
+        // A mode picked with Shift-Tab holds even when the line was thrown away.
+        if shared_mode.get() != repl.engine.mode() {
+            repl.engine.set_mode(shared_mode.get());
+            console.out(&format!("  mode: {}", views::mode_line(shared_mode.get())));
+        }
+        match input {
             Input::Line(line) => {
                 settle_late_probes(repl);
                 guard.reset();

@@ -29,8 +29,8 @@ use crate::permissions;
 /// on every turn and the prompt cache holds.
 pub const SESSION_NOTE: &str = "You are running inside jev-code, a terminal router for coding models, not in the Claude Code terminal UI. \
 When a tool call needs approval, jev-code asks the user in the terminal by itself: just make the call, and if it is denied, say what you need and why. \
-The user manages permission rules with jev-code's /permissions command. \
-Never tell the user to use Claude Code interface features such as Shift+Tab, /config or plugin commands: jev-code does not have them.";
+The user manages permission rules with jev-code's /permissions command and the permission mode (ask, edit, plan, auto) with /mode or Shift+Tab. \
+Never tell the user to use Claude Code interface features such as /config or plugin commands: jev-code does not have them.";
 
 pub struct ClaudeBackend {
     pub bin: String,
@@ -207,7 +207,10 @@ impl Backend for ClaudeBackend {
         if let Some(id) = &req.session_id {
             cmd.args(["--resume", id]);
         }
-        cmd.args(["--permission-mode", &self.permission_mode]);
+        // A session follows the mode the person set (Shift-Tab, `/mode`); a run nobody can
+        // answer keeps `CODE_PERMISSION_MODE` as given.
+        let mode = if self.interactive { req.mode.claude_flag() } else { self.permission_mode.as_str() };
+        cmd.args(["--permission-mode", mode]);
         if self.interactive {
             cmd.args(["--input-format", "stream-json", "--permission-prompt-tool", "stdio", "--append-system-prompt", SESSION_NOTE]);
         }
@@ -306,6 +309,7 @@ mod tests {
             model: "sonnet-x".into(),
             prompt: "hi".into(),
             session_id: session.map(String::from),
+            mode: Default::default(),
         }
     }
 
@@ -391,6 +395,19 @@ mod tests {
             ["-p", "--model", "sonnet-x", "--output-format", "stream-json", "--verbose", "--resume", "abc",
              "--permission-mode", "acceptEdits", "--allowedTools", "Bash(cargo *)"]
         );
+    }
+
+    #[test]
+    fn a_session_follows_the_mode_but_a_headless_run_keeps_the_environment() {
+        use crate::mode::Mode;
+        let session = backend().in_session();
+        for (mode, flag) in [(Mode::Ask, "default"), (Mode::Edit, "acceptEdits"), (Mode::Plan, "plan"), (Mode::Auto, "acceptEdits")] {
+            let a = args(&session.command(&TurnRequest { mode, ..req(None) }));
+            let at = a.iter().position(|x| x == "--permission-mode").unwrap();
+            assert_eq!(a[at + 1], flag, "{mode}");
+        }
+        let headless = args(&backend().command(&TurnRequest { mode: Mode::Plan, ..req(None) }));
+        assert!(headless.windows(2).any(|w| w == ["--permission-mode", "acceptEdits"]), "{headless:?}");
     }
 
     fn attachment() -> McpAttachment {

@@ -552,7 +552,7 @@ mod tests {
 
     #[test]
     fn a_run_nobody_can_answer_never_uses_the_host_prompt_protocol() {
-        let req = crate::backend::TurnRequest { dir: "/tmp".into(), model: "m".into(), prompt: "hi".into(), session_id: None };
+        let req = crate::backend::TurnRequest { dir: "/tmp".into(), model: "m".into(), prompt: "hi".into(), session_id: None, mode: Default::default() };
         let args = |b: &dyn Backend| -> Vec<String> { b.command(&req).as_std().get_args().map(|a| a.to_string_lossy().into_owned()).collect() };
         for provider in [Claude, DeepSeek] {
             // `-p` or piped input: plain `claude -p`, allowed tools and permission mode decide.

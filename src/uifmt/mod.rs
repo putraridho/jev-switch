@@ -47,7 +47,7 @@ pub use commands::{command_names, command_usage};
 pub use complete::{complete, completion_start, hint, Candidate, CompleteCtx};
 pub use failure::{error_block, failover_note, next_steps_for, no_route_message, problem_block};
 pub use markdown::answer_text;
-pub use permissions::{denied_without_asking, permission_answered, permission_prompt, permissions_text, Prompt, Question};
+pub use permissions::{auto_allowed, denied_without_asking, permission_answered, permission_prompt, permissions_text, Prompt, Question};
 pub use provider_view::{provider_glyphs, providers_table, AvailRow, ProviderStatus};
 pub use route::{route_line, short_reason, RouteFacts};
 pub use screens::{doctor_report, doctor_summary, help_text, status_text, DoctorItem, ReadyProvider, Severity, StatusFacts};

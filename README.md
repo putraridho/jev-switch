@@ -374,7 +374,18 @@ downgrade is held for a few turns (the prompt cache).
 **Hard security rule.** Security work (strong keywords, a high `security_review`, or
 auth/session edits) overrides Jev's task label and never goes to DeepSeek or Grok.
 
-**Permissions.** Edits are auto-accepted on Claude (`CODE_PERMISSION_MODE=acceptEdits`).
+**Modes.** `Shift-Tab` at the prompt (or `/mode ask|edit|plan|auto`) cycles how much a turn may do
+without asking; an empty prompt line shows the current one. `ask` asks before every edit and
+command, `edit` (the default) accepts edits and asks about commands, `plan` only reads and
+proposes a plan, and `auto` also allows, without asking, every call that is safe to remember
+with `a` (read-only commands, the project's build and test commands, files inside the project),
+printing `✓ auto-allowed ...` for each. Anything `a` would refuse (`rm`, `curl`, `git push`,
+`npm install`, a path outside your folders) is still asked in `auto`. No mode uses
+`bypassPermissions`. `CODE_PERMISSION_MODE` (`ask|edit|plan|auto`, or Claude Code's `default`
+and `acceptEdits`) sets the starting mode. Modes apply on Claude and DeepSeek (both run through
+Claude Code); the other providers keep their own fixed sandbox.
+
+**Permissions.** Edits are auto-accepted on Claude in the default `edit` mode.
 Anything else that needs approval (a command, a read outside the project, a write to
 `.claude/settings.local.json`) is asked to you in the terminal on Claude and DeepSeek (both
 run through Claude Code, which `jev-code` starts with `--input-format stream-json

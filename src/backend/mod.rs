@@ -206,6 +206,8 @@ pub struct TurnRequest {
     pub model: String,
     pub prompt: String,
     pub session_id: Option<String>,
+    /// What the turn may do without asking; only Claude Code (and DeepSeek through it) acts on it.
+    pub mode: crate::mode::Mode,
 }
 
 /// A successful turn.
@@ -1007,7 +1009,7 @@ mod tests {
     }
 
     fn req() -> TurnRequest {
-        TurnRequest { dir: std::env::temp_dir(), model: "m".into(), prompt: "hello".into(), session_id: None }
+        TurnRequest { dir: std::env::temp_dir(), model: "m".into(), prompt: "hello".into(), session_id: None, mode: Default::default() }
     }
 
     async fn run(script: &'static str, idle_ms: u64) -> (Result<TurnOutcome, TurnError>, Vec<Event>) {

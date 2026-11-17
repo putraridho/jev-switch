@@ -29,6 +29,7 @@ use crate::catalog::{self, find, ModelSpec};
 use crate::changes::{self, ChangeSummary, Snapshot, TurnActivity, UndoError, UndoReport};
 use crate::handoff::{self, ResumeError, SavedSession, Sessions, TurnRecord};
 use crate::log;
+use crate::mode::Mode;
 use crate::orchestrate::{self, Outcome, Setup};
 use crate::permissions::{self, Offer, Places, Settled};
 use crate::providers::{self, Runtime};
@@ -153,11 +154,19 @@ struct EngineApprover<'a> {
     cancel: &'a Cancel,
     /// The project folder, where "always" saves its rule.
     dir: &'a Path,
+    /// The turn's mode: in [`Mode::Auto`] a call that is safe to remember is allowed unasked.
+    mode: Mode,
 }
 
 impl EngineApprover<'_> {
     async fn answer(&self, req: &PermissionRequest) -> Decision {
         let offer = permissions::always_plan(&req.tool, &req.input, req.blocked_path.as_deref(), &Places::from_env(self.dir));
+        // Auto answers exactly what would be offered to remember for good: nothing that
+        // deletes, pushes, installs or sends data, and nothing outside the project's reach.
+        if self.mode == Mode::Auto && offer.is_ok() {
+            lock_ui(self.ui).event(&Event::Hint(uifmt::auto_allowed(&req.summary)));
+            return Decision::Allow;
+        }
         // The question goes up under the lock; the wait for the person does not hold it, so
         // the turn's own events can still be shown, and dropping this future ends the wait.
         let question = lock_ui(self.ui).ask_permission(req, &offer);
@@ -419,6 +428,8 @@ pub struct Engine {
     /// The file this session saves to: chosen at its first save, or the one `/resume` took
     /// over. `/new` clears it, so the next save starts another file and the old one stays.
     session_file: Option<PathBuf>,
+    /// What a turn may do without asking (`/mode`, Shift-Tab).
+    mode: Mode,
 }
 
 impl Engine {
@@ -449,6 +460,7 @@ impl Engine {
             turn_activity: TurnActivity::default(),
             persist: None,
             session_file: None,
+            mode: Mode::default(),
         }
     }
 
@@ -464,6 +476,12 @@ impl Engine {
     /// passes [`log::state_dir`].
     pub fn with_persistence(mut self, state_dir: Option<PathBuf>) -> Self {
         self.persist = state_dir;
+        self
+    }
+
+    /// Start in this mode (the binary reads `CODE_PERMISSION_MODE`).
+    pub fn with_mode(mut self, mode: Mode) -> Self {
+        self.mode = mode;
         self
     }
 
@@ -533,6 +551,15 @@ impl Engine {
 
     pub fn set_enabled(&mut self, on: bool) {
         self.enabled = on;
+    }
+
+    pub fn mode(&self) -> Mode {
+        self.mode
+    }
+
+    /// Applies from the next turn on; a turn already running keeps the mode it started in.
+    pub fn set_mode(&mut self, mode: Mode) {
+        self.mode = mode;
     }
 
     pub fn orchestrate(&self) -> bool {
@@ -1003,6 +1030,7 @@ impl Engine {
             model: chosen.spec.id.to_string(),
             prompt: sent,
             session_id: self.sessions.session_id(provider).map(String::from),
+            mode: self.mode,
         };
         let mut tools: Vec<String> = Vec::new();
         // Progress (tools, plan) is shown as it happens; assistant text is held back until
@@ -1014,7 +1042,7 @@ impl Engine {
         let runtime = &mut self.runtime;
         let result = {
             let shared_ui: SharedUi = Mutex::new(&mut *ui);
-            let approver = EngineApprover { ui: &shared_ui, cancel, dir: &self.dir };
+            let approver = EngineApprover { ui: &shared_ui, cancel, dir: &self.dir, mode: self.mode };
             let mut on_event = |e: &Event| match e {
                 Event::Text(_) => held.push(e.clone()),
                 other => {
@@ -2680,13 +2708,16 @@ mod tests {
         settled: Vec<Settled>,
         texts: Vec<String>,
         notes: Vec<String>,
+        hints: Vec<String>,
     }
 
     impl Ui for Asked {
         fn route(&mut self, _: &str) {}
         fn event(&mut self, e: &Event) {
-            if let Event::Text(t) = e {
-                self.texts.push(t.clone());
+            match e {
+                Event::Text(t) => self.texts.push(t.clone()),
+                Event::Hint(h) => self.hints.push(h.clone()),
+                _ => {}
             }
         }
         fn note(&mut self, line: &str) {
@@ -2756,6 +2787,31 @@ mod tests {
         assert_eq!(ui.questions, vec![("Bash".to_string(), "cargo test --quiet".to_string(), Some("Bash(cargo test:*)".to_string()))]);
         assert!(!permissions::local_settings_path(&dir).exists(), "a plain yes saves nothing");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn auto_mode_runs_a_safe_call_without_asking_and_saves_nothing() {
+        let (engine, dir) = ask_engine("auto-safe");
+        let mut engine = engine.with_mode(Mode::Auto);
+        let mut ui = Asked::default();
+        let report = ask_turn(&mut engine, &mut ui).await;
+        assert_eq!((report.status, report.text.as_str()), (TurnStatus::Answered, "ran"));
+        assert!(ui.questions.is_empty(), "nobody was asked: {:?}", ui.questions);
+        assert!(ui.hints.iter().any(|h| h.contains("auto-allowed") && h.contains("cargo test --quiet")), "{:?}", ui.hints);
+        assert!(!permissions::local_settings_path(&dir).exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn the_other_modes_still_ask_about_the_same_call() {
+        for mode in [Mode::Ask, Mode::Edit, Mode::Plan] {
+            let (engine, dir) = ask_engine(&format!("ask-{mode}"));
+            let mut engine = engine.with_mode(mode);
+            let mut ui = Asked { answers: [Some(Decision::Allow)].into(), ..Asked::default() };
+            ask_turn(&mut engine, &mut ui).await;
+            assert_eq!(ui.questions.len(), 1, "{mode}");
+            let _ = std::fs::remove_dir_all(&dir);
+        }
     }
 
     #[tokio::test]

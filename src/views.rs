@@ -237,6 +237,11 @@ pub fn prompt_label(pin: &Pin, routing_on: bool) -> Option<String> {
     }
 }
 
+/// `auto (accepts edits and safe commands, asks about the rest)`.
+pub fn mode_line(mode: crate::mode::Mode) -> String {
+    format!("{mode} ({})", mode.about())
+}
+
 /// The prompt as plain text, which is what the line editor measures: `› ` or `[codex] › `.
 pub fn plain_prompt(label: Option<&str>) -> String {
     match label {

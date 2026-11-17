@@ -23,6 +23,7 @@ pub mod envfile;
 pub mod handoff;
 pub mod lineedit;
 pub mod log;
+pub mod mode;
 pub mod orchestrate;
 pub mod permissions;
 pub mod prefix;

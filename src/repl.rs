@@ -199,6 +199,11 @@ impl Repl {
                 self.console.out(&format!("  orchestrate: {}", on_off(on)));
             }
             Command::ShowOrchestrate => self.console.out(&format!("  orchestrate: {}", on_off(self.engine.orchestrate()))),
+            Command::SetMode(mode) => {
+                self.engine.set_mode(mode);
+                self.console.out(&format!("  mode: {}", views::mode_line(mode)));
+            }
+            Command::ShowMode => self.console.out(&format!("  mode: {}", views::mode_line(self.engine.mode()))),
             Command::New => {
                 self.engine.new_session();
                 self.last_summary = None;

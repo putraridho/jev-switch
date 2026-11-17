@@ -41,6 +41,7 @@ fn arg_choices(command: &str, ctx: &CompleteCtx) -> Vec<String> {
     let words: Vec<&str> = match command {
         "/provider" => vec!["auto", "off"],
         "/orchestrate" => vec!["on", "off"],
+        "/mode" => vec!["ask", "edit", "plan", "auto"],
         "/providers" => vec!["refresh"],
         "/permissions" => vec!["allow", "remove", "dir", "list"],
         "/model" => ["auto"]
@@ -134,13 +135,14 @@ mod tests {
 
     #[test]
     fn completes_slash_commands() {
-        assert_eq!(replacements("/"), vec!["/diff", "/doctor", "/help", "/model", "/new", "/orchestrate", "/permissions", "/provider", "/providers", "/quit", "/resume", "/status", "/undo"]);
-        assert_eq!(replacements("/mo"), vec!["/model"]);
+        assert_eq!(replacements("/"), vec!["/diff", "/doctor", "/help", "/mode", "/model", "/new", "/orchestrate", "/permissions", "/provider", "/providers", "/quit", "/resume", "/status", "/undo"]);
+        assert_eq!(replacements("/mo"), vec!["/mode", "/model"]);
+        assert_eq!(replacements("/model"), vec!["/model"]);
         assert_eq!(replacements("/prov"), vec!["/provider", "/providers"]);
-        assert_eq!(replacements("/MO"), vec!["/model"]);
+        assert_eq!(replacements("/MO"), vec!["/mode", "/model"]);
         assert_eq!(replacements("/nope"), Vec::<String>::new());
         // the menu line names the command and says what it does
-        let c = &complete("/mo", &ctx())[0];
+        let c = &complete("/model", &ctx())[0];
         assert!(c.display.starts_with("/model") && c.display.contains("Pin a model"), "{}", c.display);
         // every command is a candidate for its own full name
         for cmd in &COMMANDS {
@@ -206,7 +208,9 @@ mod tests {
             ("/orchestrate ", Some("on|off")),
             ("/providers ", Some("[refresh]")),
             ("/diff ", Some("[file]")),
-            ("/mod", Some("el")),
+            ("/mode ", Some("ask|edit|plan|auto")),
+            ("/mod", Some("e")),
+            ("/model", Some(" auto|codex|claude:...")),
             ("/prov", Some("ider")),
             ("/provider", Some(" auto|off")),
             ("/", Some("diff")),

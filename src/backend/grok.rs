@@ -224,6 +224,7 @@ mod tests {
             model: "grok-4.6".into(),
             prompt: "hi".into(),
             session_id: session.map(String::from),
+            mode: Default::default(),
         }
     }
 

@@ -15,7 +15,9 @@ use rustyline::highlight::Highlighter;
 use rustyline::hint::Hinter;
 use rustyline::history::{DefaultHistory, History};
 use rustyline::validate::Validator;
-use rustyline::{Cmd, ColorMode, CompletionType, Config, Context, Editor, Helper, KeyEvent};
+use rustyline::{Cmd, ColorMode, CompletionType, Config, ConditionalEventHandler, Context, Editor, EventContext, EventHandler, Helper, KeyCode, KeyEvent, Modifiers, RepeatCount};
+
+use crate::mode::SharedMode;
 
 use crate::uifmt::{self, CompleteCtx, Style};
 
@@ -71,11 +73,12 @@ pub struct JevHelper {
     style: Style,
     plain_prompt: String,
     styled_prompt: String,
+    mode: SharedMode,
 }
 
 impl JevHelper {
-    pub fn new(style: Style) -> Self {
-        Self { ctx: CompleteCtx::default(), style, plain_prompt: String::new(), styled_prompt: String::new() }
+    pub fn new(style: Style, mode: SharedMode) -> Self {
+        Self { ctx: CompleteCtx::default(), style, plain_prompt: String::new(), styled_prompt: String::new(), mode }
     }
 
     /// What Tab may offer from now on (refreshed before every prompt).
@@ -87,6 +90,21 @@ impl JevHelper {
     pub fn set_prompt(&mut self, plain: &str, styled: &str) {
         self.plain_prompt = plain.to_string();
         self.styled_prompt = styled.to_string();
+    }
+}
+
+/// The faint text on an empty line: the mode and how to change it.
+pub fn mode_hint(mode: crate::mode::Mode) -> String {
+    format!("[{mode} mode \u{b7} shift-tab to change]")
+}
+
+/// Shift-Tab: the next mode, shown at once.
+struct CycleMode(SharedMode);
+
+impl ConditionalEventHandler for CycleMode {
+    fn handle(&self, _: &rustyline::Event, _: RepeatCount, _: bool, _: &EventContext) -> Option<Cmd> {
+        self.0.cycle();
+        Some(Cmd::Repaint)
     }
 }
 
@@ -116,6 +134,10 @@ impl Hinter for JevHelper {
     fn hint(&self, line: &str, pos: usize, _: &Context<'_>) -> Option<String> {
         if pos < line.len() {
             return None;
+        }
+        // An empty line shows the mode, so Shift-Tab has something to change on screen.
+        if line.is_empty() {
+            return Some(mode_hint(self.mode.get()));
         }
         uifmt::hint(line)
     }
@@ -176,7 +198,7 @@ pub type LineEditor = Editor<JevHelper, DefaultHistory>;
 /// Build the editor: history loaded from `history` (when given), Tab completion that lists
 /// the choices, Alt-Enter for a new line, bracketed paste (multi-line text pastes as one
 /// message) and no history entry unless [`remember`] adds one.
-pub fn build_editor(style: Style, history: Option<&Path>) -> rustyline::Result<LineEditor> {
+pub fn build_editor(style: Style, history: Option<&Path>, mode: SharedMode) -> rustyline::Result<LineEditor> {
     let config = Config::builder()
         .max_history_size(HISTORY_MAX)?
         .history_ignore_dups(true)?
@@ -186,8 +208,9 @@ pub fn build_editor(style: Style, history: Option<&Path>) -> rustyline::Result<L
         .bracketed_paste(true)
         .build();
     let mut editor: LineEditor = Editor::with_config(config)?;
-    editor.set_helper(Some(JevHelper::new(style)));
+    editor.set_helper(Some(JevHelper::new(style, mode.clone())));
     editor.bind_sequence(KeyEvent::alt('\r'), Cmd::Newline);
+    editor.bind_sequence(KeyEvent(KeyCode::BackTab, Modifiers::NONE), EventHandler::Conditional(Box::new(CycleMode(mode))));
     if let Some(path) = history {
         prepare_history_file(path);
         let _ = editor.load_history(path);
@@ -463,9 +486,9 @@ mod tests {
 
     #[test]
     fn tab_completes_commands_and_their_arguments() {
-        let (start, c) = completions_for("/mod", 4, &ctx());
+        let (start, c) = completions_for("/mode", 5, &ctx());
         assert_eq!(start, 0);
-        assert_eq!(c.iter().map(|p| p.replacement.as_str()).collect::<Vec<_>>(), ["/model"]);
+        assert_eq!(c.iter().map(|p| p.replacement.as_str()).collect::<Vec<_>>(), ["/mode", "/model"]);
 
         let (start, c) = completions_for("/model co", 9, &ctx());
         assert_eq!(start, 7, "only the word being completed is replaced");
@@ -488,19 +511,29 @@ mod tests {
 
     #[test]
     fn the_hint_is_dim_only_when_styled() {
-        let h = JevHelper::new(Style::off());
+        let h = JevHelper::new(Style::off(), SharedMode::default());
         assert_eq!(h.highlight_hint("el"), "el");
-        assert_eq!(JevHelper::new(Style::on()).highlight_hint("el"), "\x1b[2mel\x1b[0m");
+        assert_eq!(JevHelper::new(Style::on(), SharedMode::default()).highlight_hint("el"), "\x1b[2mel\x1b[0m");
+    }
+
+    #[test]
+    fn an_empty_line_hints_the_mode_and_a_typed_one_does_not() {
+        use crate::mode::Mode;
+        let h = JevHelper::new(Style::off(), SharedMode::new(Mode::Auto));
+        let history = DefaultHistory::new();
+        let ctx = Context::new(&history);
+        assert_eq!(h.hint("", 0, &ctx).as_deref(), Some("[auto mode \u{b7} shift-tab to change]"));
+        assert_eq!(h.hint("hello", 5, &ctx), None);
     }
 
     #[test]
     fn the_prompt_is_coloured_only_when_it_is_ours_and_colour_is_on() {
-        let mut h = JevHelper::new(Style::on());
+        let mut h = JevHelper::new(Style::on(), SharedMode::default());
         h.set_prompt("› ", "\x1b[36m›\x1b[0m ");
         assert_eq!(h.highlight_prompt("› ", true), "\x1b[36m›\x1b[0m ");
         assert_eq!(h.highlight_prompt("› ", false), "› ", "an incremental-search prompt stays plain");
         assert_eq!(h.highlight_prompt("(reverse-i-search)`': ", true), "(reverse-i-search)`': ");
-        let mut off = JevHelper::new(Style::off());
+        let mut off = JevHelper::new(Style::off(), SharedMode::default());
         off.set_prompt("› ", "x");
         assert_eq!(off.highlight_prompt("› ", true), "› ");
     }
@@ -526,7 +559,7 @@ mod tests {
     fn history_is_a_private_file_that_remembers_lines_across_editors() {
         let dir = temp("history");
         let path = history_path(&dir);
-        let mut first = build_editor(Style::off(), Some(&path)).unwrap();
+        let mut first = build_editor(Style::off(), Some(&path), SharedMode::default()).unwrap();
         remember(&mut first, "fix the bug", Some(&path));
         remember(&mut first, "   ", Some(&path));
         remember(&mut first, "fix the bug", Some(&path));
@@ -538,7 +571,7 @@ mod tests {
             use std::os::unix::fs::PermissionsExt;
             assert_eq!(std::fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o600);
         }
-        let second = build_editor(Style::off(), Some(&path)).unwrap();
+        let second = build_editor(Style::off(), Some(&path), SharedMode::default()).unwrap();
         let last: Vec<String> = second.history().iter().cloned().collect();
         assert_eq!(last, ["fix the bug", "/model codex"]);
         let _ = std::fs::remove_dir_all(dir);
@@ -548,9 +581,9 @@ mod tests {
     fn multi_line_messages_survive_in_history() {
         let dir = temp("multiline");
         let path = history_path(&dir);
-        let mut first = build_editor(Style::off(), Some(&path)).unwrap();
+        let mut first = build_editor(Style::off(), Some(&path), SharedMode::default()).unwrap();
         remember(&mut first, "line one\nline two", Some(&path));
-        let second = build_editor(Style::off(), Some(&path)).unwrap();
+        let second = build_editor(Style::off(), Some(&path), SharedMode::default()).unwrap();
         assert_eq!(second.history().iter().next().map(String::as_str), Some("line one\nline two"));
         let _ = std::fs::remove_dir_all(dir);
     }
@@ -559,7 +592,7 @@ mod tests {
     fn the_history_is_capped() {
         let dir = temp("cap");
         let path = history_path(&dir);
-        let mut e = build_editor(Style::off(), Some(&path)).unwrap();
+        let mut e = build_editor(Style::off(), Some(&path), SharedMode::default()).unwrap();
         for i in 0..HISTORY_MAX + 10 {
             remember(&mut e, &format!("message {i}"), Some(&path));
         }
