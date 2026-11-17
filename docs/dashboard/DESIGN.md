@@ -1,6 +1,6 @@
 # Flashboard (the Jev usage dashboard): design
 
-Status: design for v1. The user's decisions are recorded in section 1a; section 17 has no open user question. Normative for every task in `TASKS.md`.
+Status: design for v1. The user's decisions are recorded in section 1a; section 17 has one open user question, which does not block v1 (the Antigravity verification run). Normative for every task in `TASKS.md`.
 Date: 2026-11-17. Lead and reviewer: Fable 5.2. Implementation: parallel workers.
 
 Words used precisely here: **MUST / MUST NOT** are review-blocking rules. **Verified** means
@@ -13,9 +13,11 @@ inference and not yet observed.
 
 A resident desktop app (Tauri 2: Rust core, web UI) that shows, in one place, how much of each
 AI plan or credit balance has been used and when it resets. v1 covers Claude Max (5-hour and
-7-day windows, read from the local gateway's log) and Codex/ChatGPT (read from the free
-`codex app-server` protocol). DeepSeek balance is built and activates when a key exists.
-Gemini, Antigravity and Grok are typed placeholders with a documented path to real adapters.
+7-day windows, read from the local gateway's log) and Codex/ChatGPT on any plan (read from
+the `codex app-server` protocol, a call that costs no quota). DeepSeek balance is built and
+activates when a key exists. Gemini, Antigravity and Grok are typed placeholders with a
+documented path to real adapters: the app says plainly that it has no source for them and
+shows no number (1a, 9.3).
 
 The app is three layers with one dependency direction:
 
@@ -76,12 +78,25 @@ These answer the open questions and override any earlier default in this documen
   `orca 51.1-1` is installed, 3.4) and takes part in
   the manual pass: the lead writes the script of checks per screen and state, the user
   confirms what Orca announces. That pass is part of the definition of done (11.5).
+- **Subscriptions (updated 2026-11-17, after the spikes of section 3):** the user now has
+  a **paid Codex/ChatGPT plan** (the spike recorded the free plan) and an **Antigravity
+  (Google) subscription** (there was none). Consequences, normative: (1) the Codex adapter
+  must be right for the paid shape (two windows, possibly credits), which is not recorded
+  yet: T04's one real, free `app-server` run records it and the lead replaces the synthetic
+  paid fixture with the redacted real one (3.1, 6.3). (2) Antigravity has **no verified
+  usage source**, so v1 shows it as "no source Flashboard can read yet" with an honest
+  explanation (9.3); the app never shows a number, a plan name or a "subscribed" /
+  "not subscribed" claim for it, because it never runs `agy` and never reads its login
+  (8.3, 8.6). A real adapter needs one user-approved verification run (6.5, 17). (3) No
+  screen, fixture or test may assume that Codex is on the free plan or has one window.
 - **Process rule:** every task is validated by the lead with its own tests and reviews, and review rounds repeat until a full round finds nothing. A task is not done while any review finding is open.
 
 ## 2. Goals, non-goals, user stories
 
 ### Goals (v1)
-1. One glance answers "how close am I to a limit, and when does it reset?" for every plan.
+1. One glance answers "how close am I to a limit, and when does it reset?" for every plan
+   that has a source the app can read (Claude, Codex, DeepSeek in v1); a plan without one
+   (Antigravity, Gemini, Grok) says so instead of showing a guess.
 2. Works beside `jev-claude` with zero interference: read-only on the gateway's files, no
    requests through the gateway, no model calls unless the user opts in.
 3. Resident and cheap: lives in the tray, no busy loops, no periodic UI work while hidden.
@@ -128,7 +143,9 @@ These answer the open questions and override any earlier default in this documen
 - Timings (one process): initialize 212 ms, `account/rateLimits/read` 613 ms,
   `account/usage/read` 831 ms, `account/read` 4 ms. Exit code 0 about 15 ms after stdin
   closes. Whole session 2.75 s. Stderr empty.
-- Real response on the FREE plan (ids redacted), recorded as fixtures in
+- Real response on the FREE plan, **the plan at the time of the spike; the user has since
+  moved to a paid plan (1a), so this fixture no longer shows what this machine returns**
+  (ids redacted), recorded as fixtures in
   `dashboard/fixtures/codex-app-server/` (README there lists every redaction):
   ```json
   {"ordinaryUsageAllowed":true,
@@ -147,6 +164,12 @@ These answer the open questions and override any earlier default in this documen
   not recorded. `resetsAt` is epoch seconds, nullable. Whether `resetsAt` is fixed for a
   window or slides between reads is **not known**; nothing in this design depends on it.
   `rateLimitsByLimitId` can carry further limits; v1 reads `rateLimits` only.
+  **Paid plan (the user's plan now): not recorded.** From the schema only: a 300-minute
+  `primary`, a 10080-minute `secondary`, and possibly `credits` with a balance. Whether a
+  paid account has further limits that appear only in `rateLimitsByLimitId` (v1 would not
+  show them), and the unit of `credits.balance`, are **not known**. T04's real run (free,
+  no prompt) records the paid response with the same redactions; until then the paid shape
+  is tested from a synthetic fixture and the parser never assumes which window is which.
 - The spike ran with the shell's full environment and working directory. Running under the
   scrubbed environment and empty working directory of section 8.6 is **assumed** to work and
   is checked once, by hand, in T04 (this call is free and sends no prompt).
@@ -236,7 +259,7 @@ These answer the open questions and override any earlier default in this documen
 | provider | conclusion | detail |
 |---|---|---|
 | Gemini CLI | **not available** headless | `gemini --help` (run) has no usage or quota command or flag. Quota is shown only by the interactive `/stats`. An undocumented internal Code Assist quota call exists; using it would require reading the OAuth token, which this app never does. |
-| Antigravity (`agy`) | **available per docs, unverified here** | Docs: `/usage` shows per-model-group quota; reported to work headless as `agy -p /usage --output-format json` with `remaining_fraction` and `reset_time` per bucket, about 7 s, no quota spent. `agy` on this machine is a **lazy mise shim that installs on first run** (see 3.5), so it was not executed to completion. |
+| Antigravity (`agy`) | **available per docs, unverified here** | Docs: `/usage` shows per-model-group quota; reported to work headless as `agy -p /usage --output-format json` with `remaining_fraction` and `reset_time` per bucket, about 7 s, no quota spent. At the spike `agy` was a **lazy mise shim that installs on first run** (see 3.5), so it was not executed to completion. Since then the user has subscribed and installed it (names only, checked 2026-11-17, nothing run): a regular executable `~/.local/bin/agy` is first on `PATH`, mise also holds `installs/antigravity-cli/1.5.10/agy` (the mise tool directory is `antigravity-cli`, not `agy`), and its login lives in `~/.gemini/antigravity-cli` and `~/.config/antigravity`, which the app never opens (8.3). Whether `-p /usage` really spends nothing is still **unverified**, so v1 does not run it (6.5). |
 | Grok | **partly available, not for v1** | xAI Management API (documented): `GET https://management-api.x.ai/v1/billing/teams/{team_id}/prepaid/balance` with a separate management key gives API credit balance. The Grok Build subscription quota is only shown by the CLI's `/usage` through a non-public endpoint that needs the token in `~/.grok/auth.json`, which this app never reads. `grok` is never executed. |
 
 Sources: antigravity.google/docs/cli/commands/usage, github.com/google-antigravity/antigravity-cli
@@ -270,7 +293,8 @@ github.com/steipete/CodexBar docs/xai.md.
 Running `agy --help` under a 15 s timeout started a mise download of `antigravity-cli@1.5.9`
 (the brief warned only about `grok`; `agy` is the same kind of lazy shim). The timeout killed
 it at about 7 of 99 MB. It left an empty directory
-`~/.local/share/mise/installs/antigravity-cli/1.5.9`, which the lead has since removed. Rule
+`~/.local/share/mise/installs/antigravity-cli/1.5.9`, which the lead has since removed (the
+1.5.10 install there now is the user's own, 3.3). Rule
 added to the design: **never execute `agy`, `grok` or `gemini`; never start `codex` or
 `claude` unless a real install exists on disk; and switch mise's installers off in every
 child's environment** (section 8.6).
@@ -388,7 +412,8 @@ pub enum Usage {
     Unavailable { reason: Unavailable },
     /// The user has to do something first.
     NotConfigured { setup: Setup },
-    /// No usage interface exists for this provider (placeholders).
+    /// No usage source the app can read exists for this provider (placeholders). It says
+    /// nothing about whether the user has a plan there: the app cannot know (1a).
     Unsupported,
 }
 #[derive(Copy, Clone, Eq, PartialEq, Debug)]                                              // IPC
@@ -855,15 +880,22 @@ dropped), `usedPercent` as any JSON number (integer or fraction, 0 and up; negat
 non-finite drops the window), `resetsAt` null → `resets_at: None`, `plan` from `planType`
 through `Label::parse`. Status: `Rejected` on **every** window when `rateLimitReachedType` is
 non-null or `ordinaryUsageAllowed` is false, else `Allowed`. `credits.balance` (assumed to be
-a decimal string; it was `null` here) becomes a `Balance(Usd)` meter only when `hasCredits`
-is true, `unlimited` is false and the string parses. A response with no usable window and no
+a decimal string; it was `null` here) becomes a `Balance(Other)` meter only when `hasCredits`
+is true, `unlimited` is false and the string parses (`usable: true`, no granted or topped-up
+part). It is `Other`, **not** `Usd`: the protocol does not say what a credit is worth, and
+a dollar sign would be an invented unit (1a); 9.9 shows it as a plain number with the word
+"balance". T04's paid-plan run reports what the field holds; a currency is assigned only
+by a contract change after that. A response with no usable window and no
 balance is `Protocol`. A JSON-RPC `error` response is `ServerError`; a malformed response is
 `Protocol`.
 Gate (`needs_login`): spawn only when the login probe (8.6) says Codex is `Ready`. Otherwise,
 without spawning anything: `NotInstalled` → `Unavailable(NotInstalled)`, `NotLoggedIn` →
 `Unavailable(NotLoggedIn)`, `Unknown` (the probe timed out or could not read the status) →
 `Unavailable(Timeout)`, and the next attempt re-probes first (7.2). The Codex plan is the
-response's `planType`; the probe supplies no plan for Codex.
+response's `planType`; the probe supplies no plan for Codex. Every response replaces the
+provider's whole meter set, so a plan change (free to paid: one 30-day window becomes a
+5-hour and a 7-day one) or an account switch by the wrapper (3.1) needs no special case:
+the old meters leave the card, and their history stays in the store under their own keys.
 
 ### 6.4 DeepSeek balance
 `GET https://api.deepseek.com/user/balance`, `Authorization: Bearer <key>`. Documented body:
@@ -877,9 +909,15 @@ with no network call. 401/403 → `Unauthorized`. Unverified until the user has 
 `PlaceholderSource::new(provider)` returns `Unsupported`. Its descriptor is
 `Trigger::OnSignal`, `Cost::Free`, `needs_login: false`: nothing ever signals it, so it is
 asked once at start and when the window opens, never on a timer, and it does no IO. The
-UI lists these under "No usage interface yet" (section 9.3). Later, without touching the service or the UI:
-- Antigravity: an `AntigravityUsageSource` running `agy -p /usage --output-format json`
-  through `proc`, once verified against a really installed binary.
+UI lists these under "No usage source yet" (section 9.3) and never shows a number for them. Later, without touching the service or the UI:
+- Antigravity (the user has a subscription, 1a, so this is the first follow-up): an
+  `AntigravityUsageSource` running `agy -p /usage --output-format json` through `proc`.
+  It is **not** in v1 because nothing here has verified that the call spends no quota,
+  what it prints (the JSON may carry identity), or what it writes; a `-p` argument is by
+  shape a prompt. The gate is one run **approved by the user** (17), done by the lead under
+  the 8.6 rules with before/after listings like T04's; only then does `Program` get an
+  `Agy` variant (8.6 has none today, so the app cannot run it), and `proc::resolve` needs
+  the mise tool name `antigravity-cli` for a binary called `agy` (3.3).
 - Grok: an `XaiPrepaidBalanceSource` on the Management API with `XAI_MANAGEMENT_KEY` and
   `XAI_TEAM_ID` in the env file, through `http` (a second allowed host).
 - Gemini: none until Google ships a headless quota command.
@@ -981,8 +1019,11 @@ Fetch timeouts stay on tokio's monotonic timer, which is the right clock for a d
   (timeout, shutdown, provider hidden) kills its child process group (8.6).
 - **Login probe** (`LoginProbe`; the real one, `CliProbe`, runs `claude auth status` and
   `codex login status` under the rules of 8.6, and only for providers that are not hidden):
-  (a) once at start; (b) before a fetch of a `needs_login` source when the cached readiness
-  of that provider is not `Ready` and the cached facts are older than 60 s, so a probe that
+  (a) once at start, and the first fetch of every `needs_login` source waits for that
+  answer (otherwise Codex would fail its gate with `Timeout` at every start and sit in
+  backoff for a minute); (b) before a fetch of a `needs_login` source when the cached readiness
+  of that provider is not `Ready` and the cached facts are older than 45 s (less than the
+  shortest backoff step, 1 min minus 10 % jitter, so the first retry always re-probes), so a probe that
   timed out during a busy login is retried on the source's backoff schedule **even while
   the window is hidden**; (c) on a manual refresh, at most once per 60 s; (d) otherwise when
   the facts are older than 6 hours, **or older than 15 minutes while a probed provider's
@@ -990,7 +1031,7 @@ Fetch timeouts stay on tokio's monotonic timer, which is the right clock for a d
   own). The second case is for Claude: its only `needs_login` source is the manual live
   check, so (b) never retries a `claude auth status` that timed out during a busy login,
   and the plan name would otherwise stay missing for 6 hours. The probe never runs more
-  often than once per 60 s.
+  often than once per 45 s.
 - **Suspend/resume and clock jumps**: handled by the wall-clock timer (7.1). Every wake
   recomputes deadlines from the injected clock; deadlines found in the past run once each
   (no catch-up storm).
@@ -1271,7 +1312,7 @@ screen-reader user hears what a sighted user sees change, once. No extra IPC is 
 1. Prompt text and prompt-adjacent metadata in the gateway's files (`gateway.jsonl`,
    `turns.jsonl`, `code-turns.jsonl`, `history`, `sessions/`, and most keys of `usage.jsonl`).
 2. Secrets: `DEEPSEEK_API_KEY` and every other key in `~/.jev-router.env`; the OAuth tokens
-   of Claude, Codex, Gemini, Grok in their own homes.
+   of Claude, Codex, Gemini, Antigravity, Grok in their own homes.
 3. Identity: account e-mail, user/account/installation ids, the home directory name.
 4. Integrity of the gateway's files and of the user's quota (the app must not spend it).
 
@@ -1303,7 +1344,8 @@ screen-reader user hears what a sighted user sees change, once. No extra IPC is 
   through a private read buffer and the JSON tokenizer. Those buffers are reused, never
   logged, never copied out, and zeroized when the tail reader is dropped. Nothing but the
   parsed numbers leaves `parse_line`.
-- OAuth/token files and homes of any CLI (`~/.claude*`, `~/.codex`, `~/.gemini`, `~/.grok`):
+- OAuth/token files and homes of any CLI (`~/.claude*`, `~/.codex`, `~/.gemini` with
+  `~/.gemini/antigravity-cli` inside it, `~/.config/antigravity`, `~/.grok`):
   never opened, listed or stat-ed by the dashboard (architecture test), and the engine's
   probe, which does read some of them, is never called (5.1). The only path the dashboard
   inspects outside its own files, the log and the env file is mise's `installs/<tool>/`
@@ -1425,7 +1467,14 @@ One module, `io::proc`, is the only place `std::process`/`tokio::process` may be
   this case with a stub, and the real run compares the listings);
   the switches are inherited by the real tool and anything it starts through mise; and a
   CLI's **own** updater (not mise's) is outside the app's control: the same before/after
-  listing shows whether a status run triggers one.
+  listing shows whether a status run triggers one. One more effect is **not known**: the
+  app starts `codex` every 5 to 15 minutes, always offline, and if mise marks its
+  four-hourly update check as done when it skips it offline, the user's own `codex` and
+  `claude` would stop updating while Flashboard runs. T04 checks it without running a
+  model (names and modification times of mise's state and cache entries before and after
+  an offline status run); if the bookkeeping moves, the lead reports it to the user before
+  T08 ships polling, and the candidate fix (start the real binary found by `resolve`
+  with the account home the wrapper would pick) is a contract change, not a worker's call.
 - Arguments are constant arrays. No shell, no string interpolation.
 - Environment: `env_clear()` then exactly these, each only if set in the parent: `HOME`,
   `USER`, `LOGNAME`, `PATH`, `LANG`, `LC_ALL`, `XDG_CONFIG_HOME`, `XDG_DATA_HOME`,
@@ -1581,6 +1630,11 @@ One module, `io::proc`, is the only place `std::process`/`tokio::process` may be
 - Rust: lockfile committed, every command `--locked`. `deny.toml`: advisories = deny
   (vulnerabilities, unsound, yanked), sources = crates.io only (no git), licenses = explicit
   allow-list, bans = `openssl`, `openssl-sys`, `native-tls` denied, wildcard versions denied.
+  A path dependency without a version counts as a wildcard for cargo-deny, and the app's
+  internal lines (`jev-usage-core`, `jev-usage-io`, `jev-engine`) are exactly that, so
+  `deny.toml` sets `allow-wildcard-paths = true` and the three app crates say
+  `publish = false` (the exemption covers private crates only; cargo-deny's documentation,
+  **assumed**, confirmed by T00's first `cargo deny check`).
   `cargo audit` as a second advisory source.
 - Direct Rust dependencies, complete list (additions need lead approval):
   core: `serde`, `serde_json`, `zeroize`, `ts-rs` (dev/bindings feature); dev: `proptest`,
@@ -1681,7 +1735,7 @@ One card per configured provider, ordered by severity (critical, warn, ok, unkno
 fixed provider order; ties never reorder on their own. A reorder never takes the keyboard
 focus away: when a card moves while an element inside it has focus, that same element has
 focus afterwards (moving a DOM node drops focus in WebKit, so the screen restores it), and
-the level change that caused the move is what the live region announces (9.10). Providers without a usage interface are one
+the level change that caused the move is what the live region announces (9.10). Providers without a usage source are one
 quiet line at the bottom.
 
 ```
@@ -1698,18 +1752,37 @@ quiet line at the bottom.
 │ │                                         as of 12:33      │ │  freshness
 │ └──────────────────────────────────────────────────────────┘ │
 │ ┌──────────────────────────────────────────────────────────┐ │
-│ │ ● Codex                                         Free   › │ │
-│ │ 30-day             4%   █░░░░░░░░░░░░░░░░░░░░░░░░░       │ │
-│ │                   resets in 29d 11h                      │ │
+│ │ ● Codex                                         Plus   › │ │
+│ │ 5-hour            12%   ███░░░░░░░░░░░░░░░░░░░░░░░       │ │
+│ │                   resets in 3h 40m                       │ │
+│ │ 7-day              4%   █░░░░░░░░░░░░░░░░░░░░░░░░░       │ │
+│ │                   resets in 5d 02h                       │ │
 │ └──────────────────────────────────────────────────────────┘ │
 │ ┌──────────────────────────────────────────────────────────┐ │
 │ │ ○ DeepSeek                                               │ │
 │ │ Add a key to see your balance.                           │ │
 │ │ DEEPSEEK_API_KEY=…  in ~/.jev-router.env        [Copy]   │ │
 │ └──────────────────────────────────────────────────────────┘ │
-│  No usage interface yet: Gemini · Antigravity · Grok     ⓘ   │
+│  No usage source yet: Gemini · Antigravity · Grok  [ Why? ]  │
 └──────────────────────────────────────────────────────────────┘
 ```
+- The Codex card above is the paid shape (illustrative figures; the plan name is whatever
+  `planType` says, here `plus`). On the free plan the same card has one "30-day" row (the
+  recorded fixture: 4 %); the card renders whatever meters the reading has (1a).
+- **The bottom line is the honest answer for a plan the app cannot read** (1a: the user
+  pays for Antigravity). It is plain text naming every placeholder provider that is not
+  hidden, followed by one text button, "Why?" (a visible label that is its accessible
+  name, 32 px target; no bare icon). It carries the app's one level-1 disclosure (the
+  `Detail` primitive, same rules as a meter row: opens on hover and on focus, closes on
+  `Esc` with focus staying, never covers the button; pressing the button opens it again
+  after an `Esc`), and the same text is the button's `aria-describedby` description, so a
+  screen reader hears it on focus. It holds one sentence per listed provider
+  from `copy.ts` (`unsupportedCopy`), for Antigravity: "Antigravity: Flashboard has no way
+  to read this usage yet without running a command that has not been verified to be free.
+  Your plan is not affected; check it in Antigravity itself." The provider's detail view
+  (digits `4`–`6`, 9.10) shows the same sentence as its state block and nothing else: no
+  meter, no chart frame, no plan name, no "0 %", no "not signed in". With all three hidden
+  in Settings the line is absent.
 - The wireframe shows level 0 (9.1). Hovering or focusing a meter row shows level 1 next to
   it: "50.0 % used · resets today 14:00 · status allowed · seen 12:33".
 - The percentage is the largest element in a row (type `num-lg`), right-aligned in a fixed
@@ -1810,7 +1883,8 @@ NOT CONFIGURED     │ ○ Claude                               │
 
 FIRST RUN          centred, once:   Usage, in one place.
                    Claude and Codex appear automatically when they're set up.
-                   [ ✓ Claude · found ]  [ ✓ Codex · found ]  [ ○ DeepSeek · add a key ]
+                   ✓ Claude · found     ✓ Codex · found     ○ DeepSeek · add a key
+                   Gemini, Antigravity and Grok: no usage source yet.
 
                    Flashboard starts with your session and waits in the tray.
                    [x] Start at login                          (a real switch, applied at once)
@@ -1826,8 +1900,11 @@ FIRST RUN          centred, once:   Usage, in one place.
   milliseconds, and the autostart notice must be readable). Start at login is on by default
   (1a) and the entry has already been written when this is shown; the switch here turns it
   off again in one action, and the same switch lives in Settings. Continue sets
-  `first_run_seen` and moves focus to the overview heading.
-Copy for every `Unavailable` and `Setup` value lives in one table (`src/lib/copy.ts`):
+  `first_run_seen` and moves focus to the overview heading. The provider line is a plain
+  list (glyph plus words, not buttons: nothing that looks pressable is inert), built from
+  the snapshot; the sentence under it names the placeholder providers, so a user who pays
+  for Antigravity learns on the first screen that it will not appear (1a).
+Copy for every `Unavailable` and `Setup` value, and the `unsupported` sentence per provider, lives in one table (`src/lib/copy.ts`):
 a one-sentence cause in plain words, and when there is one, the exact command to copy.
 No error codes, no stack traces, no "Something went wrong".
 
@@ -1853,6 +1930,7 @@ No error codes, no stack traces, no "Something went wrong".
 │   [x] Single-key shortcuts (R, comma, 1 to 6, ?)             │
 │ Providers                                                    │
 │   [x] Claude   [x] Codex   [x] DeepSeek                      │
+│   [x] Gemini   [x] Antigravity   [x] Grok   (no source yet)  │
 │   [ ] Claude live check  · uses one small request per check  │
 │ About and diagnostics                                  ▸     │
 │   Flashboard 0.1.0 · history 1.2 MB, 8 412 samples           │
@@ -1864,7 +1942,9 @@ Settings apply immediately (no Save button); each control shows a brief inline "
 invalid threshold input is corrected on blur with an explanation (warn must be below
 critical; range 50..100). The first notification switch is the master (`notifications`, the
 same value as the tray's checkbox); the two level switches are disabled, with their values
-kept, while it is off. Turning on "Claude live check" opens a confirmation dialog. "Keep
+kept, while it is off. "Providers" lists all six `ProviderKey`s (`hidden_providers`);
+unticking a placeholder only removes its name from the overview's bottom line (9.3).
+Turning on "Claude live check" opens a confirmation dialog. "Keep
 running in the tray" is disabled with an explanation when no tray host exists. "Start at
 login" is on by default (1a); if writing or removing the entry fails, the switch returns to
 its previous state and says why (`CommandError` `io`). Under the shortcuts switch the
@@ -1976,8 +2056,10 @@ movement and keeps at most a 100 ms opacity change; skeletons become static.
 
 ### 9.9 Numbers, time and copy
 Rules (one implementation per language, shared vectors in `format-vectors.json`):
-- **Percent**: whole numbers. `0 < x < 1` → "<1%". `99.5 ≤ x < 100` → "99%". 100 and above →
-  the real figure ("100%", "104%"). Never round up to 100.
+- **Percent**: whole numbers, always rounded **down** (79.6 is "79%", so a card never
+  shows "80%" before the 80 % level is reached, and never rounds up to 100). `0 < x < 1` →
+  "<1%". 100 and above → the real figure ("100%", "104%"). The one-decimal figure of
+  level 1 is cut the same way (79.96 is "79.9 %").
 - **Countdown** (to `resets_at`, from now): ≥ 48 h "3d 4h"; ≥ 1 h "2h 14m"; ≥ 1 min "38m";
   below "under a minute"; past → the `Elapsed` state, never a negative.
 - **Absolute time**, local zone, hour cycle from the setting: same day "today 14:00";
@@ -2278,7 +2360,10 @@ and that nothing merges without the gates below and a lead review.
 - Rust, always scoped to the three app crates (`P` = `-p jev-usage-core -p jev-usage-io
   -p jev-dashboard`; at the root a bare command selects the engine, which is not formatted
   with rustfmt today and has its own lint policy): `cargo fmt --check P`;
-  `cargo clippy P --all-targets --locked -- -D warnings` with the `[lints]` table each app
+  `cargo clippy P --all-targets --locked -- --no-deps -D warnings` (`--no-deps` is
+  required: without it clippy also lints every workspace member the three depend on,
+  which is the engine through `jev-engine`, and `-D warnings` would fail the app's gate
+  on engine code under the engine's different policy) with the `[lints]` table each app
   crate carries (5, invariant 3): `clippy::all`, `pedantic` (selected allow-list written in the manifest),
   `unwrap_used`, `expect_used`, `panic`, `indexing_slicing`, `arithmetic_side_effects`,
   `as_conversions`, `print_stdout`, `print_stderr`, `dbg_macro`, `todo`, `unimplemented`
@@ -2493,7 +2578,7 @@ and v1 is not done while one is open (1a).
 
 ## 16. Verified versus assumed
 **Verified** (section 3): Codex app-server transport, sequence, timings, exit behaviour and
-free-plan shapes; `usage.jsonl` field names, value types, freshness and line size; tray and
+free-plan shapes (the plan at the time; the user is on a paid plan now, 1a); `usage.jsonl` field names, value types, freshness and line size; tray and
 notification hosts present; Tauri CLI `info` output; toolchain versions; which tools are
 missing; `gemini --help` has no usage command; `codex`/`claude` are lazy, self-updating mise
 wrappers that select the account, which stream each status command answers on, and mise's
@@ -2502,7 +2587,11 @@ environment switches (3.1); `webkitgtk-6.0` ships `WebKitWebDriver` (3.4);
 rename; XDG autostart is honoured by this session and its `PATH` finds `codex` and `claude`
 (3.4); what the engine's probe reads and runs, which is why it is not called (5.1).
 
-**Assumed**: paid Codex plans report 300- and 10080-minute windows (schema only);
+**Assumed**: paid Codex plans report 300- and 10080-minute windows (schema only; the
+user's plan now, so T04's real run records it, 3.1); what a Codex credit balance holds
+(shown without a currency until known, 6.3); an offline wrapper run does not move mise's
+auto-update bookkeeping (T04, 8.6); cargo-deny exempts versionless path dependencies of
+private crates with `allow-wildcard-paths` (T00);
 `account/rateLimits/updated` is not pushed without turns; meaning of Claude's `7d_oi`
 window; DeepSeek balance response shape (documentation); `claude -p` emits a
 `rate_limit_event` on a minimal request and its exact cheapest flags; Antigravity headless
@@ -2546,7 +2635,11 @@ Orca (both now installed, 3.4), the WebDriver stage is required, and the user ta
 the screen-reader pass.
 The interrupted `antigravity-cli` directory has been removed by the lead.
 
-Still for the user: none.
+Still for the user: one, and it does not block v1. The user now pays for Antigravity (1a)
+and v1 can only say that it has no source. Reading it needs one run of
+`agy -p /usage --output-format json` to learn whether it is free and what it prints (6.5).
+Does the user approve that single run (by the lead, under the 8.6 rules), and should the
+adapter then follow v1 directly, before the chat window?
 
 For the lead (resolved during implementation, not user-owned): which path of 5 applies when
 T00 starts (the engine refactor's schedule decides; both are specified); moving the engine's own `probe_all` onto the narrow probe of 8.6 (it has the

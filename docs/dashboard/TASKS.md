@@ -183,7 +183,9 @@ first `scripts/ci.sh`, so that everything compiles and every later task only fil
   `claude-gateway/{sample.jsonl,canary.jsonl,rotation/…}` (synthetic rows shaped like D3.2,
   both canaries of D8.10), `claude-auth/{logged_in.json,logged_out.json,text_form.txt}`
   (synthetic, key names of D3.1, canary e-mail, org id and org name), `codex-app-server/
-  paid_plan.response.json` (synthetic from the schema: 300 and 10080 minutes), `deepseek/{balance_ok.json,balance_two_currencies.json,
+  paid_plan.response.json` (synthetic from the schema: 300 and 10080 minutes, credits with
+  a balance; the user's plan is paid now, D1a, and the lead replaces this file with the
+  redacted real response after T04's run), `deepseek/{balance_ok.json,balance_two_currencies.json,
   unauthorized.json}`, `format-vectors.json` (≥ 60 cases for D9.9), `ipc-allowlist.txt`.
 
 **Interfaces to expose (exactly as written in the design).**
@@ -302,7 +304,9 @@ first `scripts/ci.sh`, so that everything compiles and every later task only fil
   --dir dashboard check && pnpm --dir dashboard lint` pass; then (the shell embeds the built
   UI, D11.4 stage 2) `cargo test -p jev-usage-core -p jev-usage-io --locked` and `cargo
   build -p jev-dashboard --locked` pass; `cargo fmt --check` and clippy pass **scoped to
-  the three app crates** (D11.1);
+  the three app crates**, clippy with `-- --no-deps -D warnings` so the engine, a workspace
+  dependency, is not linted by the app's gate (D11.1); `cargo deny check` passes with the
+  path-dependency setting of D8.9 (`allow-wildcard-paths`, the app crates `publish = false`);
   `pnpm --dir dashboard tauri build --no-bundle -- --profile dist` produces a binary that
   opens an empty window.
 - Unit and property tests for the frozen types: `Percent` (saturation, NaN/negative
@@ -343,7 +347,9 @@ first `scripts/ci.sh`, so that everything compiles and every later task only fil
   `svelte-ignore`, a `<script>` without `lang="ts"`, a tracked `.js` file)
   and sees each one reported, while `as const`, `satisfies` and the word "never" in a string
   pass; ESLint reports the same constructs.
-- Lints (D11.1): the three app manifests carry an identical `[lints]` table (compared by
+- Lints (D11.1): a clippy warning planted in an engine file does **not** fail the app's
+  clippy stage (shown once in the report, not committed: the proof that `--no-deps` is in
+  place); the three app manifests carry an identical `[lints]` table (compared by
   a test) and none says `lints.workspace`; `dashboard/clippy.toml` is picked up by the three app crates and not by
   the engine (a `serde_json::Value` in a stub fails clippy; the engine's own use does not);
   the fixed test header and the single float cast are the only `allow`s in the tree.
@@ -437,7 +443,9 @@ when the bytes are not that JSON, the text rule of D8.6 on bytes; anything else 
 - Each parser against its recorded/synthetic fixtures with exact expected `Meters`
   (`rate_limits_read.response.json` → one `Monthly` window, 400 bp, reset 1797439066,
   plan `free`; notifications and other ids → `None`).
-- Paid-plan shape (synthetic from the schema): 300 and 10080 minutes → `FiveHour`, `SevenDay`.
+- Paid-plan shape (`paid_plan.response.json`; the user's plan, D1a): 300 and 10080 minutes
+  → `FiveHour`, `SevenDay`, plan from `planType`; its credit balance → one
+  `Balance(Other)` meter, never `Usd` (D6.3).
 - Real key set of D3.2 in one synthetic row (`5h-surpassed-threshold`, `fallback`,
   `fallback-percentage`, `overage-status`, `representative-claim`, `upgrade-paths`, `status`,
   `reset`, `7d_oi-*`): exactly the meters `FiveHour`, `SevenDay`, `Named(7d_oi)`; status
@@ -735,7 +743,8 @@ is not part of this task.
 **Acceptance tests** (stub programs only).
 - Stub replays the recorded Codex session (with notifications interleaved and a 200 ms
   delay) → the expected `Reading`; stdin received by the stub equals the three request
-  lines exactly.
+  lines exactly. The same with `paid_plan.response.json` → two window meters and the plan;
+  a free-plan answer followed by a paid one replaces the meter set (no 30-day meter left).
 - Failure matrix: stub exits 1 immediately; prints garbage; prints a 5 MiB line; never
   answers (deadline with paused time, process group is killed: assert no child remains);
   answers with a JSON-RPC error (`ServerError`); closes stdout early.
@@ -775,15 +784,22 @@ is not part of this task.
 - There is no way to construct a `Program` for any other binary (compile-level: the enum).
 - **Manual check, recorded in the report** (free, no prompt, allowed by D3.1): through
   `ProcRunner::system` with the scrubbed environment, the `MISE_*` switches and the empty
-  working directory, on this machine: both login-status commands give `Ready` with the
-  right plan, and one real `codex app-server` run returns a reading with the three request
+  working directory, on this machine: both login-status commands give `Ready` (Claude
+  with the right plan; the probe has no plan for Codex), and one real `codex app-server` run returns a reading with the three request
   lines written at once (D6.3; if the server needs them one by one, report it: the fix
   changes the frozen `proc` types and is the lead's decision). List mise's
   `installs/`, `downloads/` and `incomplete-installs/` directories and hash
   `~/.config/mise/config.toml` before and after: no
   entry may appear or change and the hash must be equal (the D8.6 assumptions that nothing
   is downloaded, by mise or by a CLI's own updater, and that the account wrapper's
-  `mise use -g` fallback is not reached). If a run
+  `mise use -g` fallback is not reached). **Paid plan** (D1a, D3.1): the user is on a
+  paid Codex plan, which no fixture records. Save that run's rate-limit response with the
+  redactions of the fixtures' README and hand it to the lead (fixtures are frozen): which
+  windows it has, whether `credits` carries a balance and in what form, and whether
+  `rateLimitsByLimitId` holds limits that `rateLimits` does not. **Update bookkeeping**
+  (D8.6): list names and modification times under mise's state and cache directories
+  before and after one offline status run and report whether anything that records an
+  update check moved. If a run
   fails, report which variable was missing or which switch mise refused; do not widen
   `ENV_ALLOW` or drop a switch without the lead.
 
@@ -1006,6 +1022,8 @@ export interface MockIpcClient extends IpcClient { push(s: Snapshot): void; navi
 export type MockCall = { command: "getSnapshot" | "refresh" | "getHistory" | "getSettings" | "updateSettings" | "getDiagnostics" };
 export function createMockClient(script: MockScript): MockIpcClient;
 export const fixtures: Record<FixtureName, MockScript>;   // a whole script: `first_run` differs in `settings`, not in the snapshot
+// Every script lists all six providers, Gemini, Antigravity and Grok as `unsupported`. Codex is the paid shape
+// (two windows) in `known` and `mixed` and the free shape (one 30-day window) in `stale_failing` (D1a, D9.3).
 
 // lib/stores
 export const usage:    { readonly snapshot: Snapshot | null; readonly refreshing: boolean; refresh(t?: RefreshTarget): Promise<Outcome<null>> };
@@ -1029,6 +1047,7 @@ export function meterValueText(m: MeterView, nowMs: number, hour: HourCycle): st
 // lib/copy.ts — every user-facing sentence for Unavailable, Setup, StaleCause; commands to copy
 export function unavailableCopy(reason: Unavailable, provider: ProviderKey): { text: string; command?: string };
 export function setupCopy(setup: Setup, provider: ProviderKey): { text: string; command?: string };
+export function unsupportedCopy(provider: ProviderKey): string;   // D9.3: the honest "no source yet" sentence; no number, no plan
 export const providerName: Record<ProviderKey, string>;
 export function planName(label: string): string;   // "max_5x" → "Max 5x", "free" → "Free"; unknown → "_" as spaces, capitalised
 export function levelChange(provider: ProviderKey, meter: MeterView, nowMs: number, hour: HourCycle): string;   // live-region sentence, same words as the notification
@@ -1100,7 +1119,8 @@ only from the generated bindings; no hand-written IPC types).
 - [ ] Type tokens are in `rem`; one accent; a healthy palette is neutral plus one blue.
 - [ ] Rune files are `*.svelte.ts`; nothing uses web storage; nothing sets a `style` attribute.
 - [ ] No timer runs while the document is hidden.
-- [ ] Fixtures cover every `UsageView` state, every `Unavailable` and `Setup` value.
+- [ ] Fixtures cover every `UsageView` state (`unsupported` included), every `Unavailable`
+      and `Setup` value, and both Codex shapes (one window, two windows).
 
 ---
 
@@ -1134,8 +1154,9 @@ Behaviour to implement: D7.1 loop with **one** `WallTimer` wait (never
 backoff (`NotConfigured`/`Unsupported` are not failures), one-in-flight, the exact manual
 refresh semantics (returns when queued; 10 s floor; `Busy`/`NotEnabled` cases; `live_check`
 allowed only when the setting is on and the source's cost is `SpendsQuota`), and the engine
-probe schedule (start; before a fetch of a `needs_login` source when not `Ready` and older
-than 60 s, also while hidden; manual at most once per 60 s; piggy-back on a due fetch when
+probe schedule (start, with the first fetch of each `needs_login` source waiting for that
+answer; before a fetch of a `needs_login` source when not `Ready` and older
+than 45 s, also while hidden; manual at most once per 60 s; piggy-back on a due fetch when
 the facts are 6 hours old, or 15 minutes old with a probed provider still `Unknown`) through the
 injected `LoginProbe`, called with the providers that are not hidden and have a
 `needs_login` source, merging the result into `FactsCell` for the providers probed (the
@@ -1172,7 +1193,9 @@ fetches and ends the task within 2 s; dropping all handles does the same.
 - A reading stamped 5 minutes in the future is stored and shown with `observed_at = now`.
 - **Probe**: with a `ScriptedProbe` that first answers `Unknown` and then `Ready` for Codex,
   while hidden: the first gated fetch yields `Unavailable(Timeout)`, the retry re-probes and
-  the source is fetched; the probe is called at most once per 60 s under 100 manual
+  the source is fetched, for the lowest and the highest jitter value alike (the 45 s rule
+  of D7.2); at start no gated source is fetched before the first probe answers (a
+  `ScriptedProbe` that takes 2 s: Codex stays `Pending`, never `Timeout`); the probe is called at most once per 60 s under 100 manual
   refreshes; a 6-hour-old `Ready` is re-probed on the next due fetch, with no extra wake;
   a Claude `Unknown` (its only `needs_login` source is manual) is re-probed on the first
   due fetch after 15 minutes, and not before.
@@ -1290,6 +1313,16 @@ or focus of a row. Whitespace per D9.1. Nothing decorative.
   `settings.update({autostart})`, rolls back and says why on an `io` error); Continue sets
   `first_run_seen`, moves focus to the overview heading, and the view never returns.
 - `not_installed` copy names the PATH ("Flashboard can't find `codex` on its PATH").
+- **No source** (D9.3, D1a): the bottom line names exactly the placeholder providers that
+  are not hidden and is absent when all are; "Why?" is a named button whose `Detail`
+  opens on focus and hover, closes on `Esc` with focus staying, opens again when the
+  button is pressed, and holds `unsupportedCopy` for each listed provider, which is also
+  the button's accessible description; for an `unsupported` provider no card, meter,
+  percentage, plan or sign-in hint is rendered anywhere (asserted on the DOM text of every
+  fixture); the first-run screen carries the "no usage source yet" sentence and its
+  provider line contains no button.
+- Codex renders from its meters, not from its plan: the two-window and the one-window
+  fixture both pass every test above.
 - Reflow (D9.10): at 320 CSS px (a 320 px window at 100 %, and a 640 px window at 200 %)
   no clipped text and no horizontal scroll; the text-spacing run loses no content.
 - **Focus kept**: with focus on a meter row of the second card, a snapshot that raises that
@@ -1361,13 +1394,15 @@ export const history: { load(q: HistoryQuery): Promise<void>; readonly state: "i
 - Range switch is a radio group with arrow keys; changing range/meter issues exactly one
   `getHistory` and cancels a stale response (out-of-order responses do not overwrite).
 - Detail states: provider `unavailable`/`not_configured`/`unsupported` show the state block
-  and no empty chart frame; `stale` shows the freshness note.
+  and no empty chart frame (`unsupported`: the `unsupportedCopy` sentence and nothing
+  else, D9.3); `stale` shows the freshness note.
 - Live check button exists only when `refresh.live_check` is true; it states the cost;
   `NotEnabled`/`Busy` handled; a non-null `refresh.live_check_error` is shown next to the
   button in `copy.ts` words and does not change the meters above.
 - Detail view is level 2 of D9.1: every window in full (number, countdown and absolute time
   side by side, status), without needing hover.
-- Settings covers every field of D7.4 `Settings` except `first_run_seen`: the notification
+- Settings covers every field of D7.4 `Settings` except `first_run_seen`: all six
+  providers under "Providers", the three placeholders marked "no source yet" (D9.6); the notification
   master switch with the two level switches disabled (values kept) while it is off; "Start
   at login" **on by default**, rolling back with a reason on an `io` error; the single-key
   shortcuts switch, with the full key list in text under it (`R`, `,`, `1`–`6` with the
@@ -1553,7 +1588,7 @@ programs), `dashboard/e2e/webdriver/**`, `dashboard/e2e/screens/security.spec.ts
   the **architecture test** (allowed locations of `expose_secret` and `reqwest` (`http.rs`),
   process APIs (`proc.rs`), `zbus` (`bus.rs`), `notify_rust` (`notifier.rs`), the engine's
   crate identifiers (`engine_bridge.rs` and one manifest line, D5.1); forbidden file names,
-  CLI home paths and `probe_all`/`path_from_env`; forbidden macros; the type-file rule; the
+  CLI home paths (the Antigravity ones of D8.3 included) and `probe_all`/`path_from_env`; forbidden macros; the type-file rule; the
   three `[lints]` tables equal; the login commands in `copy.ts` equal
   `engine_bridge::login_command`),
   the **IPC audit** (key allow-list, forbidden key pattern, string-leaf vocabulary, over
@@ -1597,7 +1632,7 @@ programs), `dashboard/e2e/webdriver/**`, `dashboard/e2e/screens/security.spec.ts
   PASS/FAIL/SKIPPED/NOT RUN per stage and total time; non-zero exit on any FAIL (and on
   SKIPPED or NOT RUN with `--release`, except the advisory fuzz stage 12, D11.4). Stage 2
   builds the UI before any cargo command compiles the shell, and fmt and clippy are scoped
-  to the three app crates (D11.1, D11.4).
+  to the three app crates, clippy with `--no-deps` (D11.1, D11.4).
 - Accessibility gate: stage 6 and stage 8 fail on any axe violation, on the contrast test,
   and on the keyboard-path and live-region tests of D9.10; a table in the report maps every
   bullet of D9.10 to the test (or manual step) that checks it.
@@ -1711,7 +1746,7 @@ the harness stub included, until T07 is merged; final test run after it, section
 of D9.3, `aria-valuenow` clamped to 0..100, the full level-1 text as `aria-valuetext`; a
 `MeterText` variant for a row without a number), `Detail` (the level-1 disclosure of D9.1:
 opens on hover **and** focus, hoverable, `Esc` closes without moving focus, never covers its
-trigger), `StatusGlyph`, `Card`, `Button`, `IconButton`, `CopyCommand`, `Countdown`
+trigger; when the trigger is a button, pressing it opens the disclosure again, D9.3), `StatusGlyph`, `Card`, `Button`, `IconButton`, `CopyCommand`, `Countdown`
 (re-renders from `clock`), `Freshness`, `Skeleton`, `RadioGroup`, `Switch`, `Slider`,
 `NumberField` (with an error slot wired to `aria-describedby`/`aria-invalid`), `Dialog`,
 `Icon` (inline SVG). The header and the live region are T07's (`components/shell/`), not
