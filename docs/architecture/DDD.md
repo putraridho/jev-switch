@@ -119,8 +119,8 @@ several contexts. It has no `domain/`.
 ### 1.3 Context map
 
 The levels below are the whole picture: lower levels are upstream. A context may import only
-the contexts listed in its row of the table; the architecture test holds this table as data
-(section 3.4) and also checks that it has no cycle.
+the contexts listed in its row of the table. The table is each crate's `[dependencies]`, so
+Cargo refuses a cycle; check C1 (section 3.4) holds the manifests to the table.
 
 ```
 level 0   shared
