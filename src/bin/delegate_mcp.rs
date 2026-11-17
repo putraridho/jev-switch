@@ -1,5 +1,5 @@
 //! delegate_mcp: the MCP server that gives an orchestration PLANNER its `delegate`,
-//! `merge` and `discard` tools. A planner CLI (Claude Code, Codex) starts it as a stdio
+//! `show_diff`, `merge` and `discard` tools. A planner CLI (Claude Code, Codex) starts it as a stdio
 //! child: newline-delimited JSON-RPC 2.0, one message per line.
 //!
 //! The tool has NO model parameter. Which worker model runs a piece is Jev's decision
@@ -21,7 +21,7 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::sync::{mpsc, OnceCell};
 use tokio::task::JoinSet;
 
-use jev_router::delegate::{router_judge, BoxFut, DelegateApi, DelegateRequest, DelegateResult, Delegator, GitWorktrees};
+use jev_router::delegate::{has_leftovers, router_judge, BoxFut, DelegateApi, DelegateRequest, DelegateResult, Delegator, GitWorktrees};
 use jev_router::log;
 use jev_router::providers::Runtime;
 use jev_router::router::Router;
@@ -32,16 +32,27 @@ use jev_router::typesafe::TypeSafe;
 const PROTOCOL_VERSIONS: [&str; 3] = ["2025-06-18", "2025-03-26", "2024-11-05"];
 
 const DELEGATE_DESCRIPTION: &str = "Hand ONE self-contained piece of a larger task to a worker model, which runs in its own \
-private git worktree and returns a short report plus the diff it made. Use it for independent pieces (you may call it several \
-times in parallel; each worker gets its own directory). Give each call a COMPLETE, self-contained brief: the worker sees only \
-the brief and the last commit, not your conversation and not your uncommitted edits, so commit what a worker needs first or \
-put it in the brief. There is no model parameter: the worker model is chosen for you. Review the returned diff yourself \
-before merging; merge only what you verified.";
-const MERGE_DESCRIPTION: &str = "Apply a worker's diff (by worker_id) to your working tree with a 3-way merge. Do this only \
-after you reviewed the diff the delegate call returned and verified it. If it conflicts, nothing is changed and the worker's \
-worktree is kept so you can discard it or merge by hand.";
+private git worktree and returns a short report, the list of EVERY file it changed (with +/- counts) and the diffs of as many \
+files as fit. Use it for independent pieces (you may call it several times in parallel; each worker gets its own directory). \
+Give each call a COMPLETE, self-contained brief: the worker sees only the brief and the last commit, not your conversation and \
+not your uncommitted edits, so commit what a worker needs first or put it in the brief. There is no model parameter: the worker \
+model is chosen for you. Review the returned diff yourself before merging; merge only what you verified. A file whose diff is \
+not shown in the result must be read with show_diff before it can be merged.";
+const SHOW_DIFF_DESCRIPTION: &str = "Read a worker's diff in pages (about 20,000 characters each). Without `file` it pages the \
+whole diff; with `file` (a path from the delegate result's file list) it pages that one file, which is how to read a file the \
+delegate result did not show. Pass `offset` (characters) to continue where the previous page ended. A file counts as seen once \
+its diff was shown in full, and merge accepts only files that were seen.";
+const MERGE_DESCRIPTION: &str = "Apply a worker's diff (by worker_id) to your working tree. It applies on top of your uncommitted \
+edits when the hunks do not overlap, else as a 3-way merge. Do this only after you reviewed the diff and verified it: merge REFUSES \
+any file you have not seen in full (call show_diff for it, or pass `files` listing only the files you have seen; the others stay in \
+the worker's worktree for a later merge or discard). If it cannot apply, nothing is changed and the worker's worktree is kept so \
+you can discard it or merge by hand.";
 const DISCARD_DESCRIPTION: &str = "Throw away a worker's worktree and diff (by worker_id) without applying anything. Use it for \
 work you rejected.";
+
+fn worker_id_schema() -> Value {
+    json!({ "type": "string", "description": "The worker_id a delegate call returned." })
+}
 
 fn tools_list() -> Value {
     json!({ "tools": [
@@ -59,11 +70,27 @@ fn tools_list() -> Value {
             }
         },
         {
+            "name": "show_diff",
+            "description": SHOW_DIFF_DESCRIPTION,
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "worker_id": worker_id_schema(),
+                    "file": { "type": "string", "description": "A changed file's path: page just that file's diff." },
+                    "offset": { "type": "integer", "minimum": 0, "description": "Character offset to continue from (default 0), as the previous page's footer says." }
+                },
+                "required": ["worker_id"]
+            }
+        },
+        {
             "name": "merge",
             "description": MERGE_DESCRIPTION,
             "inputSchema": {
                 "type": "object",
-                "properties": { "worker_id": { "type": "string", "description": "The worker_id a delegate call returned." } },
+                "properties": {
+                    "worker_id": worker_id_schema(),
+                    "files": { "type": "array", "items": { "type": "string" }, "description": "Optional: merge only these changed files (all of them must have been shown in full). Default: every file." }
+                },
                 "required": ["worker_id"]
             }
         },
@@ -72,7 +99,7 @@ fn tools_list() -> Value {
             "description": DISCARD_DESCRIPTION,
             "inputSchema": {
                 "type": "object",
-                "properties": { "worker_id": { "type": "string", "description": "The worker_id a delegate call returned." } },
+                "properties": { "worker_id": worker_id_schema() },
                 "required": ["worker_id"]
             }
         }
@@ -84,20 +111,36 @@ fn tools_list() -> Value {
 /// model choice can pass through the tool.
 fn parse_delegate(args: &Value) -> Result<DelegateRequest, String> {
     let brief = args["brief"].as_str().map(str::trim).filter(|b| !b.is_empty()).ok_or("`brief` is required: a non-empty string")?;
-    let files = match args.get("files") {
-        None | Some(Value::Null) => vec![],
-        Some(Value::Array(items)) => items
-            .iter()
-            .map(|f| f.as_str().map(String::from).ok_or("`files` must be a list of strings"))
-            .collect::<Result<_, _>>()?,
-        Some(_) => return Err("`files` must be a list of strings".into()),
-    };
+    let files = string_list(args, "files")?.unwrap_or_default();
     let read_only = args.get("read_only").and_then(Value::as_bool).unwrap_or(false);
     Ok(DelegateRequest { brief: brief.to_string(), files, read_only })
 }
 
-fn worker_id_arg(args: &Value) -> Result<&str, String> {
-    args["worker_id"].as_str().filter(|w| !w.is_empty()).ok_or_else(|| "`worker_id` is required".to_string())
+/// A `files` argument: absent (or null) is `None`, otherwise a list of strings.
+fn string_list(args: &Value, key: &str) -> Result<Option<Vec<String>>, String> {
+    match args.get(key) {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::Array(items)) => items.iter().map(|f| f.as_str().map(String::from).ok_or(format!("`{key}` must be a list of strings"))).collect::<Result<_, _>>().map(Some),
+        Some(_) => Err(format!("`{key}` must be a list of strings")),
+    }
+}
+
+/// `show_diff`'s optional `file` and `offset`.
+fn parse_show_diff(args: &Value) -> Result<(Option<String>, usize), String> {
+    let file = match args.get("file") {
+        None | Some(Value::Null) => None,
+        Some(Value::String(f)) if !f.is_empty() => Some(f.clone()),
+        Some(_) => return Err("`file` must be a non-empty string".into()),
+    };
+    let offset = match args.get("offset") {
+        None | Some(Value::Null) => 0,
+        Some(v) => v.as_u64().ok_or("`offset` must be a non-negative integer")? as usize,
+    };
+    Ok((file, offset))
+}
+
+fn worker_id_arg(args: &Value) -> Result<String, String> {
+    args["worker_id"].as_str().filter(|w| !w.is_empty()).map(String::from).ok_or_else(|| "`worker_id` is required".to_string())
 }
 
 fn text_result(text: impl Into<String>, is_error: bool) -> Value {
@@ -139,9 +182,16 @@ async fn call_tool(server: &Server, params: &Value) -> Result<Value, String> {
             let result = server.api.delegate(parse_delegate(args)?).await;
             Ok(text_result(result.render(), !result.ok))
         }
-        "merge" => Ok(outcome(server.api.merge(worker_id_arg(args)?))),
-        "discard" => Ok(outcome(server.api.discard(worker_id_arg(args)?))),
-        other => Err(format!("unknown tool `{other}` (delegate, merge, discard)")),
+        "show_diff" => {
+            let (file, offset) = parse_show_diff(args)?;
+            Ok(outcome(server.api.show_diff(worker_id_arg(args)?, file, offset).await))
+        }
+        "merge" => {
+            let files = string_list(args, "files")?;
+            Ok(outcome(server.api.merge(worker_id_arg(args)?, files).await))
+        }
+        "discard" => Ok(outcome(server.api.discard(worker_id_arg(args)?).await)),
+        other => Err(format!("unknown tool `{other}` (delegate, show_diff, merge, discard)")),
     }
 }
 
@@ -194,13 +244,23 @@ impl Lazy {
         let state = log::state_dir().context("no state directory (is HOME set?)")?;
         let worktrees = GitWorktrees::new(&self.dir, state.join("worktrees"))?;
         let runtime = Runtime::start().await;
-        Ok(Delegator::new(runtime, router_judge(router), Box::new(worktrees))
+        let delegator = Delegator::new(runtime, router_judge(router), Box::new(worktrees))
             .with_log(log::path_from_env("JEV_DELEGATE_LOG", "orchestration.jsonl"))
-            .with_planner(self.planner.clone()))
+            .with_planner(self.planner.clone())
+            .with_store(&state);
+        // Workers an earlier run left: reload the mergeable ones, remove the abandoned ones.
+        delegator.recover().await;
+        Ok(delegator)
     }
 
     async fn delegator(&self) -> Result<&Delegator> {
         self.cell.get_or_try_init(|| self.build()).await
+    }
+
+    /// The delegator for a tool that works on an existing worker: built on demand, because
+    /// after a restart the worker lives only in the saved registry.
+    async fn known(&self) -> Result<&Delegator, String> {
+        self.delegator().await.map_err(|e| format!("delegation is not available: {e:#}"))
     }
 }
 
@@ -214,12 +274,16 @@ impl DelegateApi for Lazy {
         })
     }
 
-    fn merge(&self, worker_id: &str) -> Result<String, String> {
-        self.cell.get().ok_or_else(|| "no workers have been started".to_string())?.merge(worker_id)
+    fn show_diff(&self, worker_id: String, file: Option<String>, offset: usize) -> BoxFut<'_, Result<String, String>> {
+        Box::pin(async move { self.known().await?.show_diff(&worker_id, file.as_deref(), offset).await })
     }
 
-    fn discard(&self, worker_id: &str) -> Result<String, String> {
-        self.cell.get().ok_or_else(|| "no workers have been started".to_string())?.discard(worker_id)
+    fn merge(&self, worker_id: String, files: Option<Vec<String>>) -> BoxFut<'_, Result<String, String>> {
+        Box::pin(async move { self.known().await?.merge(&worker_id, files).await })
+    }
+
+    fn discard(&self, worker_id: String) -> BoxFut<'_, Result<String, String>> {
+        Box::pin(async move { self.known().await?.discard(&worker_id).await })
     }
 }
 
@@ -244,7 +308,16 @@ async fn main() -> Result<()> {
         Some(d) => d,
         None => std::env::current_dir()?,
     };
-    let server = Server { api: Arc::new(Lazy { dir, planner, cell: OnceCell::new() }) };
+    let lazy = Arc::new(Lazy { dir, planner, cell: OnceCell::new() });
+    // Workers an earlier run left behind are cleaned up at startup, but providers are only
+    // probed for that when there is something to clean: a session that never delegates stays free.
+    if log::state_dir().is_some_and(|s| has_leftovers(&s)) {
+        let warm = lazy.clone();
+        tokio::spawn(async move {
+            let _ = warm.delegator().await;
+        });
+    }
+    let server = Server { api: lazy };
 
     // Replies go through one writer task so concurrent calls never interleave their lines.
     let (tx, mut rx) = mpsc::unbounded_channel::<String>();
@@ -284,11 +357,14 @@ mod tests {
     use super::*;
     use std::sync::Mutex;
 
+    use jev_router::delegate::FileStat;
+
     /// Records every call; its worker report is canned.
     #[derive(Default)]
     struct FakeApi {
         delegated: Mutex<Vec<DelegateRequest>>,
-        merged: Mutex<Vec<String>>,
+        merged: Mutex<Vec<(String, Option<Vec<String>>)>>,
+        shown: Mutex<Vec<(String, Option<String>, usize)>>,
         discarded: Mutex<Vec<String>>,
     }
 
@@ -301,21 +377,29 @@ mod tests {
                     provider: Some(jev_router::backend::ProviderId::Codex),
                     model: Some("gpt-6.1-terra".into()),
                     summary: "added the retry".into(),
-                    files_changed: vec!["src/net.rs".into()],
+                    stats: vec![
+                        FileStat { path: "src/net.rs".into(), added: 3, removed: 1, binary: false },
+                        FileStat { path: "src/big.rs".into(), added: 900, removed: 0, binary: false },
+                    ],
                     diff: "diff --git a/src/net.rs b/src/net.rs".into(),
+                    shown: vec!["src/net.rs".into()],
                     ok: true,
                     error: None,
                     retries: vec![],
                 }
             })
         }
-        fn merge(&self, id: &str) -> Result<String, String> {
-            self.merged.lock().unwrap().push(id.into());
-            if id == "conflict" { Err("does not apply cleanly".into()) } else { Ok(format!("merged {id}")) }
+        fn show_diff(&self, id: String, file: Option<String>, offset: usize) -> BoxFut<'_, Result<String, String>> {
+            self.shown.lock().unwrap().push((id.clone(), file, offset));
+            Box::pin(async move { Ok(format!("diff page of {id}")) })
         }
-        fn discard(&self, id: &str) -> Result<String, String> {
-            self.discarded.lock().unwrap().push(id.into());
-            Ok(format!("discarded {id}"))
+        fn merge(&self, id: String, files: Option<Vec<String>>) -> BoxFut<'_, Result<String, String>> {
+            self.merged.lock().unwrap().push((id.clone(), files));
+            Box::pin(async move { if id == "conflict" { Err("does not apply cleanly".into()) } else { Ok(format!("merged {id}")) } })
+        }
+        fn discard(&self, id: String) -> BoxFut<'_, Result<String, String>> {
+            self.discarded.lock().unwrap().push(id.clone());
+            Box::pin(async move { Ok(format!("discarded {id}")) })
         }
     }
 
@@ -361,12 +445,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn tools_list_has_three_tools_and_delegate_has_no_model_field() {
+    async fn tools_list_has_four_tools_and_delegate_has_no_model_field() {
         let (s, _) = rig();
         let r = send(&s, json!({ "jsonrpc": "2.0", "id": 3, "method": "tools/list" })).await;
         let tools = r["result"]["tools"].as_array().unwrap();
         let names: Vec<_> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
-        assert_eq!(names, ["delegate", "merge", "discard"]);
+        assert_eq!(names, ["delegate", "show_diff", "merge", "discard"]);
         for t in tools {
             assert_eq!(t["inputSchema"]["type"], "object");
             assert!(t["inputSchema"]["required"].is_array());
@@ -380,7 +464,19 @@ mod tests {
         // The descriptions carry the guidance the planner needs.
         let d = delegate["description"].as_str().unwrap();
         assert!(d.contains("independent") && d.contains("self-contained") && d.contains("Review the returned diff") && d.contains("merge only what you verified"));
-        assert!(tools[1]["description"].as_str().unwrap().contains("after you reviewed"));
+        assert!(d.contains("EVERY file") && d.contains("show_diff"));
+        let show = &tools[1];
+        assert_eq!(show["inputSchema"]["required"], json!(["worker_id"]));
+        let props = show["inputSchema"]["properties"].as_object().unwrap();
+        assert_eq!(props.keys().map(String::as_str).collect::<Vec<_>>(), ["file", "offset", "worker_id"]);
+        assert_eq!(props["offset"]["type"], "integer");
+        assert!(show["description"].as_str().unwrap().contains("pages"));
+        let merge = &tools[2];
+        assert_eq!(merge["inputSchema"]["required"], json!(["worker_id"]), "files is optional");
+        assert_eq!(merge["inputSchema"]["properties"]["files"]["type"], "array");
+        let m = merge["description"].as_str().unwrap();
+        assert!(m.contains("after you reviewed") && m.contains("REFUSES") && m.contains("show_diff") && m.contains("files"));
+        assert!(!tools.iter().any(|t| t.to_string().contains("\"model\"")), "no tool takes a model");
     }
 
     #[tokio::test]
@@ -389,14 +485,24 @@ mod tests {
         let r = send(&s, call(4, "delegate", json!({ "brief": "add a retry", "files": ["src/net.rs"], "read_only": false }))).await;
         assert_eq!(r["result"]["isError"], false);
         let text = r["result"]["content"][0]["text"].as_str().unwrap();
-        assert!(text.contains("worker w1") && text.contains("added the retry") && text.contains("diff:"));
-        assert!(text.contains("merge(w1)"));
+        assert!(text.contains("worker w1") && text.contains("added the retry") && text.contains("diff"));
+        assert!(text.contains("merge(w1"));
+        // Every changed file is listed with its counts, and the one not shown says how to read it.
+        assert!(text.contains("src/net.rs +3 -1") && text.contains("src/big.rs +900 -0"), "{text}");
+        assert!(text.contains("NOT SHOWN") && text.contains("src/big.rs") && text.contains("show_diff(w1, file)"), "{text}");
         assert_eq!(*api.delegated.lock().unwrap(), vec![DelegateRequest { brief: "add a retry".into(), files: vec!["src/net.rs".into()], read_only: false }]);
     }
 
     #[tokio::test]
     async fn a_model_argument_is_ignored() {
         let (s, api) = rig();
+        // Nor can show_diff or merge be steered by a model: they read only their own keys.
+        send(&s, call(50, "show_diff", json!({ "worker_id": "w1", "model": "claude-opus-5-5" }))).await;
+        send(&s, call(51, "merge", json!({ "worker_id": "w1", "model": "claude-opus-5-5", "provider": "codex" }))).await;
+        assert_eq!(*api.shown.lock().unwrap(), [("w1".to_string(), None, 0)]);
+        assert_eq!(*api.merged.lock().unwrap(), [("w1".to_string(), None)]);
+        api.shown.lock().unwrap().clear();
+        api.merged.lock().unwrap().clear();
         let r = send(&s, call(5, "delegate", json!({ "brief": "do it", "model": "claude-opus-5-5", "provider": "codex", "read_only": true }))).await;
         assert_eq!(r["result"]["isError"], false, "not rejected, just not heard");
         // The request the delegator received has only the three real fields; there is no place for a model.
@@ -424,10 +530,39 @@ mod tests {
         assert!(r["result"]["content"][0]["text"].as_str().unwrap().contains("does not apply cleanly"));
         let r = send(&s, call(9, "discard", json!({ "worker_id": "w2" }))).await;
         assert_eq!(r["result"]["content"][0]["text"], "discarded w2");
-        assert_eq!(*api.merged.lock().unwrap(), ["w1", "conflict"]);
+        assert_eq!(*api.merged.lock().unwrap(), [("w1".to_string(), None), ("conflict".to_string(), None)]);
         assert_eq!(*api.discarded.lock().unwrap(), ["w2"]);
         let r = send(&s, call(10, "merge", json!({}))).await;
         assert_eq!(r["error"]["code"], -32602);
+    }
+
+    #[tokio::test]
+    async fn show_diff_passes_file_and_offset_and_merge_passes_files() {
+        let (s, api) = rig();
+        let r = send(&s, call(20, "show_diff", json!({ "worker_id": "w1", "file": "src/big.rs", "offset": 20000 }))).await;
+        assert_eq!((r["result"]["isError"].clone(), r["result"]["content"][0]["text"].clone()), (json!(false), json!("diff page of w1")));
+        send(&s, call(21, "show_diff", json!({ "worker_id": "w1" }))).await;
+        assert_eq!(*api.shown.lock().unwrap(), [("w1".to_string(), Some("src/big.rs".to_string()), 20000), ("w1".to_string(), None, 0)]);
+        send(&s, call(22, "merge", json!({ "worker_id": "w1", "files": ["src/net.rs"] }))).await;
+        assert_eq!(*api.merged.lock().unwrap(), [("w1".to_string(), Some(vec!["src/net.rs".to_string()]))]);
+    }
+
+    #[tokio::test]
+    async fn bad_show_diff_and_merge_arguments_are_invalid_params() {
+        let (s, api) = rig();
+        for (tool, args) in [
+            ("show_diff", json!({})),
+            ("show_diff", json!({ "worker_id": "w1", "offset": -1 })),
+            ("show_diff", json!({ "worker_id": "w1", "offset": "0" })),
+            ("show_diff", json!({ "worker_id": "w1", "file": 5 })),
+            ("show_diff", json!({ "worker_id": "w1", "file": "" })),
+            ("merge", json!({ "worker_id": "w1", "files": "a.rs" })),
+            ("merge", json!({ "worker_id": "w1", "files": [1] })),
+        ] {
+            let r = send(&s, call(23, tool, args.clone())).await;
+            assert_eq!(r["error"]["code"], -32602, "{tool} {args}");
+        }
+        assert!(api.shown.lock().unwrap().is_empty() && api.merged.lock().unwrap().is_empty());
     }
 
     #[tokio::test]

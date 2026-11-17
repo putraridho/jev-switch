@@ -21,8 +21,15 @@
 //! Layout: [`pick_worker`] and the text helpers are pure; [`Worktrees`] is the only git
 //! door ([`GitWorktrees`] real, tests fake it); [`Delegator`] sequences judge, pick,
 //! worktree, run, retry, log; [`DelegateApi`] is what the MCP server sees.
+//!
+//! **The planner merges only what it saw.** The delegate result lists every changed file
+//! with its +/- counts and carries whole-file diffs up to a size budget; `show_diff` pages
+//! the rest. The registry records which files were shown in full and `merge` refuses any
+//! other. The registry is saved to `<state>/workers` so a restarted server still knows
+//! its workers, and [`Delegator::recover`] removes abandoned checkouts. Git calls are
+//! blocking, so the delegator runs them on the blocking pool ([`Delegator::blocking`]).
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::future::Future;
 use std::io::Write as _;
 use std::path::{Component, Path, PathBuf};
@@ -33,6 +40,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, bail, Context, Result};
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use crate::backend::{self, Event, ProviderId, TurnError, TurnOutcome, TurnRequest};
@@ -48,7 +56,7 @@ use crate::turnlog::turn_row;
 /// A worker that fails in a way another provider can fix is retried this many times in
 /// all (so: once more), on the next worker pick.
 pub const MAX_WORKER_ATTEMPTS: u32 = 2;
-/// Most characters of a diff handed back to the planner.
+/// Most characters of diff handed back at once, in the delegate result and per `show_diff` page.
 pub const MAX_DIFF_CHARS: usize = 20_000;
 /// Most characters of the worker's final text handed back.
 pub const MAX_SUMMARY_CHARS: usize = 4_000;
@@ -196,12 +204,26 @@ pub fn pick_worker(signals: &BriefSignals, view: &WorkerView) -> Result<&'static
 
 // --------------------------------------------------------------- text helpers
 
+/// The old and new path in the rest of a `diff --git a/<old> b/<new>` line (after `a/`).
+/// Without a rename both halves are the same text, which is checked first so a path that
+/// itself contains ` b/` is still read right.
+fn header_paths(rest: &str) -> (&str, &str) {
+    let n = rest.len();
+    if n >= 3 && (n - 3) % 2 == 0 {
+        let half = (n - 3) / 2;
+        if rest.is_char_boundary(half) && rest.is_char_boundary(half + 3) && &rest[half..half + 3] == " b/" && rest[..half] == rest[half + 3..] {
+            return (&rest[..half], &rest[..half]);
+        }
+    }
+    rest.split_once(" b/").unwrap_or((rest, rest))
+}
+
 /// The paths a unified diff touches (both sides of a rename), in order, once each.
 pub fn patch_paths(patch: &str) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     for line in patch.lines() {
         let Some(rest) = line.strip_prefix("diff --git a/") else { continue };
-        let (old, new) = rest.split_once(" b/").unwrap_or((rest, rest));
+        let (old, new) = header_paths(rest);
         for p in [old, new] {
             if !out.iter().any(|o| o == p) {
                 out.push(p.to_string());
@@ -209,6 +231,100 @@ pub fn patch_paths(patch: &str) -> Vec<String> {
         }
     }
     out
+}
+
+/// One file's part of a patch, exactly as git wrote it (header, hunks, binary data).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FileDiff {
+    /// The path after the change (the new name of a rename). A header git quoted, which
+    /// this cannot parse, keeps its raw text: the file stays listed and cannot slip through.
+    pub path: String,
+    pub text: String,
+}
+
+/// A patch cut into per-file parts, in order. Joining the parts gives the patch back.
+pub fn split_patch(patch: &str) -> Vec<FileDiff> {
+    let mut out: Vec<FileDiff> = Vec::new();
+    for line in patch.split_inclusive('\n') {
+        if let Some(rest) = line.strip_prefix("diff --git ") {
+            let rest = rest.trim_end();
+            let path = rest.strip_prefix("a/").map_or(rest, |r| header_paths(r).1);
+            out.push(FileDiff { path: path.to_string(), text: String::new() });
+        }
+        if let Some(cur) = out.last_mut() {
+            cur.text.push_str(line);
+        }
+    }
+    out
+}
+
+fn join_diffs<'a>(parts: impl IntoIterator<Item = &'a FileDiff>) -> String {
+    parts.into_iter().map(|p| p.text.as_str()).collect()
+}
+
+/// How much of one file changed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FileStat {
+    pub path: String,
+    pub added: usize,
+    pub removed: usize,
+    pub binary: bool,
+}
+
+impl FileStat {
+    pub fn render(&self) -> String {
+        if self.binary {
+            format!("{} (binary)", self.path)
+        } else {
+            format!("{} +{} -{}", self.path, self.added, self.removed)
+        }
+    }
+}
+
+impl FileDiff {
+    pub fn stat(&self) -> FileStat {
+        let (mut added, mut removed, mut binary, mut in_hunk) = (0, 0, false, false);
+        for line in self.text.lines() {
+            if line.starts_with("@@") {
+                in_hunk = true;
+            } else if line.starts_with("GIT binary patch") || line.starts_with("Binary files ") {
+                binary = true;
+            } else if in_hunk {
+                match line.as_bytes().first() {
+                    Some(b'+') => added += 1,
+                    Some(b'-') => removed += 1,
+                    _ => {}
+                }
+            }
+        }
+        FileStat { path: self.path.clone(), added, removed, binary }
+    }
+
+    fn chars(&self) -> usize {
+        self.text.chars().count()
+    }
+}
+
+/// The whole files that fit in `budget` characters, in order (one that does not fit is
+/// skipped, a smaller later one may still go in), as text and as the paths shown.
+fn first_page(parts: &[FileDiff], budget: usize) -> (String, Vec<String>) {
+    let (mut left, mut text, mut shown) = (budget, String::new(), Vec::new());
+    for p in parts {
+        let n = p.chars();
+        if n <= left {
+            left -= n;
+            text.push_str(&p.text);
+            shown.push(p.path.clone());
+        }
+    }
+    (text, shown)
+}
+
+/// `max` characters of `text` from character `offset`, and the offset just after them.
+fn char_page(text: &str, offset: usize, max: usize) -> (&str, usize) {
+    let byte = |chars: usize| text.char_indices().nth(chars).map_or(text.len(), |(b, _)| b);
+    let (from, to) = (byte(offset), byte(offset.saturating_add(max)));
+    (&text[from..to], offset + text[from..to].chars().count())
 }
 
 /// `text` cut to `max` characters, with a note of how much was dropped.
@@ -238,15 +354,23 @@ pub fn worker_prompt(brief: &str, files: &[String]) -> String {
 
 // --------------------------------------------------------------- worktrees
 
-/// The only door to git. Real: [`GitWorktrees`]; tests use a fake.
+/// The only door to git. Real: [`GitWorktrees`]; tests use a fake. Every method blocks;
+/// the [`Delegator`] runs them off the async threads in one place.
 pub trait Worktrees: Send + Sync {
+    /// The repository workers start from and merges apply to.
+    fn repo(&self) -> PathBuf;
+    /// The directory every worktree lives under.
+    fn root(&self) -> PathBuf;
     /// A fresh isolated working copy at the main tree's `HEAD`, named `id`.
     fn create(&self, id: &str) -> Result<PathBuf>;
     /// Everything the worker changed in `path` (new files included) as one patch.
     fn diff(&self, path: &Path) -> Result<String>;
     /// Apply `patch` to the MAIN working tree. On failure the tree is left as it was.
     fn apply(&self, patch: &str) -> Result<()>;
+    /// Delete a worktree checkout.
     fn remove(&self, path: &Path) -> Result<()>;
+    /// Forget the bookkeeping of worktrees whose directory is gone (`git worktree prune`).
+    fn prune(&self, repo: &Path) -> Result<()>;
 }
 
 /// Run `git -C dir args`, optionally feeding `stdin`; stdout on success, a message with
@@ -317,6 +441,19 @@ impl Snapshot {
     }
 }
 
+/// Why a patch did not go on, from git's words for the plain apply and the 3-way one.
+fn explain_apply_failure(plain: &str, three_way: &str) -> String {
+    let cause = if three_way.contains("does not match index") {
+        "your working tree has uncommitted edits to a file the worker also changed, and they overlap its hunks \
+         (a 3-way merge also needs those files unmodified or staged). Commit, stage or stash them, or merge by hand"
+    } else if plain.contains("already exists") || three_way.contains("already exists") {
+        "a file the worker created already exists in your tree"
+    } else {
+        "the worker's changes do not apply cleanly: they conflict with your tree"
+    };
+    format!("{cause}; nothing was changed. Plain apply: {plain} 3-way apply: {three_way}")
+}
+
 /// Real worktrees: `git worktree add --detach <root>/<id> HEAD`. Detached, so no branch
 /// is created and nothing is left behind once the worktree is removed.
 pub struct GitWorktrees {
@@ -341,6 +478,14 @@ impl GitWorktrees {
 }
 
 impl Worktrees for GitWorktrees {
+    fn repo(&self) -> PathBuf {
+        self.repo.clone()
+    }
+
+    fn root(&self) -> PathBuf {
+        self.root.clone()
+    }
+
     fn create(&self, id: &str) -> Result<PathBuf> {
         let path = self.root.join(id);
         std::fs::create_dir_all(&self.root).with_context(|| format!("create {}", self.root.display()))?;
@@ -355,21 +500,207 @@ impl Worktrees for GitWorktrees {
         git(path, &["diff", "--cached", "--binary", "HEAD"], None)
     }
 
+    /// A plain `git apply` first: it works on the working tree whatever is unstaged, as
+    /// long as the hunks fit. Only when it does not fit, `--3way`, which also merges into
+    /// text the planner changed but needs the index to match the files.
     fn apply(&self, patch: &str) -> Result<()> {
         let snapshot = Snapshot::take(&self.repo, self.index_path(), &patch_paths(patch));
+        let plain = git(&self.repo, &["apply", "--check", "-"], Some(patch)).and_then(|_| git(&self.repo, &["apply", "-"], Some(patch)));
+        let Err(plain) = plain else { return Ok(()) };
         match git(&self.repo, &["apply", "--3way", "-"], Some(patch)) {
             Ok(_) => Ok(()),
-            Err(e) => {
+            Err(three_way) => {
                 snapshot.restore();
-                Err(anyhow!("the worker's changes do not apply cleanly (conflict with your tree); nothing was changed. {e}"))
+                Err(anyhow!("{}", explain_apply_failure(&format!("{plain:#}."), &format!("{three_way:#}"))))
             }
         }
     }
 
+    /// `git worktree remove`, and when git will not (the checkout belongs to another
+    /// repository, or git's record of it is gone) the directory itself, but only under `root`.
     fn remove(&self, path: &Path) -> Result<()> {
-        git(&self.repo, &["worktree", "remove", "--force", &path.to_string_lossy()], None).map(|_| ())
+        match git(&self.repo, &["worktree", "remove", "--force", &path.to_string_lossy()], None) {
+            Ok(_) => Ok(()),
+            Err(e) if !path.starts_with(&self.root) => Err(e),
+            Err(_) if !path.exists() => Ok(()),
+            Err(_) => std::fs::remove_dir_all(path).with_context(|| format!("remove {}", path.display())),
+        }
+    }
+
+    fn prune(&self, repo: &Path) -> Result<()> {
+        git(repo, &["worktree", "prune"], None).map(|_| ())
     }
 }
+
+// --------------------------------------------------------------- the registry
+
+/// A worker started by this server and not yet merged or discarded.
+#[derive(Debug, Clone)]
+struct Worker {
+    provider: ProviderId,
+    model: String,
+    /// The repository the worker was cut from.
+    repo: PathBuf,
+    created_ms: u64,
+    /// `None` while the slot is reserved and the worktree is still being made.
+    path: Option<PathBuf>,
+    /// Still running; a finished worker awaiting merge or discard is not load.
+    running: bool,
+    /// Files the planner has seen IN FULL: only these may be merged.
+    shown: BTreeSet<String>,
+    /// Files being read page by page: how many leading characters were seen.
+    covered: BTreeMap<String, usize>,
+    /// Files already merged by an earlier `merge` with `files`.
+    merged: BTreeSet<String>,
+}
+
+impl Worker {
+    /// A slot claimed before the worktree exists, so parallel picks see it as load.
+    fn reserved(spec: &ModelSpec, repo: PathBuf, now_ms: u64) -> Self {
+        Self {
+            provider: spec.provider,
+            model: spec.id.to_string(),
+            repo,
+            created_ms: now_ms,
+            path: None,
+            running: true,
+            shown: BTreeSet::new(),
+            covered: BTreeMap::new(),
+            merged: BTreeSet::new(),
+        }
+    }
+
+    /// Characters `from..to` of `file`'s diff (`total` long) were shown. The file counts as
+    /// shown in full once its leading characters were seen without a gap.
+    fn cover(&mut self, file: &str, from: usize, to: usize, total: usize) {
+        if self.shown.contains(file) {
+            return;
+        }
+        let seen = self.covered.get(file).copied().unwrap_or(0);
+        if from > seen {
+            return;
+        }
+        if seen.max(to) >= total {
+            self.covered.remove(file);
+            self.shown.insert(file.to_string());
+        } else {
+            self.covered.insert(file.to_string(), seen.max(to));
+        }
+    }
+}
+
+/// A worker as written to disk. Plain data: provider as its name.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct Saved {
+    worker_id: String,
+    path: PathBuf,
+    repo: PathBuf,
+    provider: String,
+    model: String,
+    created_ms: u64,
+    #[serde(default)]
+    running: bool,
+    #[serde(default)]
+    shown: BTreeSet<String>,
+    #[serde(default)]
+    covered: BTreeMap<String, usize>,
+    #[serde(default)]
+    merged: BTreeSet<String>,
+}
+
+impl Saved {
+    /// `None` for a slot with no worktree yet: there is nothing on disk to keep track of.
+    fn of(id: &str, w: &Worker) -> Option<Self> {
+        Some(Self {
+            worker_id: id.to_string(),
+            path: w.path.clone()?,
+            repo: w.repo.clone(),
+            provider: w.provider.to_string(),
+            model: w.model.clone(),
+            created_ms: w.created_ms,
+            running: w.running,
+            shown: w.shown.clone(),
+            covered: w.covered.clone(),
+            merged: w.merged.clone(),
+        })
+    }
+
+    fn into_worker(self) -> Option<(String, Worker)> {
+        let provider = self.provider.parse().ok()?;
+        let w = Worker {
+            provider,
+            model: self.model,
+            repo: self.repo,
+            created_ms: self.created_ms,
+            path: Some(self.path),
+            running: false,
+            shown: self.shown,
+            covered: self.covered,
+            merged: self.merged,
+        };
+        Some((self.worker_id, w))
+    }
+}
+
+/// One JSON file per worker under `<state dir>/workers`, so two servers sharing a state
+/// directory never overwrite each other's records. Writes are atomic (temp file, then
+/// rename); a missing, unreadable or corrupt file is skipped, never an error.
+struct Store {
+    dir: PathBuf,
+}
+
+fn plain_id(id: &str) -> bool {
+    !id.is_empty() && id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+}
+
+impl Store {
+    fn file(&self, id: &str) -> PathBuf {
+        self.dir.join(format!("{id}.json"))
+    }
+
+    fn save(&self, s: &Saved) {
+        if !plain_id(&s.worker_id) || std::fs::create_dir_all(&self.dir).is_err() {
+            return;
+        }
+        let tmp = self.dir.join(format!("{}.json.tmp", s.worker_id));
+        let Ok(text) = serde_json::to_string(s) else { return };
+        if std::fs::write(&tmp, text).is_ok() && std::fs::rename(&tmp, self.file(&s.worker_id)).is_err() {
+            let _ = std::fs::remove_file(&tmp);
+        }
+    }
+
+    fn remove(&self, id: &str) {
+        if plain_id(id) {
+            let _ = std::fs::remove_file(self.file(id));
+        }
+    }
+
+    fn load(&self) -> Vec<Saved> {
+        let Ok(entries) = std::fs::read_dir(&self.dir) else { return vec![] };
+        let mut out: Vec<Saved> = entries
+            .filter_map(|e| e.ok())
+            .map(|e| e.path())
+            .filter(|p| p.extension().is_some_and(|x| x == "json"))
+            .filter_map(|p| serde_json::from_slice::<Saved>(&std::fs::read(p).ok()?).ok())
+            .filter(|s| plain_id(&s.worker_id))
+            .collect();
+        out.sort_by(|a, b| a.worker_id.cmp(&b.worker_id));
+        out
+    }
+}
+
+/// True when `state` holds worker records or worktrees a previous run left, so a server
+/// that never delegates can skip the cleanup.
+pub fn has_leftovers(state: &Path) -> bool {
+    let any = |d: PathBuf| std::fs::read_dir(d).is_ok_and(|mut e| e.next().is_some());
+    any(state.join("workers")) || any(state.join("worktrees"))
+}
+
+/// A worker whose record is older than this is abandoned: its checkout is removed.
+const STALE_AFTER_MS: u64 = 24 * 60 * 60 * 1000;
+/// A directory under the worktrees root that no record names is removed once it is this
+/// old; younger ones may belong to a server that is creating them right now.
+const ORPHAN_GRACE_MS: u64 = 10 * 60 * 1000;
 
 // --------------------------------------------------------------- the delegation API
 
@@ -390,9 +721,12 @@ pub struct DelegateResult {
     pub model: Option<String>,
     /// The worker's final text, truncated.
     pub summary: String,
-    pub files_changed: Vec<String>,
-    /// The worker's patch, truncated to [`MAX_DIFF_CHARS`] with a note.
+    /// EVERY file the worker changed, with its +/- counts, never cut short.
+    pub stats: Vec<FileStat>,
+    /// The diffs of the files in `shown`, whole files only, up to [`MAX_DIFF_CHARS`].
     pub diff: String,
+    /// The files whose full diff is in `diff`. The rest need `show_diff` before a merge.
+    pub shown: Vec<String>,
     pub ok: bool,
     pub error: Option<String>,
     /// What happened to earlier attempts (a limit hit, a refused model).
@@ -406,12 +740,17 @@ impl DelegateResult {
             provider: None,
             model: None,
             summary: String::new(),
-            files_changed: vec![],
+            stats: vec![],
             diff: String::new(),
+            shown: vec![],
             ok: false,
             error: Some(error),
             retries,
         }
+    }
+
+    pub fn files_changed(&self) -> Vec<String> {
+        self.stats.iter().map(|s| s.path.clone()).collect()
     }
 
     /// The text the planner reads.
@@ -426,10 +765,24 @@ impl DelegateResult {
             out.push(format!("error: {e}"));
         }
         if self.ok {
-            out.push(format!("files changed: {}", if self.files_changed.is_empty() { "none".into() } else { self.files_changed.join(", ") }));
+            let id = &self.worker_id;
+            if self.stats.is_empty() {
+                out.push("files changed: none".into());
+            } else {
+                out.push(format!("files changed ({}):", self.stats.len()));
+                out.extend(self.stats.iter().map(|s| format!("  {}", s.render())));
+            }
             out.push(format!("worker report:\n{}", self.summary));
-            out.push(format!("diff:\n{}", if self.diff.is_empty() { "(empty)" } else { &self.diff }));
-            out.push(format!("Review the diff, then merge({0}) to apply it or discard({0}) to drop it.", self.worker_id));
+            let shown = if self.shown.is_empty() { "no file".to_string() } else { self.shown.join(", ") };
+            out.push(format!("diff (full diffs of: {shown}):\n{}", if self.diff.is_empty() { "(empty)" } else { &self.diff }));
+            let unseen: Vec<&str> = self.stats.iter().map(|s| s.path.as_str()).filter(|p| !self.shown.iter().any(|s| s == p)).collect();
+            if !unseen.is_empty() {
+                out.push(format!(
+                    "NOT SHOWN here (too long): {}. Call show_diff({id}, file) for each to read it; merge refuses files you have not seen in full.",
+                    unseen.join(", ")
+                ));
+            }
+            out.push(format!("Review the diff, then merge({id}) to apply it (or merge({id}, files) for some files) or discard({id}) to drop it."));
         }
         out.join("\n")
     }
@@ -438,10 +791,14 @@ impl DelegateResult {
 /// What the MCP server calls. Implemented by [`Delegator`]; tests use a fake.
 pub trait DelegateApi: Send + Sync {
     fn delegate(&self, req: DelegateRequest) -> BoxFut<'_, DelegateResult>;
-    /// Apply the worker's diff to the main tree and remove its worktree.
-    fn merge(&self, worker_id: &str) -> Result<String, String>;
+    /// One page of a worker's diff, a single file's when `file` is given, from character
+    /// `offset`. What it shows in full counts as seen for `merge`.
+    fn show_diff(&self, worker_id: String, file: Option<String>, offset: usize) -> BoxFut<'_, Result<String, String>>;
+    /// Apply the worker's diff (only `files` when given) to the main tree, refusing any
+    /// file not shown in full; remove its worktree once nothing is left.
+    fn merge(&self, worker_id: String, files: Option<Vec<String>>) -> BoxFut<'_, Result<String, String>>;
     /// Remove the worker's worktree without applying anything.
-    fn discard(&self, worker_id: &str) -> Result<String, String>;
+    fn discard(&self, worker_id: String) -> BoxFut<'_, Result<String, String>>;
 }
 
 // --------------------------------------------------------------- the delegator
@@ -462,19 +819,17 @@ fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|e| e.into_inner())
 }
 
-struct LiveWorker {
-    provider: ProviderId,
-    path: PathBuf,
-    /// Still running; a finished worker awaiting merge or discard is not load.
-    running: bool,
+fn unknown_worker(id: &str) -> String {
+    format!("unknown worker id `{id}` (already merged or discarded?)")
 }
 
 pub struct Delegator {
     runtime: Mutex<Runtime>,
     judge: Judge,
-    worktrees: Box<dyn Worktrees>,
+    worktrees: Arc<dyn Worktrees>,
     backend_factory: BackendFactory,
-    live: Mutex<HashMap<String, LiveWorker>>,
+    live: Mutex<HashMap<String, Worker>>,
+    store: Option<Store>,
     counter: AtomicU64,
     /// Makes worker ids unique across runs that share a worktree directory.
     run_tag: u64,
@@ -492,15 +847,16 @@ struct AttemptFailure {
 }
 
 impl Delegator {
-    /// Real backends, clock and idle timeout; no log, unknown planner.
+    /// Real backends, clock and idle timeout; no log, unknown planner, workers not saved.
     pub fn new(runtime: Runtime, judge: Judge, worktrees: Box<dyn Worktrees>) -> Self {
         let now: Clock = Box::new(log::now_ms);
         Self {
             runtime: Mutex::new(runtime),
             judge,
-            worktrees,
+            worktrees: Arc::from(worktrees),
             backend_factory: Box::new(crate::providers::backend_for),
             live: Mutex::new(HashMap::new()),
+            store: None,
             counter: AtomicU64::new(1),
             run_tag: now() / 1000 % 1_000_000,
             now,
@@ -537,28 +893,126 @@ impl Delegator {
         self
     }
 
+    /// Keep the worker registry in `<state_dir>/workers`, so a restarted server still
+    /// knows its unmerged workers. Call [`Delegator::recover`] after.
+    pub fn with_store(mut self, state_dir: &Path) -> Self {
+        self.store = Some(Store { dir: state_dir.join("workers") });
+        self
+    }
+
     fn next_id(&self) -> String {
         format!("w{}-{}", self.run_tag, self.counter.fetch_add(1, Ordering::SeqCst))
     }
 
-    /// The worker for a brief, from the live view. Lock order is runtime, then the registry.
-    fn pick(&self, signals: &BriefSignals, excluded: &HashSet<(ProviderId, String)>, brief_len: usize) -> Result<&'static ModelSpec, NoWorker> {
-        let runtime = lock(&self.runtime);
-        let usable = runtime.usable((self.now)()).without(excluded);
-        let live = |p: ProviderId| lock(&self.live).values().filter(|w| w.running && w.provider == p).count();
-        let utilization = |p: ProviderId| runtime.plan_utilization(p);
-        pick_worker(
-            signals,
-            &WorkerView {
-                usable: &usable,
-                allow: &runtime.allow,
-                overrides: &runtime.overrides,
-                plan_utilization: &utilization,
-                live: &live,
-                context_tokens: (brief_len / 4) as u64,
-            },
-        )
+    /// The ONE place git work leaves the async threads: `f` runs on the blocking pool, so
+    /// slow worktree operations of parallel workers overlap instead of queueing up.
+    async fn blocking<T: Send + 'static>(&self, f: impl FnOnce(&dyn Worktrees) -> Result<T> + Send + 'static) -> Result<T> {
+        let worktrees = self.worktrees.clone();
+        tokio::task::spawn_blocking(move || f(&*worktrees)).await.map_err(|e| anyhow!("worktree task failed: {e}"))?
     }
+
+    // ---- the registry
+
+    /// Change a worker's entry and save it. `None` when the id is unknown.
+    fn update<R>(&self, id: &str, f: impl FnOnce(&mut Worker) -> R) -> Option<R> {
+        let mut live = lock(&self.live);
+        let w = live.get_mut(id)?;
+        let r = f(w);
+        if let (Some(store), Some(saved)) = (&self.store, Saved::of(id, w)) {
+            store.save(&saved);
+        }
+        Some(r)
+    }
+
+    fn lookup(&self, id: &str) -> Result<Worker, String> {
+        lock(&self.live).get(id).cloned().ok_or_else(|| unknown_worker(id))
+    }
+
+    /// Forget a worker (and its saved record), returning its entry.
+    fn take(&self, id: &str) -> Option<Worker> {
+        let w = lock(&self.live).remove(id)?;
+        if let Some(store) = &self.store {
+            store.remove(id);
+        }
+        Some(w)
+    }
+
+    /// Pick a worker for a brief AND claim its slot under one lock, so parallel delegations
+    /// see each other and fan out. Lock order is runtime, then the registry.
+    fn reserve(&self, signals: &BriefSignals, excluded: &HashSet<(ProviderId, String)>, brief_len: usize, id: &str) -> Result<&'static ModelSpec, NoWorker> {
+        let runtime = lock(&self.runtime);
+        let mut live = lock(&self.live);
+        let spec = {
+            let usable = runtime.usable((self.now)()).without(excluded);
+            let running = |p: ProviderId| live.values().filter(|w| w.running && w.provider == p).count();
+            let utilization = |p: ProviderId| runtime.plan_utilization(p);
+            pick_worker(
+                signals,
+                &WorkerView {
+                    usable: &usable,
+                    allow: &runtime.allow,
+                    overrides: &runtime.overrides,
+                    plan_utilization: &utilization,
+                    live: &running,
+                    context_tokens: (brief_len / 4) as u64,
+                },
+            )?
+        };
+        live.insert(id.to_string(), Worker::reserved(spec, self.worktrees.repo(), (self.now)()));
+        Ok(spec)
+    }
+
+    /// Remove a worker's worktree and forget it. A failed removal is reported but the
+    /// worker is forgotten anyway: a worktree that cannot be removed is a leftover to
+    /// clean by hand (`git worktree prune`), not a reason to keep tracking it.
+    async fn forget(&self, id: &str) -> Result<(), String> {
+        let worker = self.take(id).ok_or_else(|| unknown_worker(id))?;
+        let Some(path) = worker.path else { return Ok(()) };
+        let shown = path.clone();
+        self.blocking(move |w| w.remove(&path)).await.map_err(|e| format!("worker {id} forgotten, but its worktree {} was not removed: {e}", shown.display()))
+    }
+
+    /// At startup: reload the workers an earlier run left, and clean up. Records older than
+    /// 24 hours lose their checkout; directories under the worktrees root that no record
+    /// names (and that are not brand new) go too; `git worktree prune` runs in every
+    /// repository touched. A record of a worker that was still running is left alone (it
+    /// may be another live server's) until it is 24 hours old.
+    pub async fn recover(&self) {
+        let Some(store) = &self.store else { return };
+        let now = (self.now)();
+        let mut known: HashSet<PathBuf> = HashSet::new();
+        let mut repos: BTreeSet<PathBuf> = BTreeSet::new();
+        for saved in store.load() {
+            known.insert(saved.path.clone());
+            if now.saturating_sub(saved.created_ms) > STALE_AFTER_MS || (!saved.running && !saved.path.exists()) {
+                self.drop_checkout(saved.path.clone()).await;
+                store.remove(&saved.worker_id);
+                repos.insert(saved.repo.clone());
+            } else if !saved.running {
+                if let Some((id, w)) = saved.into_worker() {
+                    lock(&self.live).insert(id, w);
+                }
+            }
+        }
+        let entries = std::fs::read_dir(self.worktrees.root()).into_iter().flatten().filter_map(|e| e.ok());
+        for path in entries.map(|e| e.path()).filter(|p| p.is_dir() && !known.contains(p)) {
+            let modified = std::fs::metadata(&path).and_then(|m| m.modified()).ok();
+            let modified_ms = modified.and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map_or(now, |d| d.as_millis() as u64);
+            if now.saturating_sub(modified_ms) > ORPHAN_GRACE_MS {
+                self.drop_checkout(path).await;
+                repos.insert(self.worktrees.repo());
+            }
+        }
+        for repo in repos {
+            let _ = self.blocking(move |w| w.prune(&repo)).await;
+        }
+    }
+
+    async fn drop_checkout(&self, path: PathBuf) {
+        let _ = self.blocking(move |w| w.remove(&path)).await;
+    }
+
+    // ---- delegating
 
     /// Run the worker CLI in its worktree. Plan usage it reports feeds the spreading.
     async fn run_worker(&self, spec: &'static ModelSpec, dir: &Path, prompt: String) -> (Result<TurnOutcome, TurnError>, Vec<String>) {
@@ -572,22 +1026,6 @@ impl Delegator {
         };
         let result = backend::run_turn(&*backend, &req, self.idle_timeout, &mut on_event).await;
         (result, tools)
-    }
-
-    fn set_running(&self, id: &str, running: bool) {
-        if let Some(w) = lock(&self.live).get_mut(id) {
-            w.running = running;
-        }
-    }
-
-    /// Remove a worker's worktree and forget it. A failed removal is reported but the
-    /// worker is forgotten anyway: a worktree that cannot be removed is a leftover to
-    /// clean by hand (`git worktree prune`), not a reason to keep tracking it.
-    fn forget(&self, id: &str) -> Result<(), String> {
-        let worker = lock(&self.live).remove(id).ok_or_else(|| format!("unknown worker id `{id}` (already merged or discarded?)"))?;
-        self.worktrees
-            .remove(&worker.path)
-            .map_err(|e| format!("worker {id} forgotten, but its worktree {} was not removed: {e}", worker.path.display()))
     }
 
     fn log_attempt(&self, a: &AttemptLog) {
@@ -607,7 +1045,7 @@ impl Delegator {
         log::append(path, &row);
     }
 
-    /// One attempt: pick, create the worktree, run. `Err` is the failure to react to.
+    /// One attempt: pick and claim, create the worktree, run. `Err` is the failure to react to.
     async fn attempt(
         &self,
         req: &DelegateRequest,
@@ -616,13 +1054,23 @@ impl Delegator {
         excluded: &HashSet<(ProviderId, String)>,
         attempt: u32,
     ) -> Result<DelegateResult, AttemptOutcome> {
-        let spec = self.pick(signals, excluded, req.brief.len()).map_err(|e| AttemptOutcome::Stop(e.to_string()))?;
         let id = self.next_id();
-        let path = self.worktrees.create(&id).map_err(|e| AttemptOutcome::Stop(format!("could not create a worktree: {e:#}")))?;
-        lock(&self.live).insert(id.clone(), LiveWorker { provider: spec.provider, path: path.clone(), running: true });
+        let spec = self.reserve(signals, excluded, req.brief.len(), &id).map_err(|e| AttemptOutcome::Stop(e.to_string()))?;
+        let made = self.blocking({
+            let id = id.clone();
+            move |w| w.create(&id)
+        });
+        let path = match made.await {
+            Ok(path) => path,
+            Err(e) => {
+                self.take(&id);
+                return Err(AttemptOutcome::Stop(format!("could not create a worktree: {e:#}")));
+            }
+        };
+        self.update(&id, |w| w.path = Some(path.clone()));
         let started = Instant::now();
         let (result, tools) = self.run_worker(spec, &path, worker_prompt(&req.brief, &req.files)).await;
-        self.set_running(&id, false);
+        self.update(&id, |w| w.running = false);
         let wall_ms = started.elapsed().as_millis() as u64;
         let task = worker_task(signals);
         let log = |result: &Result<TurnOutcome, TurnError>, files: &[String]| {
@@ -632,31 +1080,42 @@ impl Delegator {
             Err(err) => {
                 log(&Err(err.clone()), &[]);
                 // A failed worker's partial work is never offered; its worktree goes.
-                let _ = self.forget(&id);
+                let _ = self.forget(&id).await;
                 Err(AttemptOutcome::Failed(AttemptFailure { id, spec, err }))
             }
-            Ok(out) => match self.worktrees.diff(&path) {
-                Err(e) => {
-                    log(&Ok(out), &[]);
-                    let _ = self.forget(&id);
-                    Err(AttemptOutcome::Stop(format!("worker {id} finished but its changes could not be read: {e:#}")))
+            Ok(out) => {
+                let read = self.blocking({
+                    let path = path.clone();
+                    move |w| w.diff(&path)
+                });
+                match read.await {
+                    Err(e) => {
+                        log(&Ok(out), &[]);
+                        let _ = self.forget(&id).await;
+                        Err(AttemptOutcome::Stop(format!("worker {id} finished but its changes could not be read: {e:#}")))
+                    }
+                    Ok(diff) => {
+                        let parts = split_patch(&diff);
+                        let stats: Vec<FileStat> = parts.iter().map(FileDiff::stat).collect();
+                        let (shown_text, shown) = first_page(&parts, MAX_DIFF_CHARS);
+                        self.update(&id, |w| w.shown.extend(shown.iter().cloned()));
+                        let files: Vec<String> = stats.iter().map(|s| s.path.clone()).collect();
+                        log(&Ok(out.clone()), &files);
+                        Ok(DelegateResult {
+                            worker_id: id,
+                            provider: Some(spec.provider),
+                            model: Some(spec.id.to_string()),
+                            summary: truncate_with_note(out.text.trim(), MAX_SUMMARY_CHARS, "report"),
+                            stats,
+                            diff: shown_text,
+                            shown,
+                            ok: true,
+                            error: None,
+                            retries: vec![],
+                        })
+                    }
                 }
-                Ok(diff) => {
-                    let files = patch_paths(&diff);
-                    log(&Ok(out.clone()), &files);
-                    Ok(DelegateResult {
-                        worker_id: id,
-                        provider: Some(spec.provider),
-                        model: Some(spec.id.to_string()),
-                        summary: truncate_with_note(out.text.trim(), MAX_SUMMARY_CHARS, "report"),
-                        files_changed: files,
-                        diff: truncate_with_note(&diff, MAX_DIFF_CHARS, "diff"),
-                        ok: true,
-                        error: None,
-                        retries: vec![],
-                    })
-                }
-            },
+            }
         }
     }
 
@@ -692,29 +1151,132 @@ impl Delegator {
         DelegateResult::failed("no worker succeeded".into(), retries)
     }
 
-    pub fn merge(&self, id: &str) -> Result<String, String> {
-        let (path, running) = {
-            let live = lock(&self.live);
-            let w = live.get(id).ok_or_else(|| format!("unknown worker id `{id}` (already merged or discarded?)"))?;
-            (w.path.clone(), w.running)
+    // ---- reviewing and merging
+
+    /// A finished worker, and its diff split per file (files already merged left out).
+    async fn finished_diff(&self, id: &str) -> Result<(Worker, Vec<FileDiff>), String> {
+        let worker = self.lookup(id)?;
+        let path = match (&worker.path, worker.running) {
+            (Some(path), false) => path.clone(),
+            _ => return Err(format!("worker {id} is still running")),
         };
-        if running {
-            return Err(format!("worker {id} is still running"));
-        }
-        let diff = self.worktrees.diff(&path).map_err(|e| format!("could not read worker {id}'s changes: {e:#}"))?;
-        if diff.trim().is_empty() {
-            self.forget(id)?;
-            return Ok(format!("worker {id} changed nothing; nothing to merge"));
-        }
-        let files = patch_paths(&diff);
-        self.worktrees.apply(&diff).map_err(|e| format!("{e:#}\nWorker {id}'s worktree is kept; discard({id}) it or merge by hand."))?;
-        let removed = self.forget(id);
-        let note = removed.err().map(|e| format!(" ({e})")).unwrap_or_default();
-        Ok(format!("merged worker {id}: {}. Changes are in your working tree (staged by git's 3-way apply).{note}", files.join(", ")))
+        let diff = self.blocking(move |w| w.diff(&path)).await.map_err(|e| format!("could not read worker {id}'s changes: {e:#}"))?;
+        let parts = split_patch(&diff).into_iter().filter(|p| !worker.merged.contains(&p.path)).collect();
+        Ok((worker, parts))
     }
 
-    pub fn discard(&self, id: &str) -> Result<String, String> {
-        self.forget(id).map(|()| format!("discarded worker {id}"))
+    pub async fn show_diff(&self, id: &str, file: Option<&str>, offset: usize) -> Result<String, String> {
+        let (_, parts) = self.finished_diff(id).await?;
+        if parts.is_empty() {
+            return Ok(format!("worker {id} has no changes left to show"));
+        }
+        let all: Vec<String> = parts.iter().map(|p| p.path.clone()).collect();
+        // The text to page, and where each file sits in it: (path, start, length) in characters.
+        let (text, spans): (String, Vec<(String, usize, usize)>) = match file {
+            Some(f) => {
+                let part = parts.iter().find(|p| p.path == f).ok_or_else(|| format!("worker {id} changed no file `{f}`; files: {}", all.join(", ")))?;
+                (part.text.clone(), vec![(part.path.clone(), 0, part.chars())])
+            }
+            None => {
+                let mut at = 0;
+                let spans = parts
+                    .iter()
+                    .map(|p| {
+                        let start = at;
+                        at += p.chars();
+                        (p.path.clone(), start, p.chars())
+                    })
+                    .collect();
+                (join_diffs(&parts), spans)
+            }
+        };
+        let total = text.chars().count();
+        if offset >= total {
+            return Err(format!("offset {offset} is past the end ({total} characters)"));
+        }
+        let (page, end) = char_page(&text, offset, MAX_DIFF_CHARS);
+        self.update(id, |w| {
+            for (path, start, len) in &spans {
+                let (lo, hi) = (offset.max(*start), end.min(start + len));
+                if lo < hi {
+                    w.cover(path, lo - start, hi - start, *len);
+                }
+            }
+        });
+        let seen = self.lookup(id)?.shown;
+        let unseen: Vec<&str> = all.iter().map(String::as_str).filter(|p| !seen.contains(*p)).collect();
+        let what = file.map_or("all files".to_string(), |f| format!("file {f}"));
+        let more = if end < total {
+            let scope = file.map(|f| format!(", file \"{f}\"")).unwrap_or_default();
+            format!("[more: call show_diff with worker_id \"{id}\"{scope}, offset {end}]")
+        } else {
+            "[end]".to_string()
+        };
+        let seen_line = if unseen.is_empty() { "Every file has now been shown in full.".to_string() } else { format!("Not yet shown in full: {}.", unseen.join(", ")) };
+        Ok(format!("worker {id}, {what}, characters {offset}-{end} of {total}:\n{page}\n{more}\n{seen_line}"))
+    }
+
+    pub async fn merge(&self, id: &str, only: Option<Vec<String>>) -> Result<String, String> {
+        let (worker, parts) = self.finished_diff(id).await?;
+        if worker.repo != self.worktrees.repo() {
+            return Err(format!(
+                "worker {id} was made from {}, but this server works in {}: start the planner there to merge it, or discard({id})",
+                worker.repo.display(),
+                self.worktrees.repo().display()
+            ));
+        }
+        if parts.is_empty() {
+            self.forget(id).await?;
+            return Ok(format!("worker {id} has nothing left to merge; its worktree is removed"));
+        }
+        let chosen: Vec<&FileDiff> = match &only {
+            None => parts.iter().collect(),
+            Some(names) if names.is_empty() => return Err("`files` is empty: name the files to merge, or leave it out to merge all".into()),
+            Some(names) => {
+                let mut picked: Vec<&FileDiff> = Vec::new();
+                for name in names {
+                    let part = parts.iter().find(|p| &p.path == name).ok_or_else(|| {
+                        format!("worker {id} has no file `{name}` to merge; files: {}", parts.iter().map(|p| p.path.as_str()).collect::<Vec<_>>().join(", "))
+                    })?;
+                    if !picked.contains(&part) {
+                        picked.push(part);
+                    }
+                }
+                picked
+            }
+        };
+        let unseen: Vec<&str> = chosen.iter().map(|p| p.path.as_str()).filter(|p| !worker.shown.contains(*p)).collect();
+        if !unseen.is_empty() {
+            let seen: Vec<&str> = chosen.iter().map(|p| p.path.as_str()).filter(|p| worker.shown.contains(*p)).collect();
+            let alternative = if seen.is_empty() {
+                "none of the requested files has been shown yet".to_string()
+            } else {
+                format!("or merge again with `files` = [{}], the ones you have seen", seen.join(", "))
+            };
+            return Err(format!(
+                "refusing to merge {} file(s) you have not seen in full: {}. Call show_diff for each of them first ({alternative}). Nothing was changed.",
+                unseen.len(),
+                unseen.join(", ")
+            ));
+        }
+        let patch = join_diffs(chosen.iter().copied());
+        let done: Vec<String> = chosen.iter().map(|p| p.path.clone()).collect();
+        self.blocking(move |w| w.apply(&patch)).await.map_err(|e| format!("{e:#}\nWorker {id}'s worktree is kept; discard({id}) it or merge by hand."))?;
+        self.update(id, |w| w.merged.extend(done.iter().cloned()));
+        let left: Vec<&str> = parts.iter().map(|p| p.path.as_str()).filter(|p| !done.iter().any(|d| d == p)).collect();
+        if !left.is_empty() {
+            return Ok(format!(
+                "merged from worker {id}: {}. Changes are in your working tree. Not merged yet, still in the worker's worktree: {}. Merge or discard({id}) them later.",
+                done.join(", "),
+                left.join(", ")
+            ));
+        }
+        let note = self.forget(id).await.err().map(|e| format!(" ({e})")).unwrap_or_default();
+        Ok(format!("merged worker {id}: {}. Changes are in your working tree.{note}", done.join(", ")))
+    }
+
+    pub async fn discard(&self, id: &str) -> Result<String, String> {
+        self.forget(id).await.map(|()| format!("discarded worker {id}"))
     }
 }
 
@@ -723,12 +1285,16 @@ impl DelegateApi for Delegator {
         Box::pin(Delegator::delegate(self, req))
     }
 
-    fn merge(&self, worker_id: &str) -> Result<String, String> {
-        Delegator::merge(self, worker_id)
+    fn show_diff(&self, worker_id: String, file: Option<String>, offset: usize) -> BoxFut<'_, Result<String, String>> {
+        Box::pin(async move { Delegator::show_diff(self, &worker_id, file.as_deref(), offset).await })
     }
 
-    fn discard(&self, worker_id: &str) -> Result<String, String> {
-        Delegator::discard(self, worker_id)
+    fn merge(&self, worker_id: String, files: Option<Vec<String>>) -> BoxFut<'_, Result<String, String>> {
+        Box::pin(async move { Delegator::merge(self, &worker_id, files).await })
+    }
+
+    fn discard(&self, worker_id: String) -> BoxFut<'_, Result<String, String>> {
+        Box::pin(async move { Delegator::discard(self, &worker_id).await })
     }
 }
 
@@ -979,7 +1545,13 @@ mod tests {
         created: Mutex<Vec<PathBuf>>,
         removed: Mutex<Vec<PathBuf>>,
         applied: Mutex<Vec<String>>,
+        pruned: Mutex<Vec<PathBuf>>,
         apply_fails: bool,
+        create_fails: bool,
+        /// Every `create` and `apply` takes this long, like a big checkout would.
+        delay: Duration,
+        /// What `diff` returns for every worker; by default a one-file patch named after it.
+        patch: Mutex<Option<String>>,
     }
 
     static UNIQUE: AtomicUsize = AtomicUsize::new(0);
@@ -995,20 +1567,43 @@ mod tests {
         fn new() -> Arc<Self> {
             Arc::new(Self { base: temp_dir("fake"), ..Self::default() })
         }
+
+        fn slow(delay: Duration) -> Arc<Self> {
+            Arc::new(Self { base: temp_dir("slow"), delay, ..Self::default() })
+        }
+
+        fn with_patch(self: Arc<Self>, patch: String) -> Arc<Self> {
+            *self.patch.lock().unwrap() = Some(patch);
+            self
+        }
     }
 
     impl Worktrees for Arc<FakeWorktrees> {
+        fn repo(&self) -> PathBuf {
+            self.base.join("repo")
+        }
+        fn root(&self) -> PathBuf {
+            self.base.clone()
+        }
         fn create(&self, id: &str) -> Result<PathBuf> {
+            std::thread::sleep(self.delay);
+            if self.create_fails {
+                bail!("disk full");
+            }
             let p = self.base.join(id);
             std::fs::create_dir_all(&p)?;
             self.created.lock().unwrap().push(p.clone());
             Ok(p)
         }
         fn diff(&self, path: &Path) -> Result<String> {
+            if let Some(p) = self.patch.lock().unwrap().clone() {
+                return Ok(p);
+            }
             let name = path.file_name().unwrap().to_string_lossy().into_owned();
-            Ok(format!("diff --git a/{name}.rs b/{name}.rs\n--- a/{name}.rs\n+++ b/{name}.rs\n@@ -1 +1 @@\n-a\n+b\n"))
+            Ok(file_patch(&format!("{name}.rs"), "a", &["b"]))
         }
         fn apply(&self, patch: &str) -> Result<()> {
+            std::thread::sleep(self.delay);
             if self.apply_fails {
                 bail!("conflict");
             }
@@ -1020,6 +1615,22 @@ mod tests {
             let _ = std::fs::remove_dir_all(path);
             Ok(())
         }
+        fn prune(&self, repo: &Path) -> Result<()> {
+            self.pruned.lock().unwrap().push(repo.to_path_buf());
+            Ok(())
+        }
+    }
+
+    /// A one-file patch: `old` replaced by `new` lines.
+    fn file_patch(path: &str, old: &str, new: &[&str]) -> String {
+        let added: String = new.iter().map(|l| format!("+{l}\n")).collect();
+        format!("diff --git a/{path} b/{path}\n--- a/{path}\n+++ b/{path}\n@@ -1 +1,{} @@\n-{old}\n{added}", new.len())
+    }
+
+    /// A one-file patch of about `chars` characters.
+    fn big_patch(path: &str, chars: usize) -> String {
+        let line = "x".repeat(99);
+        file_patch(path, "a", &vec![line.as_str(); chars / 100])
     }
 
     fn want(task: TaskType) -> ProviderWant {
@@ -1042,30 +1653,40 @@ mod tests {
         Availability { provider, state, plan: None, models: None, detail: String::new(), verified: true }
     }
 
+    type Started = Arc<Mutex<Vec<(ProviderId, String, PathBuf, String)>>>;
+    type Scripts = Arc<Mutex<HashMap<ProviderId, &'static str>>>;
+
     struct Rig {
         d: Delegator,
         wt: Arc<FakeWorktrees>,
-        started: Arc<Mutex<Vec<(ProviderId, String, PathBuf, String)>>>,
-        scripts: Arc<Mutex<HashMap<ProviderId, &'static str>>>,
+        started: Started,
+        scripts: Scripts,
     }
 
-    fn rig(ready: &[ProviderId], task: TaskType) -> Rig {
+    /// A delegator on `wt` whose fake CLIs all succeed unless `scripts` says otherwise.
+    fn delegator_on(wt: &Arc<FakeWorktrees>, ready: &[ProviderId], task: TaskType, started: &Started, scripts: &Scripts) -> Delegator {
         let avail = PROVIDERS.iter().map(|p| availability(*p, ready.contains(p))).collect();
-        let wt = FakeWorktrees::new();
-        let started = Arc::new(Mutex::new(Vec::new()));
-        let scripts: Arc<Mutex<HashMap<ProviderId, &'static str>>> =
-            Arc::new(Mutex::new(PROVIDERS.iter().map(|p| (*p, OK)).collect()));
         let (st, sc) = (started.clone(), scripts.clone());
         let judge: Judge = Box::new(move |_| Box::pin(async move { Some(want(task)) }));
-        let d = Delegator::new(Runtime::for_tests(avail), judge, Box::new(wt.clone()))
+        Delegator::new(Runtime::for_tests(avail), judge, Box::new(wt.clone()))
             .with_backend_factory(Box::new(move |p| {
                 let script = sc.lock().unwrap()[&p];
                 Box::new(Fake { provider: p, script, started: st.clone() })
             }))
             .with_clock(Box::new(|| NOW))
             .with_idle_timeout(Duration::from_millis(500))
-            .with_planner("claude:claude-opus-5-5".into());
+            .with_planner("claude:claude-opus-5-5".into())
+    }
+
+    fn rig_on(wt: Arc<FakeWorktrees>, ready: &[ProviderId], task: TaskType) -> Rig {
+        let started: Started = Arc::new(Mutex::new(Vec::new()));
+        let scripts: Scripts = Arc::new(Mutex::new(PROVIDERS.iter().map(|p| (*p, OK)).collect()));
+        let d = delegator_on(&wt, ready, task, &started, &scripts);
         Rig { d, wt, started, scripts }
+    }
+
+    fn rig(ready: &[ProviderId], task: TaskType) -> Rig {
+        rig_on(FakeWorktrees::new(), ready, task)
     }
 
     fn brief(text: &str) -> DelegateRequest {
@@ -1080,7 +1701,9 @@ mod tests {
         assert_eq!(res.provider, Some(Claude));
         assert_eq!(res.model.as_deref(), Some("claude-sonnet-5-5"));
         assert_eq!(res.summary, "did the piece");
-        assert_eq!(res.files_changed, [format!("{}.rs", res.worker_id)]);
+        assert_eq!(res.files_changed(), [format!("{}.rs", res.worker_id)]);
+        assert_eq!(res.stats[0].render(), format!("{}.rs +1 -1", res.worker_id));
+        assert_eq!(res.shown, res.files_changed(), "a small diff is shown in full");
         assert!(res.diff.contains("+b"));
         let started = r.started.lock().unwrap().clone();
         assert_eq!(started.len(), 1);
@@ -1157,11 +1780,11 @@ mod tests {
     async fn merge_applies_the_workers_diff_and_removes_its_worktree() {
         let r = rig(&[Claude], TaskType::Feature);
         let res = r.d.delegate(brief("x")).await;
-        let msg = r.d.merge(&res.worker_id).unwrap();
+        let msg = r.d.merge(&res.worker_id, None).await.unwrap();
         assert!(msg.contains("merged worker") && msg.contains(&res.worker_id));
         assert_eq!(r.wt.applied.lock().unwrap().len(), 1);
         assert_eq!(r.wt.removed.lock().unwrap().len(), 1);
-        assert!(r.d.merge(&res.worker_id).unwrap_err().contains("unknown worker id"), "a worker merges once");
+        assert!(r.d.merge(&res.worker_id, None).await.unwrap_err().contains("unknown worker id"), "a worker merges once");
     }
 
     #[tokio::test]
@@ -1174,12 +1797,12 @@ mod tests {
             .with_backend_factory(Box::new(move |p| Box::new(Fake { provider: p, script: OK, started: st.clone() })))
             .with_idle_timeout(Duration::from_millis(500));
         let res = d.delegate(brief("x")).await;
-        let err = d.merge(&res.worker_id).unwrap_err();
+        let err = d.merge(&res.worker_id, None).await.unwrap_err();
         assert!(err.contains("conflict") && err.contains("discard"), "{err}");
         assert!(wt.removed.lock().unwrap().is_empty());
-        assert!(d.discard(&res.worker_id).unwrap().contains("discarded"));
+        assert!(d.discard(&res.worker_id).await.unwrap().contains("discarded"));
         assert_eq!(wt.removed.lock().unwrap().len(), 1);
-        assert!(d.discard(&res.worker_id).is_err());
+        assert!(d.discard(&res.worker_id).await.is_err());
     }
 
     #[tokio::test]
@@ -1289,5 +1912,318 @@ mod tests {
         let failed = DelegateResult::failed("boom".into(), vec!["claude hit its limit".into()]);
         let text = failed.render();
         assert!(text.contains("FAILED") && text.contains("error: boom") && text.contains("retry: claude hit its limit"));
+    }
+
+    // ---------------------------------------------------------------- the diff the planner sees
+
+    #[test]
+    fn a_patch_splits_per_file_and_counts_changes() {
+        let patch = format!(
+            "{}{}diff --git a/img.png b/img.png\nnew file mode 100644\nindex 0000000..1111111\nGIT binary patch\nliteral 3\nKcmZ?)\n\n",
+            file_patch("src/a.rs", "old", &["n1", "n2"]),
+            "diff --git a/old.txt b/new.txt\nsimilarity index 90%\nrename from old.txt\nrename to new.txt\n--- a/old.txt\n+++ b/new.txt\n@@ -1 +1 @@\n-x\n+y\n"
+        );
+        let parts = split_patch(&patch);
+        assert_eq!(parts.iter().map(|p| p.path.as_str()).collect::<Vec<_>>(), ["src/a.rs", "new.txt", "img.png"]);
+        assert_eq!(join_diffs(&parts), patch, "the parts add up to the patch");
+        let stats: Vec<_> = parts.iter().map(FileDiff::stat).collect();
+        assert_eq!((stats[0].added, stats[0].removed), (2, 1));
+        assert_eq!((stats[1].added, stats[1].removed), (1, 1), "the +++ and --- header lines are not counted");
+        assert!(stats[2].binary && stats[2].render() == "img.png (binary)");
+        assert!(split_patch("").is_empty());
+        // A path that itself contains " b/" is read whole; a quoted header keeps its raw text, so it is still listed.
+        assert_eq!(split_patch("diff --git a/x b/y b/x b/y\n")[0].path, "x b/y");
+        assert_eq!(split_patch("diff --git \"a/caf\\303\\251\" \"b/caf\\303\\251\"\n")[0].path, "\"a/caf\\303\\251\" \"b/caf\\303\\251\"");
+    }
+
+    #[test]
+    fn the_first_page_holds_whole_files_only() {
+        let parts = split_patch(&format!("{}{}{}", big_patch("big.rs", 5000), file_patch("small.rs", "a", &["b"]), big_patch("big2.rs", 100)));
+        let (text, shown) = first_page(&parts, 3000);
+        assert_eq!(shown, ["small.rs", "big2.rs"], "a file that does not fit is skipped, a later small one still goes in");
+        assert!(text.contains("small.rs") && !text.contains("big.rs"));
+        assert_eq!(char_page("héllo wörld", 3, 4), ("lo w", 7), "offsets count characters");
+        assert_eq!(char_page("abc", 5, 4), ("", 5));
+    }
+
+    #[tokio::test]
+    async fn the_result_lists_every_file_but_shows_only_whole_files_that_fit() {
+        let patch = format!("{}{}{}", file_patch("a.rs", "a", &["b"]), big_patch("big.rs", 30_000), file_patch("c.rs", "a", &["b"]));
+        let r = rig_on(FakeWorktrees::new().with_patch(patch), &[Claude], TaskType::Feature);
+        let res = r.d.delegate(brief("x")).await;
+        assert_eq!(res.files_changed(), ["a.rs", "big.rs", "c.rs"], "the stat list is never cut short");
+        assert_eq!(res.shown, ["a.rs", "c.rs"]);
+        assert!(!res.diff.contains("big.rs") && res.diff.contains("c.rs") && !res.diff.contains("truncated"));
+        let text = res.render();
+        assert!(text.contains("big.rs +300 -1") && text.contains("NOT SHOWN here") && text.contains(&format!("show_diff({}, file)", res.worker_id)), "{text}");
+    }
+
+    #[tokio::test]
+    async fn merge_refuses_what_the_planner_has_not_seen_and_files_lets_the_seen_ones_through() {
+        let patch = format!("{}{}{}", file_patch("a.rs", "a", &["b"]), big_patch("big.rs", 30_000), file_patch("c.rs", "a", &["b"]));
+        let r = rig_on(FakeWorktrees::new().with_patch(patch), &[Claude], TaskType::Feature);
+        let id = r.d.delegate(brief("x")).await.worker_id;
+        let err = r.d.merge(&id, None).await.unwrap_err();
+        assert!(err.contains("big.rs") && err.contains("show_diff") && err.contains("`files`") && err.contains("a.rs, c.rs"), "{err}");
+        assert!(!err.contains("not seen in full: a.rs"), "only the unseen file is named: {err}");
+        assert!(r.wt.applied.lock().unwrap().is_empty(), "nothing was applied");
+        let err = r.d.merge(&id, Some(vec!["big.rs".into()])).await.unwrap_err();
+        assert!(err.contains("none of the requested files has been shown"), "{err}");
+        assert!(r.d.merge(&id, Some(vec!["nope.rs".into()])).await.unwrap_err().contains("no file `nope.rs`"));
+        assert!(r.d.merge(&id, Some(vec![])).await.unwrap_err().contains("`files` is empty"));
+        // The seen files go through alone; the rest stays for later.
+        let msg = r.d.merge(&id, Some(vec!["a.rs".into(), "c.rs".into(), "a.rs".into()])).await.unwrap();
+        assert!(msg.contains("a.rs, c.rs") && msg.contains("Not merged yet") && msg.contains("big.rs"), "{msg}");
+        let applied = r.wt.applied.lock().unwrap().clone();
+        assert_eq!(applied.len(), 1);
+        assert!(applied[0].contains("a/a.rs") && applied[0].contains("a/c.rs") && !applied[0].contains("big.rs"), "only those files' hunks");
+        assert!(r.wt.removed.lock().unwrap().is_empty(), "the worker is kept for the rest");
+        // Merging the rest later needs it shown first, and then removes the worker.
+        assert!(r.d.merge(&id, None).await.unwrap_err().contains("big.rs"));
+        let page = r.d.show_diff(&id, Some("big.rs"), 0).await.unwrap();
+        assert!(page.contains("characters 0-20000 of 30") && page.contains("[more: call show_diff") && page.contains("offset 20000"), "{}", &page[page.len() - 300..]);
+        assert!(r.d.merge(&id, None).await.is_err(), "one page of a two-page file is not the whole file");
+        let page = r.d.show_diff(&id, Some("big.rs"), 20_000).await.unwrap();
+        assert!(page.contains("[end]") && page.contains("Every file has now been shown in full"));
+        let msg = r.d.merge(&id, None).await.unwrap();
+        assert!(msg.starts_with(&format!("merged worker {id}: big.rs")), "{msg}");
+        assert!(!r.wt.applied.lock().unwrap()[1].contains("a/a.rs"), "files merged before are not applied twice");
+        assert_eq!(r.wt.removed.lock().unwrap().len(), 1, "nothing left: the worktree is gone");
+    }
+
+    #[tokio::test]
+    async fn show_diff_pages_the_whole_diff_and_a_skipped_page_does_not_count_as_seen() {
+        let patch = format!("{}{}", big_patch("big.rs", 30_000), file_patch("z.rs", "a", &["b"]));
+        let r = rig_on(FakeWorktrees::new().with_patch(patch), &[Claude], TaskType::Feature);
+        let id = r.d.delegate(brief("x")).await.worker_id;
+        // Jumping to the second page of a file never read from its start shows nothing in full.
+        r.d.show_diff(&id, Some("big.rs"), 20_000).await.unwrap();
+        assert!(r.d.merge(&id, Some(vec!["big.rs".into()])).await.unwrap_err().contains("not seen in full"));
+        // The whole-diff view, read page by page from the start, covers big.rs in full.
+        let first = r.d.show_diff(&id, None, 0).await.unwrap();
+        assert!(first.contains("characters 0-20000 of 3") && first.contains("Not yet shown in full: big.rs"), "{first}");
+        let second = r.d.show_diff(&id, None, 20_000).await.unwrap();
+        assert!(second.contains("Every file has now been shown in full"), "{second}");
+        assert!(r.d.merge(&id, None).await.unwrap().contains("big.rs, z.rs"));
+        // Errors name the problem.
+        let id = r.d.delegate(brief("y")).await.worker_id;
+        assert!(r.d.show_diff(&id, Some("nope.rs"), 0).await.unwrap_err().contains("changed no file `nope.rs`"));
+        assert!(r.d.show_diff(&id, None, 999_999).await.unwrap_err().contains("past the end"));
+        assert!(r.d.show_diff("w0-0", None, 0).await.unwrap_err().contains("unknown worker id"));
+    }
+
+    // ---------------------------------------------------------------- reserving the slot
+
+    #[tokio::test]
+    async fn parallel_delegations_claim_their_slot_before_the_worktree_exists() {
+        // Making a worktree takes a while, and all pickers run before any of them finishes.
+        let r = rig_on(FakeWorktrees::slow(Duration::from_millis(100)), &[Claude, Codex, Gemini], TaskType::Feature);
+        let (a, b, c) = tokio::join!(r.d.delegate(brief("one")), r.d.delegate(brief("two")), r.d.delegate(brief("three")));
+        assert!(a.ok && b.ok && c.ok, "{:?} {:?} {:?}", a.error, b.error, c.error);
+        let providers: HashSet<_> = [a.provider, b.provider, c.provider].into_iter().collect();
+        assert_eq!(providers.len(), 3, "three parallel workers, three providers: {providers:?}");
+    }
+
+    #[tokio::test]
+    async fn a_reserved_slot_is_released_when_the_worktree_cannot_be_made() {
+        let wt = Arc::new(FakeWorktrees { base: temp_dir("nocreate"), create_fails: true, ..FakeWorktrees::default() });
+        let r = rig_on(wt, &[Claude], TaskType::Feature);
+        let res = r.d.delegate(brief("x")).await;
+        assert!(!res.ok && res.error.unwrap().contains("could not create a worktree"));
+        assert!(lock(&r.d.live).is_empty(), "no placeholder is left behind to count as a running worker");
+    }
+
+    // ---------------------------------------------------------------- git off the async threads
+
+    #[tokio::test]
+    async fn slow_git_work_of_parallel_workers_overlaps() {
+        let r = rig_on(FakeWorktrees::slow(Duration::from_millis(200)), &[Claude, Codex], TaskType::Feature);
+        let started = Instant::now();
+        let (a, b) = tokio::join!(r.d.delegate(brief("one")), r.d.delegate(brief("two")));
+        assert!(a.ok && b.ok);
+        let took = started.elapsed();
+        assert!(took < Duration::from_millis(350), "two 200 ms checkouts took {took:?}: they ran one after the other");
+        let started = Instant::now();
+        let (x, y) = tokio::join!(r.d.merge(&a.worker_id, None), r.d.merge(&b.worker_id, None));
+        assert!(x.is_ok() && y.is_ok());
+        let took = started.elapsed();
+        assert!(took < Duration::from_millis(350), "two 200 ms merges took {took:?}");
+    }
+
+    // ---------------------------------------------------------------- the saved registry
+
+    const HOUR: u64 = 3_600_000;
+
+    /// A delegator that saves to `state`, with a clock the test moves.
+    fn saving(wt: &Arc<FakeWorktrees>, state: &Path, clock: &Arc<AtomicU64>) -> Delegator {
+        let started: Started = Arc::new(Mutex::new(Vec::new()));
+        let scripts: Scripts = Arc::new(Mutex::new(PROVIDERS.iter().map(|p| (*p, OK)).collect()));
+        let c = clock.clone();
+        delegator_on(wt, &[Claude], TaskType::Feature, &started, &scripts).with_clock(Box::new(move || c.load(Ordering::SeqCst))).with_store(state)
+    }
+
+    fn real_now() -> Arc<AtomicU64> {
+        Arc::new(AtomicU64::new(log::now_ms()))
+    }
+
+    #[tokio::test]
+    async fn a_restarted_server_still_merges_and_discards_its_workers() {
+        let patch = format!("{}{}", file_patch("a.rs", "a", &["b"]), big_patch("big.rs", 30_000));
+        let (wt, state, clock) = (FakeWorktrees::new().with_patch(patch), temp_dir("state"), real_now());
+        let first = saving(&wt, &state, &clock);
+        let (keep, dropped) = (first.delegate(brief("one")).await.worker_id, first.delegate(brief("two")).await.worker_id);
+        first.show_diff(&keep, Some("big.rs"), 0).await.unwrap();
+        let saved: Value = serde_json::from_slice(&std::fs::read(state.join("workers").join(format!("{keep}.json"))).unwrap()).unwrap();
+        assert_eq!(saved["worker_id"], keep.as_str());
+        assert_eq!(saved["path"], wt.base.join(&keep).to_string_lossy().as_ref());
+        assert_eq!(saved["repo"], wt.repo().to_string_lossy().as_ref());
+        assert_eq!((saved["provider"].clone(), saved["running"].clone()), (json!("claude"), json!(false)));
+        assert!(saved["model"].is_string() && saved["created_ms"].is_u64());
+        assert_eq!(saved["shown"], json!(["a.rs"]));
+        assert_eq!(saved["covered"], json!({ "big.rs": 20000 }), "page-by-page progress is saved too");
+        std::mem::drop(first);
+        // The server process ends; a new one starts on the same state directory.
+        let second = saving(&wt, &state, &clock);
+        second.recover().await;
+        assert!(second.merge(&keep, None).await.unwrap_err().contains("big.rs"), "what was shown, and what was not, survived the restart");
+        second.show_diff(&keep, Some("big.rs"), 20_000).await.unwrap();
+        assert!(second.merge(&keep, None).await.unwrap().contains("merged worker"));
+        assert!(second.discard(&dropped).await.unwrap().contains("discarded"));
+        assert!(!state.join("workers").join(format!("{keep}.json")).exists() && !state.join("workers").join(format!("{dropped}.json")).exists(), "records go with the worker");
+        assert!(second.merge(&keep, None).await.unwrap_err().contains("unknown worker id"));
+    }
+
+    #[tokio::test]
+    async fn startup_removes_abandoned_checkouts_and_prunes() {
+        let (wt, state, clock) = (FakeWorktrees::new(), temp_dir("state"), real_now());
+        let first = saving(&wt, &state, &clock);
+        let (old, fresh) = (first.delegate(brief("one")).await.worker_id, first.delegate(brief("two")).await.worker_id);
+        // `fresh` is a later worker: move the clock before saving it again via a show.
+        let mut record: Value = serde_json::from_slice(&std::fs::read(state.join("workers").join(format!("{old}.json"))).unwrap()).unwrap();
+        record["created_ms"] = json!(log::now_ms() - 25 * HOUR);
+        std::fs::write(state.join("workers").join(format!("{old}.json")), record.to_string()).unwrap();
+        // An orphan (no record), a brand new orphan, a corrupt record, and a record of a worker that was running.
+        let orphan = wt.base.join("orphan");
+        std::fs::create_dir_all(&orphan).unwrap();
+        std::fs::write(state.join("workers").join("garbage.json"), "{ not json").unwrap();
+        std::fs::write(state.join("workers").join("other.txt"), "ignored").unwrap();
+        let running = wt.base.join("w1-running");
+        std::fs::create_dir_all(&running).unwrap();
+        let live = Saved { worker_id: "w1-running".into(), path: running.clone(), repo: wt.repo(), provider: "claude".into(), model: "m".into(), created_ms: log::now_ms(), running: true, shown: Default::default(), covered: Default::default(), merged: Default::default() };
+        std::fs::write(state.join("workers").join("w1-running.json"), serde_json::to_string(&live).unwrap()).unwrap();
+        std::mem::drop(first);
+
+        // Now: the old worker is over 24 h, nothing else is. A brand new orphan is left alone.
+        let second = saving(&wt, &state, &clock);
+        second.recover().await;
+        assert!(wt.removed.lock().unwrap().contains(&wt.base.join(&old)), "older than 24 h: checkout removed");
+        assert!(!state.join("workers").join(format!("{old}.json")).exists());
+        assert!(wt.base.join(&fresh).exists() && second.merge(&fresh, None).await.is_ok(), "younger workers come back");
+        assert!(orphan.exists() && running.exists(), "a fresh orphan and another server's running worker are left alone");
+        assert!(state.join("workers").join("garbage.json").exists(), "a corrupt record is skipped, not deleted or fatal");
+        assert!(wt.pruned.lock().unwrap().contains(&wt.repo()), "git worktree prune ran in the affected repository");
+
+        // A day later the orphan and the stale running record are cleaned as well.
+        let later = Arc::new(AtomicU64::new(log::now_ms() + 25 * HOUR));
+        let third = saving(&wt, &state, &later);
+        third.recover().await;
+        assert!(!orphan.exists(), "an orphan older than the grace period is removed");
+        assert!(!running.exists() && !state.join("workers").join("w1-running.json").exists(), "a running record is abandoned after 24 h");
+    }
+
+    #[tokio::test]
+    async fn a_worker_from_another_repository_is_not_merged_here() {
+        let (wt, state, clock) = (FakeWorktrees::new(), temp_dir("state"), real_now());
+        let id = saving(&wt, &state, &clock).delegate(brief("one")).await.worker_id;
+        let elsewhere = FakeWorktrees::new();
+        let other = saving(&elsewhere, &state, &clock);
+        other.recover().await;
+        let err = other.merge(&id, None).await.unwrap_err();
+        assert!(err.contains("was made from") && err.contains("discard"), "{err}");
+        assert!(elsewhere.applied.lock().unwrap().is_empty());
+        assert!(other.discard(&id).await.is_ok());
+    }
+
+    #[test]
+    fn leftovers_are_noticed_only_when_there_are_some() {
+        let state = temp_dir("state");
+        assert!(!has_leftovers(&state));
+        std::fs::create_dir_all(state.join("worktrees")).unwrap();
+        assert!(!has_leftovers(&state), "an empty directory is nothing");
+        std::fs::create_dir_all(state.join("worktrees").join("w1")).unwrap();
+        assert!(has_leftovers(&state));
+    }
+
+    // ---------------------------------------------------------------- real git: applying on a dirty tree
+
+    /// A repository with `big.txt` of 30 numbered lines, committed.
+    fn numbered_repo() -> PathBuf {
+        let d = temp_dir("repo");
+        run_git(&d, &["init", "-q"]);
+        std::fs::write(d.join("big.txt"), (1..=30).map(|n| format!("line{n}\n")).collect::<String>()).unwrap();
+        run_git(&d, &["add", "."]);
+        run_git(&d, &["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "init"]);
+        d
+    }
+
+    fn replace_line(path: &Path, n: usize, text: &str) {
+        let content = std::fs::read_to_string(path).unwrap();
+        let out: String = content.lines().enumerate().map(|(i, l)| format!("{}\n", if i + 1 == n { text } else { l })).collect();
+        std::fs::write(path, out).unwrap();
+    }
+
+    #[test]
+    fn merge_works_on_top_of_the_planners_unstaged_edit_to_the_same_file() {
+        let repo = numbered_repo();
+        let wt = GitWorktrees::new(&repo, temp_dir("wt-root")).unwrap();
+        let w = wt.create("w1").unwrap();
+        replace_line(&w.join("big.txt"), 3, "from-worker");
+        let patch = wt.diff(&w).unwrap();
+        // The planner edits another part of the same file and has NOT staged it.
+        replace_line(&repo.join("big.txt"), 27, "from-planner");
+        wt.apply(&patch).unwrap();
+        let merged = std::fs::read_to_string(repo.join("big.txt")).unwrap();
+        assert!(merged.contains("from-worker") && merged.contains("from-planner"), "{merged}");
+        assert!(!merged.contains("line3\n") && !merged.contains("line27\n") && !merged.contains("<<<<<<<"));
+        assert_eq!(run_git(&repo, &["diff", "--cached", "--stat"]).trim(), "", "the planner's index is not touched");
+    }
+
+    #[test]
+    fn an_overlapping_unstaged_edit_fails_cleanly_and_says_why() {
+        let repo = numbered_repo();
+        let wt = GitWorktrees::new(&repo, temp_dir("wt-root")).unwrap();
+        let w = wt.create("w1").unwrap();
+        replace_line(&w.join("big.txt"), 3, "from-worker");
+        std::fs::write(w.join("new.txt"), "hello\n").unwrap();
+        let patch = wt.diff(&w).unwrap();
+        replace_line(&repo.join("big.txt"), 4, "from-planner"); // inside the worker's hunk, unstaged
+        let (status, before) = (run_git(&repo, &["status", "--porcelain"]), std::fs::read_to_string(repo.join("big.txt")).unwrap());
+        let err = format!("{:#}", wt.apply(&patch).unwrap_err());
+        assert!(err.contains("uncommitted edits") && err.contains("nothing was changed"), "{err}");
+        assert!(!err.contains("conflict with your tree"), "the cause is the dirty file, not a conflict: {err}");
+        assert_eq!(std::fs::read_to_string(repo.join("big.txt")).unwrap(), before, "the file is exactly as it was");
+        assert!(!repo.join("new.txt").exists(), "no partial application");
+        assert_eq!(run_git(&repo, &["status", "--porcelain"]), status);
+    }
+
+    #[test]
+    fn a_real_checkout_that_is_gone_is_cleaned_by_remove_and_prune() {
+        let repo = temp_repo();
+        let root = temp_dir("wt-root");
+        let wt = GitWorktrees::new(&repo, root.clone()).unwrap();
+        let (gone, kept) = (wt.create("wgone").unwrap(), wt.create("wkept").unwrap());
+        std::fs::remove_dir_all(&gone).unwrap();
+        assert!(run_git(&repo, &["worktree", "list"]).contains("wgone"), "git still lists the vanished checkout");
+        wt.prune(&repo).unwrap();
+        let list = run_git(&repo, &["worktree", "list"]);
+        assert!(!list.contains("wgone") && list.contains("wkept"), "{list}");
+        // A directory git does not know (a leftover of another repository) is deleted, but only under the root.
+        let stray = root.join("wstray");
+        std::fs::create_dir_all(&stray).unwrap();
+        wt.remove(&stray).unwrap();
+        assert!(!stray.exists());
+        let outside = temp_dir("outside");
+        assert!(wt.remove(&outside).is_err() && outside.exists(), "never deletes outside its root");
+        wt.remove(&kept).unwrap();
     }
 }

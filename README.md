@@ -302,8 +302,15 @@ that normal routing would send to a Top-tier model runs on a PLANNER, which gets
 `delegate` tool (an MCP server, `delegate_mcp`). The planner hands independent pieces to
 cheaper WORKERS, each in its own git worktree (`<state dir>/worktrees/<id>`, detached at
 `HEAD`, so the planner's uncommitted edits are not visible to workers), reviews the diffs it
-gets back, and `merge`s (a 3-way `git apply`; a conflict changes nothing) or `discard`s
-them. **Jev makes every model decision:** the tool has no model parameter and anything a
+gets back, and `merge`s or `discard`s them. The `delegate` result lists EVERY changed file with
+its +/- counts and shows whole-file diffs up to 20,000 characters; `show_diff` (worker_id,
+optional `file`, `offset`) pages the rest, and `merge` (optional `files`) refuses any file the
+planner has not seen in full. A merge is a plain `git apply` onto the working tree (so the
+planner's unstaged edits to other hunks of the same file survive), falling back to `--3way`; a
+failure changes nothing and says whether it is a conflict or an overlapping uncommitted edit.
+Unmerged workers are saved as `<state dir>/workers/<id>.json` and reloaded after a restart;
+checkouts older than 24 hours and unlisted directories under `worktrees/` are removed at
+startup and `git worktree prune` runs. **Jev makes every model decision:** the tool has no model parameter and anything a
 planner says about models is ignored. Code only filters to usable models and applies hard
 rules: workers are never Top tier and never Fable/Astra/Carbon, security briefs never go
 to DeepSeek or Grok, code-writing work never drops below Everyday (a brief the planner calls
