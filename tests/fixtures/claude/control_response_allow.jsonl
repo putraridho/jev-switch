@@ -1,0 +1,1 @@
+{"type":"control_response","response":{"subtype":"success","request_id":"2f318992-1d40-4a9f-afab-303ef045d9d6","response":{"behavior":"allow","updatedInput":{"command":"touch /tmp/spike/outside.txt","description":"Create empty file at /tmp/spike/outside.txt"}}}}

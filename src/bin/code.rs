@@ -64,15 +64,23 @@ impl Term {
     }
 }
 
+/// `stream_answers` is false for `-p`, which also never asks: a one-shot run behaves the
+/// same on a terminal and in a pipe. A session on a terminal asks the person about each
+/// tool call that needs approval, with one key press.
 fn console_for(term: &Term, project: &Path, stream_answers: bool) -> Console {
-    Console::stdio(ConsoleConfig {
+    let console = Console::stdio(ConsoleConfig {
         out_style: term.out_style,
         err_style: term.err_style,
         width: term.width,
         live: term.live(),
         project: project.to_path_buf(),
         stream_answers,
-    })
+    });
+    if term.interactive() && stream_answers {
+        console.with_key_reader(std::sync::Arc::new(|always| tokio::task::block_in_place(|| lineedit::read_answer(always))))
+    } else {
+        console
+    }
 }
 
 #[tokio::main]

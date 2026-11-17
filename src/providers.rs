@@ -61,8 +61,22 @@ pub fn choose_gemini_flavor(gemini_on_path: bool, gemini_configured: bool) -> Fl
 /// the instance, so sharing one across turns would mix their output: build a new one
 /// every time (construction is cheap).
 pub fn backend_for(provider: ProviderId) -> Box<dyn Backend> {
+    build_backend(provider, false)
+}
+
+/// [`backend_for`] for the `jev-code` session: the Claude Code CLIs (Claude, DeepSeek)
+/// ask the host about tool approvals and know where they run. The other CLIs are the same
+/// as in [`backend_for`]: they have no host approval protocol, Codex's sandbox decides.
+pub fn session_backend_for(provider: ProviderId) -> Box<dyn Backend> {
+    build_backend(provider, true)
+}
+
+fn build_backend(provider: ProviderId, session: bool) -> Box<dyn Backend> {
+    let claude_code = |backend: ClaudeBackend| -> Box<dyn Backend> {
+        Box::new(if session { backend.in_session() } else { backend })
+    };
     match provider {
-        ProviderId::Claude => Box::new(ClaudeBackend::claude()),
+        ProviderId::Claude => claude_code(ClaudeBackend::claude()),
         ProviderId::Codex => Box::new(CodexBackend::codex()),
         ProviderId::Grok => Box::new(GrokBackend::grok()),
         ProviderId::Gemini => Box::new(match detect_gemini_flavor() {
@@ -72,7 +86,7 @@ pub fn backend_for(provider: ProviderId) -> Box<dyn Backend> {
         // No key means the caller never routes here; an empty key just fails the turn.
         ProviderId::DeepSeek => {
             let key = envfile::lookup("DEEPSEEK_API_KEY").unwrap_or_default();
-            Box::new(ClaudeBackend::with_profile(ProviderId::DeepSeek, deepseek_env(&key)))
+            claude_code(ClaudeBackend::with_profile(ProviderId::DeepSeek, deepseek_env(&key)))
         }
     }
 }

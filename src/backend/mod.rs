@@ -9,7 +9,9 @@ pub mod codex;
 pub mod gemini;
 pub mod grok;
 
+use std::future::Future;
 use std::path::{Path, PathBuf};
+use std::pin::Pin;
 use std::process::Stdio;
 use std::str::FromStr;
 use std::sync::{Mutex, PoisonError};
@@ -17,6 +19,7 @@ use std::time::Duration;
 
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command};
+use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
 use crate::anthropic::{is_limit_message, is_limit_phrase};
@@ -122,6 +125,61 @@ pub enum Event {
     Finished(Finish),
     Failed { message: String },
     Plan(PlanUsage),
+    /// The CLI is waiting for the host to say whether it may run a tool. Only backends
+    /// that are [`Backend::interactive`] produce it; [`run_turn_with`] answers it through
+    /// the [`Approver`] and it never reaches `on_event`.
+    PermissionRequest(PermissionRequest),
+}
+
+/// A tool call the CLI wants approval for.
+#[derive(Clone, PartialEq)]
+pub struct PermissionRequest {
+    /// The CLI's id for the question; the answer must carry it back.
+    pub id: String,
+    pub tool: String,
+    /// One line for the person: the command, or the path (and size) for a file write.
+    pub summary: String,
+    /// The tool's input exactly as the CLI sent it. It can hold secrets: it is only ever
+    /// echoed back to the CLI, never logged or shown.
+    pub input: serde_json::Value,
+    /// The path outside the allowed folders that made the CLI ask, when it said.
+    pub blocked_path: Option<String>,
+}
+
+impl std::fmt::Debug for PermissionRequest {
+    /// Leaves out the summary and the input: both can hold a secret, and `{:?}` ends up in logs.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PermissionRequest").field("id", &self.id).field("tool", &self.tool).finish_non_exhaustive()
+    }
+}
+
+/// What happens to a [`PermissionRequest`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Decision {
+    /// Run it this once.
+    Allow,
+    /// Run it, and the approver has remembered a rule so the CLI does not ask again.
+    AllowAlways,
+    /// Do not run it; the model is told `reason`.
+    Deny { reason: String },
+}
+
+/// Why a request is denied when nobody can be asked.
+pub const NO_ONE_TO_ASK: &str = "no one to ask: this session has no terminal to approve tool calls";
+
+/// Whoever answers [`PermissionRequest`]s while a turn runs. The turn waits for the answer
+/// without any idle timeout: a person can take as long as they need.
+pub trait Approver: Send + Sync {
+    fn decide<'a>(&'a self, req: &'a PermissionRequest) -> Pin<Box<dyn Future<Output = Decision> + Send + 'a>>;
+}
+
+/// The approver of a run that has no one to ask: every request is denied at once.
+pub struct NoApprover;
+
+impl Approver for NoApprover {
+    fn decide<'a>(&'a self, _: &'a PermissionRequest) -> Pin<Box<dyn Future<Output = Decision> + Send + 'a>> {
+        Box::pin(async { Decision::Deny { reason: NO_ONE_TO_ASK.to_string() } })
+    }
 }
 
 /// Everything a backend needs to run one turn.
@@ -193,6 +251,19 @@ pub trait Backend: Send + Sync {
 
     /// Parse ONE stdout line. Non-JSON or irrelevant lines give an empty Vec.
     fn parse_line(&self, line: &str) -> Vec<Event>;
+
+    /// Whether this CLI asks the host before running a tool ([`Event::PermissionRequest`])
+    /// and waits for [`Backend::permission_response`] on stdin. Such a CLI keeps stdin open
+    /// until it has answered the turn; every other CLI gets its prompt and EOF at once.
+    fn interactive(&self) -> bool {
+        false
+    }
+
+    /// The line (without the newline) that answers `req` on the CLI's stdin. Only called
+    /// when [`Backend::interactive`].
+    fn permission_response(&self, _req: &PermissionRequest, _decision: &Decision) -> Option<String> {
+        None
+    }
 
     /// Whether [`Backend::attach_mcp`] works for this CLI. Orchestration only picks a
     /// planner among providers that say yes: a planner that cannot call the delegate
@@ -436,15 +507,45 @@ enum Ended {
 /// Marker for "no stdout line within the idle timeout".
 struct Idle;
 
-/// Write the prompt on its own task and close stdin. A separate task so a big
-/// prompt cannot deadlock against a CLI that starts printing before it reads all
-/// of stdin; closing matters because some CLIs wait forever for end of input.
-fn feed_stdin(stdin: Option<ChildStdin>, payload: Option<String>) {
-    let (Some(mut stdin), Some(payload)) = (stdin, payload) else { return };
-    tokio::spawn(async move {
-        // A CLI that exits early closes the pipe; its exit is reported by the runner.
-        let _ = stdin.write_all(payload.as_bytes()).await;
-    });
+/// Everything written to the CLI's stdin goes through one task, so a big prompt cannot
+/// deadlock against a CLI that starts printing before it reads all of stdin, and so the
+/// runner can keep writing (permission answers) while it reads stdout. Stdin closes when
+/// the feed is closed or dropped; some CLIs wait forever for end of input.
+struct StdinFeed(Option<mpsc::UnboundedSender<String>>);
+
+impl StdinFeed {
+    /// Send `payload`, then close stdin at once unless `keep_open`.
+    fn start(stdin: Option<ChildStdin>, payload: Option<String>, keep_open: bool) -> Self {
+        let Some(mut stdin) = stdin else { return Self(None) };
+        let (tx, mut rx) = mpsc::unbounded_channel::<String>();
+        tokio::spawn(async move {
+            while let Some(text) = rx.recv().await {
+                // A CLI that exits early closes the pipe; its exit is reported by the runner.
+                if stdin.write_all(text.as_bytes()).await.is_err() {
+                    break;
+                }
+            }
+        });
+        let mut feed = Self(Some(tx));
+        if let Some(payload) = payload {
+            feed.send(payload);
+        }
+        if !keep_open {
+            feed.close();
+        }
+        feed
+    }
+
+    fn send(&self, text: String) {
+        if let Some(tx) = &self.0 {
+            let _ = tx.send(text);
+        }
+    }
+
+    /// Close stdin once what was sent has been written.
+    fn close(&mut self) {
+        self.0 = None;
+    }
 }
 
 /// Drain stderr concurrently, keeping only the tail: an unread pipe fills up and
@@ -476,12 +577,17 @@ fn last_chars(s: &str, n: usize) -> String {
 /// Read stdout until the CLI fails, ends, or goes quiet for `idle`. After a
 /// `Finished` the stream is still read to EOF so the process can exit cleanly,
 /// but a CLI that then hangs does not lose the answer it already gave.
+///
+/// While a [`PermissionRequest`] waits for its answer nothing is being read, so no idle
+/// timeout runs: the watchdog only covers the wait for the CLI's next line.
 async fn pump(
     backend: &dyn Backend,
     stdout: ChildStdout,
     idle: Duration,
     on_event: &mut (dyn FnMut(&Event) + Send),
     plan: &mut Option<PlanUsage>,
+    approver: &dyn Approver,
+    feed: &mut StdinFeed,
 ) -> Result<Ended, Idle> {
     let mut reader = BufReader::new(stdout);
     let mut finished: Option<Finish> = None;
@@ -496,8 +602,18 @@ async fn pump(
         }
         for event in backend.parse_line(&String::from_utf8_lossy(&raw)) {
             match event {
-                Event::Finished(f) => finished = Some(f),
+                Event::Finished(f) => {
+                    finished = Some(f);
+                    // An interactive CLI keeps reading stdin until told there is no more.
+                    feed.close();
+                }
                 Event::Failed { message } => return Ok(Ended::Failed(message)),
+                Event::PermissionRequest(req) => {
+                    let decision = approver.decide(&req).await;
+                    if let Some(line) = backend.permission_response(&req, &decision) {
+                        feed.send(format!("{line}\n"));
+                    }
+                }
                 Event::Plan(p) => {
                     on_event(&Event::Plan(p.clone()));
                     *plan = Some(p);
@@ -559,10 +675,22 @@ pub async fn run_turn(
     idle_timeout: Duration,
     on_event: &mut (dyn FnMut(&Event) + Send),
 ) -> Result<TurnOutcome, TurnError> {
+    run_turn_with(backend, req, idle_timeout, on_event, &NoApprover).await
+}
+
+/// [`run_turn`] with someone to answer the tool approvals of an [`Backend::interactive`]
+/// CLI. For any other backend `approver` is never asked.
+pub async fn run_turn_with(
+    backend: &dyn Backend,
+    req: &TurnRequest,
+    idle_timeout: Duration,
+    on_event: &mut (dyn FnMut(&Event) + Send),
+    approver: &dyn Approver,
+) -> Result<TurnOutcome, TurnError> {
     // A guard, not a call after the await: a cancelled turn drops this future, and the
     // backend's files must go then too.
     let _cleanup = CleanupOnDrop(backend);
-    run_child(backend, req, idle_timeout, on_event).await
+    run_child(backend, req, idle_timeout, on_event, approver).await
 }
 
 /// Runs [`Backend::cleanup`] when the turn ends or its future is dropped.
@@ -612,6 +740,7 @@ async fn run_child(
     req: &TurnRequest,
     idle_timeout: Duration,
     on_event: &mut (dyn FnMut(&Event) + Send),
+    approver: &dyn Approver,
 ) -> Result<TurnOutcome, TurnError> {
     let mut cmd = backend.command(req);
     cmd.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).kill_on_drop(true);
@@ -623,11 +752,11 @@ async fn run_child(
     let mut child = cmd.spawn().map_err(|e| other(format!("failed to run `{program}` (is it installed?): {e}")))?;
     let mut group = GroupKill(if cfg!(unix) { child.id() } else { None });
     let stdout = child.stdout.take().ok_or_else(|| other(format!("`{program}` gave no stdout")))?;
-    feed_stdin(child.stdin.take(), backend.stdin_payload(req));
+    let mut feed = StdinFeed::start(child.stdin.take(), backend.stdin_payload(req), backend.interactive());
     let stderr = collect_stderr(child.stderr.take());
 
     let mut plan = None;
-    let ended = pump(backend, stdout, idle_timeout, on_event, &mut plan).await;
+    let ended = pump(backend, stdout, idle_timeout, on_event, &mut plan, approver, &mut feed).await;
     let classified = |message: String| TurnError::new(backend.classify_error(&message), message);
     match ended {
         Err(Idle) => {
@@ -1243,5 +1372,172 @@ mod tests {
         for text in must_not_match {
             assert_eq!(kind(text), None, "{text:?}");
         }
+    }
+
+    // ------------------------------------------------------------ host approvals
+
+    /// An interactive "CLI": a shell script that asks one question and reads the answer from
+    /// stdin. Output grammar: `ASK:<tool>:<summary>`, `FIN:<text>`. The answers it receives
+    /// are `ALLOW` (also for always) and `DENY:<reason>`.
+    struct Asking(String);
+
+    impl Backend for Asking {
+        fn provider(&self) -> ProviderId {
+            ProviderId::Claude
+        }
+        fn command(&self, req: &TurnRequest) -> Command {
+            let mut c = Command::new("sh");
+            c.arg("-c").arg(&self.0).current_dir(&req.dir);
+            c
+        }
+        fn stdin_payload(&self, req: &TurnRequest) -> Option<String> {
+            Some(format!("{}\n", req.prompt))
+        }
+        fn interactive(&self) -> bool {
+            true
+        }
+        fn parse_line(&self, line: &str) -> Vec<Event> {
+            let line = line.trim_end();
+            match line.split_once(':') {
+                Some(("ASK", rest)) => {
+                    let (tool, summary) = rest.split_once(':').unwrap_or((rest, ""));
+                    vec![Event::PermissionRequest(PermissionRequest {
+                        id: "q1".into(),
+                        tool: tool.into(),
+                        summary: summary.into(),
+                        input: serde_json::json!({ "command": summary }),
+                        blocked_path: None,
+                    })]
+                }
+                Some(("FIN", text)) => vec![Event::Finished(Finish { text: text.into(), session_id: None, usage: Usage::default() })],
+                _ => vec![],
+            }
+        }
+        fn permission_response(&self, _: &PermissionRequest, decision: &Decision) -> Option<String> {
+            Some(match decision {
+                Decision::Allow | Decision::AllowAlways => "ALLOW".to_string(),
+                Decision::Deny { reason } => format!("DENY:{reason}"),
+            })
+        }
+        fn classify_error(&self, _: &str) -> ErrorKind {
+            ErrorKind::Other
+        }
+    }
+
+    const ASK_AND_REPORT: &str =
+        r#"read prompt; echo "ASK:Bash:cargo test --quiet"; read ans; case "$ans" in ALLOW) echo "FIN:ran";; *) echo "FIN:refused ${ans#DENY:}";; esac"#;
+
+    /// An approver that answers after `wait`, and remembers what it was asked.
+    struct Scripted {
+        wait: Duration,
+        decision: Decision,
+        asked: Mutex<Vec<(String, String)>>,
+    }
+
+    impl Scripted {
+        fn new(wait_ms: u64, decision: Decision) -> Self {
+            Self { wait: Duration::from_millis(wait_ms), decision, asked: Mutex::new(Vec::new()) }
+        }
+    }
+
+    impl Approver for Scripted {
+        fn decide<'a>(&'a self, req: &'a PermissionRequest) -> Pin<Box<dyn Future<Output = Decision> + Send + 'a>> {
+            Box::pin(async move {
+                self.asked.lock().unwrap().push((req.tool.clone(), req.summary.clone()));
+                tokio::time::sleep(self.wait).await;
+                self.decision.clone()
+            })
+        }
+    }
+
+    async fn run_asking(script: &str, approver: &dyn Approver, idle_ms: u64) -> (Result<TurnOutcome, TurnError>, Vec<Event>) {
+        let mut seen = Vec::new();
+        let mut on_event = |e: &Event| seen.push(e.clone());
+        let r = run_turn_with(&Asking(script.into()), &req(), Duration::from_millis(idle_ms), &mut on_event, approver).await;
+        (r, seen)
+    }
+
+    #[tokio::test]
+    async fn an_allowed_request_lets_the_cli_go_on_and_is_not_shown_as_an_event() {
+        let approver = Scripted::new(0, Decision::Allow);
+        let (r, seen) = run_asking(ASK_AND_REPORT, &approver, 5000).await;
+        assert_eq!(r.unwrap().text, "ran");
+        assert_eq!(*approver.asked.lock().unwrap(), vec![("Bash".to_string(), "cargo test --quiet".to_string())]);
+        assert!(seen.is_empty(), "{seen:?}");
+    }
+
+    #[tokio::test]
+    async fn always_reaches_the_cli_as_an_allow() {
+        let (r, _) = run_asking(ASK_AND_REPORT, &Scripted::new(0, Decision::AllowAlways), 5000).await;
+        assert_eq!(r.unwrap().text, "ran");
+    }
+
+    #[tokio::test]
+    async fn a_denial_carries_its_reason_to_the_cli() {
+        let approver = Scripted::new(0, Decision::Deny { reason: "not today".into() });
+        let (r, _) = run_asking(ASK_AND_REPORT, &approver, 5000).await;
+        assert_eq!(r.unwrap().text, "refused not today");
+    }
+
+    #[tokio::test]
+    async fn the_idle_watchdog_does_not_run_while_the_person_decides() {
+        // The question takes four times the idle timeout to answer; the turn must not be cut off.
+        let approver = Scripted::new(800, Decision::Allow);
+        let (r, _) = run_asking(ASK_AND_REPORT, &approver, 200).await;
+        assert_eq!(r.unwrap().text, "ran");
+        // And it still guards the CLI's own silence afterwards.
+        let (r, _) = run_asking(r#"read p; echo "ASK:Bash:x"; read a; exec sleep 30"#, &Scripted::new(0, Decision::Allow), 300).await;
+        assert_eq!(r.unwrap_err().kind, ErrorKind::Stalled);
+    }
+
+    #[tokio::test]
+    async fn without_an_approver_every_request_is_denied_and_nothing_hangs() {
+        let mut on_event = |_: &Event| {};
+        let started = std::time::Instant::now();
+        let r = run_turn(&Asking(ASK_AND_REPORT.into()), &req(), Duration::from_secs(5), &mut on_event).await;
+        assert_eq!(r.unwrap().text, format!("refused {NO_ONE_TO_ASK}"));
+        assert!(started.elapsed() < Duration::from_secs(3));
+    }
+
+    #[tokio::test]
+    async fn stdin_stays_open_for_answers_and_closes_once_the_turn_has_finished() {
+        let dir = scratch_dir("interactive-close");
+        std::fs::create_dir_all(&dir).unwrap();
+        let marker = dir.join("exited");
+        // After its answer the "CLI" reads until stdin closes, then leaves a marker.
+        let script = format!(
+            r#"read prompt; echo "ASK:Bash:x"; read ans; echo "FIN:ok"; cat > /dev/null; touch {}"#,
+            marker.display()
+        );
+        let started = std::time::Instant::now();
+        let (r, _) = run_asking(&script, &Scripted::new(0, Decision::Allow), 5000).await;
+        assert_eq!(r.unwrap().text, "ok");
+        assert!(started.elapsed() < Duration::from_millis(1500), "stdin was not closed after the result: {:?}", started.elapsed());
+        assert!(marker.exists(), "the CLI should have seen end of input and exited by itself");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn a_turn_dropped_while_a_question_waits_kills_the_cli() {
+        let dir = scratch_dir("interactive-drop");
+        std::fs::create_dir_all(&dir).unwrap();
+        let pid_file = dir.join("cli.pid");
+        let script = format!(r#"echo $$ > {}; read prompt; echo "ASK:Bash:x"; read ans; echo FIN:late"#, pid_file.display());
+        let approver = Scripted::new(60_000, Decision::Allow);
+        let request = req();
+        let mut on_event = |_: &Event| {};
+        let backend = Asking(script);
+        let turn = run_turn_with(&backend, &request, Duration::from_millis(300), &mut on_event, &approver);
+        let waited = async {
+            let pid = read_pid(&pid_file).await;
+            tokio::time::sleep(Duration::from_millis(600)).await;
+            pid
+        };
+        let pid = tokio::select! {
+            _ = turn => panic!("the turn waits for the answer"),
+            pid = waited => pid,
+        };
+        assert!(all_dead(&[pid]).await, "the CLI must not outlive the cancelled turn");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

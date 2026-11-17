@@ -3,6 +3,7 @@
 //! unit test. The names come from the one command table in [`crate::uifmt`], which also
 //! drives `/help` and Tab completion.
 
+use crate::permissions::{self, PermissionsCmd};
 use crate::routing::Pin;
 use crate::uifmt;
 
@@ -40,6 +41,8 @@ pub enum Command {
     Undo,
     /// `/resume`: pick up the saved session of this folder.
     Resume,
+    /// `/permissions [allow <rule> | remove <rule> | dir <path>]`.
+    Permissions(PermissionsCmd),
     /// A slash word that is no command, with the closest real one when there is one. Never
     /// sent to the model: a typo must not cost a turn.
     Unknown { typed: String, suggestion: Option<&'static str> },
@@ -114,6 +117,7 @@ pub fn parse(line: &str) -> Command {
             let path = line[head.len()..].trim();
             Command::Diff((!path.is_empty()).then(|| path.to_string()))
         }
+        "/permissions" => permissions::parse_args(&line[head.len()..]).map_or_else(Command::Invalid, Command::Permissions),
         "/model" => match (arg, extra) {
             (None, _) => Command::ShowModel,
             (Some(a), false) => Pin::parse(a).map_or_else(Command::Invalid, Command::SetPin),
@@ -233,6 +237,16 @@ mod tests {
         assert_eq!(parse("/HELP"), Command::Help, "commands are not case sensitive");
         assert_eq!(parse("/help me"), Command::Invalid("usage: /help".into()));
         assert_eq!(parse("/undo now"), Command::Invalid("usage: /undo".into()));
+    }
+
+    #[test]
+    fn permissions_takes_the_rest_of_the_line_as_the_rule() {
+        assert_eq!(parse("/permissions"), Command::Permissions(PermissionsCmd::List));
+        assert_eq!(parse("/Permissions allow Bash(cargo test:*)"), Command::Permissions(PermissionsCmd::Allow("Bash(cargo test:*)".into())));
+        assert_eq!(parse("/permissions remove Bash(ls:*)"), Command::Permissions(PermissionsCmd::Remove("Bash(ls:*)".into())));
+        assert_eq!(parse("/permissions dir ~/data"), Command::Permissions(PermissionsCmd::Dir("~/data".into())));
+        assert!(matches!(parse("/permissions allow"), Command::Invalid(m) if m.contains("usage: /permissions")));
+        assert!(matches!(parse("/permissions allow nonsense("), Command::Invalid(m) if m.contains("not a permission rule")));
     }
 
     #[test]
