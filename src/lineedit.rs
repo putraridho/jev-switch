@@ -15,7 +15,7 @@ use rustyline::highlight::Highlighter;
 use rustyline::hint::Hinter;
 use rustyline::history::{DefaultHistory, History};
 use rustyline::validate::Validator;
-use rustyline::{Cmd, ColorMode, CompletionType, Config, ConditionalEventHandler, Context, Editor, EventContext, EventHandler, Helper, KeyCode, KeyEvent, Modifiers, RepeatCount};
+use rustyline::{Cmd, ColorMode, CompletionType, Config, ConditionalEventHandler, Context, Editor, EventContext, EventHandler, Helper, KeyCode, KeyEvent, Modifiers, Movement, RepeatCount};
 
 use crate::mode::SharedMode;
 
@@ -74,11 +74,18 @@ pub struct JevHelper {
     plain_prompt: String,
     styled_prompt: String,
     mode: SharedMode,
+    /// The project, where `@path` completion looks; `None` completes no paths.
+    project: Option<PathBuf>,
 }
 
 impl JevHelper {
     pub fn new(style: Style, mode: SharedMode) -> Self {
-        Self { ctx: CompleteCtx::default(), style, plain_prompt: String::new(), styled_prompt: String::new(), mode }
+        Self { ctx: CompleteCtx::default(), style, plain_prompt: String::new(), styled_prompt: String::new(), mode, project: None }
+    }
+
+    /// Let Tab complete `@path` mentions from this folder.
+    pub fn set_project(&mut self, dir: &Path) {
+        self.project = Some(dir.to_path_buf());
     }
 
     /// What Tab may offer from now on (refreshed before every prompt).
@@ -108,6 +115,72 @@ impl ConditionalEventHandler for CycleMode {
     }
 }
 
+/// Enter right after a `\\` at the end of the line: the backslash becomes a new line, as
+/// in a shell. Anywhere else Enter sends the line.
+struct BackslashNewline;
+
+impl ConditionalEventHandler for BackslashNewline {
+    fn handle(&self, _: &rustyline::Event, _: RepeatCount, _: bool, ctx: &EventContext) -> Option<Cmd> {
+        continues_line(ctx.line(), ctx.pos()).then(|| Cmd::Replace(Movement::BackwardChar(1), Some("\n".to_string())))
+    }
+}
+
+/// Whether Enter at `pos` continues the line: the cursor is at the end, after one `\\`
+/// (a doubled one is a literal backslash).
+pub fn continues_line(line: &str, pos: usize) -> bool {
+    pos == line.len() && line.ends_with('\\') && !line.ends_with("\\\\")
+}
+
+/// Most `@path` candidates Tab lists at once.
+const MAX_PATH_CANDIDATES: usize = 200;
+
+/// Candidates for an `@path` word (given without the `@`): the entries of its folder that
+/// start with what was typed, folders with a `/`; and, for a word with no `/` yet, the
+/// tracked files anywhere whose name starts with it (`@main` finds `src/main.rs`). Hidden
+/// entries only when typed with a dot; `.git` never. Spaces are escaped, as a pasted
+/// path would be.
+pub fn path_candidates(word: &str, project: &Path, tracked: &[String]) -> Vec<Pair> {
+    let (folder, prefix) = word.rsplit_once('/').map_or(("", word), |(d, p)| (d, p));
+    let lower = prefix.to_lowercase();
+    let mut found: Vec<(String, bool)> = Vec::new();
+    let base = if folder.is_empty() { project.to_path_buf() } else { project.join(folder) };
+    if let Ok(entries) = std::fs::read_dir(&base) {
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            let hidden_ok = !name.starts_with('.') || prefix.starts_with('.');
+            if name == ".git" || !hidden_ok || !name.to_lowercase().starts_with(&lower) {
+                continue;
+            }
+            let is_dir = entry.file_type().is_ok_and(|t| t.is_dir());
+            let path = if folder.is_empty() { name } else { format!("{folder}/{name}") };
+            found.push((path, is_dir));
+        }
+    }
+    found.sort();
+    if !word.contains('/') && !word.is_empty() {
+        let deeper = tracked.iter().filter(|t| t.contains('/') && t.rsplit('/').next().is_some_and(|n| n.to_lowercase().starts_with(&lower)));
+        found.extend(deeper.map(|t| (t.clone(), false)));
+    }
+    found.dedup();
+    found
+        .into_iter()
+        .take(MAX_PATH_CANDIDATES)
+        .map(|(path, is_dir)| {
+            let shown = if is_dir { format!("{path}/") } else { path };
+            Pair { display: shown.clone(), replacement: format!("@{}", shown.replace(' ', "\\ ")) }
+        })
+        .collect()
+}
+
+/// The files git tracks in `dir` (empty outside a repository).
+fn tracked_files(dir: &Path) -> Vec<String> {
+    let out = std::process::Command::new("git").args(["ls-files", "-z"]).current_dir(dir).stderr(std::process::Stdio::null()).output();
+    match out {
+        Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout).split('\0').filter(|s| !s.is_empty()).map(String::from).collect(),
+        _ => Vec::new(),
+    }
+}
+
 /// The completions of the word before the cursor: where that word starts, and the
 /// candidates. Pure, so Tab behaviour is tested without a terminal.
 pub fn completions_for(line: &str, pos: usize, ctx: &CompleteCtx) -> (usize, Vec<Pair>) {
@@ -123,6 +196,11 @@ impl Completer for JevHelper {
     type Candidate = Pair;
 
     fn complete(&self, line: &str, pos: usize, _: &Context<'_>) -> rustyline::Result<(usize, Vec<Pair>)> {
+        let upto = line.get(..pos).unwrap_or(line);
+        let start = uifmt::completion_start(upto);
+        if let (Some(word), Some(project)) = (upto[start..].strip_prefix('@'), &self.project) {
+            return Ok((start, path_candidates(word, project, &tracked_files(project))));
+        }
         Ok(completions_for(line, pos, &self.ctx))
     }
 }
@@ -210,6 +288,7 @@ pub fn build_editor(style: Style, history: Option<&Path>, mode: SharedMode) -> r
     let mut editor: LineEditor = Editor::with_config(config)?;
     editor.set_helper(Some(JevHelper::new(style, mode.clone())));
     editor.bind_sequence(KeyEvent::alt('\r'), Cmd::Newline);
+    editor.bind_sequence(KeyEvent(KeyCode::Enter, Modifiers::NONE), EventHandler::Conditional(Box::new(BackslashNewline)));
     editor.bind_sequence(KeyEvent(KeyCode::BackTab, Modifiers::NONE), EventHandler::Conditional(Box::new(CycleMode(mode))));
     if let Some(path) = history {
         prepare_history_file(path);
@@ -246,13 +325,14 @@ pub enum Input {
 }
 
 /// Read one message. `plain` and `styled` are the prompt without and with colour; `ctx`
-/// is what Tab may offer.
-pub fn read(editor: &mut LineEditor, plain: &str, styled: &str, ctx: CompleteCtx) -> Input {
+/// is what Tab may offer; `initial` is text already in the line (typed during a turn).
+pub fn read(editor: &mut LineEditor, plain: &str, styled: &str, ctx: CompleteCtx, initial: &str) -> Input {
     if let Some(h) = editor.helper_mut() {
         h.set_ctx(ctx);
         h.set_prompt(plain, styled);
     }
-    match editor.readline(plain) {
+    let read = if initial.is_empty() { editor.readline(plain) } else { editor.readline_with_initial(plain, (initial, "")) };
+    match read {
         Ok(line) => Input::Line(line),
         Err(ReadlineError::Interrupted) => Input::Interrupted,
         Err(ReadlineError::Eof) => Input::Eof,
@@ -300,6 +380,11 @@ pub enum AnswerKey {
     /// Ctrl-C: stop the turn.
     Interrupt,
 }
+
+/// Whoever reads keys from the terminal holds this: the approval question for its whole
+/// wait, the type-ahead reader for each poll ([`crate::typeahead`]). So a key meant for a
+/// question is never taken as typing.
+pub static STDIN_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 /// How long the wait for an approval key goes without looking at its cancel flag; also the
 /// longest a cancelled read takes to stop.
@@ -362,6 +447,8 @@ pub fn read_answer(always_offered: bool, cancel: &std::sync::atomic::AtomicBool)
         }
     }
     let fd = libc::STDIN_FILENO;
+    // The type-ahead reader stays off the terminal until the question is answered.
+    let _owner = STDIN_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     // SAFETY: termios is plain data; tcgetattr fills it or fails.
     let mut saved: libc::termios = unsafe { std::mem::zeroed() };
     if unsafe { libc::tcgetattr(fd, &mut saved) } != 0 {
@@ -496,6 +583,32 @@ mod tests {
 
         let (_, c) = completions_for("/diff ", 6, &ctx());
         assert_eq!(c.iter().map(|p| p.replacement.as_str()).collect::<Vec<_>>(), ["src/a.rs"]);
+    }
+
+    #[test]
+    fn enter_after_one_backslash_continues_the_line() {
+        assert!(continues_line("first line\\", 11));
+        assert!(!continues_line("first line\\", 3), "only at the end of the line");
+        assert!(!continues_line("a literal \\\\", 12), "a doubled backslash is literal");
+        assert!(!continues_line("plain", 5));
+    }
+
+    #[test]
+    fn at_paths_complete_from_the_folder_and_tracked_files() {
+        let dir = temp("atpath");
+        std::fs::create_dir_all(dir.join("src/deep")).unwrap();
+        std::fs::create_dir_all(dir.join(".git")).unwrap();
+        std::fs::write(dir.join("src/main.rs"), "").unwrap();
+        std::fs::write(dir.join("my notes.md"), "").unwrap();
+        std::fs::write(dir.join(".env"), "").unwrap();
+        let names = |word: &str, tracked: &[String]| path_candidates(word, &dir, tracked).into_iter().map(|p| p.replacement).collect::<Vec<_>>();
+        assert_eq!(names("", &[]), ["@my\\ notes.md", "@src/"]);
+        assert_eq!(names("s", &[]), ["@src/"]);
+        assert_eq!(names("src/", &[]), ["@src/deep/", "@src/main.rs"]);
+        assert_eq!(names("src/M", &[]), ["@src/main.rs"], "case is ignored");
+        assert_eq!(names(".", &[]), ["@.env"], "hidden only when asked, never .git");
+        assert_eq!(names("main", &["src/main.rs".to_string(), "README.md".to_string()]), ["@src/main.rs"]);
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]

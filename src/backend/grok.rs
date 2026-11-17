@@ -146,7 +146,7 @@ impl Backend for GrokBackend {
     fn command(&self, req: &TurnRequest) -> Command {
         let mut cmd = Command::new(&self.bin);
         // `--single=` (not `-p <prompt>`) so a prompt that starts with `-` is not read as a flag.
-        match self.prompts.arg(&req.prompt) {
+        match self.prompts.arg(&super::prompt_with_images(req)) {
             PromptArg::Inline(prompt) => cmd.arg(format!("--single={prompt}")),
             PromptArg::File { path, .. } => cmd.arg("--prompt-file").arg(path),
         };
@@ -223,6 +223,7 @@ mod tests {
             dir: "/tmp".into(),
             model: "grok-4.6".into(),
             prompt: "hi".into(),
+            images: vec![],
             session_id: session.map(String::from),
             mode: Default::default(),
         }

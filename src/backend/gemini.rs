@@ -4,9 +4,11 @@
 //! one provider ([`ProviderId::Gemini`]), so one struct serves both and only the
 //! flags and event shapes that genuinely differ branch on [`Flavor`].
 //!
-//! Neither CLI was logged in when this was written, so the schemas come from the
-//! official docs (and, for Gemini CLI, the installed 0.68.0 bundle's source), not
-//! from recordings; see `tests/fixtures/{gemini,agy}/README.md`.
+//! Gemini CLI uses headless stream-json. Antigravity uses ACP so tool approvals
+//! reach the host instead of being silently denied by print mode. The legacy
+//! headless fixtures remain as regression evidence; see `tests/fixtures/agy/README.md`.
+
+mod acp;
 
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
@@ -15,7 +17,7 @@ use tokio::process::Command;
 
 use super::claude::tool_summary;
 use super::{
-    classify_common, Backend, ErrorKind, Event, Finish, PromptFiles, ProviderId, TurnRequest, Usage,
+    classify_common, Backend, Decision, ErrorKind, Event, Finish, PermissionRequest, ProviderId, TurnRequest, Usage,
 };
 
 /// Which of Google's two CLIs a [`GeminiBackend`] drives.
@@ -29,7 +31,6 @@ pub enum Flavor {
 /// approve-everything modes (`--yolo`, `--dangerously-skip-permissions`): a router
 /// that runs on the user's behalf must not widen what they allowed.
 const GEMINI_APPROVAL_MODE: &str = "auto_edit";
-const AGY_MODE: &str = "accept-edits";
 
 /// What a blank answer is called, so [`classify_text`] can map it to `Empty`.
 const EMPTY_ANSWER: &str = "the CLI returned an empty response";
@@ -62,8 +63,7 @@ pub struct GeminiBackend {
     pub flavor: Flavor,
     pub bin: String,
     pending: Mutex<Pending>,
-    /// Antigravity takes the prompt as an argument, so a long one goes to a file.
-    prompts: PromptFiles,
+    acp: Mutex<acp::Acp>,
     /// Variables the child needs that may live only in `~/.jev-router.env` (an API key),
     /// which the child process would not otherwise see.
     extra_env: Vec<(String, String)>,
@@ -75,7 +75,7 @@ impl GeminiBackend {
             flavor,
             bin: bin.into(),
             pending: Mutex::new(Pending::default()),
-            prompts: PromptFiles::default(),
+            acp: Mutex::default(),
             extra_env: Vec::new(),
         }
     }
@@ -105,7 +105,7 @@ impl GeminiBackend {
     fn args(&self, req: &TurnRequest) -> Vec<String> {
         match self.flavor {
             Flavor::GeminiCli => gemini_args(req),
-            Flavor::Antigravity => agy_args(req, self.prompts.arg(&req.prompt).text()),
+            Flavor::Antigravity => vec!["acp".into()],
         }
     }
 }
@@ -126,20 +126,6 @@ fn gemini_args(req: &TurnRequest) -> Vec<String> {
     args
 }
 
-/// `-p` must come last because it takes the next word as the prompt, and `agy -p`
-/// ignores stdin, so the prompt has to be in argv (`prompt` is the request's prompt,
-/// or the instruction to read it from a file when it is too long for one argument).
-fn agy_args(req: &TurnRequest, prompt: &str) -> Vec<String> {
-    let mut args: Vec<String> = ["--output-format", "stream-json", "--mode", AGY_MODE, "--model", &req.model]
-        .map(String::from)
-        .into();
-    if let Some(id) = &req.session_id {
-        args.extend(["--conversation".into(), id.clone()]);
-    }
-    args.extend(["-p".into(), prompt.to_string()]);
-    args
-}
-
 fn uint(v: &Value, key: &str) -> u64 {
     v[key].as_u64().unwrap_or(0)
 }
@@ -157,6 +143,7 @@ fn gemini_usage(stats: &Value) -> Usage {
 
 /// Assumes Antigravity counts like Gemini (input includes cache reads); the `max`
 /// keeps the cached share from ever exceeding the total if it does not.
+#[cfg(test)]
 fn agy_usage(usage: &Value) -> Usage {
     let cached = uint(usage, "cache_read_tokens");
     Usage {
@@ -238,6 +225,7 @@ fn gemini_result(ev: &Value, pending: Pending) -> Event {
 /// Antigravity `--output-format stream-json`: `init`, `step_update` and a final
 /// `result`. A logged-out run is reported to print the bare JSON envelope (no
 /// `event` key) instead, so that shape is accepted too.
+#[cfg(test)]
 fn agy_events(ev: &Value) -> Vec<Event> {
     match ev["event"].as_str() {
         Some("step_update") => agy_step(&ev["step_update"]),
@@ -249,6 +237,7 @@ fn agy_events(ev: &Value) -> Vec<Event> {
 
 /// Tool steps go `ACTIVE` then `DONE`; announce on `ACTIVE` so each call shows once.
 /// Text deltas are skipped: the `result` carries the whole answer.
+#[cfg(test)]
 fn agy_step(step: &Value) -> Vec<Event> {
     let info = &step["tool_info"];
     match (step["step_type"].as_str(), step["state"].as_str()) {
@@ -261,6 +250,7 @@ fn agy_step(step: &Value) -> Vec<Event> {
     }
 }
 
+#[cfg(test)]
 fn agy_result(result: &Value) -> Event {
     let status = result["status"].as_str().unwrap_or("");
     if status != "SUCCESS" {
@@ -279,6 +269,7 @@ fn agy_result(result: &Value) -> Event {
 
 /// An empty answer after denied tool calls is the headless permission trap: the
 /// CLI cannot ask, so it denies and still exits 0. Say so instead of just "empty".
+#[cfg(test)]
 fn denied_note(result: &Value) -> String {
     match result["denied_actions"].as_array().map(Vec::len) {
         Some(n) if n > 0 => format!(
@@ -339,8 +330,8 @@ impl Backend for GeminiBackend {
 
     fn stdin_payload(&self, req: &TurnRequest) -> Option<String> {
         match self.flavor {
-            Flavor::GeminiCli => Some(req.prompt.clone()),
-            Flavor::Antigravity => None,
+            Flavor::GeminiCli => Some(super::prompt_with_images(req)),
+            Flavor::Antigravity => Some(self.acp.lock().unwrap_or_else(PoisonError::into_inner).start(req)),
         }
     }
 
@@ -348,12 +339,21 @@ impl Backend for GeminiBackend {
         let Ok(ev) = serde_json::from_str::<Value>(line) else { return vec![] };
         match self.flavor {
             Flavor::GeminiCli => self.gemini_events(&ev),
-            Flavor::Antigravity => agy_events(&ev),
+            Flavor::Antigravity => self.acp.lock().unwrap_or_else(PoisonError::into_inner).parse(&ev),
         }
     }
 
-    fn cleanup(&self) {
-        self.prompts.cleanup();
+    fn interactive(&self) -> bool {
+        self.flavor == Flavor::Antigravity
+    }
+
+    fn take_responses(&self) -> Vec<String> {
+        self.acp.lock().unwrap_or_else(PoisonError::into_inner).drain()
+    }
+
+    fn permission_response(&self, req: &PermissionRequest, decision: &Decision) -> Option<String> {
+        self.acp.lock().unwrap_or_else(PoisonError::into_inner).answer(req, decision)
+            .map(|line| line.trim_end_matches('\n').to_string())
     }
 
     fn classify_error(&self, message: &str) -> ErrorKind {
@@ -416,7 +416,11 @@ mod tests {
     }
 
     fn parse_all(backend: &GeminiBackend, fixture: &str) -> Vec<Event> {
-        fixture.lines().flat_map(|l| backend.parse_line(l)).collect()
+        fixture.lines().flat_map(|l| {
+            if backend.flavor == Flavor::Antigravity {
+                serde_json::from_str::<Value>(l).map(|ev| agy_events(&ev)).unwrap_or_default()
+            } else { backend.parse_line(l) }
+        }).collect()
     }
 
     fn failed_message(events: &[Event]) -> String {
@@ -435,6 +439,7 @@ mod tests {
             dir: "/tmp".into(),
             model: "m-1".into(),
             prompt: "do the thing".into(),
+            images: vec![],
             session_id: session.map(String::from),
             mode: Default::default(),
         }
@@ -546,15 +551,15 @@ mod tests {
     #[test]
     fn agy_non_success_statuses_fail() {
         let canceled = r#"{"event":"result","result":{"status":"CANCELED","response":""}}"#;
-        assert_eq!(agy().parse_line(canceled), vec![Event::Failed { message: "antigravity ended with status CANCELED".into() }]);
+        assert_eq!(agy_events(&serde_json::from_str::<Value>(canceled).unwrap()), vec![Event::Failed { message: "antigravity ended with status CANCELED".into() }]);
         let waiting = r#"{"event":"result","result":{"response":"partial"}}"#;
-        assert!(matches!(&agy().parse_line(waiting)[..], [Event::Failed { message }] if message.contains("(none)")));
+        assert!(matches!(&agy_events(&serde_json::from_str::<Value>(waiting).unwrap())[..], [Event::Failed { message }] if message.contains("(none)")));
     }
 
     #[test]
     fn agy_failed_tool_step_gives_a_hint() {
         let line = r#"{"event":"step_update","step_update":{"step_type":"tool","state":"DONE","tool_info":{"name":"run_command","error":{"type":"DENIED","message":"needs permission"}}}}"#;
-        assert_eq!(agy().parse_line(line), vec![Event::Hint("\u{2717} tool failed: needs permission".into())]);
+        assert_eq!(agy_events(&serde_json::from_str::<Value>(line).unwrap()), vec![Event::Hint("\u{2717} tool failed: needs permission".into())]);
     }
 
     #[test]
@@ -582,17 +587,12 @@ mod tests {
     }
 
     #[test]
-    fn agy_command_puts_the_prompt_last_in_argv_and_uses_accept_edits() {
+    fn agy_command_uses_acp_and_keeps_stdin_open_for_approvals() {
         let b = agy();
-        assert_eq!(
-            args(&b.command(&req(None))),
-            ["--output-format", "stream-json", "--mode", "accept-edits", "--model", "m-1", "-p", "do the thing"]
-        );
-        assert_eq!(
-            args(&b.command(&req(Some("cid")))),
-            ["--output-format", "stream-json", "--mode", "accept-edits", "--model", "m-1", "--conversation", "cid", "-p", "do the thing"]
-        );
-        assert_eq!(b.stdin_payload(&req(None)), None);
+        assert_eq!(args(&b.command(&req(None))), ["acp"]);
+        assert!(b.interactive());
+        let init: Value = serde_json::from_str(&b.stdin_payload(&req(None)).unwrap()).unwrap();
+        assert_eq!(init["method"], "initialize");
     }
 
     #[test]
@@ -606,25 +606,14 @@ mod tests {
 
     #[test]
     fn a_huge_prompt_never_becomes_an_oversized_argument() {
-        let dir = std::env::temp_dir().join(format!("jev-agy-prompt-{}", std::process::id()));
         let prompt = "q".repeat(500_000);
         let request = TurnRequest { prompt: prompt.clone(), ..req(Some("cid")) };
-        let mut b = agy();
-        b.prompts = PromptFiles::in_dir(dir.clone());
-        let all = args(&b.command(&request));
-        assert!(all.iter().all(|a| a.len() <= crate::backend::MAX_PROMPT_ARG_BYTES), "an argument is too long");
-        assert_eq!(all[all.len() - 2], "-p");
-        let instruction = &all[all.len() - 1];
-        let path = std::fs::read_dir(&dir).unwrap().next().unwrap().unwrap().path();
-        assert!(instruction.contains(&path.display().to_string()));
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), prompt);
-        b.cleanup();
-        assert!(!path.exists());
-        // Gemini CLI sends the prompt on stdin, which has no such limit.
+        let b = agy();
+        assert_eq!(args(&b.command(&request)), ["acp"]);
+        assert!(b.stdin_payload(&request).unwrap().len() < 500);
         let g = gemini();
         assert!(args(&g.command(&request)).iter().all(|a| a.len() < 100));
         assert_eq!(g.stdin_payload(&request).as_deref(), Some(prompt.as_str()));
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

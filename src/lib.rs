@@ -9,7 +9,9 @@
 //!    curve so you read the number off your own data.
 
 pub mod anthropic;
+pub mod attach;
 pub mod availability;
+pub mod base64;
 pub mod backend;
 pub mod catalog;
 pub mod changes;
@@ -21,6 +23,7 @@ pub mod delegate;
 pub mod doctor;
 pub mod envfile;
 pub mod handoff;
+pub mod host;
 pub mod lineedit;
 pub mod log;
 pub mod mode;
@@ -31,10 +34,13 @@ pub mod providers;
 pub mod repl;
 pub mod router;
 pub mod routing;
+pub mod sessionlog;
 pub mod terminal;
+pub mod termsetup;
 pub mod transcript;
 pub mod turn;
 pub mod turnlog;
+pub mod typeahead;
 pub mod typesafe;
 pub mod uifmt;
 pub mod usage;

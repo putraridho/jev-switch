@@ -1320,9 +1320,10 @@ def a_question_the_cli_withdraws_is_erased_and_the_terminal_and_keyboard_are_lef
             raise Fail(f"the withdrawn question should be gone from the screen:\n{screen}")
         if "✓" in screen.split("withdrawn")[-1] or "denied" in screen or "stopped" in screen:
             raise Fail(f"a withdrawn question is not an answer:\n{screen}")
-        # Raw mode is off again, and echo is as it was before the question (off under the status line).
+        # Raw mode is off again: Ctrl-C is a signal. The turn is still running, so keys are read
+        # one at a time for type-ahead (no ICANON), and echo stays off under the status line.
         now = local_flags(p)
-        if not (now & termios.ICANON and now & termios.ISIG):
+        if not now & termios.ISIG:
             raise Fail(f"the terminal was left in raw mode after the withdrawal (lflag {now:#x})")
         if now & termios.ECHO:
             raise Fail("echo should be as it was during the turn (off), not switched on early")
@@ -1727,6 +1728,67 @@ class Timeout(BaseException):
 
 def on_alarm(signum, frame):
     raise Timeout()
+
+
+@scenario
+def typing_during_a_turn_queues_a_message_that_runs_after_it(w):
+    p = Pty(w, [w.repo], "queue")
+    try:
+        prompt_ready(p)
+        p.send("slow work please\r")
+        p.expect("→ claude", 15, "the route of the slow turn")
+        p.settle(0.3)
+        p.send("and then hello")
+        p.expect("and then hello▏", 5, "the typed message at the end of the status line")
+        p.send("\r")
+        p.expect("(queued: after this turn)", 5, "the queued line")
+        p.expect("✓ claude", 20, "the end of the slow turn")
+        p.expect("› and then hello", 10, "the queued message run as the next one")
+        p.expect(ANSWER, 20, "the answer to the queued message")
+        p.expect("› ", 10, "the next prompt")
+        quit_with_ctrl_d(p)
+    finally:
+        p.close()
+
+
+@scenario
+def esc_stops_the_turn_and_sends_what_was_typed_right_after(w):
+    p = Pty(w, [w.repo], "esc")
+    try:
+        prompt_ready(p)
+        p.send("slow work please\r")
+        p.expect("→ claude", 15, "the route of the slow turn")
+        p.settle(0.3)
+        p.send("do this now")
+        p.expect("do this now▏", 5, "the typed message on the status line")
+        p.send("\x1b")
+        p.expect("(queued: next, after the stop)", 5, "the message sent with Esc")
+        p.expect("stopped", 10, "the stopped turn")
+        p.expect("› do this now", 10, "the message run at once")
+        p.expect(ANSWER, 20, "its answer")
+        quit_with_ctrl_d(p)
+    finally:
+        p.close()
+
+
+@scenario
+def backslash_enter_adds_a_line_and_bang_runs_a_shell_command(w):
+    p = Pty(w, [w.repo], "backslash")
+    try:
+        prompt_ready(p)
+        start = len(p.raw)
+        p.send("first line\\\r")
+        p.settle(0.6)
+        if "→ claude" in p.raw[start:].decode("utf-8", "replace"):
+            raise Fail(f"backslash then Enter must not send the message:\n{p.tail()}")
+        ask(p, "second line")
+        p.send("!echo shell-says-hi\r")
+        p.expect("shell-says-hi", 10, "the shell output")
+        p.expect("exit 0", 10, "the exit status")
+        p.expect("› ", 10, "the next prompt")
+        quit_with_ctrl_d(p)
+    finally:
+        p.close()
 
 
 def main():

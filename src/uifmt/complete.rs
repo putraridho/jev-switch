@@ -43,6 +43,7 @@ fn arg_choices(command: &str, ctx: &CompleteCtx) -> Vec<String> {
         "/orchestrate" => vec!["on", "off"],
         "/mode" => vec!["ask", "edit", "plan", "auto"],
         "/providers" => vec!["refresh"],
+        "/terminal-setup" => vec!["install"],
         "/permissions" => vec!["allow", "remove", "dir", "list"],
         "/model" => ["auto"]
             .into_iter()
@@ -135,7 +136,15 @@ mod tests {
 
     #[test]
     fn completes_slash_commands() {
-        assert_eq!(replacements("/"), vec!["/diff", "/doctor", "/help", "/mode", "/model", "/new", "/orchestrate", "/permissions", "/provider", "/providers", "/quit", "/resume", "/status", "/undo"]);
+        assert_eq!(
+            replacements("/"),
+            vec![
+                "/clear", "/compact", "/config", "/context", "/copy", "/cost", "/diff", "/doctor", "/edit", "/export", "/help", "/init", "/memory", "/mode",
+                "/model", "/new", "/orchestrate", "/permissions", "/provider", "/providers", "/quit", "/resume", "/review", "/status", "/terminal-setup",
+                "/undo", "/why"
+            ]
+        );
+        assert_eq!(replacements("/terminal-setup "), vec!["install"]);
         assert_eq!(replacements("/mo"), vec!["/mode", "/model"]);
         assert_eq!(replacements("/model"), vec!["/model"]);
         assert_eq!(replacements("/prov"), vec!["/provider", "/providers"]);
@@ -213,7 +222,7 @@ mod tests {
             ("/model", Some(" auto|codex|claude:...")),
             ("/prov", Some("ider")),
             ("/provider", Some(" auto|off")),
-            ("/", Some("diff")),
+            ("/", Some("clear")),
             ("/new", None),
             ("/new ", None),
             ("/model co", None),

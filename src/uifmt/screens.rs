@@ -12,7 +12,7 @@ use super::wrap::wrap_to_width;
 pub fn help_text(style: Style) -> String {
     let col = COMMANDS.iter().map(|c| display_width(&usage(c))).max().unwrap_or(0) + 2;
     let mut lines: Vec<String> = Vec::new();
-    for (group, title) in [(Group::Model, "Model & routing"), (Group::Session, "Session"), (Group::Info, "Info")] {
+    for (group, title) in [(Group::Model, "Model & routing"), (Group::Session, "Session"), (Group::Context, "Context & output"), (Group::Project, "Project"), (Group::Info, "Info")] {
         lines.push(style.bold(title));
         for c in COMMANDS.iter().filter(|c| c.group == group) {
             lines.push(format!("  {}{}", style.cyan(&pad_to_width(&usage(c), col)), c.about));

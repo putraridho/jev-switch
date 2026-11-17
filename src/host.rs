@@ -1,0 +1,327 @@
+//! Programs on this machine that session commands hand work to: a shell for `!command`,
+//! `$EDITOR` for `/edit` and `/memory`, and the clipboard for `/copy`. The choices (which
+//! program, how output is cut, how a note for the model reads) are pure and tested; the
+//! process calls around them are thin.
+
+use std::io::Write;
+use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
+
+// ------------------------------------------------------------------- !command
+
+/// Lines of `!command` output kept for the next message.
+pub const SHELL_KEEP_LINES: usize = 200;
+
+/// Bytes of `!command` output kept for the next message.
+pub const SHELL_KEEP_BYTES: usize = 20_000;
+
+/// What a `!command` printed and how it ended.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ShellRun {
+    pub command: String,
+    /// Stdout and stderr, as printed.
+    pub output: String,
+    /// The exit code; `None` when killed by a signal or it could not start.
+    pub code: Option<i32>,
+    /// It could not be started at all; the reason.
+    pub failed: Option<String>,
+}
+
+/// Run `command` with `sh -c` in `dir`, stdin closed, stderr joined to stdout; each line
+/// goes to `on_line` as it is printed, and all of it comes back in the result.
+pub fn run_shell(command: &str, dir: &Path, on_line: &mut dyn FnMut(&str)) -> ShellRun {
+    use std::io::BufRead;
+    let script = format!("exec 2>&1\n{command}");
+    let child = Command::new("sh").arg("-c").arg(script).current_dir(dir).stdin(Stdio::null()).stdout(Stdio::piped()).spawn();
+    let mut child = match child {
+        Ok(c) => c,
+        Err(e) => return ShellRun { command: command.to_string(), output: String::new(), code: None, failed: Some(e.to_string()) },
+    };
+    // The pipe is read on its own thread: a job the command left in the background (`npm run
+    // dev &`) keeps it open after `sh` exits, and the session must not wait for that job.
+    let (lines, received) = std::sync::mpsc::channel::<String>();
+    if let Some(stdout) = child.stdout.take() {
+        std::thread::spawn(move || {
+            let mut reader = std::io::BufReader::new(stdout);
+            let mut raw = Vec::new();
+            while reader.read_until(b'\n', &mut raw).is_ok_and(|n| n > 0) {
+                if lines.send(String::from_utf8_lossy(&raw).into_owned()).is_err() {
+                    return;
+                }
+                raw.clear();
+            }
+        });
+    }
+    let mut output = String::new();
+    let mut take = |line: String, output: &mut String| {
+        on_line(line.trim_end_matches(['\n', '\r']));
+        output.push_str(&line);
+    };
+    let status = loop {
+        match received.recv_timeout(SHELL_POLL) {
+            Ok(line) => take(line, &mut output),
+            // The pipe closed: everything was read.
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break child.wait(),
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+        }
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                // `sh` is done; take what is still on its way, then stop waiting for the pipe.
+                let until = std::time::Instant::now() + SHELL_DRAIN;
+                while let Some(left) = until.checked_duration_since(std::time::Instant::now()) {
+                    match received.recv_timeout(left) {
+                        Ok(line) => take(line, &mut output),
+                        Err(_) => break,
+                    }
+                }
+                break Ok(status);
+            }
+            Ok(None) => {}
+            Err(e) => break Err(e),
+        }
+    };
+    match status {
+        Ok(status) => ShellRun { command: command.to_string(), output, code: status.code(), failed: None },
+        Err(e) => ShellRun { command: command.to_string(), output, code: None, failed: Some(e.to_string()) },
+    }
+}
+
+/// How often a running `!command` is checked for having exited.
+const SHELL_POLL: std::time::Duration = std::time::Duration::from_millis(50);
+
+/// How long output is still taken after the command exited (its last lines in flight).
+const SHELL_DRAIN: std::time::Duration = std::time::Duration::from_millis(200);
+
+/// `text` cut to the last [`SHELL_KEEP_LINES`] lines and [`SHELL_KEEP_BYTES`] bytes (the
+/// end of a long output is usually what matters), and whether anything was cut.
+pub fn keep_tail(text: &str) -> (String, bool) {
+    let lines: Vec<&str> = text.lines().collect();
+    let mut cut = lines.len() > SHELL_KEEP_LINES;
+    let mut kept = lines[lines.len().saturating_sub(SHELL_KEEP_LINES)..].join("\n");
+    if kept.len() > SHELL_KEEP_BYTES {
+        let mut start = kept.len() - SHELL_KEEP_BYTES;
+        while !kept.is_char_boundary(start) {
+            start += 1;
+        }
+        kept = kept[start..].to_string();
+        cut = true;
+    }
+    (kept, cut)
+}
+
+/// The note the next message carries about a `!command`, so the model sees what the
+/// person saw.
+pub fn shell_note(run: &ShellRun) -> String {
+    if let Some(why) = &run.failed {
+        return format!("I tried to run `{}` in the shell, but it could not start: {why}", run.command);
+    }
+    let (kept, cut) = keep_tail(&run.output);
+    let status = match run.code {
+        Some(0) => "it exited 0".to_string(),
+        Some(code) => format!("it exited {code}"),
+        None => "it was stopped by a signal".to_string(),
+    };
+    let cut_note = if cut { " (only the end is shown)" } else { "" };
+    format!("I ran `{}` in the shell; {status}. Its output{cut_note}:\n```\n{}\n```", run.command, kept.trim_end())
+}
+
+// --------------------------------------------------------------------- editor
+
+/// The editor to open: `$VISUAL`, else `$EDITOR`, else `vi`, split into program and
+/// arguments (`code --wait` works).
+pub fn editor_command(visual: Option<&str>, editor: Option<&str>) -> (String, Vec<String>) {
+    let chosen = [visual, editor].into_iter().flatten().map(str::trim).find(|s| !s.is_empty()).unwrap_or("vi");
+    let mut words = chosen.split_whitespace().map(String::from);
+    let program = words.next().unwrap_or_else(|| "vi".to_string());
+    (program, words.collect())
+}
+
+/// Open `path` in the editor and wait for it to close. The error is for the user.
+pub fn edit_file(path: &Path) -> Result<(), String> {
+    let (program, args) = editor_command(crate::envfile::lookup("VISUAL").as_deref(), crate::envfile::lookup("EDITOR").as_deref());
+    let status = Command::new(&program).args(&args).arg(path).status().map_err(|e| format!("cannot start the editor `{program}`: {e}"))?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(format!("the editor `{program}` exited with {status}"))
+    }
+}
+
+/// A private scratch file for composing a message, with `initial` in it.
+pub fn scratch_file(state_dir: Option<&Path>, initial: &str) -> std::io::Result<PathBuf> {
+    let dir = state_dir.map(Path::to_path_buf).unwrap_or_else(std::env::temp_dir);
+    std::fs::create_dir_all(&dir)?;
+    let path = dir.join(format!("message-{}.md", std::process::id()));
+    let mut opts = std::fs::OpenOptions::new();
+    opts.create(true).write(true).truncate(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut opts, 0o600);
+    opts.open(&path)?.write_all(initial.as_bytes())?;
+    Ok(path)
+}
+
+/// Compose a message in the editor: the text written, trimmed; `Ok(None)` when it was left
+/// empty. The scratch file is removed either way.
+pub fn compose(state_dir: Option<&Path>) -> Result<Option<String>, String> {
+    let path = scratch_file(state_dir, "").map_err(|e| format!("cannot make a scratch file: {e}"))?;
+    let edited = edit_file(&path);
+    let text = std::fs::read_to_string(&path);
+    let _ = std::fs::remove_file(&path);
+    edited?;
+    let text = text.map_err(|e| format!("cannot read what was written: {e}"))?;
+    let text = text.trim();
+    Ok((!text.is_empty()).then(|| text.to_string()))
+}
+
+// ------------------------------------------------------------------ clipboard
+
+/// A program that takes text on stdin and puts it on the clipboard.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClipboardTool {
+    WlCopy,
+    Xclip,
+    Xsel,
+    Pbcopy,
+}
+
+impl ClipboardTool {
+    fn program(self) -> &'static str {
+        match self {
+            Self::WlCopy => "wl-copy",
+            Self::Xclip => "xclip",
+            Self::Xsel => "xsel",
+            Self::Pbcopy => "pbcopy",
+        }
+    }
+
+    fn args(self) -> &'static [&'static str] {
+        match self {
+            Self::WlCopy | Self::Pbcopy => &[],
+            Self::Xclip => &["-selection", "clipboard"],
+            Self::Xsel => &["--clipboard", "--input"],
+        }
+    }
+}
+
+/// The clipboard programs worth trying here, best first: Wayland's when a Wayland
+/// display is set, X11's when an X display is, and macOS's.
+pub fn clipboard_tools(wayland: bool, x11: bool, macos: bool) -> Vec<ClipboardTool> {
+    let mut tools = Vec::new();
+    if wayland {
+        tools.push(ClipboardTool::WlCopy);
+    }
+    if x11 {
+        tools.extend([ClipboardTool::Xclip, ClipboardTool::Xsel]);
+    }
+    if macos {
+        tools.push(ClipboardTool::Pbcopy);
+    }
+    tools
+}
+
+/// How text reached the clipboard.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Copied {
+    By(ClipboardTool),
+    /// Through the terminal (OSC 52); it works when the terminal allows it.
+    Terminal,
+}
+
+/// The OSC 52 sequence that asks the terminal to set its clipboard to `text`.
+pub fn osc52(text: &str) -> String {
+    format!("\x1b]52;c;{}\x07", crate::base64::encode(text.as_bytes()))
+}
+
+/// Put `text` on the clipboard: the first clipboard program that works, else OSC 52 on
+/// stderr when it is a terminal. The error is for the user.
+pub fn copy_to_clipboard(text: &str, stderr_tty: bool) -> Result<Copied, String> {
+    let has = |key: &str| std::env::var_os(key).is_some_and(|v| !v.is_empty());
+    let tools = clipboard_tools(has("WAYLAND_DISPLAY"), has("DISPLAY"), cfg!(target_os = "macos"));
+    for tool in tools {
+        let child = Command::new(tool.program()).args(tool.args()).stdin(Stdio::piped()).stdout(Stdio::null()).stderr(Stdio::null()).spawn();
+        let Ok(mut child) = child else { continue };
+        let wrote = child.stdin.take().is_some_and(|mut stdin| stdin.write_all(text.as_bytes()).is_ok());
+        if wrote && child.wait().is_ok_and(|s| s.success()) {
+            return Ok(Copied::By(tool));
+        }
+    }
+    if stderr_tty {
+        let mut err = std::io::stderr();
+        let _ = err.write_all(osc52(text).as_bytes());
+        let _ = err.flush();
+        return Ok(Copied::Terminal);
+    }
+    Err("no clipboard program found (install wl-clipboard or xclip)".to_string())
+}
+
+impl std::fmt::Display for ClipboardTool {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.program())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_shell_command_runs_in_the_project_and_reports_its_exit() {
+        let dir = std::env::temp_dir();
+        let mut seen = Vec::new();
+        let ok = run_shell("echo out; echo err >&2", &dir, &mut |l| seen.push(l.to_string()));
+        assert_eq!((ok.output.as_str(), ok.code), ("out\nerr\n", Some(0)));
+        assert_eq!(seen, ["out", "err"], "each line is passed on as it comes");
+        // A job left in the background holds the pipe open; the command still returns.
+        let started = std::time::Instant::now();
+        let bg = run_shell("sleep 30 & echo started", &dir, &mut |_| {});
+        assert!(started.elapsed() < std::time::Duration::from_secs(5), "waited for a background job: {:?}", started.elapsed());
+        assert_eq!((bg.output.as_str(), bg.code), ("started\n", Some(0)));
+        let bad = run_shell("exit 3", &dir, &mut |_| {});
+        assert_eq!(bad.code, Some(3));
+        assert!(shell_note(&bad).contains("it exited 3"));
+        let note = shell_note(&ok);
+        assert!(note.starts_with("I ran `echo out; echo err >&2` in the shell; it exited 0. Its output:\n```\nout\nerr\n```"), "{note}");
+    }
+
+    #[test]
+    fn long_output_keeps_its_end() {
+        let many: String = (0..SHELL_KEEP_LINES + 5).map(|i| format!("line {i}\n")).collect();
+        let (kept, cut) = keep_tail(&many);
+        assert!(cut && kept.starts_with("line 5\n") && kept.ends_with(&format!("line {}", SHELL_KEEP_LINES + 4)));
+        let wide = "é".repeat(SHELL_KEEP_BYTES);
+        let (kept, cut) = keep_tail(&wide);
+        assert!(cut && kept.len() <= SHELL_KEEP_BYTES);
+        assert_eq!(keep_tail("short"), ("short".to_string(), false));
+        let note = shell_note(&ShellRun { command: "x".into(), output: many, code: Some(0), failed: None });
+        assert!(note.contains("(only the end is shown)"));
+    }
+
+    #[test]
+    fn the_editor_comes_from_visual_then_editor_then_vi() {
+        assert_eq!(editor_command(Some("code --wait"), Some("nano")), ("code".to_string(), vec!["--wait".to_string()]));
+        assert_eq!(editor_command(Some("  "), Some("nano")), ("nano".to_string(), vec![]));
+        assert_eq!(editor_command(None, None), ("vi".to_string(), vec![]));
+    }
+
+    #[test]
+    fn a_scratch_file_is_private() {
+        let dir = std::env::temp_dir().join(format!("jev-host-{}", std::process::id()));
+        let path = scratch_file(Some(&dir), "hi").unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "hi");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(std::fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o600);
+        }
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn clipboard_programs_follow_the_display() {
+        use ClipboardTool::*;
+        assert_eq!(clipboard_tools(true, true, false), [WlCopy, Xclip, Xsel]);
+        assert_eq!(clipboard_tools(false, false, true), [Pbcopy]);
+        assert!(clipboard_tools(false, false, false).is_empty());
+        assert_eq!(osc52("hi"), "\x1b]52;c;aGk=\x07");
+    }
+}

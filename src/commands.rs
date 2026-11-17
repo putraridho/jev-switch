@@ -48,6 +48,34 @@ pub enum Command {
     Resume,
     /// `/permissions [allow <rule> | remove <rule> | dir <path>]`.
     Permissions(PermissionsCmd),
+    /// `/clear`: clear the screen and start a fresh session.
+    Clear,
+    /// `/compact [focus]`: summarise the conversation and go on from the summary.
+    Compact(Option<String>),
+    /// `/context`: how full the last model's context window is.
+    Context,
+    /// `/cost` (also `/usage`): tokens and time of this session, by model.
+    Cost,
+    /// `/why`: why the router picked the last turn's model.
+    Why,
+    /// `/export [file]`: the conversation as Markdown.
+    Export(Option<String>),
+    /// `/copy`: the last answer to the clipboard.
+    Copy,
+    /// `/edit`: write the message in `$EDITOR`.
+    Edit,
+    /// `/init`: have the agent write the project's instructions file.
+    Init,
+    /// `/memory`: open the project's instructions file in `$EDITOR`.
+    Memory,
+    /// `/review [focus]`: review the uncommitted changes, read-only.
+    Review(Option<String>),
+    /// `/config`: the effective settings.
+    Config,
+    /// `/terminal-setup [install]`: Shift-Enter for a new line.
+    TerminalSetup { install: bool },
+    /// `!command`: run it in the shell; its output goes with the next message.
+    Shell(String),
     /// A slash word that is no command, with the closest real one when there is one. Never
     /// sent to the model: a typo must not cost a turn.
     Unknown { typed: String, suggestion: Option<&'static str> },
@@ -106,12 +134,43 @@ pub fn parse(line: &str) -> Command {
     let arg = words.next();
     let extra = words.next().is_some();
     let invalid = |usage: &str| Command::Invalid(usage.to_string());
+    if let Some(shell) = line.strip_prefix('!') {
+        let shell = shell.trim();
+        return if shell.is_empty() { invalid("usage: !<command>, e.g. !git status") } else { Command::Shell(shell.to_string()) };
+    }
+    // The rest of the line after the command word, for commands that take free text.
+    let rest = || {
+        let r = line[head.len()..].trim();
+        (!r.is_empty()).then(|| r.to_string())
+    };
     let lower = head.to_ascii_lowercase();
     let head = lower.as_str();
     match head {
         "/quit" | "/exit" => Command::Quit,
         "/new" => Command::New,
-        "/help" | "/status" | "/doctor" | "/undo" | "/resume" if arg.is_some() => usage_error(head),
+        "/help" | "/status" | "/doctor" | "/undo" | "/resume" | "/clear" | "/context" | "/cost" | "/usage" | "/why" | "/copy" | "/edit"
+        | "/init" | "/memory" | "/config"
+            if arg.is_some() =>
+        {
+            usage_error(if head == "/usage" { "/cost" } else { head })
+        }
+        "/clear" => Command::Clear,
+        "/compact" => Command::Compact(rest()),
+        "/context" => Command::Context,
+        "/cost" | "/usage" => Command::Cost,
+        "/why" => Command::Why,
+        "/export" => Command::Export(rest()),
+        "/copy" => Command::Copy,
+        "/edit" => Command::Edit,
+        "/init" => Command::Init,
+        "/memory" => Command::Memory,
+        "/review" => Command::Review(rest()),
+        "/config" => Command::Config,
+        "/terminal-setup" => match (arg, extra) {
+            (None, _) => Command::TerminalSetup { install: false },
+            (Some("install"), false) => Command::TerminalSetup { install: true },
+            _ => invalid("usage: /terminal-setup [install]"),
+        },
         "/help" => Command::Help,
         "/status" => Command::Status,
         "/doctor" => Command::Doctor,
@@ -262,6 +321,38 @@ mod tests {
         assert_eq!(parse("/permissions dir ~/data"), Command::Permissions(PermissionsCmd::Dir("~/data".into())));
         assert!(matches!(parse("/permissions allow"), Command::Invalid(m) if m.contains("usage: /permissions")));
         assert!(matches!(parse("/permissions allow nonsense("), Command::Invalid(m) if m.contains("not a permission rule")));
+    }
+
+    #[test]
+    fn new_session_and_context_commands() {
+        assert_eq!(parse("/clear"), Command::Clear);
+        assert_eq!(parse("/compact"), Command::Compact(None));
+        assert_eq!(parse("/compact keep the API notes"), Command::Compact(Some("keep the API notes".into())));
+        assert_eq!(parse("/context"), Command::Context);
+        assert_eq!(parse("/cost"), Command::Cost);
+        assert_eq!(parse("/usage"), Command::Cost);
+        assert_eq!(parse("/usage now"), Command::Invalid("usage: /cost".into()));
+        assert_eq!(parse("/why"), Command::Why);
+        assert_eq!(parse("/export"), Command::Export(None));
+        assert_eq!(parse("/export notes/session.md"), Command::Export(Some("notes/session.md".into())));
+        assert_eq!(parse("/copy"), Command::Copy);
+        assert_eq!(parse("/edit"), Command::Edit);
+        assert_eq!(parse("/init"), Command::Init);
+        assert_eq!(parse("/memory"), Command::Memory);
+        assert_eq!(parse("/review"), Command::Review(None));
+        assert_eq!(parse("/review only the parser"), Command::Review(Some("only the parser".into())));
+        assert_eq!(parse("/config"), Command::Config);
+        assert_eq!(parse("/terminal-setup"), Command::TerminalSetup { install: false });
+        assert_eq!(parse("/terminal-setup install"), Command::TerminalSetup { install: true });
+        assert!(matches!(parse("/terminal-setup now"), Command::Invalid(_)));
+        assert_eq!(parse("/clear all"), Command::Invalid("usage: /clear".into()));
+    }
+
+    #[test]
+    fn a_bang_runs_a_shell_command() {
+        assert_eq!(parse("!git status"), Command::Shell("git status".into()));
+        assert_eq!(parse("  ! ls -la "), Command::Shell("ls -la".into()));
+        assert!(matches!(parse("!"), Command::Invalid(m) if m.contains("!git status")));
     }
 
     #[test]

@@ -427,6 +427,9 @@ pub struct Engine {
     track_changes: bool,
     /// What the last turn that started a model changed; consumed by an undo.
     last_changes: Option<ChangeSummary>,
+    /// Images for the next turn (dropped or pasted paths, see [`crate::attach`]); sent with
+    /// every attempt of that turn, then dropped.
+    images: Vec<PathBuf>,
     /// What the tools of the turn in progress did (all attempts), to tell its changes from
     /// other processes'.
     turn_activity: TurnActivity,
@@ -464,6 +467,7 @@ impl Engine {
             orch_setup: None,
             track_changes: true,
             last_changes: None,
+            images: Vec::new(),
             turn_activity: TurnActivity::default(),
             persist: None,
             session_file: None,
@@ -575,6 +579,11 @@ impl Engine {
 
     pub fn set_orchestrate(&mut self, on: bool) {
         self.orchestrate = on;
+    }
+
+    /// Images to send with the next turn (and only that one).
+    pub fn attach_images(&mut self, images: Vec<PathBuf>) {
+        self.images = images;
     }
 
     /// `/new`: forget the conversation and every provider session. The pin, the
@@ -701,9 +710,15 @@ impl Engine {
     pub async fn run_cancellable(&mut self, prompt: &str, ui: &mut dyn Ui, cancel: &Cancel) -> TurnReport {
         let judged = tokio::select! {
             j = self.judge(prompt, ui) => j,
-            _ = cancel.cancelled() => return self.cancelled_report(prompt, None, 0, ui),
+            _ = cancel.cancelled() => {
+                self.images.clear();
+                return self.cancelled_report(prompt, None, 0, ui);
+            }
         };
-        self.run_judged_cancellable(prompt, judged, ui, cancel).await
+        let report = self.run_judged_cancellable(prompt, judged, ui, cancel).await;
+        // Attachments belong to the turn they were sent with.
+        self.images.clear();
+        report
     }
 
     /// Ask Jev. The only network call of a turn before the CLI starts.
@@ -1036,6 +1051,7 @@ impl Engine {
             dir: self.dir.clone(),
             model: chosen.spec.id.to_string(),
             prompt: sent,
+            images: self.images.clone(),
             session_id: self.sessions.session_id(provider).map(String::from),
             mode: self.mode,
         };

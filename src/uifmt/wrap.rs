@@ -13,6 +13,8 @@ pub(super) enum Span {
     Plain,
     Bold,
     Code,
+    /// The target of a link: dimmed, and never broken across rows.
+    Dim,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -66,7 +68,7 @@ pub(super) fn wrap_words(words: &[Word], avail: usize) -> Vec<Vec<Word>> {
     let avail = avail.max(1);
     let (mut lines, mut cur, mut cw): (Vec<Vec<Word>>, Vec<Word>, usize) = (Vec::new(), Vec::new(), 0);
     for word in words {
-        let pieces = if word_width(word) > avail && !is_url(&word_text(word)) {
+        let pieces = if word_width(word) > avail && !is_url(&word_text(word)) && !word.iter().all(|t| t.span == Span::Dim) {
             split_word(word, avail)
         } else {
             vec![word.clone()]

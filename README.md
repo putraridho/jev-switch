@@ -282,20 +282,37 @@ When files changed, `/diff` shows them and `/undo` puts them back.
 | `/resume` | pick up the most recent saved session of this folder other than the running one; again, the one before |
 | `/diff [file]` | show what the last turn changed, coloured, through `$PAGER` (default `less -R`) when it is long and you are on a terminal |
 | `/undo` | revert the last turn's file changes; lists the files and asks `Revert N files? [y/N]` first; refuses without a terminal, and refuses if you edited those files since |
+| `/why` | the full reason the router picked the last turn's model, and whether it is pinned |
+| `/clear` | clear the screen and start a fresh session |
+| `/edit` | write the message in `$VISUAL`/`$EDITOR` (default `vi`), then send it |
+| `/compact [focus]` | have the model summarise the conversation (read-only), then start a fresh session that gets the summary with your next message; frees the context window |
+| `/context` | how full the last model's context window is, as tokens, a share and a bar |
+| `/copy` | copy the last answer to the clipboard (`wl-copy`, `xclip`, `xsel`, `pbcopy`, else the terminal's OSC 52) |
+| `/export [file]` | save the conversation as Markdown (default `jev-session-<time>.md` in the project; never overwrites) |
+| `/init` | have the agent write `AGENTS.md` and point `CLAUDE.md`/`GEMINI.md` at it, so every CLI gets the same instructions |
+| `/memory` | open the instructions file (`AGENTS.md`, `CLAUDE.md` or `GEMINI.md`) in the editor |
+| `/review [focus]` | review the uncommitted changes for bugs, in plan mode (nothing is edited) |
 | `/quit` | exit (also `/exit`) |
 | `/help` | commands and keys |
 | `/status` | project, routing, pin, ready providers with plan use, cooldowns, last turn |
+| `/cost` | tokens and time of this session by model, and how full each plan window is (also `/usage`) |
+| `/config` | the effective settings and the files they live in (keys show only as set / not set) |
 | `/providers [refresh]` | what was detected and why each provider can or cannot run; `refresh` probes again |
 | `/doctor` | the setup check, inside the session |
+| `/terminal-setup [install]` | make Shift-Enter insert a new line: shows the line for your terminal (kitty, Ghostty, Alacritty, foot, WezTerm, VS Code); `install` adds it, with a backup |
+| `!command` | run a shell command in the project; its output is shown and goes with your next message |
 
 A mistyped command (`/provders`) is never sent to the model: it says so and suggests the closest one.
 
 | key | what it does |
 |---|---|
-| Tab | complete a command, or its argument (providers, `provider:model`, changed files for `/diff`); a faint hint after the cursor shows the arguments |
-| Ctrl-C | while a turn runs: stop it (the model CLI and everything it started are killed) and carry on; at the prompt: clear the line, press again within 2 s to exit |
+| Tab | complete a command, or its argument (providers, `provider:model`, changed files for `/diff`), or an `@path` (files of the folder, and tracked files anywhere by name); a faint hint after the cursor shows the arguments |
+| typing during a turn | what you type shows at the end of the live line; Enter queues it to run after the turn (several can wait, in order); whatever is unfinished comes back into the prompt |
+| Esc | while a turn runs: stop it; a message typed before Esc is sent right after (queued ones keep waiting) |
+| Ctrl-C | while a turn runs: stop it (the model CLI and everything it started are killed), drop the queue, and carry on; at the prompt: clear the line, press again within 2 s to exit |
 | Ctrl-D | exit (on an empty line) |
-| Alt-Enter | a new line inside your message; pasting several lines works too |
+| Alt-Enter, `\` then Enter | a new line inside your message; pasting several lines works too; Shift-Enter after `/terminal-setup` |
+| drag and drop | dropping a file or image into the terminal pastes its path; images are sent as images (Claude, Codex) or by path (Gemini, Grok), other files and folders become plain paths the model opens |
 | ↑ / ↓ | earlier messages, kept across runs in `<state dir>/history` (private, 2000 lines) |
 
 Piped input still works (`printf 'explain src/lib.rs\n/quit\n' | jev-code`): one line per
@@ -306,7 +323,9 @@ only the answer on stdout; the route, tool calls and summary go to stderr. `jev-
 reads the prompt from stdin. Exit code 0 answered, 1 failed, 130 stopped with Ctrl-C (2 for a
 bad command line). A one-shot starts a fresh conversation and leaves your saved session alone.
 `-c` / `--continue` resumes the most recent saved session of the folder (in a session, or with `-p`).
-`--no-color` or `NO_COLOR=1` turns colours and the live line off. `jev-code doctor` exits 1 when
+`-m`/`--model <target>` starts pinned (as `/model`), `--mode <mode>` starts in a permission mode (as `/mode`).
+`--no-color` or `NO_COLOR=1` turns colours and the live line off. A turn of 15 s or more rings
+the terminal bell when it ends (`JEV_BELL=off` to silence it). `jev-code doctor` exits 1 when
 something is a Problem.
 
 **Saved sessions.** Every session has its own file under `<state dir>/sessions/<project>/`

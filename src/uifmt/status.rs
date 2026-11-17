@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use super::style::Style;
 use super::text::{human_duration, one_line};
-use super::width::truncate_to_width;
+use super::width::{display_width, truncate_to_width};
 
 /// Braille spinner frames.
 pub const SPINNER_FRAMES: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
@@ -53,8 +53,47 @@ pub fn status_line(model_label: &str, elapsed: Duration, activity: Option<&str>,
     truncate_to_width(&line, width)
 }
 
+/// What was typed during a turn, for the end of the status line: `› fix the tes▏` and
+/// `· 2 queued`. A long draft keeps its end (where the cursor is); new lines show as `⏎`.
+/// At most `width` columns; empty when there is nothing to show.
+pub fn draft_tail(draft: &str, queued: usize, width: usize, style: Style) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    if queued > 0 {
+        parts.push(style.dim(&format!("{queued} queued")));
+    }
+    if !draft.is_empty() {
+        let flat: String = draft.chars().map(|c| if c == '\n' { '⏎' } else { c }).collect();
+        let room = width.saturating_sub(display_width(&parts.join(" ")) + 4);
+        let mut kept: Vec<char> = Vec::new();
+        let mut used = 0;
+        for c in flat.chars().rev() {
+            let w = super::width::char_width(c);
+            if used + w > room {
+                break;
+            }
+            used += w;
+            kept.push(c);
+        }
+        kept.reverse();
+        let shown: String = kept.into_iter().collect();
+        let cut = if shown.chars().count() < flat.chars().count() { "…" } else { "" };
+        parts.push(format!("{} {cut}{shown}▏", style.cyan("›")));
+    }
+    truncate_to_width(&parts.join(" "), width)
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_draft_keeps_its_end_and_counts_the_queue() {
+        assert_eq!(draft_tail("", 0, 40, OFF), "");
+        assert_eq!(draft_tail("fix it", 0, 40, OFF), "› fix it▏");
+        assert_eq!(draft_tail("", 2, 40, OFF), "2 queued");
+        assert_eq!(draft_tail("a\nb", 1, 40, OFF), "1 queued › a⏎b▏");
+        let long = draft_tail("the beginning is cut and the end stays", 0, 16, OFF);
+        assert!(long.ends_with("end stays▏") && long.contains('…') && display_width(&long) <= 16, "{long}");
+    }
+
     use super::*;
     use crate::uifmt::display_width;
     use crate::uifmt::testutil::*;

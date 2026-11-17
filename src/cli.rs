@@ -4,6 +4,9 @@
 
 use std::path::PathBuf;
 
+use crate::mode::Mode;
+use crate::routing::Pin;
+
 /// Where a one-shot prompt (`-p`) comes from.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PromptSource {
@@ -26,7 +29,7 @@ pub enum Action {
     Version,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Args {
     pub action: Action,
     /// The project directory; the current one when absent.
@@ -35,6 +38,10 @@ pub struct Args {
     pub resume: bool,
     /// `--no-color`.
     pub no_color: bool,
+    /// `--model <target>`: the pin to start with (as `/model`).
+    pub pin: Option<Pin>,
+    /// `--mode <mode>`: the permission mode to start in (as `/mode`).
+    pub mode: Option<Mode>,
 }
 
 /// A command line that cannot be run; the text is one line, ready to print.
@@ -63,7 +70,7 @@ where
     S: Into<String>,
 {
     let mut it = args.into_iter().map(Into::into);
-    let mut out = Args { action: Action::Session, dir: None, resume: false, no_color: false };
+    let mut out = Args { action: Action::Session, dir: None, resume: false, no_color: false, pin: None, mode: None };
     let mut doctor = false;
     let mut print: Option<PromptSource> = None;
     let mut only_positionals = false;
@@ -95,6 +102,18 @@ where
                 print = Some(prompt_source(value)?);
             }
             long if long.starts_with("--print=") => print = Some(prompt_source(long["--print=".len()..].to_string())?),
+            "-m" | "--model" => {
+                let Some(value) = it.next() else { return err(format!("{arg} needs a model, e.g. {arg} codex or {arg} opus")) };
+                out.pin = Some(Pin::parse(&value).map_err(UsageError)?);
+            }
+            long if long.starts_with("--model=") => out.pin = Some(Pin::parse(&long["--model=".len()..]).map_err(UsageError)?),
+            "--mode" => {
+                let Some(value) = it.next() else { return err("--mode needs a mode: ask, edit, plan or auto") };
+                out.mode = Some(value.parse().map_err(|e: crate::mode::UnknownMode| UsageError(e.to_string()))?);
+            }
+            long if long.starts_with("--mode=") => {
+                out.mode = Some(long["--mode=".len()..].parse().map_err(|e: crate::mode::UnknownMode| UsageError(e.to_string()))?);
+            }
             other => return err(format!("unknown option {other}")),
         }
     }
@@ -127,13 +146,17 @@ OPTIONS:
                          stderr); `-p -` reads the prompt from stdin. Exit code: 0 answered,
                          1 failed, 130 stopped with Ctrl-C
   -c, --continue         resume the saved session of this directory
+  -m, --model <target>   start pinned to a model or provider, as /model (codex, opus,
+                         claude:claude-sonnet-5-5, auto)
+      --mode <mode>      start in a permission mode, as /mode: ask, edit, plan or auto
       --no-color         no colours or styling (also: NO_COLOR=1)
   -h, --help             this text
   -V, --version          version
 
-IN SESSION: type /help for the commands and keys. Tab completes commands and models,
-Ctrl-C stops the running turn (twice at the prompt, or Ctrl-D, to exit), Alt-Enter adds a
-line to your message.
+IN SESSION: type /help for the commands and keys. Tab completes commands, models and
+@paths; Esc or Ctrl-C stops the running turn (Ctrl-C twice at the prompt, or Ctrl-D, to
+exit); Alt-Enter or \\ then Enter adds a line; Enter while a turn runs queues the message;
+!command runs a shell command; drop a file or image into the terminal to attach it.
 
 A provider is used only if it is installed and logged in (or has its key), is not
 cooling down after a usage limit, and its billing is allowed. When a turn hits a limit
@@ -159,9 +182,12 @@ ENVIRONMENT (each may also be a KEY=VALUE line in ~/.jev-router.env):
   CODE_STRONG_THRESHOLD      with routing off: Jev reasoning confidence for Opus (default 0.85)
   DOWNGRADE_AFTER            with routing off: easier turns before stepping back to Sonnet (default 2)
   PAGER                      what /diff pipes long output through (default: less -R)
+  VISUAL | EDITOR            the editor of /edit and /memory (default: vi)
+  JEV_BELL                   off: no bell when a long turn ends
   NO_COLOR                   set to turn colours off
 
-Edits are applied without asking, so use it inside a git repo.";
+In the default edit mode, file edits are applied without asking (commands still ask), so
+use it inside a git repo; /undo puts back what the last turn changed.";
 
 #[cfg(test)]
 mod tests {
@@ -177,7 +203,7 @@ mod tests {
 
     #[test]
     fn no_arguments_is_a_session_in_the_current_directory() {
-        assert_eq!(ok(&[]), Args { action: Action::Session, dir: None, resume: false, no_color: false });
+        assert_eq!(ok(&[]), Args { action: Action::Session, dir: None, resume: false, no_color: false, pin: None, mode: None });
     }
 
     #[test]
@@ -245,6 +271,19 @@ mod tests {
     }
 
     #[test]
+    fn model_and_mode_set_how_the_session_starts() {
+        use crate::backend::ProviderId;
+        assert_eq!(ok(&["--model", "codex"]).pin, Some(Pin::Provider(ProviderId::Codex)));
+        assert_eq!(ok(&["-m", "opus", "proj"]).pin, Some(Pin::Model(ProviderId::Claude, "claude-opus-5-5".into())));
+        assert_eq!(ok(&["--model=auto"]).pin, Some(Pin::Auto));
+        assert_eq!(ok(&["--mode", "plan"]).mode, Some(Mode::Plan));
+        assert_eq!(ok(&["--mode=auto"]).mode, Some(Mode::Auto));
+        assert!(bad(&["--model"]).contains("needs a model"));
+        assert!(bad(&["--model", "nonsense"]).contains("unknown provider"));
+        assert!(bad(&["--mode", "yolo"]).contains("ask, edit, plan or auto"));
+    }
+
+    #[test]
     fn double_dash_makes_the_rest_positional() {
         assert_eq!(ok(&["--", "-weird-dir"]).dir, Some(PathBuf::from("-weird-dir")));
     }
@@ -256,7 +295,7 @@ mod tests {
 
     #[test]
     fn help_mentions_every_option_the_parser_accepts() {
-        for flag in ["-p, --print", "-c, --continue", "--no-color", "-h, --help", "-V, --version", "doctor"] {
+        for flag in ["-p, --print", "-c, --continue", "-m, --model", "--mode", "--no-color", "-h, --help", "-V, --version", "doctor"] {
             assert!(HELP.contains(flag), "{flag}");
         }
     }

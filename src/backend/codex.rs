@@ -72,8 +72,22 @@ impl CodexBackend {
 
     /// New turn: `-C` and `-s` are only accepted by plain `exec`.
     fn fresh_args(&self, cmd: &mut Command, req: &TurnRequest) {
-        cmd.args(["exec", "--json", "-C"]).arg(&req.dir).args(["-s", self.sandbox_arg(), "-m", &req.model]);
+        cmd.args(["exec", "--json", "-C"]).arg(&req.dir).args(["-s", self.sandbox_for(req), "-m", &req.model]);
         cmd.args(self.mcp_overrides());
+        // `--image=<path>` in one argument, so the flag can never take the next one as a value.
+        for image in req.images.iter().filter(|p| takes_image_flag(p)) {
+            cmd.arg(format!("--image={}", image.display()));
+        }
+    }
+
+    /// The sandbox of this turn: read-only in plan mode (so `/review` and `/compact` cannot
+    /// edit), else the configured one.
+    fn sandbox_for(&self, req: &TurnRequest) -> &str {
+        if req.mode == crate::mode::Mode::Plan {
+            "read-only"
+        } else {
+            self.sandbox_arg()
+        }
     }
 
     /// `-c mcp_servers.<name>.command=... -c mcp_servers.<name>.args=[...]`: Codex has
@@ -108,9 +122,11 @@ impl CodexBackend {
     /// from `current_dir` and the sandbox is re-asserted as a config override. The
     /// trailing `-` makes codex read the prompt from stdin.
     fn resume_args(&self, cmd: &mut Command, req: &TurnRequest, thread_id: &str) {
-        let sandbox = format!("sandbox_mode=\"{}\"", self.sandbox_arg());
+        let sandbox = format!("sandbox_mode=\"{}\"", self.sandbox_for(req));
         cmd.args(["exec", "resume", "--json", "-m", &req.model, "-c", &sandbox]);
         cmd.args(self.mcp_overrides());
+        // No `--image` here: a resumed turn names its images in the prompt (see
+        // `stdin_payload`), so the thread id is never taken for an image path.
         cmd.args([thread_id, "-"]);
     }
 
@@ -131,6 +147,12 @@ impl CodexBackend {
             _ => vec![],
         }
     }
+}
+
+/// Whether an image goes as `--image=`: Codex splits that flag's value on commas, so a path
+/// with one is named in the prompt instead.
+fn takes_image_flag(path: &std::path::Path) -> bool {
+    !path.to_string_lossy().contains(',')
 }
 
 /// `/usr/bin/bash -lc 'cat a.txt'` is noise; the user wants `cat a.txt`.
@@ -203,6 +225,14 @@ impl Backend for CodexBackend {
 
     fn supports_mcp(&self) -> bool {
         true
+    }
+
+    /// The prompt, naming the images that could not go as `--image=` (all of them on a
+    /// resumed turn) so Codex opens them by path.
+    fn stdin_payload(&self, req: &TurnRequest) -> Option<String> {
+        let listed: Vec<std::path::PathBuf> =
+            req.images.iter().filter(|p| req.session_id.is_some() || !takes_image_flag(p)).cloned().collect();
+        Some(super::prompt_with_images(&TurnRequest { images: listed, ..req.clone() }))
     }
 
     fn attach_mcp(&mut self, mcp: &McpAttachment) {
@@ -283,7 +313,36 @@ mod tests {
     }
 
     fn req(session: Option<&str>) -> TurnRequest {
-        TurnRequest { dir: "/tmp/proj".into(), model: "gpt-x".into(), prompt: "hi".into(), session_id: session.map(String::from), mode: Default::default() }
+        TurnRequest { dir: "/tmp/proj".into(), model: "gpt-x".into(), prompt: "hi".into(), images: vec![], session_id: session.map(String::from), mode: Default::default() }
+    }
+
+    #[test]
+    fn image_arguments_for_fresh_and_resume() {
+        let args = |request: &TurnRequest| -> Vec<String> { backend().command(request).as_std().get_args().map(|a| a.to_string_lossy().into_owned()).collect() };
+        let mut fresh = req(None);
+        fresh.images = vec!["/tmp/picture.png".into(), "/tmp/shot 10,30.png".into()];
+        assert!(args(&fresh).contains(&"--image=/tmp/picture.png".to_string()));
+        assert!(!args(&fresh).iter().any(|a| a.contains("10,30")), "a path with a comma is not a flag value");
+        let payload = backend().stdin_payload(&fresh).unwrap_or_default();
+        assert!(payload.contains("/tmp/shot 10,30.png") && !payload.contains("/tmp/picture.png"), "{payload}");
+
+        let mut resumed = req(Some("thread"));
+        resumed.images = vec!["/tmp/picture.png".into()];
+        let a = args(&resumed);
+        assert!(!a.iter().any(|x| x.starts_with("--image")), "{a:?}");
+        assert_eq!(&a[a.len() - 2..], ["thread", "-"], "the thread id stays the thread id");
+        assert!(backend().stdin_payload(&resumed).unwrap_or_default().contains("/tmp/picture.png"));
+    }
+
+    #[test]
+    fn plan_mode_runs_codex_read_only() {
+        let args = |request: &TurnRequest| -> Vec<String> { backend().command(request).as_std().get_args().map(|a| a.to_string_lossy().into_owned()).collect() };
+        for session in [None, Some("thread")] {
+            let mut r = req(session);
+            r.mode = crate::mode::Mode::Plan;
+            let a = args(&r);
+            assert!(a.windows(2).any(|w| w == ["-s", "read-only"]) || a.contains(&"sandbox_mode=\"read-only\"".to_string()), "{a:?}");
+        }
     }
 
     #[test]

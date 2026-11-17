@@ -20,9 +20,13 @@ use crate::permissions::{self, PermissionsCmd};
 use crate::routing::Pin as ModelPin;
 use crate::terminal;
 use crate::turn::{Cancel, Engine, TurnReport, TurnStatus};
+use crate::typeahead::TypeAhead;
 use crate::uifmt::{self, Style};
 use crate::views;
 use crate::changes::UndoError;
+use crate::sessionlog::{SessionLog, TurnRecord};
+
+mod session_cmds;
 
 // ------------------------------------------------------------------- interrupts
 
@@ -89,21 +93,47 @@ async fn press_outside_pager(interrupt: &mut dyn Interrupt, console: &Console) {
     }
 }
 
-/// Run one turn that Ctrl-C can stop. The status line shows while it runs and is gone when
-/// this returns.
+/// Which key asked a turn to stop.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StopKey {
+    CtrlC,
+    Esc,
+}
+
+/// The next press that stops the turn: Ctrl-C (outside a pager), or Esc when keys are read
+/// during the turn.
+async fn stop_pressed(interrupt: &mut dyn Interrupt, console: &Console, ahead: Option<&TypeAhead>) -> StopKey {
+    let esc = async {
+        match ahead {
+            Some(a) => a.escaped().await,
+            None => std::future::pending::<()>().await,
+        }
+    };
+    tokio::select! {
+        _ = press_outside_pager(interrupt, console) => StopKey::CtrlC,
+        _ = esc => StopKey::Esc,
+    }
+}
+
+/// Run one turn that Ctrl-C (or Esc) can stop. The status line shows while it runs and is
+/// gone when this returns. With type-ahead on, keys typed meanwhile queue messages on the
+/// console; a Ctrl-C stop drops that queue (Esc keeps it: it is how a message is sent now).
 pub async fn run_turn(engine: &mut Engine, console: &Console, prompt: &str, interrupt: &mut dyn Interrupt) -> TurnEnd {
     interrupt.drain();
     let cancel = Cancel::new();
     let started = Instant::now();
     console.begin_turn();
     let _ticker = console.ticker();
+    let ahead = console.type_ahead().then(|| TypeAhead::start(console.clone()));
     let mut ui = console.clone();
+    let mut stopped_by: Option<StopKey> = None;
     let report = {
         let turn = engine.run_cancellable(prompt, &mut ui, &cancel);
         tokio::pin!(turn);
         tokio::select! {
             report = &mut turn => Some(report),
-            _ = press_outside_pager(interrupt, console) => {
+            key = stop_pressed(interrupt, console, ahead.as_ref()) => {
+                stopped_by = Some(key);
                 cancel.cancel();
                 console.set_activity("stopping...");
                 tokio::select! {
@@ -116,6 +146,19 @@ pub async fn run_turn(engine: &mut Engine, console: &Console, prompt: &str, inte
     };
     // A pager still open (its question was withdrawn) keeps the terminal until it is closed.
     console.pager_closed().await;
+    if let Some(a) = ahead {
+        a.finish();
+    }
+    // Ctrl-C stops a turn as a signal, or as a key at an approval question (which reads keys
+    // raw): either way it is not Esc, and the queue goes.
+    let cancelled = report.as_ref().is_some_and(|r| r.status == TurnStatus::Cancelled);
+    if stopped_by == Some(StopKey::CtrlC) || (cancelled && stopped_by != Some(StopKey::Esc)) {
+        let dropped = console.clear_queue();
+        if dropped > 0 {
+            let noun = if dropped == 1 { "message" } else { "messages" };
+            console.err(&format!("  {}", console.err_style().dim(&format!("dropped {dropped} queued {noun} (Ctrl-C); Esc stops and keeps them"))));
+        }
+    }
     console.end_turn();
     match report {
         Some(r) => TurnEnd::Done(Box::new(r), started.elapsed()),
@@ -148,11 +191,28 @@ pub struct Repl {
     /// Whether stdout is a terminal, which decides if long output may go through a pager.
     paging: bool,
     last_summary: Option<uifmt::SummaryFacts>,
+    /// The turns of this session, for `/cost`, `/export` and `/copy`.
+    log: SessionLog,
+    /// Notes that go with the next message: `!command` output, a `/compact` summary.
+    carry: Vec<String>,
+    /// Where scratch files go (`/edit`); the temp folder when `None`.
+    state_dir: Option<std::path::PathBuf>,
 }
 
 impl Repl {
     pub fn new(engine: Engine, console: Console, home: Option<String>, paging: bool) -> Self {
-        Self { engine, console, home, paging, last_summary: None }
+        Self { engine, console, home, paging, last_summary: None, log: SessionLog::default(), carry: Vec::new(), state_dir: None }
+    }
+
+    /// Keep scratch files (the message `/edit` composes) in the state folder.
+    pub fn with_state_dir(mut self, dir: Option<std::path::PathBuf>) -> Self {
+        self.state_dir = dir;
+        self
+    }
+
+    /// The session's turns so far.
+    pub fn log(&self) -> &SessionLog {
+        &self.log
     }
 
     fn now(&self) -> u64 {
@@ -205,10 +265,33 @@ impl Repl {
             }
             Command::ShowMode => self.console.out(&format!("  mode: {}", views::mode_line(self.engine.mode()))),
             Command::New => {
-                self.engine.new_session();
-                self.last_summary = None;
+                self.fresh_session();
                 self.console.out(&format!("{} new session", style.green("✓")));
             }
+            Command::Clear => {
+                self.console.clear_screen();
+                self.fresh_session();
+                self.console.out(&format!("{} new session", style.green("✓")));
+            }
+            Command::Compact(focus) => return self.compact(focus.as_deref(), io).await,
+            Command::Context => self.page_out(&self.context_text()),
+            Command::Cost => self.page_out(&self.cost_text()),
+            Command::Why => {
+                let pin = self.engine.pin().to_string();
+                self.page_out(&uifmt::why_text(self.console.last_route().as_ref(), &pin, self.engine.enabled(), style));
+            }
+            Command::Export(path) => self.export(path.as_deref()),
+            Command::Copy => self.copy(),
+            Command::Edit => return self.edit(io).await,
+            Command::Init => return self.canned(session_cmds::INIT_PROMPT, "/init", None, io).await,
+            Command::Memory => self.memory(),
+            Command::Review(focus) => {
+                let prompt = session_cmds::review_prompt(focus.as_deref());
+                return self.canned(&prompt, "/review", Some(crate::mode::Mode::Plan), io).await;
+            }
+            Command::Config => self.page_out(&self.config_text()),
+            Command::TerminalSetup { install } => self.terminal_setup(install, io),
+            Command::Shell(command) => self.shell(&command),
             Command::Resume => self.resume(),
             Command::Permissions(cmd) => self.permissions(cmd),
             Command::Diff(path) => self.diff(path.as_deref()),
@@ -233,14 +316,52 @@ impl Repl {
 
     // ----------------------------------------------------------------- turns
 
+    /// A message from the person: sent with the notes waiting for it, attachments said.
     async fn prompt(&mut self, text: &str, io: &mut Io<'_>) -> Flow {
-        match run_turn(&mut self.engine, &self.console, text, io.interrupt).await {
+        let typed = self.take_attachments(text);
+        let sent = self.with_carry(&typed);
+        self.run_recorded(&sent, text, io).await
+    }
+
+    /// Run `sent` as a turn and keep it in the session's log under `label`. The waiting
+    /// notes are dropped once a model was started (they went with it).
+    async fn run_recorded(&mut self, sent: &str, label: &str, io: &mut Io<'_>) -> Flow {
+        match run_turn(&mut self.engine, &self.console, sent, io.interrupt).await {
             TurnEnd::Aborted => Flow::Aborted,
             TurnEnd::Done(report, elapsed) => {
+                // The notes (a `/compact` summary, `!command` output) are kept until a model
+                // has answered with them: a failed or stopped turn must not lose them.
+                if report.status == TurnStatus::Answered {
+                    self.carry.clear();
+                }
+                self.record(label, &report, elapsed);
                 self.finish(&report, elapsed);
                 Flow::Continue
             }
         }
+    }
+
+    /// Add a finished turn to the session's log.
+    fn record(&mut self, prompt: &str, report: &TurnReport, elapsed: Duration) {
+        let route = report.provider.zip(report.model.clone());
+        let model = route.as_ref().map(|(p, m)| format!("{p} · {m}")).unwrap_or_default();
+        self.log.push(TurnRecord {
+            prompt: prompt.to_string(),
+            answer: report.text.clone(),
+            status: report.status,
+            model,
+            route,
+            usage: report.usage,
+            elapsed_ms: elapsed.as_millis() as u64,
+        });
+    }
+
+    /// `/new`, `/clear`, `/resume`: nothing of the old conversation stays in this session.
+    fn fresh_session(&mut self) {
+        self.engine.new_session();
+        self.last_summary = None;
+        self.log.clear();
+        self.carry.clear();
     }
 
     /// What follows a turn: the full "nothing can run" message when that was the outcome,
@@ -259,6 +380,9 @@ impl Repl {
         let facts = views::summary_facts(report, elapsed.as_millis() as u64, &self.engine.runtime);
         let files = report.changes.as_ref().map(views::file_changes).unwrap_or_default();
         self.console.turn_end(&facts, &files);
+        if bell_after(elapsed, crate::envfile::lookup("JEV_BELL").as_deref()) {
+            self.console.bell();
+        }
         // Changes other processes made during the turn: said apart from the turn's own files.
         let warning = report.changes.as_ref().and_then(|c| c.outside.warning());
         if let Some(w) = warning {
@@ -270,7 +394,8 @@ impl Repl {
     /// `-p`: one turn; the answer alone on stdout (laid out for the terminal when stdout is
     /// one), everything else on stderr. The process exit code.
     pub async fn one_shot(&mut self, prompt: &str, interrupt: &mut dyn Interrupt) -> i32 {
-        match run_turn(&mut self.engine, &self.console, prompt, interrupt).await {
+        let prompt = self.take_attachments(prompt);
+        match run_turn(&mut self.engine, &self.console, &prompt, interrupt).await {
             TurnEnd::Aborted => 130,
             TurnEnd::Done(report, elapsed) => {
                 if report.status == TurnStatus::Answered {
@@ -338,6 +463,8 @@ impl Repl {
         match self.engine.resume() {
             Ok(info) => {
                 self.last_summary = None;
+                self.log.clear();
+                self.carry.clear();
                 self.console.out(&views::resumed_line(&info, self.now(), style));
             }
             Err(e @ (ResumeError::NotFound | ResumeError::Disabled)) => {
@@ -426,6 +553,15 @@ impl Repl {
             Err(e) => self.console.out(&uifmt::problem_block("Not undone", &[e.to_string()], &[], style)),
         }
     }
+}
+
+/// A turn at least this long rings the bell when it ends, so the person can look away.
+pub const BELL_AFTER: Duration = Duration::from_secs(15);
+
+/// Whether a turn that took `elapsed` rings the bell: long enough, and `JEV_BELL` is not off.
+pub fn bell_after(elapsed: Duration, setting: Option<&str>) -> bool {
+    let off = setting.is_some_and(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "off" | "0" | "false" | "no"));
+    elapsed >= BELL_AFTER && !off
 }
 
 fn on_off(on: bool) -> &'static str {
@@ -784,6 +920,120 @@ mod tests {
         let e = r.err.text();
         assert!(e.contains("⏺ Edit a.txt") && e.contains("✓ claude"), "{e}");
         assert!(!e.contains("the answer"), "the answer is not repeated on stderr: {e}");
+    }
+
+    /// A prompt through the REPL, routed without Jev (the test router has no server).
+    async fn send(r: &mut Rig, line: &str) {
+        let mut int = Presses { pending: vec![] };
+        let mut io = Io { interrupt: &mut int, confirm: None };
+        r.repl.handle(crate::commands::parse(line), &mut io).await;
+    }
+
+    #[tokio::test]
+    async fn cost_context_copy_and_export_read_the_session() {
+        let mut r = rig("session-cmds", ANSWER);
+        run(&mut r, "/cost").await;
+        run(&mut r, "/context").await;
+        run(&mut r, "/export").await;
+        let o = r.out.text();
+        assert!(o.contains("No turns in this session yet") && o.contains("No turn has run yet") && o.contains("Nothing to export yet"), "{o}");
+        send(&mut r, "change a").await;
+        r.out.clear();
+        run(&mut r, "/cost").await;
+        let o = r.out.text();
+        assert!(o.contains("This session") && o.contains("1 turn") && o.contains("in     2K (cached     1K)"), "{o}");
+        r.out.clear();
+        run(&mut r, "/context").await;
+        let o = r.out.text();
+        assert!(o.contains("2K of") && o.contains("turns       1"), "{o}");
+        r.out.clear();
+        run(&mut r, "/export session.md").await;
+        assert!(r.out.text().contains("✓ saved 1 turns to"), "{}", r.out.text());
+        let md = std::fs::read_to_string(r.dir.join("session.md")).unwrap();
+        assert!(md.contains("> change a") && md.contains("the answer"), "{md}");
+        r.out.clear();
+        run(&mut r, "/export session.md").await;
+        assert!(r.out.text().contains("exists already"), "an export never overwrites: {}", r.out.text());
+        assert_eq!(r.repl.log().last_answer(), Some("the answer"));
+        run(&mut r, "/new").await;
+        assert!(r.repl.log().is_empty(), "a new session starts a new log");
+    }
+
+    #[tokio::test]
+    async fn a_shell_command_shows_its_output_and_goes_with_the_next_message() {
+        // The fake model echoes what it was sent, so the note can be seen arriving.
+        let mut r = rig("bang", "read -r first; printf 'FIN:%s\\n' \"$first\"");
+        run(&mut r, "!echo hello-from-shell").await;
+        let o = r.out.text();
+        assert!(o.contains("hello-from-shell") && o.contains("✓ exit 0") && o.contains("goes with your next message"), "{o}");
+        assert_eq!(r.repl.carry.len(), 1);
+        assert!(r.repl.with_carry("now fix it").starts_with("I ran `echo hello-from-shell` in the shell; it exited 0."));
+        assert!(r.repl.with_carry("now fix it").ends_with("---\n\nnow fix it"));
+        send(&mut r, "now fix it").await;
+        assert!(r.repl.carry.is_empty(), "the note went with the message");
+        assert_eq!(r.repl.log().turns()[0].prompt, "now fix it", "the log keeps what the person typed");
+    }
+
+    #[tokio::test]
+    async fn a_failed_turn_keeps_the_notes_for_the_next_message() {
+        let mut r = rig("bang-fail", "printf 'FAIL:segmentation fault\\n'");
+        run(&mut r, "!echo kept").await;
+        send(&mut r, "use it").await;
+        assert_eq!(r.repl.carry.len(), 1, "the shell output still waits for a turn that answers");
+    }
+
+    #[tokio::test]
+    async fn why_config_and_terminal_setup_print_their_screens() {
+        let mut r = rig("why", ANSWER);
+        run(&mut r, "/why").await;
+        assert!(r.out.text().contains("No turn has been routed yet"), "{}", r.out.text());
+        send(&mut r, "change a").await;
+        r.out.clear();
+        run(&mut r, "/why").await;
+        let o = r.out.text();
+        assert!(o.contains("Last route") && o.contains("claude") && o.contains("setting"), "{o}");
+        r.out.clear();
+        run(&mut r, "/config").await;
+        let o = r.out.text();
+        assert!(o.contains("mode") && o.contains("JEV_API_KEY") && o.contains("permissions"), "{o}");
+        assert!(!o.contains("sk-"), "no key value is ever shown");
+        r.out.clear();
+        run(&mut r, "/terminal-setup").await;
+        assert!(r.out.text().contains("Shift-Enter for a new line"), "{}", r.out.text());
+    }
+
+    #[tokio::test]
+    async fn compact_starts_fresh_with_the_summary_waiting() {
+        let mut r = rig("compact", "printf 'FIN:SUMMARY of it all\\n'");
+        run(&mut r, "/compact").await;
+        assert!(r.out.text().contains("Nothing to compact yet"), "{}", r.out.text());
+        send(&mut r, "first").await;
+        let mode = r.repl.engine.mode();
+        r.out.clear();
+        run(&mut r, "/compact keep names").await;
+        let o = r.out.text();
+        assert!(o.contains("✓ compacted 1 turn"), "{o}");
+        assert_eq!(r.repl.engine.mode(), mode, "the mode is put back after the read-only summary");
+        assert!(r.repl.log().is_empty());
+        assert!(r.repl.with_carry("next").starts_with("Summary of our conversation so far") && r.repl.with_carry("next").contains("SUMMARY of it all"));
+    }
+
+    #[tokio::test]
+    async fn review_runs_read_only_and_puts_the_mode_back() {
+        let mut r = rig("review", ANSWER);
+        run(&mut r, "/mode auto").await;
+        send(&mut r, "/review").await;
+        assert!(r.err.text().contains("/review runs in plan mode"), "{}", r.err.text());
+        assert_eq!(r.repl.engine.mode(), crate::mode::Mode::Auto);
+        assert_eq!(r.repl.log().turns()[0].prompt, "/review");
+    }
+
+    #[test]
+    fn only_a_long_turn_rings_the_bell_unless_it_is_off() {
+        assert!(bell_after(Duration::from_secs(20), None));
+        assert!(!bell_after(Duration::from_secs(3), None));
+        assert!(!bell_after(Duration::from_secs(20), Some("off")));
+        assert!(bell_after(Duration::from_secs(20), Some("on")));
     }
 
     #[test]

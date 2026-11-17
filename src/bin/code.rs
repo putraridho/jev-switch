@@ -78,7 +78,13 @@ fn console_for(term: &Term, project: &Path, stream_answers: bool) -> Console {
         stream_answers,
     });
     if term.interactive() && stream_answers {
-        console.with_key_reader(jev_router::console::terminal_keys())
+        let console = console.with_key_reader(jev_router::console::terminal_keys());
+        // What is typed during a turn shows on the status line: without one it would be blind.
+        if term.live() {
+            console.with_type_ahead()
+        } else {
+            console
+        }
     } else {
         console
     }
@@ -173,14 +179,23 @@ async fn start_runtime(console: &Console) -> Runtime {
 /// Settings come from the environment or `~/.jev-router.env`, like every other setting.
 /// `can_ask`: the console can put an approval question to a person
 /// ([`Console::can_ask`]); otherwise the CLIs run without the host prompt protocol.
-fn engine_for(runtime: Runtime, router: Router, dir: PathBuf, can_ask: bool) -> Engine {
-    Engine::new(runtime, router, dir)
+fn engine_for(args: &Args, runtime: Runtime, router: Router, dir: PathBuf, can_ask: bool) -> Engine {
+    let mode = args.mode.unwrap_or_else(|| mode::initial(envfile::lookup("CODE_PERMISSION_MODE").as_deref()));
+    let engine = Engine::new(runtime, router, dir)
         .with_backend_factory(Box::new(providers::run_backends(can_ask)))
         .with_enabled(commands::routing_enabled(envfile::lookup("JEV_PROVIDERS").as_deref()))
-        .with_mode(mode::initial(envfile::lookup("CODE_PERMISSION_MODE").as_deref()))
+        .with_mode(mode)
         .with_orchestrate(orchestrate::enabled_from_env(envfile::lookup("JEV_ORCHESTRATE").as_deref()))
         .with_orch_setup(Setup::detect())
-        .with_downgrade_after(envfile::lookup_f64("DOWNGRADE_AFTER", 2.0) as u32)
+        .with_downgrade_after(envfile::lookup_f64("DOWNGRADE_AFTER", 2.0) as u32);
+    match &args.pin {
+        Some(pin) => {
+            let mut engine = engine;
+            engine.set_pin(pin.clone());
+            engine
+        }
+        None => engine,
+    }
 }
 
 // ----------------------------------------------------------------------- doctor
@@ -223,7 +238,7 @@ async fn print_mode(args: &Args, source: &PromptSource, dir: &Path, term: &Term,
     let runtime = start_runtime(&console).await;
     // A one-shot starts a fresh conversation and leaves the saved session alone, unless -c asks to continue it.
     let persist = if args.resume { state_dir } else { None };
-    let engine = engine_for(runtime, router, dir.to_path_buf(), console.can_ask()).with_persistence(persist);
+    let engine = engine_for(args, runtime, router, dir.to_path_buf(), console.can_ask()).with_persistence(persist);
     let mut repl = Repl::new(engine, console.clone(), std::env::var("HOME").ok(), false);
     if args.resume {
         resume_quietly(&mut repl, &console);
@@ -272,9 +287,9 @@ async fn session(args: &Args, dir: &Path, term: &Term, console: Console, state_d
         }
     };
     let runtime = start_runtime(&console).await;
-    let engine = engine_for(runtime, router, dir.to_path_buf(), console.can_ask()).with_persistence(state_dir.clone());
+    let engine = engine_for(args, runtime, router, dir.to_path_buf(), console.can_ask()).with_persistence(state_dir.clone());
     let home = std::env::var("HOME").ok();
-    let mut repl = Repl::new(engine, console.clone(), home.clone(), term.stdout_tty);
+    let mut repl = Repl::new(engine, console.clone(), home.clone(), term.stdout_tty).with_state_dir(state_dir.clone());
     startup(&mut repl, args, term, &console, state_dir.as_deref(), home.as_deref());
     recheck_slow_providers(&mut repl, &console);
 
@@ -347,6 +362,9 @@ async fn edit_loop(repl: &mut Repl, term: &Term, console: &Console, state_dir: O
             return pipe_loop(repl, sigint).await;
         }
     };
+    if let Some(helper) = editor.helper_mut() {
+        helper.set_project(repl.engine.dir());
+    }
     let mut guard = InterruptGuard::default();
     loop {
         settle_late_probes(repl);
@@ -355,7 +373,9 @@ async fn edit_loop(repl: &mut Repl, term: &Term, console: &Console, state_dir: O
         let plain = views::plain_prompt(label.as_deref());
         let styled = views::styled_prompt(label.as_deref(), term.out_style);
         let ctx = views::complete_ctx(&repl.engine, log::now_ms());
-        let input = tokio::task::block_in_place(|| lineedit::read(&mut editor, &plain, &styled, ctx));
+        // A message left unfinished when the last turn ended comes back into the prompt.
+        let draft = console.take_draft();
+        let input = tokio::task::block_in_place(|| lineedit::read(&mut editor, &plain, &styled, ctx, &draft));
         // A mode picked with Shift-Tab holds even when the line was thrown away.
         if shared_mode.get() != repl.engine.mode() {
             repl.engine.set_mode(shared_mode.get());
@@ -366,9 +386,15 @@ async fn edit_loop(repl: &mut Repl, term: &Term, console: &Console, state_dir: O
                 settle_late_probes(repl);
                 guard.reset();
                 lineedit::remember(&mut editor, &line, history.as_deref());
-                let mut confirm = EditorConfirm(&mut editor);
-                let mut io = Io { interrupt: sigint, confirm: Some(&mut confirm) };
-                match repl.handle(commands::parse(&line), &mut io).await {
+                let mut flow = run_line(repl, &mut editor, sigint, &line).await;
+                // Messages typed during the turn run next, in order, until one stops the loop.
+                while flow == Flow::Continue {
+                    let Some(next) = console.take_queued() else { break };
+                    console.out(&format!("{} {}", term.out_style.cyan("›"), next.replace('\n', "\n  ")));
+                    lineedit::remember(&mut editor, &next, history.as_deref());
+                    flow = run_line(repl, &mut editor, sigint, &next).await;
+                }
+                match flow {
                     Flow::Continue => {}
                     Flow::Quit => return 0,
                     Flow::Aborted => return 130,
@@ -388,6 +414,13 @@ async fn edit_loop(repl: &mut Repl, term: &Term, console: &Console, state_dir: O
             }
         }
     }
+}
+
+/// One line from the person (typed, or queued during a turn), with `/undo` able to ask.
+async fn run_line(repl: &mut Repl, editor: &mut lineedit::LineEditor, sigint: &mut SigInt, line: &str) -> Flow {
+    let mut confirm = EditorConfirm(editor);
+    let mut io = Io { interrupt: sigint, confirm: Some(&mut confirm) };
+    repl.handle(commands::parse(line), &mut io).await
 }
 
 /// Lines from a pipe: one message or command per line, no prompt, no editing. Ctrl-C while

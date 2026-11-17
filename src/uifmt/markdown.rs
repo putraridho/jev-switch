@@ -1,6 +1,7 @@
 //! Assistant text with light markdown for a styled terminal.
 
 use super::ansi::strip_ansi;
+use super::highlight::{highlight_line, Lang, LineState};
 use super::style::Style;
 use super::width::{clamp_width, display_width};
 use super::wrap::{push_char, wrap_words, Span, Tok, Word};
@@ -11,6 +12,7 @@ fn paint_span(style: Style, span: Span, s: &str) -> String {
         Span::Plain => s.to_string(),
         Span::Bold => style.bold(s),
         Span::Code => style.cyan(s),
+        Span::Dim => style.dim(s),
     }
 }
 
@@ -65,7 +67,32 @@ fn find_bold_close(chars: &[char], from: usize) -> Option<usize> {
         .find(|&j| chars[j] == '*' && chars[j + 1] == '*' && !chars[j - 1].is_whitespace())
 }
 
-/// Light inline markdown: `code`, `**bold**`. Anything unmatched stays literal.
+/// For a link whose `[` is at `at`: where its text ends (the `]`) and where its target
+/// ends (the `)`). The target has no spaces; text and target are not empty.
+fn find_link(chars: &[char], at: usize) -> Option<(usize, usize)> {
+    let close = (at + 1..chars.len()).find(|&j| chars[j] == ']' || chars[j] == '[')?;
+    if chars[close] != ']' || close == at + 1 || chars.get(close + 1) != Some(&'(') {
+        return None;
+    }
+    let end = (close + 2..chars.len()).find(|&j| chars[j] == ')' || chars[j].is_whitespace())?;
+    (chars[end] == ')' && end > close + 2).then_some((close, end))
+}
+
+/// `text (url)` with the url dimmed, or just the url when the text is the url.
+fn push_link(out: &mut Vec<Tok>, text: &str, url: &str, base: Span) {
+    if text == url {
+        push_tok(out, url, Span::Dim);
+        return;
+    }
+    for t in parse_inline(text, base) {
+        push_tok(out, &t.text, t.span);
+    }
+    push_tok(out, " ", base);
+    push_tok(out, &format!("({url})"), Span::Dim);
+}
+
+/// Light inline markdown: `code`, `**bold**`, `[text](url)`. Anything unmatched stays
+/// literal.
 fn parse_inline(s: &str, base: Span) -> Vec<Tok> {
     let chars: Vec<char> = s.chars().collect();
     let (mut out, mut buf, mut i) = (Vec::new(), String::new(), 0);
@@ -83,6 +110,12 @@ fn parse_inline(s: &str, base: Span) -> Vec<Tok> {
             }
             buf.extend(std::iter::repeat_n('`', run));
             i += run;
+        } else if let Some((close, end)) = if chars[i] == '[' { find_link(&chars, i) } else { None } {
+            push_tok(&mut out, &std::mem::take(&mut buf), base);
+            let text: String = chars[i + 1..close].iter().collect();
+            let url: String = chars[close + 2..end].iter().collect();
+            push_link(&mut out, &text, &url, base);
+            i = end + 1;
         } else if base != Span::Bold && chars[i] == '*' && chars.get(i + 1) == Some(&'*') {
             if let Some(j) = find_bold_close(&chars, i + 2) {
                 push_tok(&mut out, &std::mem::take(&mut buf), base);
@@ -181,29 +214,34 @@ pub fn answer_text(text: &str, style: Style, width: usize) -> String {
     }
     let width = clamp_width(width);
     let mut out: Vec<String> = Vec::new();
-    let mut fence: Option<(char, usize)> = None;
+    let mut fence: Option<Fence> = None;
+    let mut table: Vec<String> = Vec::new();
     for raw in text.split('\n') {
         let line = expand_leading_tabs(&sanitize_answer_line(raw));
-        if let Some((fc, fl)) = fence {
+        if let Some(open) = fence.as_mut() {
             match fence_of(&line) {
-                Some((c, n, info)) if c == fc && n >= fl && info.is_empty() => fence = None,
+                Some((c, n, info)) if c == open.ch && n >= open.len && info.is_empty() => fence = None,
                 _ if line.trim().is_empty() => out.push(String::new()),
-                _ => out.push(format!("    {}", style.dim(line.trim_end()))),
-            }
-            continue;
-        }
-        if let Some((c, n, info)) = fence_of(&line) {
-            fence = Some((c, n));
-            if let Some(lang) = info.split_whitespace().next() {
-                out.push(format!("  {}", style.dim(lang)));
+                _ => out.push(code_line(&line, open, style)),
             }
             continue;
         }
         let trimmed = line.trim_start();
+        if trimmed.starts_with('|') {
+            table.push(line);
+            continue;
+        }
+        out.extend(render_table(&std::mem::take(&mut table), style, width));
+        if let Some((c, n, info)) = fence_of(&line) {
+            let lang = info.split_whitespace().next();
+            fence = Some(Fence { ch: c, len: n, lang: lang.and_then(Lang::from_info), state: LineState::Normal });
+            if let Some(lang) = lang {
+                out.push(format!("  {}", style.dim(lang)));
+            }
+            continue;
+        }
         if trimmed.is_empty() {
             out.push(String::new());
-        } else if trimmed.starts_with('|') {
-            out.push(line.trim_end().to_string());
         } else if let Some(h) = heading_text(trimmed) {
             let words = to_words(&parse_inline(h, Span::Bold));
             out.extend(draw_wrapped(&words, width, "", "", style));
@@ -221,7 +259,110 @@ pub fn answer_text(text: &str, style: Style, width: usize) -> String {
             out.extend(draw_wrapped(&words, width - indent, &pad, &pad, style));
         }
     }
+    out.extend(render_table(&table, style, width));
     out.join("\n")
+}
+
+/// An open code fence: what closes it, and how its lines are coloured.
+struct Fence {
+    ch: char,
+    len: usize,
+    lang: Option<Lang>,
+    state: LineState,
+}
+
+/// One line of a code block, indented four columns. A known language is highlighted;
+/// any other is dimmed.
+fn code_line(line: &str, fence: &mut Fence, style: Style) -> String {
+    let line = line.trim_end();
+    let body = match fence.lang {
+        Some(lang) => highlight_line(lang, line, &mut fence.state, style),
+        None => style.dim(line),
+    };
+    format!("    {body}")
+}
+
+/// How a table column is aligned.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Align {
+    Left,
+    Right,
+    Center,
+}
+
+/// The cells of a `| a | b |` row, trimmed. A `\|` is part of a cell.
+fn split_row(line: &str) -> Vec<String> {
+    let t = line.trim();
+    let t = t.strip_prefix('|').unwrap_or(t);
+    let t = if t.ends_with("\\|") { t } else { t.strip_suffix('|').unwrap_or(t) };
+    let (mut cells, mut cur, mut escaped) = (Vec::new(), String::new(), false);
+    for c in t.chars() {
+        if c == '|' && !escaped {
+            cells.push(std::mem::take(&mut cur).trim().to_string());
+        } else {
+            cur.push(c);
+        }
+        escaped = c == '\\' && !escaped;
+    }
+    cells.push(cur.trim().to_string());
+    cells
+}
+
+/// The alignment a separator cell (`---`, `:--`, `--:`, `:-:`) asks for.
+fn parse_align(cell: &str) -> Option<Align> {
+    let dashes = cell.trim_matches(':');
+    if dashes.is_empty() || !dashes.chars().all(|c| c == '-') {
+        return None;
+    }
+    Some(match (cell.starts_with(':'), cell.ends_with(':')) {
+        (true, true) => Align::Center,
+        (false, true) => Align::Right,
+        _ => Align::Left,
+    })
+}
+
+/// `cell` padded with spaces to `width` columns by `align`, painted by `paint`.
+fn pad_cell(cell: &str, width: usize, align: Align, paint: impl Fn(&str) -> String) -> String {
+    let gap = width.saturating_sub(display_width(cell));
+    let (left, right) = match align {
+        Align::Left => (0, gap),
+        Align::Right => (gap, 0),
+        Align::Center => (gap / 2, gap - gap / 2),
+    };
+    format!("{}{}{}", " ".repeat(left), paint(cell), " ".repeat(right))
+}
+
+/// A table row's cells drawn in columns, with no trailing spaces.
+fn draw_row(cells: &[String], widths: &[usize], aligns: &[Align], paint: impl Fn(&str) -> String) -> String {
+    let empty = String::new();
+    let drawn: Vec<String> =
+        (0..widths.len()).map(|i| pad_cell(cells.get(i).unwrap_or(&empty), widths[i], aligns[i], &paint)).collect();
+    drawn.join("  ").trim_end().to_string()
+}
+
+/// A GitHub pipe table (header, separator, rows) drawn as aligned columns with a dim
+/// rule under the header. Anything that is not a table, or is wider than `width`, is
+/// returned as the lines were written.
+fn render_table(lines: &[String], style: Style, width: usize) -> Vec<String> {
+    let as_written = || lines.iter().map(|l| l.trim_end().to_string()).collect();
+    let rows: Vec<Vec<String>> = lines.iter().map(|l| split_row(l)).collect();
+    let Some(aligns) = rows.get(1).and_then(|r| r.iter().map(|c| parse_align(c)).collect::<Option<Vec<Align>>>()) else {
+        return as_written();
+    };
+    let columns = aligns.len();
+    let body: Vec<&Vec<String>> = rows.iter().enumerate().filter(|(i, _)| *i != 1).map(|(_, r)| r).collect();
+    if rows[0].len() != columns || body.iter().any(|r| r.len() > columns) {
+        return as_written();
+    }
+    let widths: Vec<usize> =
+        (0..columns).map(|i| body.iter().filter_map(|r| r.get(i)).map(|c| display_width(c)).max().unwrap_or(0).max(1)).collect();
+    if widths.iter().sum::<usize>() + 2 * (columns - 1) > width {
+        return as_written();
+    }
+    let rule = widths.iter().map(|w| "─".repeat(*w)).collect::<Vec<_>>().join("  ");
+    let mut out = vec![draw_row(&rows[0], &widths, &aligns, |c| style.bold(c)), style.dim(&rule)];
+    out.extend(body.iter().skip(1).map(|r| draw_row(r, &widths, &aligns, |c| c.to_string())));
+    out
 }
 
 /// The text of a `# heading` line (1 to 6 hashes then a space), if it is one.
@@ -273,10 +414,10 @@ mod tests {
 
     #[test]
     fn answer_fenced_code() {
-        let t = "before\n```rust\nfn main() {\n\n    let x = 1;\n}\n```\nafter";
+        let t = "before\n```text\nfn main() {\n\n    let x = 1;\n}\n```\nafter";
         assert_eq!(
             answer_text(t, ON, 80),
-            "before\n  \x1b[2mrust\x1b[0m\n    \x1b[2mfn main() {\x1b[0m\n\n    \x1b[2m    let x = 1;\x1b[0m\n    \x1b[2m}\x1b[0m\nafter"
+            "before\n  \x1b[2mtext\x1b[0m\n    \x1b[2mfn main() {\x1b[0m\n\n    \x1b[2m    let x = 1;\x1b[0m\n    \x1b[2m}\x1b[0m\nafter"
         );
         // no language, tilde fence, longer closing fence
         assert_eq!(answer_text("~~~\ncode\n~~~~", ON, 80), "    \x1b[2mcode\x1b[0m");
@@ -294,11 +435,89 @@ mod tests {
     }
 
     #[test]
+    fn known_languages_are_highlighted_and_keep_their_layout() {
+        let t = "```rust\n    let s = \"hi\";\n\nfn f() {}\n```";
+        let out = answer_text(t, ON, 80);
+        let lines: Vec<&str> = out.split('\n').collect();
+        assert_eq!(lines.len(), 4);
+        assert_eq!(strip_ansi(&out), "  rust\n        let s = \"hi\";\n\n    fn f() {}");
+        assert!(lines[1].contains("\x1b[35mlet\x1b[0m") && lines[1].contains("\x1b[32m\"hi\"\x1b[0m"), "{out:?}");
+        assert!(lines[3].contains("\x1b[35mfn\x1b[0m"), "{out:?}");
+        // a long code line is still not wrapped
+        let long = format!("```rust\nlet x = \"{}\";\n```", "word ".repeat(40));
+        assert_eq!(answer_text(&long, ON, 30).matches('\n').count(), 1);
+    }
+
+    #[test]
+    fn diff_blocks_colour_added_and_removed_lines() {
+        let out = answer_text("```diff\n@@ -1 +1 @@\n-old\n+new\n ctx\n```", ON, 80);
+        assert!(out.contains("\x1b[36m@@ -1 +1 @@\x1b[0m"), "{out:?}");
+        assert!(out.contains("    \x1b[31m-old\x1b[0m"), "{out:?}");
+        assert!(out.contains("    \x1b[32m+new\x1b[0m"), "{out:?}");
+    }
+
+    #[test]
+    fn highlighted_blocks_have_no_escapes_with_style_off() {
+        let t = "```rust\nfn main() { let s = \"x\"; }\n```\n```diff\n+a\n-b\n```\n| a | b |\n|---|---|\n| 1 | 2 |\n[t](http://u)";
+        assert_eq!(answer_text(t, OFF, 80), t);
+        let tty_plain = Style::resolve(true, Some("1"), None, None);
+        no_esc(&answer_text(t, tty_plain, 80));
+    }
+
+    #[test]
+    fn tables_are_aligned_in_columns() {
+        let t = "| name | n |\n|:--|--:|\n| alpha | 1 |\n| b | 100 |";
+        let out = answer_text(t, ON, 80);
+        assert_eq!(strip_ansi(&out), "name     n\n─────  ───\nalpha    1\nb      100");
+        assert!(out.starts_with("\x1b[1mname\x1b[0m"), "{out:?}");
+        assert!(out.contains("\x1b[2m─────  ───\x1b[0m"), "{out:?}");
+        // wide characters count by columns, centre alignment splits the gap
+        let wide = answer_text("| a | b |\n|:-:|---|\n| 日本 | x |", ON, 80);
+        assert_eq!(strip_ansi(&wide), " a    b\n────  ─\n日本  x");
+        // prose around a table is kept, and a short row is padded
+        let mixed = answer_text("before\n| a | b |\n|---|---|\n| 1 |\nafter", ON, 80);
+        assert_eq!(strip_ansi(&mixed), "before\na  b\n─  ─\n1\nafter");
+    }
+
+    #[test]
+    fn tables_too_wide_or_malformed_are_left_alone() {
+        let wide = "| a | b |\n|---|---|\n| a very long cell that does not fit | x |";
+        assert_eq!(answer_text(wide, ON, 20), wide);
+        for t in ["| a | b |", "| a | b |\n| 1 | 2 |", "| a | b |\n|---|\n| 1 | 2 |", "| a |\n|---|\n| 1 | 2 | 3 |", "|\n|"] {
+            assert_eq!(answer_text(t, ON, 80), t, "{t:?}");
+        }
+    }
+
+    #[test]
+    fn links_show_the_text_then_a_dim_url() {
+        assert_eq!(answer_text("see [docs](https://a.io/x) now", ON, 80), "see docs \x1b[2m(https://a.io/x)\x1b[0m now");
+        assert_eq!(answer_text("[https://a.io](https://a.io)", ON, 80), "\x1b[2mhttps://a.io\x1b[0m");
+        assert_eq!(strip_ansi(&answer_text("**[b](http://u)**.", ON, 80)), "b (http://u).");
+        // not links: no target, spaces in the target, empty parts, nested brackets
+        for t in ["[a] (b)", "[a](b c)", "[](x)", "[a]()", "[a [b](c)", "[a](b"] {
+            let out = strip_ansi(&answer_text(t, ON, 80));
+            assert!(out.contains('[') || out == "a [b] (c)" || t == "[a [b](c)", "{t:?} -> {out:?}");
+        }
+        assert_eq!(answer_text("[a](b c)", ON, 80), "[a](b c)");
+    }
+
+    #[test]
+    fn link_urls_are_never_broken() {
+        let url = "https://example.com/some/really/long/path/that/never/fits/on/one/line";
+        let out = answer_text(&format!("read [the guide]({url}) for more details"), ON, 30);
+        assert!(out.contains(&format!("\x1b[2m({url})\x1b[0m")), "{out:?}");
+        // a target without a scheme is not cut either
+        let path = "docs/a/very/long/relative/path/to/a/file.md";
+        let out = answer_text(&format!("[x]({path})"), ON, 20);
+        assert!(strip_ansi(&out).contains(&format!("({path})")), "{out:?}");
+    }
+
+    #[test]
     fn answer_unclosed_fence_swallows_the_rest_as_code() {
-        let out = answer_text("```py\nprint(1)\n# still code\n**not bold**", ON, 80);
+        let out = answer_text("```txt\nprint(1)\n# still code\n**not bold**", ON, 80);
         assert_eq!(
             out,
-            "  \x1b[2mpy\x1b[0m\n    \x1b[2mprint(1)\x1b[0m\n    \x1b[2m# still code\x1b[0m\n    \x1b[2m**not bold**\x1b[0m"
+            "  \x1b[2mtxt\x1b[0m\n    \x1b[2mprint(1)\x1b[0m\n    \x1b[2m# still code\x1b[0m\n    \x1b[2m**not bold**\x1b[0m"
         );
         assert_eq!(answer_text("```", ON, 80), "");
     }

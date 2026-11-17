@@ -194,6 +194,121 @@ fn plan_of(ev: &Value) -> Option<PlanUsage> {
     })
 }
 
+// ------------------------------------------------------------- stream-json input
+
+/// One line of stream-json input: the user's message.
+#[derive(serde::Serialize)]
+#[serde(tag = "type", rename_all = "lowercase")]
+enum InputLine<'a> {
+    User { message: InputMessage<'a> },
+}
+
+#[derive(serde::Serialize)]
+struct InputMessage<'a> {
+    role: Role,
+    content: InputContent<'a>,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "lowercase")]
+enum Role {
+    User,
+}
+
+/// A plain prompt is a string; one with images is a list of blocks.
+#[derive(serde::Serialize)]
+#[serde(untagged)]
+enum InputContent<'a> {
+    Text(&'a str),
+    Blocks(Vec<InputBlock<'a>>),
+}
+
+#[derive(serde::Serialize)]
+#[serde(tag = "type", rename_all = "lowercase")]
+enum InputBlock<'a> {
+    Image { source: ImageSource },
+    Text { text: &'a str },
+}
+
+#[derive(serde::Serialize)]
+struct ImageSource {
+    #[serde(rename = "type")]
+    encoding: Encoding,
+    media_type: MediaType,
+    data: String,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "lowercase")]
+enum Encoding {
+    Base64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+enum MediaType {
+    #[serde(rename = "image/png")]
+    Png,
+    #[serde(rename = "image/jpeg")]
+    Jpeg,
+    #[serde(rename = "image/gif")]
+    Gif,
+    #[serde(rename = "image/webp")]
+    Webp,
+}
+
+impl MediaType {
+    /// The type the file's first bytes say, whatever its name: the API refuses an image
+    /// whose declared type is wrong (a JPEG saved as `.png`).
+    fn sniff(head: &[u8]) -> Option<Self> {
+        if head.starts_with(b"\x89PNG\r\n\x1a\n") {
+            Some(Self::Png)
+        } else if head.starts_with(&[0xff, 0xd8, 0xff]) {
+            Some(Self::Jpeg)
+        } else if head.starts_with(b"GIF87a") || head.starts_with(b"GIF89a") {
+            Some(Self::Gif)
+        } else if head.len() >= 12 && head.starts_with(b"RIFF") && &head[8..12] == b"WEBP" {
+            Some(Self::Webp)
+        } else {
+            None
+        }
+    }
+}
+
+/// Whether a request's images go as image blocks: Claude takes them; DeepSeek's API does
+/// not, so it gets their paths in the prompt instead.
+fn sends_image_blocks(provider: ProviderId, req: &TurnRequest) -> bool {
+    !req.images.is_empty() && provider != ProviderId::DeepSeek
+}
+
+/// The largest image sent; bigger ones are left out with a note in the prompt. The API's
+/// 5 MB limit counts the base64 text, which is 4/3 of the file.
+const MAX_IMAGE_BYTES: u64 = 5 * 1024 * 1024 * 3 / 4;
+
+/// One image block, or the note that says why it was left out.
+fn image_block(path: &std::path::Path) -> Result<ImageSource, String> {
+    let size = std::fs::metadata(path).map_err(|e| format!("Could not read image {}: {e}", path.display()))?.len();
+    if size > MAX_IMAGE_BYTES {
+        return Err(format!("Left out an image over 5 MB: {}", path.display()));
+    }
+    let data = std::fs::read(path).map_err(|e| format!("Could not read image {}: {e}", path.display()))?;
+    let media_type = MediaType::sniff(&data).ok_or_else(|| format!("Left out a file that is not a PNG, JPEG, GIF or WebP image: {}", path.display()))?;
+    Ok(ImageSource { encoding: Encoding::Base64, media_type, data: crate::base64::encode(&data) })
+}
+
+/// The image blocks of a request, and the prompt with a note for each image left out.
+fn image_content(req: &TurnRequest) -> (Vec<InputBlock<'static>>, String) {
+    let mut blocks = Vec::new();
+    let mut prompt = req.prompt.clone();
+    for path in &req.images {
+        let path = if path.is_absolute() { path.clone() } else { req.dir.join(path) };
+        match image_block(&path) {
+            Ok(source) => blocks.push(InputBlock::Image { source }),
+            Err(note) => prompt.push_str(&format!("\n({note})")),
+        }
+    }
+    (blocks, prompt)
+}
+
 impl Backend for ClaudeBackend {
     fn provider(&self) -> ProviderId {
         self.provider
@@ -209,10 +324,14 @@ impl Backend for ClaudeBackend {
         }
         // A session follows the mode the person set (Shift-Tab, `/mode`); a run nobody can
         // answer keeps `CODE_PERMISSION_MODE` as given.
-        let mode = if self.interactive { req.mode.claude_flag() } else { self.permission_mode.as_str() };
+        // Plan mode is read-only everywhere (`/review`, `/compact` rely on it), asked or not.
+        let mode = if self.interactive || req.mode == crate::mode::Mode::Plan { req.mode.claude_flag() } else { self.permission_mode.as_str() };
         cmd.args(["--permission-mode", mode]);
+        if self.interactive || sends_image_blocks(self.provider, req) {
+            cmd.args(["--input-format", "stream-json"]);
+        }
         if self.interactive {
-            cmd.args(["--input-format", "stream-json", "--permission-prompt-tool", "stdio", "--append-system-prompt", SESSION_NOTE]);
+            cmd.args(["--permission-prompt-tool", "stdio", "--append-system-prompt", SESSION_NOTE]);
         }
         if let Some(config) = &self.mcp_config {
             cmd.arg("--mcp-config").arg(config);
@@ -225,10 +344,19 @@ impl Backend for ClaudeBackend {
 
     /// Stream-json input is one JSON message per line, not the bare prompt.
     fn stdin_payload(&self, req: &TurnRequest) -> Option<String> {
-        if !self.interactive {
-            return Some(req.prompt.clone());
+        let blocks_wanted = sends_image_blocks(self.provider, req);
+        if !self.interactive && !blocks_wanted {
+            return Some(super::prompt_with_images(req));
         }
-        Some(format!("{}\n", json!({ "type": "user", "message": { "role": "user", "content": req.prompt } })))
+        let (mut blocks, prompt) = if blocks_wanted { image_content(req) } else { (Vec::new(), super::prompt_with_images(req)) };
+        let content = if !blocks_wanted {
+            InputContent::Text(&prompt)
+        } else {
+            blocks.push(InputBlock::Text { text: &prompt });
+            InputContent::Blocks(blocks)
+        };
+        let line = InputLine::User { message: InputMessage { role: Role::User, content } };
+        serde_json::to_string(&line).ok().map(|s| format!("{s}\n"))
     }
 
     fn interactive(&self) -> bool {
@@ -308,9 +436,56 @@ mod tests {
             dir: "/tmp".into(),
             model: "sonnet-x".into(),
             prompt: "hi".into(),
+            images: vec![],
             session_id: session.map(String::from),
             mode: Default::default(),
         }
+    }
+
+    #[test]
+    fn image_input_and_base64() {
+        let backend = backend().in_session();
+        assert_eq!(backend.stdin_payload(&req(None)).unwrap(), "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"hi\"}}\n");
+        let dir = std::env::temp_dir().join(format!("jev-claude-image-{}", std::process::id()));
+        // A JPEG saved as .png goes as what it really is.
+        std::fs::write(&dir, [0xff, 0xd8, 0xff, 0xe0]).unwrap();
+        let path = dir.with_extension("png");
+        std::fs::rename(&dir, &path).unwrap();
+        let mut request = req(None);
+        request.images.push(path.clone());
+        let payload = backend.stdin_payload(&request).unwrap();
+        assert!(payload.contains("\"type\":\"image\"") && payload.contains("\"media_type\":\"image/jpeg\""), "{payload}");
+        assert!(payload.contains("\"data\":\"/9j/4A==\""), "{payload}");
+        // Text with an image name is left out with a note, never sent as an image.
+        let fake = std::env::temp_dir().join(format!("jev-claude-fake-{}.png", std::process::id()));
+        std::fs::write(&fake, b"not an image").unwrap();
+        let mut faked = req(None);
+        faked.images.push(fake.clone());
+        let note = backend.stdin_payload(&faked).unwrap();
+        assert!(!note.contains("\"type\":\"image\"") && note.contains("not a PNG, JPEG, GIF or WebP"), "{note}");
+        std::fs::remove_file(fake).unwrap();
+        assert_eq!(MediaType::sniff(b"\x89PNG\r\n\x1a\nrest"), Some(MediaType::Png));
+        assert_eq!(MediaType::sniff(b"GIF89a"), Some(MediaType::Gif));
+        assert_eq!(MediaType::sniff(b"RIFF\0\0\0\0WEBPVP8 "), Some(MediaType::Webp));
+        assert_eq!(MediaType::sniff(b"RIFF"), None);
+        // DeepSeek's API takes no images: it gets their paths as text.
+        let deepseek = ClaudeBackend::with_profile(ProviderId::DeepSeek, vec![]).in_session();
+        let text = deepseek.stdin_payload(&request).unwrap();
+        assert!(!text.contains("\"type\":\"image\"") && text.contains(&*path.to_string_lossy()), "{text}");
+        let plain = ClaudeBackend::with_profile(ProviderId::DeepSeek, vec![]);
+        let args: Vec<String> = plain.command(&request).as_std().get_args().map(|a| a.to_string_lossy().into_owned()).collect();
+        assert!(!args.contains(&"stream-json".to_string()) || args.windows(2).all(|w| w != ["--input-format", "stream-json"]), "{args:?}");
+        assert!(plain.stdin_payload(&request).unwrap().contains("Attached images"));
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn plan_mode_is_read_only_even_when_nobody_can_be_asked() {
+        let headless = backend();
+        let mut r = req(None);
+        r.mode = crate::mode::Mode::Plan;
+        let args: Vec<String> = headless.command(&r).as_std().get_args().map(|a| a.to_string_lossy().into_owned()).collect();
+        assert!(args.windows(2).any(|w| w == ["--permission-mode", "plan"]), "{args:?}");
     }
 
     #[test]
@@ -406,8 +581,11 @@ mod tests {
             let at = a.iter().position(|x| x == "--permission-mode").unwrap();
             assert_eq!(a[at + 1], flag, "{mode}");
         }
-        let headless = args(&backend().command(&TurnRequest { mode: Mode::Plan, ..req(None) }));
-        assert!(headless.windows(2).any(|w| w == ["--permission-mode", "acceptEdits"]), "{headless:?}");
+        // Plan is the exception (read-only even headless); every other mode keeps the environment's.
+        for mode in [Mode::Ask, Mode::Edit, Mode::Auto] {
+            let headless = args(&backend().command(&TurnRequest { mode, ..req(None) }));
+            assert!(headless.windows(2).any(|w| w == ["--permission-mode", "acceptEdits"]), "{mode}: {headless:?}");
+        }
     }
 
     fn attachment() -> McpAttachment {

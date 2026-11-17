@@ -205,9 +205,21 @@ pub struct TurnRequest {
     pub dir: PathBuf,
     pub model: String,
     pub prompt: String,
+    /// Images to send with the prompt (absolute paths); see [`crate::attach`].
+    pub images: Vec<PathBuf>,
     pub session_id: Option<String>,
-    /// What the turn may do without asking; only Claude Code (and DeepSeek through it) acts on it.
+    /// What the turn may do without asking; used by Claude Code, DeepSeek and Antigravity.
     pub mode: crate::mode::Mode,
+}
+
+/// The prompt with the attached images listed by path, for CLIs that take no image input
+/// but open files themselves (Gemini, Antigravity, Grok).
+pub(crate) fn prompt_with_images(req: &TurnRequest) -> String {
+    if req.images.is_empty() {
+        return req.prompt.clone();
+    }
+    let paths: Vec<String> = req.images.iter().map(|p| p.to_string_lossy().into_owned()).collect();
+    format!("{}\n\nAttached images (open them from these paths): {}", req.prompt, paths.join(", "))
 }
 
 /// A successful turn.
@@ -282,6 +294,12 @@ pub trait Backend: Send + Sync {
     /// when [`Backend::interactive`].
     fn permission_response(&self, _req: &PermissionRequest, _decision: &Decision) -> Option<String> {
         None
+    }
+
+    /// Protocol messages produced while parsing stdout (for example ACP setup replies).
+    /// Each includes its framing, and is sent before reading the next stdout line.
+    fn take_responses(&self) -> Vec<String> {
+        Vec::new()
     }
 
     /// Whether [`Backend::attach_mcp`] works for this CLI. Orchestration only picks a
@@ -645,6 +663,9 @@ impl Pump<'_> {
             return Line::Eof;
         }
         let events = self.backend.parse_line(&String::from_utf8_lossy(&self.raw));
+        for response in self.backend.take_responses() {
+            self.feed.send(response);
+        }
         self.raw.clear();
         Line::Events(events)
     }
@@ -1009,7 +1030,7 @@ mod tests {
     }
 
     fn req() -> TurnRequest {
-        TurnRequest { dir: std::env::temp_dir(), model: "m".into(), prompt: "hello".into(), session_id: None, mode: Default::default() }
+        TurnRequest { dir: std::env::temp_dir(), model: "m".into(), prompt: "hello".into(), images: vec![], session_id: None, mode: Default::default() }
     }
 
     async fn run(script: &'static str, idle_ms: u64) -> (Result<TurnOutcome, TurnError>, Vec<Event>) {

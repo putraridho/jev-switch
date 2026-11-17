@@ -186,6 +186,12 @@ struct Inner {
     /// The pager owns the screen: everything printed meanwhile waits here (in order) and the
     /// status line stays away; `None` when no pager is open.
     held: Option<Vec<HeldLine>>,
+    /// The route of the latest turn, for `/why`.
+    last_route: Option<RouteFacts>,
+    /// What is being typed during a turn, shown at the end of the status line.
+    draft: String,
+    /// Messages typed during a turn, to run when it is over (oldest first).
+    queued: std::collections::VecDeque<String>,
 }
 
 /// The terminal output. Cheap to clone; every clone writes through the same lock.
@@ -199,6 +205,8 @@ pub struct Console {
     paging: Arc<tokio::sync::watch::Sender<bool>>,
     /// One pager at a time: two questions that both need one take turns.
     pager_turn: Arc<tokio::sync::Mutex<()>>,
+    /// Read keys during a turn ([`crate::typeahead`]): only a person at a terminal.
+    type_ahead: bool,
 }
 
 impl Console {
@@ -216,13 +224,94 @@ impl Console {
             pending: None,
             no_route_task: None,
             held: None,
+            last_route: None,
+            draft: String::new(),
+            queued: std::collections::VecDeque::new(),
         };
         Self {
             inner: Arc::new(Mutex::new(inner)),
             keys: None,
             paging: Arc::new(tokio::sync::watch::Sender::new(false)),
             pager_turn: Arc::new(tokio::sync::Mutex::new(())),
+            type_ahead: false,
         }
+    }
+
+    /// Let the person type during a turn: Enter queues a message, Esc stops the turn.
+    pub fn with_type_ahead(mut self) -> Self {
+        self.type_ahead = true;
+        self
+    }
+
+    /// Ring the terminal bell (a long turn is over), on a live terminal only.
+    pub fn bell(&self) {
+        let mut g = self.lock();
+        if g.cfg.live {
+            let _ = g.err.write_all(b"\x07");
+            let _ = g.err.flush();
+        }
+    }
+
+    /// Whether an approval question is waiting for its key.
+    pub fn is_asking(&self) -> bool {
+        self.lock().asking.is_some()
+    }
+
+    /// Whether keys are read during a turn.
+    pub fn type_ahead(&self) -> bool {
+        self.type_ahead
+    }
+
+    /// The message being typed changed: show it on the status line.
+    pub fn set_draft(&self, text: &str) {
+        let mut g = self.lock();
+        g.draft = text.to_string();
+        g.refresh();
+    }
+
+    /// A message typed during the turn, to run after it; `first` puts it before the others
+    /// (a message sent with Esc). Said on its own line so it is not lost from view.
+    pub fn queue_message(&self, message: String, first: bool) {
+        let mut g = self.lock();
+        let style = g.cfg.err_style;
+        let shown = message.lines().next().unwrap_or_default().to_string();
+        let more = if message.lines().count() > 1 { " …" } else { "" };
+        let when = if first { "next, after the stop" } else { "after this turn" };
+        let line = format!("  {} {}{more} {}", style.cyan("↳"), shown, style.dim(&format!("(queued: {when})")));
+        if first {
+            g.queued.push_front(message);
+        } else {
+            g.queued.push_back(message);
+        }
+        g.emit_err(&line);
+    }
+
+    /// The next queued message, oldest first (one sent with Esc before the rest).
+    pub fn take_queued(&self) -> Option<String> {
+        self.lock().queued.pop_front()
+    }
+
+    /// Drop every queued message; how many there were.
+    pub fn clear_queue(&self) -> usize {
+        let mut g = self.lock();
+        let n = g.queued.len();
+        g.queued.clear();
+        n
+    }
+
+    /// How many messages wait in the queue.
+    pub fn queued_len(&self) -> usize {
+        self.lock().queued.len()
+    }
+
+    /// Put back an unfinished message when the reader stops, for the next prompt.
+    pub fn keep_draft(&self, text: &str) {
+        self.lock().draft = text.to_string();
+    }
+
+    /// The unfinished message, once (the prompt starts with it, or the next reader does).
+    pub fn take_draft(&self) -> String {
+        std::mem::take(&mut self.lock().draft)
     }
 
     /// Let the person answer tool approvals by pressing a key. Without this the console
@@ -380,6 +469,20 @@ impl Console {
         })))
     }
 
+    /// The route of the latest turn (its model and the router's reason), for `/why`.
+    pub fn last_route(&self) -> Option<RouteFacts> {
+        self.lock().last_route.clone()
+    }
+
+    /// Clear the screen and its scrollback, on a terminal only.
+    pub fn clear_screen(&self) {
+        let mut g = self.lock();
+        if g.cfg.out_style.enabled {
+            let _ = g.out.write_all(b"\x1b[H\x1b[2J\x1b[3J");
+            let _ = g.out.flush();
+        }
+    }
+
     /// If the last turn found no model able to take it, the task type; once.
     pub fn take_no_route(&self) -> Option<String> {
         self.lock().no_route_task.take()
@@ -434,8 +537,15 @@ impl Inner {
         // since a full row wraps on terminals that wrap at the last column.
         let budget = self.width().saturating_sub(1);
         let style = self.cfg.err_style;
+        // What is typed during the turn takes up to half the row, at the end.
+        let typed = uifmt::draft_tail(&self.draft, self.queued.len(), budget / 2, style);
+        let status_budget = if typed.is_empty() { budget } else { budget.saturating_sub(uifmt::display_width(&typed) + 2) };
         let Some(l) = self.live.as_mut() else { return };
-        let line = uifmt::status_line(&l.label, elapsed, l.activity.as_deref(), budget, style);
+        let mut line = uifmt::status_line(&l.label, elapsed, l.activity.as_deref(), status_budget, style);
+        if !typed.is_empty() {
+            line.push_str("  ");
+            line.push_str(&typed);
+        }
         let mut frame = String::new();
         if !self.cursor_hidden {
             self.cursor_hidden = true;
@@ -545,6 +655,7 @@ impl Inner {
     }
 
     fn route(&mut self, f: &RouteFacts) {
+        self.last_route = Some(f.clone());
         if let Some(p) = self.pending.take() {
             let line = self.failover_line(&p, Some((&f.provider, &f.model)));
             self.emit_err(&line);
@@ -682,7 +793,14 @@ fn erase_rows_above(rows: usize) -> String {
 /// Show `text` in the pager when there is a terminal to page on. False when it could not.
 fn page_on_terminal(text: &str) -> bool {
     use std::io::IsTerminal;
-    std::io::stdin().is_terminal() && std::io::stderr().is_terminal() && crate::repl::page(text)
+    if !(std::io::stdin().is_terminal() && std::io::stderr().is_terminal()) {
+        return false;
+    }
+    // The pager owns the keyboard: the type-ahead reader stays off it, and the terminal is in
+    // the mode it had before the turn, which is what the pager expects to find and put back.
+    let _owner = lineedit::STDIN_LOCK.lock().unwrap_or_else(PoisonError::into_inner);
+    crate::typeahead::restore_turn_mode();
+    crate::repl::page(text)
 }
 
 /// The text with the two columns of indent every console line has.
@@ -768,6 +886,9 @@ impl Console {
     /// Print the question (the whole input in place unless `paged` showed it), and remember
     /// how many rows it takes while it is the last thing on screen.
     fn show_question(&self, question: &PendingQuestion, paged: bool) {
+        // A type-ahead read that began before the question must end before it shows, so no
+        // key pressed in answer is taken as typing (it holds the lock one poll at most).
+        crate::typeahead::wait_for_reader();
         let mut g = self.lock();
         // The terminal may have been resized while the pager ran.
         let prompt = question.layout(&g);
