@@ -29,5 +29,6 @@ pub mod transcript;
 pub mod turn;
 pub mod turnlog;
 pub mod typesafe;
+pub mod uifmt;
 pub mod usage;
 
