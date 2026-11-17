@@ -1,7 +1,7 @@
 # jev-router: target architecture (DDD) and migration plan
 
-Status: proposal. Scope: the Rust crate `jev-router` as of commit `6240d92` on `fix-orch-trigger`
-(63 `.rs` files, 32,359 lines: about 19,200 production lines and 13,100 test lines, 764 tests).
+Status: proposal. Scope: the Rust crate `jev-router` as of commit `296bd5b` on `fix-orch-trigger`
+(60 `.rs` files, 32,695 lines: 19,337 production lines and 13,358 test lines, 769 tests).
 This document moves no code. Every `file:line` below refers to that commit.
 
 The refactor is **pure**: no behaviour change, no change to binary names, flags, environment
@@ -13,10 +13,14 @@ variables, on-disk state, log rows or what any CLI receives on its command line 
 |---|------|--------------------|-------------------|
 | 1 | **Readability** | From the folder tree and one README, a newcomer finds where any behaviour lives in under a minute. One concept per file, small files, the same file names for the same roles in every context. | Section 9 (budgets, naming, README test), enforced by `scripts/check.sh` |
 | 2 | **Strict typing** | No untyped data inside the program. Every external payload becomes a defined struct or enum at the adapter that reads it. No `unwrap`, no stringly-typed states, no `unsafe` outside one audited file. | Section 5, enforced by lints and the architecture test |
-| 3 | **DDD, SOLID, DRY** | Bounded contexts with a domain that does no IO, use cases that depend on ports, adapters behind those ports. Each duplication found in section 7 has exactly one home. | Section 3 dependency rule, enforced by the architecture test |
+| 3 | **DDD, SOLID, DRY** | One crate per bounded context, with a domain that does no IO, use cases that depend on ports, adapters behind those ports. Each duplication found in section 7 has exactly one home. | Section 3: Cargo and the compiler hold the context map, the architecture test holds the layers |
 | 4 | **Safety of the change** | Every commit builds without warnings and passes every test. History survives (`git mv`). Any step can be reverted alone. | Section 8 |
 
-Decisions the user must make are collected in section 11. Everything else is decided here.
+The user's decisions are recorded in section 11 (U1: one crate per context; U3: three
+allow-listed wire files; U4: CI). Everything else is decided here.
+
+Notation: `<context>/<layer>/<file>.rs` is short for `crates/<context>/src/<layer>/<file>.rs`.
+A bare `name.rs:123` is a line of today's flat `src/`.
 
 ---
 
@@ -86,8 +90,8 @@ Names that are overloaded today and get exactly one owner: `Decision` (`router.r
 
 ### 1.2 Bounded contexts
 
-Sixteen top-level modules: thirteen domain contexts, the shared kernel, the calibration
-tools and the terminal front end. The purpose sentence is the first line of that
+Sixteen crates: thirteen domain contexts, the shared kernel, the calibration
+tools and the terminal front end (plus `embed`, `testkit` and `cli`, which hold no domain). The purpose sentence is the first line of that
 context's `README.md` and contains no "and" joining two responsibilities.
 
 | Context | Purpose (README first line) | Aggregates and entities | Value objects | Domain services |
@@ -114,31 +118,22 @@ several contexts. It has no `domain/`.
 
 ### 1.3 Context map
 
-Arrows point from the dependent (downstream) context to the one it depends on (upstream).
-A context may import only the contexts listed in its row; the architecture test holds this
-table as data (section 3.4).
+The levels below are the whole picture: lower levels are upstream. A context may import only
+the contexts listed in its row of the table; the architecture test holds this table as data
+(section 3.4) and also checks that it has no cycle.
 
 ```
-                                   shared  (kernel: everyone depends on it)
-                                      ^
-        catalog <------ judgment      |            approval
-           ^  ^            ^          |               ^
-           |  +--------+   |          |               |
-           |           routing     providers <---- backend
-           |              ^           ^   ^           ^
-           |              |           |   |           |
-   session |   changes    |           |   |           |
-      ^    |      ^       |           |   |           |
-      +----+------+-------+-----------+---+-----------+
-                          |
-                        turn  <----------- orchestration (planner half is called by turn;
-                          ^                 worker half reuses backend, providers, catalog, judgment)
-                          |
-              +-----------+-----------+
-             tui        doctor      (embed facade for Flashboard)
+level 0   shared
+level 1   catalog        approval       changes
+level 2   judgment       backend
+level 3   routing        providers      session
+level 4   orchestration  doctor         chat
+level 5   turn           gateway
+level 6   tui            calibration
+level 7   embed (facade for Flashboard)          cli (the eight binaries)
 
-   gateway  --> judgment, catalog, shared          chat --> judgment, catalog, shared
-   calibration --> judgment, routing, catalog, providers, backend, gateway (log reader), shared
+A crate depends only on lower levels, and only on the crates in its row of the table.
+testkit sits beside shared and is a dev-dependency only.
 ```
 
 | Downstream | Upstream (allowed imports) | Relationship |
@@ -149,27 +144,55 @@ table as data (section 3.4).
 | `approval` | `shared` | **ACL to Claude Code's settings file** (`infrastructure/claude_settings_file.rs`) |
 | `backend` | `approval`, `shared` | **One ACL per provider CLI** (`claude`, `codex`, `gemini`/`agy`, `grok`); DeepSeek reuses the Claude ACL with different environment |
 | `providers` | `backend`, `catalog`, `shared` | Customer of `backend` (`ErrorKind`, `PlanUsage`); ACLs to each CLI's login probe |
-| `session` | `shared` | Published language: `TurnRecord` |
+| `session` | `backend`, `shared` | Published language: `TurnRecord`; reads `backend`'s `ToolCall` value |
 | `changes` | `shared` | **ACL to git** |
 | `orchestration` | `backend`, `providers`, `catalog`, `judgment`, `shared` | Customer; ACL to git worktrees; open-host service to planners through the MCP server |
-| `turn` | all of the above | The core use case; nothing below depends on it |
+| `turn` | every context of levels 0-4 except `doctor` and `chat` | The core use case; only `tui` and `embed` depend on it |
 | `doctor` | `providers`, `judgment`, `shared` | Customer |
-| `gateway` | `judgment`, `catalog`, `shared` | ACL to the Anthropic HTTP API |
+| `gateway` | `orchestration`, `routing`, `judgment`, `catalog`, `shared` | ACL to the Anthropic HTTP API. It reads `orchestration`'s gate (`orch_gate`, `Gate`: `bin/gateway.rs:41`, `:213`) and `routing`'s hold rule (`Sticky`: `bin/gateway.rs:42`); both are domain names |
 | `chat` | `judgment`, `catalog`, `shared` | Customer |
 | `calibration` | `judgment`, `routing`, `catalog`, `providers`, `backend`, `gateway`, `shared` | Customer (read-only tools) |
-| `tui` | `turn`, `doctor`, and the root API of every context whose facts it shows | Interface |
+| `tui` | `turn`, `doctor`, `providers`, `backend`, `approval`, `changes`, `session`, `routing`, `judgment`, `catalog`, `orchestration`, `shared` (what `views.rs`, `repl.rs`, `console.rs` and `bin/code.rs` import today) | Interface |
+| `embed` | `turn`, `providers`, `backend`, `approval`, `routing`, `changes`, `session`, `shared` | Facade: re-exports only |
+| `cli` | `tui`, `gateway`, `orchestration`, `backend`, `chat`, `calibration`, `shared` | Composition roots |
 
-Cycles that exist today and disappear: `turn -> orchestrate -> delegate -> turn`
-(`delegate.rs:61` imports `turn::{idle_timeout_from_env, BackendFactory}`), `doctor <-> uifmt`
-(`uifmt/failure.rs:33` calls `doctor::login_instruction`, `doctor.rs:943` calls
-`uifmt::next_steps_for`), `commands -> uifmt -> backend` for a module documented as pure.
+Each context is a crate (decision U1), so this table is each crate's `[dependencies]` list and
+Cargo refuses a cycle. Test code follows the same table: a crate's tests use only that crate's
+dependencies plus `jev-testkit`. A test that needs a downstream context lives in that
+downstream crate (today one does: `doctor.rs:943` asserts on `uifmt`; it moves to `tui`).
+
+Cycles and upward imports that exist today and disappear: `turn -> orchestrate -> delegate ->
+turn` (`delegate.rs:61` imports `turn::{idle_timeout_from_env, BackendFactory}`, `delegate.rs:62`
+imports `turnlog::turn_row`); `turn -> uifmt` (`turn.rs:38`, the engine formats screen text);
+`uifmt -> doctor` (`uifmt/failure.rs:33` calls `doctor::login_instruction`; the way back,
+`doctor.rs:943`, is in a test only); `commands -> uifmt -> backend` for a module documented as
+pure.
+
+**Placements that keep the map acyclic.** Each of these was checked against the call graph;
+the obvious home would have closed a cycle or reached into another context's adapter.
+
+| Item today | Why the obvious home fails | Home |
+|------------|----------------------------|------|
+| `router::Decision` (returned by `Router::route`, `router.rs:315`) | In `routing` it would make `judgment -> routing` while `routing -> judgment` exists (`routing.rs:23`) | `judgment/domain/tier_want.rs`, renamed `TierRoute`, beside `CodeWant` |
+| `router::Sticky` (consumes `CodeWant`, used by `turn` and `gateway`) | It is a hold rule, not a judgment | `routing/domain/legacy_tier_route.rs` |
+| `availability::installed_for_real`, PATH and mise checks | Backend construction calls it (`providers.rs:110`); once construction moves to `backend`, leaving it in `providers` makes `backend -> providers` | `backend/infrastructure/path_lookup.rs`, `mise_install.rs`; `providers` probes import them |
+| `gemini::is_configured`, `AUTH_ENV_VARS`, `grok::session_dir_exists`, `codex::allowed_models_from_cache` (used by `availability.rs:418-562`) | They are each CLI's own knowledge, needed by the probes | Stay in the CLI's folder in `backend/infrastructure/`, exported by `backend/mod.rs`; `providers/infrastructure/probes` imports them (rule 4 allows adapter-to-adapter along the map) |
+| `orchestrate::write_mcp_config` (calls `backend::claude::mcp_config_json`, `orchestrate.rs:173`) | The file format is Claude Code's | `backend/infrastructure/claude/mcp_config.rs` owns format and write, behind the `McpConfigWriter` port in `backend/application/ports.rs`; `turn` calls the port |
+| `turnlog::turn_row` (shared by `turn.rs:1081` and `delegate.rs:1332`), `usage_json`, `error_kind_name` (also used by `ask_json`) | `orchestration` may not import `turn` | All of `turnlog.rs` describes a backend outcome and imports only `backend` and `log`, so the file moves to `backend/infrastructure/outcome_wire.rs`. In P4 the shared parts become `UsageRow`, `PlanRow`, `error_kind_name` there; `SignalsRow` to `judgment/infrastructure/signals_wire.rs`; each writer keeps its own row struct (`turn_log_wire.rs`, `delegate_log_wire.rs`, `ask_output.rs`), see D18 |
 
 ---
 
 ## 2. Layers inside a context
 
 Every context has the same four folders. A folder is absent when it would be empty (`routing`
-and `catalog` are almost all domain).
+is all domain). A layer with a single file is still a folder: the path always names the layer,
+which is what both a reader and the architecture test rely on. Nothing is nested deeper than
+`crates/<context>/src/<layer>/<group>/<file>.rs`, and a group folder exists only where one layer holds
+several adapters of the same kind (`backend/infrastructure/claude/`, `providers/.../probes/`).
+
+Four crates are not layered: `tui` is one delivery layer (every file in it counts as
+`interface`), `testkit` is test code, `embed` holds re-exports only, and `cli` holds the eight
+binaries.
 
 | Layer | Folder | Holds | May do |
 |-------|--------|-------|--------|
@@ -178,7 +201,7 @@ and `catalog` are almost all domain).
 | Infrastructure | `infrastructure/` | Adapters that implement ports: CLIs, HTTP, files, git, the clock. Wire and file formats (DTOs). | Any IO. |
 | Interface | `interface/` | Delivery: HTTP handlers, the MCP server, one-shot command output. | Parse input, call a use case, format output. |
 
-Binaries in `src/bin/` are the composition roots: they read configuration, build adapters, hand
+Binaries in `crates/cli/src/bin/` are the composition roots: they read configuration, build adapters, hand
 them to use cases, and contain nothing else (30 lines or fewer each).
 
 ---
@@ -187,106 +210,204 @@ them to use cases, and contain nothing else (30 lines or fewer each).
 
 ### 3.1 The rule
 
-1. **Inward only.** Inside a context: `interface -> application -> domain`, and
-   `infrastructure -> application, domain`. `domain` imports nothing from the other three.
-   `application` never imports `infrastructure` or `interface`.
-2. **Through the front door.** Another context is imported only as `crate::<context>::Name`.
-   A path that goes into another context's layer folder
-   (`crate::routing::domain::...`) is forbidden.
-3. **Along the map.** Context A may import context B only if section 1.3 lists B for A.
-4. **Layer-preserving across contexts.** A `domain` file may import from another context only
-   names that originate in that context's `domain`. An `application` file may import its
-   `domain` and `application` names. Adapters of another context are reachable only as
-   `crate::<context>::adapters::Name`, and only from `src/bin/*` and files named `compose.rs`.
-5. **Outside crates by layer:**
+| # | Rule | Enforced by |
+|---|------|-------------|
+| 1 | **Inward only.** Inside a crate: `interface -> application -> domain`, and `infrastructure -> application, domain`. `domain` imports nothing from the other three. `application` never imports `infrastructure` or `interface`. | Architecture test (A1) |
+| 2 | **Through the front door.** Another context is imported only as `jev_<context>::Name`. Its layer modules are private. | The compiler |
+| 3 | **Along the map.** A crate depends only on the crates in its row of 1.3. | Cargo (`[dependencies]`; a cycle does not build), plus check C1 that the lists equal the table |
+| 4 | **Layer-preserving across contexts.** A `domain` file imports from another crate only names that originate in that crate's `domain`. An `application` file imports its `domain` and `application` names, so a use case never names another context's adapter. An `infrastructure` or `interface` file may import any exported name: adapters build on upstream adapters (`shared`'s `git_command`, `private_file`, `jsonl_log`; `backend`'s CLI facts used by the `providers` probes). Files named `compose.rs` and the binaries wire concrete adapters and are exempt. | Architecture test (A4) |
+| 5 | **Outside crates by layer**, table below. | Cargo for whole crates (a crate that does not list `tokio` cannot use it), architecture test (A5) for layers |
 
 | Layer | Allowed | Forbidden |
 |-------|---------|-----------|
-| `domain` | `std` except the modules on the right | `std::fs`, `std::process`, `std::env`, `std::net`, `std::io` (other than `std::io::Error` as a field type), `std::time::SystemTime::now`, `tokio`, `reqwest`, `axum`, `rustyline`, `libc`, `serde`, `serde_json`, `anyhow`, `futures_util` |
-| `application` | `std` (same exclusions), `tokio::sync`, `tokio::time`, `tokio::select!`, `std::future` | `tokio::process`, `tokio::fs`, `tokio::net`, `reqwest`, `axum`, `rustyline`, `libc`, `serde`, `serde_json`, `anyhow` |
-| `infrastructure` | everything in `Cargo.toml` except `anyhow`, `axum`, `rustyline` | those three |
+| `domain` | `std` except the modules on the right | `std::fs`, `std::process`, `std::env`, `std::net`, `std::io` (other than `std::io::Error` as a field type), `SystemTime::now`, `Instant::now`, `tokio`, `reqwest`, `axum`, `rustyline`, `libc`, `serde`, `serde_json`, `anyhow`, `futures_util` |
+| `application` | `std` (same exclusions, but `Instant::now` is allowed for timeouts), `tokio::sync`, `tokio::time`, `tokio::task`, `tokio::spawn`, `tokio::select!`, `std::future` (the delegator and the cancellable snapshot run blocking work with `spawn_blocking` today: `delegate.rs`, `changes.rs:502-520`) | `tokio::process`, `tokio::fs`, `tokio::net`, `reqwest`, `axum`, `rustyline`, `libc`, `serde`, `serde_json`, `anyhow` |
+| `infrastructure` | everything the crate's `Cargo.toml` lists | `anyhow` |
 | `interface` | `axum` (gateway), `rustyline` (tui), `serde`/`serde_json` for request and response DTOs | `reqwest`, `libc`, `anyhow` |
-| `src/bin/*` | `anyhow` allowed here only | logic |
+| `cli/src/bin/*` | `anyhow` allowed here only | logic |
 
-   `serde` is forbidden in `domain` on purpose: a file or log format must not change because a
-   domain field was renamed. Formats are DTO structs in `infrastructure` with `From`
-   conversions, and golden tests pin their bytes.
+`serde` is forbidden in `domain` on purpose: a file or log format must not change because a
+domain field was renamed. Formats are DTO structs in `infrastructure` with `From`
+conversions, and golden tests pin their bytes.
 
-### 3.2 Why one crate (recommended) and not a workspace of crates
+Where each outside crate is used today, which fixes which `Cargo.toml` may list it:
 
-| Option | For | Against |
-|--------|-----|---------|
-| **A. One package `jev-router`, contexts as modules, rule enforced by a test (recommended)** | `scripts/install.sh`, `scripts/provider_eval.py` (`target/release/ask`) and `scripts/test_pty_ux.py` (`target/debug/code`) keep working unchanged. The Flashboard design already fixes the layout: a workspace rooted here with `default-members = ["."]` and the engine reused through `jev_router::embed`. One compile unit for eight binaries. `pub(crate)` keeps test seams (`Runtime::for_tests`) private. Each step is a file move, so `git log --follow` works. | The compiler does not enforce the rule; a test does. `#![forbid(unsafe_code)]` cannot be crate-wide because one file needs `unsafe` (section 5.5). |
-| B. One crate per context (16 crates) | The compiler enforces direction. `forbid(unsafe_code)` in 15 crates. Parallel compilation. | Every cross-context item becomes `pub` API. Test doubles shared across contexts need a seventeenth crate or feature flags. Eight binaries link sixteen rlibs. The move is no longer mechanical. Flashboard's `embed` plan needs rewriting. Roughly double the migration risk for the same readability. |
-| C. Three crates by layer (`domain`, `application`, `infrastructure`) | Compiler-enforced layers. | Splits every context across three crates, which destroys the "one folder per context" readability that is goal 1. |
+| Outside crate | Used today in | Crates that list it |
+|---------------|---------------|---------------------|
+| `axum` | `bin/gateway.rs` | `gateway` |
+| `reqwest` | `typesafe.rs`, `usage.rs`, `bin/gateway.rs` | `judgment`, `gateway` |
+| `rustyline` | `lineedit.rs` | `tui` |
+| `unicode-width` | `uifmt/width.rs` | `tui` |
+| `libc` | `backend/mod.rs`, `lineedit.rs`, `terminal.rs` | `shared` only (all three call sites move to `sys_unix.rs`) |
+| `futures-util` | `bin/gateway.rs`, `repl.rs` | `gateway`, `tui` |
+| `anyhow` | 4 library files, 6 binaries | `cli` only |
+| `tokio`, `serde`, `serde_json` | most modules | each crate that needs them; `routing` lists no outside crate at all |
 
-Recommendation: **A now**. The structure is crate-ready: each context exposes its surface in
-one `mod.rs` and is imported only through it, so promoting a context to a crate later is a
-directory move plus a `Cargo.toml`. If the user wants compiler enforcement, do it after the
-definition of done is met, starting with `shared` (which would also make `forbid(unsafe_code)`
-possible everywhere else). This is decision U1.
+### 3.2 One crate per context (decision U1)
+
+The workspace has 19 members: the 16 contexts of 1.2 as library crates, plus `embed`,
+`testkit` and `cli`. Folder `crates/<context>/`, package `jev-<context>`, library
+`jev_<context>`. The package in `crates/cli/` keeps the name `jev-router`.
+
+| Concern | What changes | How it is handled |
+|---------|--------------|-------------------|
+| Boundaries | The compiler and Cargo enforce the context map and the front door. | Rules 2 and 3 need no test. The architecture test shrinks to layer direction inside a crate and the rules of form (3.4). |
+| Binaries | The eight `[[bin]]` targets move from the root package to `crates/cli/Cargo.toml` with the same names. A workspace has one `target/` at the root, so `target/release/code`, `target/debug/code`, `target/release/ask` are where they are today. | Tried in a scratch workspace: `cargo build --release --bin code --bin ask` at a virtual workspace root builds both into `target/release/`. `scripts/install.sh`, `scripts/test_pty_ux.py` (`target/debug/code`) and `scripts/provider_eval.py` (`target/release/ask`) need no edit. |
+| Public items | Every item another context uses becomes `pub`. | `unreachable_pub` is denied; each crate's surface is the explicit `pub use` list of its `lib.rs` (3.3). |
+| Test seams | `#[cfg(test)]` items are invisible to other crates. Two exist today: `Runtime::for_tests` (`providers.rs:271`, used by `turn.rs:1322`, `repl.rs:521`) and the scripted fake backends (D16). | A crate's fakes of its own ports live in its `testing` module behind a `testing` feature (3.3). |
+| Trait impls | The orphan rule: an `impl` must live with the trait or the type. | Wire DTOs are local types with `From` conversions (already the plan). An `impl` that the compiler rejects at extraction moves to the crate that owns the type. |
+| `unsafe` | `#![forbid(unsafe_code)]` in every crate root except `shared`. | Check A7. |
+| Flashboard | The facade is its own crate `jev-embed` (4.4). | The dashboard crates depend on `jev-embed`. |
+| Lints | One table for all members. | `[workspace.lints]` in the root manifest; every member has `[lints] workspace = true` (5.6, check C1). |
+
+**Build time.** Measured today on this machine: clean `cargo build` 31 s wall (149 s CPU);
+`cargo test --no-run` after it 18 s; rebuild after touching one module 3.5 s (the whole
+library recompiles and the eight binaries relink). Expected after the split: the clean build is
+dominated by the outside crates and stays within about 20% of today; independent crates of one
+level compile in parallel; a change in a leaf crate such as `tui` recompiles that crate and
+relinks, a change in `shared` recompiles everything as it does today; `cargo test` links 17
+test binaries instead of 9. The numbers are measured again at `ddd-p1` and written here.
+
+**Not chosen.** One crate with a test-enforced map (the earlier recommendation), and three
+crates by layer, which would spread every context over three crates.
 
 ### 3.3 Visibility
 
-- Layer modules are private to the context: `mod domain; mod application; mod infrastructure;`
-  in the context's `mod.rs`. Other contexts cannot name them at all, so rule 2 is also a
-  compiler error.
-- Items are `pub(crate)` unless the context's `mod.rs` re-exports them. A re-export is an
-  explicit list, never a glob.
-- The only `pub` items of the crate are those re-exported by `src/embed.rs` (Flashboard) and
-  those the binaries use. `unreachable_pub` is denied, so a stray `pub` is a build failure.
+- A crate's `lib.rs` declares its layers privately (`mod domain; mod application; mod
+  infrastructure; mod interface;`) and re-exports its surface with an explicit `pub use` list,
+  never a glob. Other crates cannot name a layer module, so rule 2 is a compiler error. This
+  holds from step P5-1 on; while the `legacy` module of 8.1 exists it re-exports by glob.
+- Items are `pub(crate)` unless `lib.rs` re-exports them. `unreachable_pub` is denied, so a
+  stray `pub` is a build failure.
+- A crate does not re-export another crate's names (check A10). `embed` is the one exception:
+  it is nothing but re-exports.
+- **Test doubles.** `jev-testkit` holds helpers that know no context: scratch directory,
+  temporary git repository, capture writer, fake Jev HTTP server, the `fixture!` and `golden!`
+  macros. It depends on no context crate; if it did, a crate's unit tests would see two
+  incompatible copies of that crate's own types. A fake of a context's port (the scripted
+  backend, `ProviderRegistry::for_tests`) lives in that crate:
+  `#[cfg(any(test, feature = "testing"))] pub mod testing;`. A downstream crate turns the
+  feature on in `[dev-dependencies]` only (check C2).
 
 ### 3.4 The architecture test
 
-`tests/architecture.rs` (an integration test, standard library only, no new dependency). It
-reads every file under `src/`, removes comments, string literals and `#[cfg(test)]` modules,
-and collects every `crate::a::b::...` path (in `use` items and inline). Three small source
-rules make this exact without a Rust parser:
+`tests/architecture.rs` (standard library only, no new dependency; registered as a `[[test]]`
+of `crates/cli`, run with `cargo test --test architecture`). With crates, the context map and
+the front door are no longer its job. It checks layer direction inside each crate, the
+`Cargo.toml` files, and the rules of form.
 
-- every cross-module path starts with `crate::` (no `super::super::`; `super::` only inside
-  one layer folder),
-- one `use` item names one context (`use crate::routing::{Pin, RouteDecision};`),
-- no glob imports outside `#[cfg(test)]`.
+It is a scanner, not a Rust parser, and it is exact because the source obeys four small rules
+that the test itself checks first:
+
+| Source rule | Why the scanner needs it |
+|-------------|--------------------------|
+| S1. Inside a crate a path to another module starts with `crate::`; a path to another context starts with `jev_<context>::`. `super::` is allowed only to reach the parent of a file in a group folder; `super::super::` and `self::` paths across files are not used. | Every dependency is a literal token sequence |
+| S2. One `use` item names one crate: `use jev_routing::{Pin, RouteDecision};`. | The crate is always the first path segment |
+| S3. No glob imports and no `use ... as` renames of a crate outside test code. | A name cannot arrive unseen |
+| S4. No `macro_rules!` in production code builds a path from fragments. | Paths are visible as written |
+
+How it reads a file, in order:
+
+1. Skip test code: the `testkit` crate, `testing` modules, any file under a `tests/` folder,
+   `*_tests.rs`, `test_facts.rs`, and from the line `#[cfg(test)]` that precedes a `mod` item to
+   the end of that item (brace matching on the lexed text). One production file today has code
+   after its test module (`anthropic.rs:159-207`); P0-1 moves it above, and the test then
+   requires the test module to be the last item of a file.
+2. Lex away what is not code: line comments, nested block comments, string literals, raw
+   strings (`r#"..."#` with any number of `#`), byte strings and char literals (told apart
+   from lifetimes by the closing quote). The lexer has its own unit tests in the same file,
+   including every one of those forms.
+3. Expand `use` groups, including nested ones (`use crate::a::{b::{C, D}, e::F};` gives
+   `crate::a::b::C`, `crate::a::b::D`, `crate::a::e::F`), then collect every `crate::...` and
+   `jev_*::...` path, in `use` items and inline. Where a file imports a module by name
+   (`use jev_backend;` or `{self, ...}`), `backend::Name` tokens in that file are collected
+   too, since the code calls functions that way today (`log::append`,
+   `handoff::SessionInfo`, `providers::backend_for`).
+4. Derive the file's crate and layer from its path (`crates/<context>/src/<layer>/...`).
+5. For rule 4, build the name-to-layer index from each crate's `lib.rs`: a line
+   `pub use self::domain::pin::Pin;` says `Pin` is a `domain` name.
 
 The test fails, naming file, line and rule, on:
 
 | Check | Rule |
 |-------|------|
 | A1 | a layer imports a layer it must not (3.1 rule 1) |
-| A2 | a path enters another context's layer folder (rule 2) |
-| A3 | a context imports a context not in its row of the map (rule 3); the map is a `const` table in the test |
-| A4 | a cross-context name comes from the wrong layer (rule 4); the test builds a name-to-layer index from each context's `mod.rs` re-export list |
+| A4 | a name of another crate comes from the wrong layer (rule 4) |
 | A5 | a forbidden outside crate or `std` module for the file's layer (rule 5) |
-| A6 | `serde_json::Value`, `serde_json::Map` or `json!` outside the allow-listed wire files (section 5.2) |
-| A7 | the token `unsafe` outside `shared/infrastructure/sys_unix.rs` |
-| A8 | `std::env::var`, `var_os` or `current_exe` outside `shared/infrastructure/env.rs` |
+| A6 | `serde_json::Value`, `serde_json::Map` or `json!` outside the three allow-listed wire files (section 5.2) |
+| A7 | the token `unsafe` outside `shared/infrastructure/sys_unix.rs`; a crate root other than `shared`'s without `#![forbid(unsafe_code)]` |
+| A8 | any `std::env::` path (or `env::` after `use std::env`) outside `shared/infrastructure/env.rs`; `std::env::args` is also allowed in the binaries. Today: 38 `var`, 6 `var_os`, 8 `args`, 3 `temp_dir`, 2 `current_dir`, 1 `current_exe`, 1 `split_paths` |
 | A9 | `Secret::expose` outside `infrastructure/` |
-| A10 | a `mod.rs` that contains anything but docs, `mod` items and `pub use` lists |
-| A11 | a context folder without `README.md`, or a module without a `//!` doc comment |
-| A12 | file names from the banned list (`util`, `utils`, `helpers`, `misc`, `common`, `types`, `stuff`) |
+| A10 | a `lib.rs` or `mod.rs` that contains anything but docs, attributes, `mod` items and `pub use` lists; a `lib.rs` other than `embed`'s that re-exports a name of another crate |
+| A11 | a crate folder without `README.md`, or a module without a `//!` doc comment |
+| A12 | file names from the banned list (`util`, `utils`, `helpers`, `misc`, `common`, `types`, `manager`, `stuff`) |
+| C1 | a member `Cargo.toml` without `[lints] workspace = true`; a dependency not written as `workspace = true`; internal dependencies that differ from the crate's row of 1.3 (the table is a `const` in the test, so widening the map is a reviewed change) |
+| C2 | the `testing` feature of a crate enabled under `[dependencies]`; `testkit` depending on a context crate; a context crate listed under `[dev-dependencies]` that is not also its dependency |
+| C3 | a dependency a crate lists and never names in its `src/` |
+| T1 | **only until the crates exist (P0 to P1b):** a flat module imports a module whose context is not in its row of 1.3. The module-to-context table is the "Current path" column of 4.5. Deleted with the last flat module. |
 
-**Ratchet.** The test starts with `tests/architecture_baseline.txt`: the list of current
-violations, one per line. A violation in the baseline passes; a new one fails; a baseline line
-that no longer matches also fails (so the list can only shrink, and is deleted last). This is
-what lets the migration run in small green steps.
+A2 and A3 of the earlier draft (entering another context's layer, importing off the map) are
+now compiler and Cargo errors and are not in the test.
+
+**Ratchet.** The baseline is one file per context, `tests/architecture_baseline/<context>.txt`,
+so parallel lanes never edit the same file. A line is
+`check | file | offending path or token | count`: no line numbers, so editing a file does not
+disturb it. The rules:
+
+- A violation that is in the baseline passes. One that is not fails.
+- A baseline line with no matching violation fails, so a fixed violation must be removed from
+  the list in the same commit.
+- `ARCH_BASELINE=write cargo test --test architecture` rewrites the files from the tree. It is
+  used by a commit that moves code (the file part of the key changes) and never to hide a new
+  violation: `scripts/check.sh` compares the per-check totals with the previous commit
+  (`git show HEAD~1:tests/architecture_baseline/`) and fails if any total went up.
+- The totals rule starts at tag `ddd-p1`. During P1b whole files land in a layer folder with
+  their mixed contents, which is when most A1 and A5 lines first appear.
+- The folder is deleted in P5-6, when every file in it is empty.
 
 ### 3.5 The one gate
 
-`scripts/check.sh` is the single command every step runs, locally and in CI:
+`scripts/check.sh` is the single command every commit runs, locally and in CI:
 
 ```
-cargo build --all-targets            (RUSTFLAGS=-D warnings)
-cargo clippy --all-targets -- -D warnings
-cargo test                           (includes tests/architecture.rs and tests/embed_api.rs)
-python3 -I scripts/budget.py         (file and function size, section 9.2)
+cargo clippy --workspace --all-targets -- -D warnings    rustc and clippy warnings are errors
+cargo test --workspace                         includes the architecture test, embed_api
+                                               and the golden tests (4.1)
 cargo build --bin code && python3 -I scripts/test_pty_ux.py
 python3 -I scripts/test_orch_report.py
 python3 -I scripts/test_task_type_accuracy.py
-python3 -I -m unittest scripts/test_provider_eval.py
+python3 -I scripts/test_provider_eval.py
+python3 -I scripts/budget.py                   file and function size (9.2)
+(last step)                                    baseline totals did not go up (3.4)
 ```
+
+Facts checked on this tree (toolchain 1.97, clippy 0.1.97):
+
+- `cargo clippy -- -D warnings` already turns rustc warnings into errors, so there is no
+  separate `RUSTFLAGS=-D warnings` build. Setting `RUSTFLAGS` for one command and not the next
+  would recompile every dependency twice per run.
+- The form `python3 -I -m unittest scripts/test_provider_eval.py` named in that file's docstring
+  fails under `-I` (`No module named 'scripts'`); running the file directly passes its 30 tests.
+- Cost of one run with a warm build: clippy about 30 s, `cargo test` about 5 s, the PTY suite
+  74 s (35 scenarios), the Python tests under 1 s. About two minutes per commit.
+- Today's tree is not clippy-clean: 23 findings at the default level (11 lints). P0-1 fixes them,
+  so the gate can deny warnings from its first commit.
 
 None of these starts a real provider CLI or spends quota: the Rust tests use fake `sh` scripts
 and a fake Jev server, the PTY test uses a fake `claude`.
+
+### 3.6 CI (decision U4)
+
+`.github/workflows/check.yml` in `github.com/putraridho/jev-switch`, added in P0-1:
+
+| Item | Value |
+|------|-------|
+| Triggers | `push` and `pull_request` |
+| Job | one job on `ubuntu-latest`: check out, install the toolchain named in `rust-toolchain.toml` (pinned, so a new clippy release cannot fail an old commit), restore the cargo cache, run `scripts/check.sh` |
+| Secrets | none. The workflow reads no secret and declares `permissions: contents: read`. No `JEV_API_KEY`, no provider key |
+| Provider CLIs and Jev | not installed and not reachable. This is the test of hermeticity: a test that would need `claude`, `codex`, `gemini`, `agy`, `grok` or the Jev service fails in CI, and is then faked like the others, never skipped silently. `check.sh` clears `JEV_API_KEY`, `DEEPSEEK_API_KEY`, `GEMINI_API_KEY`, `GOOGLE_API_KEY` and `ANTHROPIC_*` before it runs anything |
+| What the runner must have | `git`, `python3`, `sh`, `date`: all present on `ubuntu-latest`. Tests that commit pass `-c user.name=... -c user.email=...` themselves (`turn.rs:2125`, `delegate.rs:2166`) |
+| Not in CI | `scripts/parity.py` (needs the `ddd-base` build; run at phase ends, 8.4) and every eval script that spends quota (`provider_eval.py`, `task_type_accuracy.py`, `orch_report.py` against live logs) |
 
 ---
 
@@ -296,8 +417,9 @@ and a fake Jev server, the PTY test uses a fake `claude`.
 
 | Topic | Rule |
 |-------|------|
-| Context folder | `src/<context>/` with `README.md`, `mod.rs`, `error.rs`, then `domain/`, `application/`, `infrastructure/`, `interface/` |
-| `mod.rs` vs `name.rs` | A folder module always uses `mod.rs` (the folder is self-contained, and this is what `backend/` and `uifmt/` already do). A `mod.rs` holds only the `//!` doc, `mod` declarations and the explicit `pub use` list. Logic never lives in `mod.rs`. |
+| Context crate | `crates/<context>/` with `Cargo.toml`, `README.md` and `src/`. In `src/`: `lib.rs`, `error.rs` when the context has a fallible operation (`routing`, `doctor`, `tui` and `shared` have none), then those of `domain/`, `application/`, `infrastructure/`, `interface/` that are not empty. Package `jev-<context>`, library `jev_<context>` |
+| `Cargo.toml` of a member | Ten to twenty lines, the same shape everywhere: `[package]` (name, `version.workspace`, `edition.workspace`, `publish = false`), `[dependencies]` with every entry `workspace = true` (versions and features are written once, in the root `[workspace.dependencies]`), optional `[features] testing = []`, `[dev-dependencies]`, `[lints] workspace = true` |
+| `lib.rs` and `mod.rs` | A crate root is `lib.rs`; a folder module uses `mod.rs` (this is what `backend/` and `uifmt/` already do). Both hold only the `//!` doc, attributes, `mod` declarations and the explicit `pub use` list. Logic never lives in them. |
 | File name | A singular noun from the glossary for a type (`snapshot.rs`, `route_decision.rs`), a verb phrase for a use case (`undo_turn.rs`, `resume_session.rs`). One concept per file. |
 | Same role, same name | `ports.rs` (traits a layer needs), `error.rs` (the context's error), `config.rs` (the context's typed settings and how they are read), `<thing>_wire.rs` (serde DTOs for a format), `<thing>_file.rs` (a file adapter), `<thing>_http.rs` (an HTTP adapter), `<thing>_cli.rs` (a CLI adapter), `git_<thing>.rs` (a git adapter), `compose.rs` (wiring) |
 | Banned names | `util`, `utils`, `helpers`, `misc`, `common`, `types`, `manager`, `stuff` |
@@ -305,9 +427,10 @@ and a fake Jev server, the PTY test uses a fake `claude`.
 | Errors | One `Error` enum per context in `<context>/error.rs`, hand-written `Display` and `std::error::Error` (no new dependency). Variants are closed and typed; no `String`-only "other" variant except where the text is a provider's own message. `anyhow` only in `src/bin/*`. |
 | Unit tests | In the file, `#[cfg(test)] mod tests`, when the file stays within the size budget. Otherwise in `<name>_tests.rs` beside it (`#[cfg(test)] #[path = "<name>_tests.rs"] mod tests;`), which keeps access to private items. |
 | Use-case tests | `application/tests/` in the context (`mod.rs` holds the fakes, one file per behaviour). |
-| Test doubles shared by contexts | `src/testkit/` (`#[cfg(test)]`): scratch directory, temporary git repository, scripted fake CLI, fake Jev server, capture writer. Replaces the seven private copies listed in 7.2. |
-| Fixtures | `tests/fixtures/<cli>/` stays where it is. Tests load them with `fixture!("claude/turn1.jsonl")`, which expands to `include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/", ...))`, so moving a source file never breaks a path. |
-| Cross-context tests | `tests/` (integration): `architecture.rs`, `embed_api.rs`, `formats.rs` (golden bytes of every file and log format). |
+| Test doubles shared by contexts | `crates/testkit/` for helpers that know no context (scratch directory, temporary git repository, fake Jev server, capture writer); a context's own fakes in its `testing` module behind the `testing` feature (3.3). Together they replace the private copies listed in 7.2, D16. |
+| Fixtures | `tests/fixtures/<cli>/` stays at the repository root, where it is today. The 24 `include_str!("../../tests/fixtures/...")` paths are relative to the source file and break on every move, so tests load fixtures with `fixture!("claude/turn1.jsonl")` from `jev-testkit`. It expands to `include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../tests/fixtures/", ...))`; `CARGO_MANIFEST_DIR` is evaluated in the calling crate, and every member sits two levels below the root (check C1 requires `crates/<name>/`). |
+| Workspace-level tests | `tests/architecture.rs` at the root, registered in `crates/cli/Cargo.toml` (`[[test]] name = "architecture"`, `path = "../../tests/architecture.rs"`; tried in a scratch workspace, a virtual root cannot own a test). `crates/embed/tests/embed_api.rs` belongs to the facade. An integration test sees only `pub` items, so it cannot reach a wire struct. |
+| Golden bytes | The expected bytes of every file, log and wire format are data files in `tests/golden/<context>/<format>.txt`, written once in P0-3 and never edited afterwards (`git diff ddd-base -- tests/golden` stays empty). The test that compares is a unit test named `golden_<format>` beside the code that writes the format, so it moves with that code and keeps access to private items; it loads the file with `golden!("turn/turn_log_row.txt")`, built like `fixture!`. Values that differ per run (`ts_ms`, process ids, temporary paths) are replaced by a fixed token in the test before comparing; each golden's first comment line lists what is masked. |
 
 ### 4.2 Cross-cutting concerns
 
@@ -316,7 +439,7 @@ and a fake Jev server, the PTY test uses a fake `claude`.
 | Environment variables and the env file | `shared/infrastructure/env.rs`: the only caller of `std::env`. A closed `EnvVar` enum lists every variable the program reads (about 57 names today). Each context has a `config.rs` that turns `&dyn Env` into its typed `Config` once, at startup. | 44 direct `std::env` reads in 16 files and 31 `envfile::lookup` calls in 16 files |
 | Secrets | `shared/domain/secret.rs`: `Secret` wraps a key; `Debug` and `Display` print `[redacted]`; it has no `Serialize`; `expose()` is callable only from `infrastructure/` (check A9). Every API key travels as `Secret`. | bare `String` keys (`providers.rs:43`, `typesafe.rs:151`) |
 | State directory | `shared/infrastructure/state_dir.rs` behind the `StateDir` port. | `log::state_dir()` called from 8 modules |
-| Clock | `shared/application/ports.rs`: `trait Clock { fn now(&self) -> UnixMillis; }`, `shared/infrastructure/system_clock.rs`. | `log::now_ms` (`log.rs:28`), `doctor::now_ms` (`doctor.rs:543`), two `Clock` closure aliases (`turn.rs:281`, `delegate.rs:979`) |
+| Clock | `shared/application/ports.rs`: `trait Clock { fn now(&self) -> UnixMillis; }`, `shared/infrastructure/system_clock.rs`. | `log::now_ms` (`log.rs:28`), `doctor::now_ms` (`doctor.rs:543`), two `Clock` closure aliases (`turn.rs:300`, `delegate.rs:979`) |
 | JSON-lines logs | `shared/infrastructure/jsonl_log.rs`: append with rotation, generic over `T: Serialize`. | `log::append(&Value)` |
 | Private atomic file writes | `shared/infrastructure/private_file.rs`: write to a temporary file with mode 0600, then rename. | five copies (7.2, row D3) |
 | git | `shared/infrastructure/git_command.rs`: one runner (directory, optional index, optional stdin, typed failure). | four runners (7.2, row D1) |
@@ -327,30 +450,34 @@ and a fake Jev server, the PTY test uses a fake `claude`.
 
 ```
 jev-router/
-├── Cargo.toml                    [workspace] root, default-members = ["."]; [lints] table (section 5.6)
+├── Cargo.toml                    virtual manifest: [workspace] members = ["crates/*"],
+│                                 [workspace.package], [workspace.dependencies], [workspace.lints]
+├── Cargo.lock                    one lock file for the workspace
 ├── clippy.toml                   disallowed types and macros, test allowances
+├── rust-toolchain.toml           the pinned toolchain (local and CI)                NEW
+├── .github/workflows/check.yml   runs scripts/check.sh on push and pull request     NEW
 ├── README.md
 ├── docs/architecture/DDD.md      this document
 ├── eval/  mods/                  unchanged
 ├── scripts/
-│   ├── install.sh                unchanged (same --bin names, same installed names)
+│   ├── install.sh                unchanged, byte for byte (see below the tree)
 │   ├── check.sh                  the one gate (3.5)                               NEW
 │   ├── budget.py                 size budgets (9.2)                               NEW
-│   ├── parity.sh                 old-binary vs new-binary output comparison (8.4) NEW
+│   ├── parity.py                 old-binary vs new-binary output comparison (8.4) NEW
+│   ├── move_check.py             proves a commit only moved lines (8.1)           NEW
 │   └── ...                       python evals and tests, unchanged
 ├── tests/
-│   ├── architecture.rs           the dependency rule (3.4)                        NEW
-│   ├── architecture_baseline.txt the ratchet, deleted at the end                  NEW
-│   ├── embed_api.rs              compiles one use of every name in embed.rs       NEW
-│   ├── formats.rs                golden bytes of every file, log and wire format  NEW
+│   ├── architecture.rs           layer direction, manifests, rules of form (3.4)  NEW
+│   ├── architecture_baseline/    the ratchet, one file per context, deleted last  NEW
+│   ├── golden/<context>/         expected bytes of every file, log, wire format   NEW
 │   └── fixtures/                 unchanged
-└── src/
-    ├── lib.rs                    crate doc, lint attributes, the 16 contexts in dependency order
-    ├── embed.rs                  the stable API for Flashboard: re-exports only
-    ├── testkit/                  #[cfg(test)] shared test doubles
+└── crates/                       one folder per crate. In the tree below the `src/` level is
+    │                             left out: `shared/domain/secret.rs` is
+    │                             `crates/shared/src/domain/secret.rs`. `Cargo.toml` and
+    │                             `README.md` sit beside `src/`.
     │
     ├── shared/
-    │   ├── README.md  mod.rs
+    │   ├── Cargo.toml  README.md  lib.rs
     │   ├── domain/           provider_id.rs  model_id.rs  probability.rs  unix_millis.rs
     │   │                     token_usage.rs  secret.rs  opaque_json.rs  truncation.rs
     │   │                     duration_text.rs  lock.rs
@@ -359,27 +486,27 @@ jev-router/
     │                         private_file.rs  git_command.rs  sys_unix.rs
     │
     ├── catalog/
-    │   ├── README.md  mod.rs  error.rs
+    │   ├── Cargo.toml  README.md  lib.rs  error.rs
     │   ├── domain/           task_type.rs  tier.rs  legacy_tier.rs  model_spec.rs  model_table.rs
     │   │                     chain.rs  overrides.rs  usable.rs  allowances.rs  pick.rs
     │   └── infrastructure/   chains_file.rs  chains_wire.rs
     │
     ├── judgment/
-    │   ├── README.md  mod.rs  error.rs
+    │   ├── Cargo.toml  README.md  lib.rs  error.rs
     │   ├── domain/           question.rs  answer.rs  judgment.rs  signals.rs  thresholds.rs
     │   │                     question_catalog.rs  orchestration_judgment.rs
     │   │                     security_keywords.rs  short_follow_up.rs  tier_want.rs
     │   ├── application/      ports.rs  judge.rs  judge_worker.rs  verify_answer.rs
-    │   └── infrastructure/   typesafe_http.rs  typesafe_wire.rs  config.rs
+    │   └── infrastructure/   typesafe_http.rs  typesafe_wire.rs  signals_wire.rs  config.rs
     │
     ├── routing/
-    │   ├── README.md  mod.rs
+    │   ├── Cargo.toml  README.md  lib.rs
     │   └── domain/           pin.rs  route_input.rs  routing_state.rs  route_decision.rs
     │                         decide.rs  pinned_choice.rs  auto_choice.rs  switch_gate.rs
     │                         plan_steer.rs  legacy_tier_route.rs
     │
     ├── approval/
-    │   ├── README.md  mod.rs  error.rs
+    │   ├── Cargo.toml  README.md  lib.rs  error.rs
     │   ├── domain/           permission_request.rs  tool_input.rs  decision.rs  review.rs
     │   │                     visible_text.rs  permission_rule.rs  bash_rule.rs  rule_policy.rs
     │   │                     always_plan.rs  listing.rs
@@ -387,13 +514,14 @@ jev-router/
     │   └── infrastructure/   claude_settings_file.rs  claude_settings_wire.rs  directory_path.rs
     │
     ├── backend/
-    │   ├── README.md  mod.rs  error.rs
+    │   ├── Cargo.toml  README.md  lib.rs  error.rs
     │   ├── domain/           turn_request.rs  turn_outcome.rs  turn_error.rs  error_kind.rs
     │   │                     error_text.rs  limit_text.rs  event.rs  tool_call.rs  plan_usage.rs
     │   │                     mcp_attachment.rs  prompt_arg.rs
     │   ├── application/      ports.rs  ask_once.rs       (TurnRunner, Approver, BackendFactory)
     │   ├── infrastructure/
     │   │   ├── cli_dialect.rs  cli_turn_runner.rs  backend_factory.rs  config.rs
+    │   │   ├── path_lookup.rs  mise_install.rs  outcome_wire.rs  lenient.rs
     │   │   ├── process/      child.rs  output_pump.rs  stdin_feed.rs  stderr_tail.rs
     │   │   │                 process_group.rs  prompt_files.rs  idle_watchdog.rs
     │   │   ├── claude/       mod.rs  claude_cli.rs  claude_wire.rs  permission_wire.rs  mcp_config.rs
@@ -404,33 +532,32 @@ jev-router/
     │   └── interface/        ask_output.rs                (the one JSON line `jev-ask` prints)
     │
     ├── providers/
-    │   ├── README.md  mod.rs  error.rs
+    │   ├── Cargo.toml  README.md  lib.rs  error.rs
     │   ├── domain/           availability.rs  cooldowns.rs  cooldown_length.rs  reset_time.rs
     │   │                     block_reason.rs  reaction.rs  allowances_rule.rs  setup_guide.rs
     │   │                     late_probe.rs
     │   │                     probe_facts/  claude.rs  codex.rs  gemini.rs  grok.rs  deepseek.rs
     │   ├── application/      ports.rs  provider_registry.rs  probe_providers.rs  retry_slow_probes.rs
-    │   └── infrastructure/   cooldown_file.rs  cooldown_wire.rs  system_date.rs  path_lookup.rs
-    │                         mise_install.rs  config.rs
+    │   └── infrastructure/   cooldown_file.rs  cooldown_wire.rs  system_date.rs  config.rs
     │                         probes/  claude_probe.rs  codex_probe.rs  codex_auth_wire.rs
     │                                  gemini_probe.rs  grok_probe.rs  deepseek_probe.rs
     │
     ├── session/
-    │   ├── README.md  mod.rs  error.rs
+    │   ├── Cargo.toml  README.md  lib.rs  error.rs
     │   ├── domain/           session.rs  turn_record.rs  catch_up.rs  catch_up_level.rs
     │   │                     tool_trail.rs  saved_session.rs  session_info.rs  project_key.rs
     │   ├── application/      ports.rs  save_session.rs  resume_session.rs
     │   └── infrastructure/   session_file.rs  session_wire.rs
     │
     ├── changes/
-    │   ├── README.md  mod.rs  error.rs
+    │   ├── Cargo.toml  README.md  lib.rs  error.rs
     │   ├── domain/           snapshot.rs  file_change.rs  change_set.rs  untracked_merge.rs
     │   │                     undo_plan.rs  undo_report.rs  new_file_diff.rs  safe_path.rs
     │   ├── application/      ports.rs  track_turn.rs  undo_turn.rs  show_diff.rs
     │   └── infrastructure/   git_working_tree.rs  git_temp_index.rs  git_output.rs  undo_files.rs
     │
     ├── orchestration/
-    │   ├── README.md  mod.rs  error.rs
+    │   ├── Cargo.toml  README.md  lib.rs  error.rs
     │   ├── domain/           orchestration_gate.rs  planner_choice.rs  planner_note.rs
     │   │                     brief_signals.rs  worker_pick.rs  worker.rs  worker_prompt.rs
     │   │                     delegation.rs  delegation_result.rs  file_patch.rs  patch_page.rs
@@ -439,12 +566,12 @@ jev-router/
     │   │                     show_worker_diff.rs  merge_worker.rs  discard_worker.rs
     │   │                     recover_workers.rs  reservation.rs  attach_delegate_tool.rs
     │   ├── infrastructure/   git_worktrees.rs  worktree_base.rs  worker_file.rs  worker_wire.rs
-    │   │                     process_liveness.rs  mcp_config_file.rs  delegate_log.rs  config.rs
+    │   │                     process_liveness.rs  delegate_log.rs  delegate_log_wire.rs  config.rs
     │   └── interface/mcp/    mod.rs  json_rpc.rs  tool_schema.rs  tool_arguments.rs
     │                         mcp_server.rs  lazy_delegator.rs  compose.rs
     │
     ├── turn/
-    │   ├── README.md  mod.rs  error.rs
+    │   ├── Cargo.toml  README.md  lib.rs  error.rs
     │   ├── domain/           turn_report.rs  judged.rs  attempt.rs  failover.rs  no_route_info.rs
     │   ├── application/      ports.rs  engine.rs  engine_builder.rs  cancel.rs  run_turn.rs
     │   │                     run_attempts.rs  choose_model.rs  plan_orchestration.rs
@@ -453,14 +580,14 @@ jev-router/
     │   └── infrastructure/   turn_log.rs  turn_log_wire.rs  git_status.rs  config.rs
     │
     ├── doctor/
-    │   ├── README.md  mod.rs
+    │   ├── Cargo.toml  README.md  lib.rs
     │   ├── domain/           check.rs  report.rs  inputs.rs  diagnose.rs  provider_checks.rs
     │   │                     machine_checks.rs  first_run_hint.rs
     │   ├── application/      ports.rs  gather_inputs.rs
     │   └── infrastructure/   machine_facts.rs
     │
     ├── gateway/
-    │   ├── README.md  mod.rs  error.rs
+    │   ├── Cargo.toml  README.md  lib.rs  error.rs
     │   ├── domain/           model_choice.rs  prompt_text.rs  harness_message.rs  recent_context.rs
     │   │                     haiku_adaptation.rs  session_state.rs  usage_record.rs
     │   │                     gateway_turn.rs  similarity.rs  prefix_fingerprint.rs  cache_break.rs
@@ -472,20 +599,20 @@ jev-router/
     │   └── interface/http/   mod.rs  routes.rs  proxy_handler.rs  check_handlers.rs  compose.rs
     │
     ├── chat/
-    │   ├── README.md  mod.rs  error.rs
+    │   ├── Cargo.toml  README.md  lib.rs  error.rs
     │   ├── domain/           message.rs  transcript.rs
     │   ├── application/      ports.rs  chat_turn.rs
     │   ├── infrastructure/   claude_print_cli.rs  claude_print_wire.rs
     │   └── interface/        chat_repl.rs
     │
     ├── calibration/
-    │   ├── README.md  mod.rs  error.rs
+    │   ├── Cargo.toml  README.md  lib.rs  error.rs
     │   ├── domain/           threshold_sweep.rs  prompt_item.rs  score_band.rs
     │   ├── application/      sweep_cheap_threshold.rs  dry_run_routes.rs  sweep_orchestration_cutoff.rs
     │   └── infrastructure/   cases_file.rs  prompt_file.rs  gateway_log_reader.rs
     │
     ├── tui/                  interface only: the terminal front end of jev-code
-    │   ├── README.md  mod.rs
+    │   ├── Cargo.toml  README.md  lib.rs
     │   ├── app/              mod.rs  compose.rs  interactive_session.rs  print_mode.rs
     │   │                     startup.rs  doctor_command.rs
     │   ├── cli_args.rs  command.rs  command_table.rs  permissions_command.rs
@@ -503,44 +630,88 @@ jev-router/
     │   │                     wrap.rs  providers_text.rs
     │   └── tty/              mod.rs  terminal_guard.rs  terminal_size.rs  screen.rs  panic_hook.rs
     │
-    └── bin/                  composition roots only, 30 lines or fewer each
-        ├── code.rs           -> tui::app::run()                         installed as jev-code
-        ├── gateway.rs        -> gateway::interface::http                installed as jev-gateway
-        ├── delegate_mcp.rs   -> orchestration::interface::mcp           installed as jev-delegate-mcp
-        ├── ask.rs            -> backend ask_once                        installed as jev-ask
-        ├── chat.rs           -> chat::interface                         installed as jev-chat
-        └── tune.rs  route.rs  orch_tune.rs   -> calibration
+    ├── embed/                the stable facade for Flashboard (4.4)
+    │   ├── Cargo.toml  README.md  lib.rs      re-exports only
+    │   └── tests/embed_api.rs                 compiles one use of every exported name
+    │
+    ├── testkit/              test helpers that know no context (3.3); dev-dependency only
+    │   ├── Cargo.toml  README.md  lib.rs
+    │   └── scratch_dir.rs  temp_git_repo.rs  capture_writer.rs  fake_jev_server.rs
+    │       fixture.rs  golden.rs
+    │
+    └── cli/                  package `jev-router`: the eight binaries and nothing else
+        ├── Cargo.toml        the eight [[bin]] entries, [[test]] architecture
+        └── bin/              composition roots only, 30 lines or fewer each
+            ├── code.rs           -> jev_tui::run()                      installed as jev-code
+            ├── gateway.rs        -> jev_gateway::serve()                installed as jev-gateway
+            ├── delegate_mcp.rs   -> jev_orchestration::serve_mcp()      installed as jev-delegate-mcp
+            ├── ask.rs            -> jev_backend::ask_once()             installed as jev-ask
+            ├── chat.rs           -> jev_chat::run()                     installed as jev-chat
+            └── tune.rs  route.rs  orch_tune.rs   -> jev_calibration
 ```
 
-`[[bin]]` names and paths in `Cargo.toml` do not change, so `scripts/install.sh`,
-`orchestration`'s search for `delegate_mcp` beside the executable (`orchestrate.rs:151`) and
-both Python scripts that name `target/.../code` and `target/release/ask` keep working.
+**Binaries and `scripts/install.sh`.** The script runs
+`cargo build --release --bin code --bin ask --bin chat --bin gateway --bin delegate_mcp` at the
+repository root and installs `target/release/{code,ask,delegate_mcp,chat,gateway}` as
+`jev-code`, `jev-ask`, `jev-delegate-mcp`, `jev-chat`, `jev-gateway`, then copies
+`scripts/jev-claude` and `mods/jev-orchestrate`. None of that changes:
 
-### 4.4 Public API
+| What the script relies on | Why it still holds |
+|---------------------------|--------------------|
+| `--bin <name>` at the root | The root is a virtual workspace with no `default-members`, so the command covers every member and finds the five targets in `crates/cli`. Bin names are unique in the workspace (check C1) |
+| `target/release/<name>` | A workspace has one `target/` at its root |
+| `mods/`, `scripts/jev-claude` | Not moved |
+| `delegate_mcp` beside the running executable (`orchestrate.rs:151`) | Same file names, same folder |
 
-- `src/embed.rs` is the stable surface for Flashboard, exactly as the dashboard design names it
-  (`jev_router::embed`). It contains re-exports only. The names the dashboard design lists stay:
+`scripts/install.sh` is therefore not edited (`git diff ddd-base -- scripts/install.sh` is
+empty), and the same holds for `scripts/test_pty_ux.py` (`target/debug/code`) and
+`scripts/provider_eval.py` (`target/release/ask`). `cargo run --bin code` keeps working.
+
+### 4.4 Public API and Flashboard
+
+- `crates/embed` (package `jev-embed`, library `jev_embed`) is the stable surface for
+  Flashboard. It contains re-exports only. The names the dashboard design lists stay:
   `ProviderId`, `ALL_PROVIDERS`, `Runtime` (kept as an alias of `ProviderRegistry`),
   `probe_all`, `Availability`, `AvailabilityState`, `state_dir`, `path_from_env`,
   `env_file_path`, `parse_env`, `install_hint`, `login_command`. For the future chat window it
   adds `Engine`, `EngineBuilder`, `TurnObserver`, `TurnReport`, `TurnStatus`, `Cancel`, `Event`,
   `PermissionRequest`, `Decision`, `Pin`, `ChangeSet`, `SessionInfo`.
-- `tests/embed_api.rs` uses every one of those names, so removing or renaming one is a failing
-  test, not a surprise in the app.
-- Binaries import context roots (`jev_router::turn::Engine`), never layer folders.
+- `crates/embed/tests/embed_api.rs` uses every one of those names, so removing or renaming one
+  is a failing test, not a surprise in the app.
+- Binaries import crate roots (`jev_turn::Engine`), never layer modules (they cannot).
+
+**How the dashboard depends on it.** The dashboard design (branch `dashboard`,
+`docs/dashboard/DESIGN.md:526-564`, `:604-619`) plans one workspace rooted at this repository
+with `default-members = ["."]`, a root package, and the members `jev-usage-core`,
+`jev-usage-io`, `jev-dashboard` importing `jev_router::embed`. Three lines of that design
+change, and it must be updated before Flashboard's first step:
+
+| Dashboard design today | Becomes |
+|------------------------|---------|
+| imports `jev_router::embed::Name` | depends on `jev-embed = { workspace = true }`, imports `jev_embed::Name`. Its own architecture rule ("engine items only through the facade") becomes: no `jev-*` engine crate other than `jev-embed` in a dashboard `Cargo.toml` |
+| root package with `default-members = ["."]`, so root commands build only the engine | the root is virtual; `default-members = ["crates/*"]` is added in the commit that adds the first dashboard member, so `cargo build`, `cargo test` and `scripts/check.sh` at the root still cover the engine only and need no Tauri system libraries |
+| `[workspace.lints]` opted into by dashboard crates | the same table, now shared with the engine crates |
+
+**One root workspace hosts both** (recommended, and what the dashboard design already
+decided): one `Cargo.lock`, one `target/`, one lint table, and path dependencies without
+version drift. The alternative, a second workspace under `dashboard/` with
+`jev-embed = { path = "../crates/embed" }`, compiles the engine twice and lets the two lock
+files disagree.
 
 ### 4.5 Every current file and where it goes
 
 "Split" means the file becomes several files in the listed folder; the first file named keeps
-the `git mv` history (it holds the largest part).
+the `git mv` history (it holds the largest part). New paths are under `crates/`, with `src/`
+left out as in the tree.
 
 | Current path | Lines | New path | Split or merge, and why |
 |--------------|------:|----------|-------------------------|
-| `src/lib.rs` | 41 | `src/lib.rs` | Lists contexts instead of 30 flat modules |
+| `src/lib.rs` | 41 | deleted | Each crate has its own `lib.rs`; the crate doc moves to the root `README.md` |
+| `Cargo.toml` | 51 | `Cargo.toml` (virtual) | The `[[bin]]` entries move to `crates/cli/Cargo.toml`; dependencies to `[workspace.dependencies]` |
 | `src/envfile.rs` | 121 | `shared/infrastructure/env_file.rs` | Pure parsing stays with it; `lookup` becomes the `Env` port in `env.rs` |
 | `src/log.rs` | 59 | `shared/infrastructure/jsonl_log.rs` | Split: `state_dir` to `state_dir.rs`, `now_ms` to `system_clock.rs`. It mixed three concerns |
 | `src/typesafe.rs` | 188 | `judgment/infrastructure/typesafe_http.rs` | Split: request and response shapes to `typesafe_wire.rs`; `ChoiceAnswer` to `judgment/domain/answer.rs` |
-| `src/router.rs` | 1197 | `judgment/application/judge.rs` | Split, see 7.3 |
+| `src/router.rs` | 1197 | `judgment/application/judge.rs` | Split, see 7.3; `Sticky` is the one part that leaves the context (to `routing`) |
 | `src/catalog.rs` | 576 | `catalog/domain/model_table.rs` | Split by concept (`task_type`, `tier`, `model_spec`, `chain`, `overrides`, `usable`, `allowances`, `pick`); `Overrides::from_env` (reads a file, `catalog.rs:252`) to `infrastructure/chains_file.rs` |
 | `src/routing.rs` | 872 | `routing/domain/decide.rs` | Split: `pin`, `route_input`, `routing_state`, `route_decision`, `pinned_choice`, `auto_choice`, `switch_gate`, `plan_steer` |
 | `src/anthropic.rs` | 226 | `chat/infrastructure/claude_print_cli.rs` | Split three ways: model id constants to `catalog/domain/legacy_tier.rs`; `is_limit_phrase`/`is_limit_message` to `backend/domain/limit_text.rs`; `Message` to `chat/domain/message.rs`. A chat client, a model list and an error classifier shared one file |
@@ -551,30 +722,30 @@ the `git mv` history (it holds the largest part).
 | `src/backend/gemini.rs` | 718 | `backend/infrastructure/gemini/gemini_cli.rs` | Split: `gemini_wire.rs`, `agy_wire.rs`, `flavor.rs` (two CLIs, one provider) |
 | `src/backend/grok.rs` | 408 | `backend/infrastructure/grok/grok_cli.rs` | Split: `grok_wire.rs` |
 | `src/providers.rs` | 904 | `providers/application/provider_registry.rs` | Split: backend construction (`backend_for`, `deepseek_env`, gemini flavor, lines 43-116) to `backend/infrastructure/backend_factory.rs`; `react` rules to `domain/reaction.rs`; late probes to `retry_slow_probes.rs`; `render*` and `format_left` to `tui/render/providers_text.rs` and `shared/domain/duration_text.rs` |
-| `src/availability.rs` | 882 | `providers/domain/availability.rs` | Split: each provider's pure `decide_*`/`parse_*` to `domain/probe_facts/<provider>.rs`, its IO half to `infrastructure/probes/<provider>_probe.rs`; PATH and mise checks to `path_lookup.rs`, `mise_install.rs`; `render*` to `tui/render` |
+| `src/availability.rs` | 895 | `providers/domain/availability.rs` | Split: each provider's pure `decide_*`/`parse_*` to `domain/probe_facts/<provider>.rs`, its IO half to `infrastructure/probes/<provider>_probe.rs`; PATH and mise checks to `backend/infrastructure/path_lookup.rs`, `mise_install.rs` (1.3); `render*` to `tui/render` |
 | `src/cooldown.rs` | 852 | `providers/domain/reset_time.rs` | Split: `cooldown_length.rs`, `cooldowns.rs` (the set), `infrastructure/cooldown_file.rs` (save, load, `DiskWatch`), `infrastructure/system_date.rs` (the `date` command and zoneinfo) |
 | `src/handoff.rs` | 1105 | `session/domain/catch_up.rs` | Split: `session.rs` (`Sessions`), `turn_record.rs`, `tool_trail.rs`, `saved_session.rs`, `session_info.rs`, `project_key.rs`; file reading and writing to `infrastructure/session_file.rs`; `write_atomic` to `shared/infrastructure/private_file.rs` |
 | `src/changes.rs` | 1586 | `changes/infrastructure/git_working_tree.rs` | Split, see 7.3 |
 | `src/permissions.rs` | 1348 | `approval/domain/rule_policy.rs` | Split, see 7.3 |
-| `src/orchestrate.rs` | 303 | `orchestration/domain/orchestration_gate.rs` | Split: `planner_choice.rs`, `planner_note.rs`; `Setup` to `application/attach_delegate_tool.rs`; `write_mcp_config` to `infrastructure/mcp_config_file.rs` |
+| `src/orchestrate.rs` | 303 | `orchestration/domain/orchestration_gate.rs` | Split: `planner_choice.rs`, `planner_note.rs`; `Setup` to `application/attach_delegate_tool.rs`; `write_mcp_config` to `backend/infrastructure/claude/mcp_config.rs` (1.3) |
 | `src/delegate.rs` | 2856 | `orchestration/application/delegator.rs` | Split, see 7.3 |
-| `src/turn.rs` | 2743 | `turn/application/engine.rs` | Split, see 7.3 and 9.4 |
-| `src/turnlog.rs` | 152 | `turn/infrastructure/turn_log.rs` | Split: row shape to `turn_log_wire.rs`; `ask_json` to `backend/interface/ask_output.rs` |
+| `src/turn.rs` | 2835 | `turn/application/engine.rs` | Split, see 7.3 and 9.4 |
+| `src/turnlog.rs` | 152 | `backend/infrastructure/outcome_wire.rs` | Split: `ask_json` to `backend/interface/ask_output.rs`. `turn/infrastructure/turn_log.rs` and `turn_log_wire.rs` are new files made from `Engine::log_attempt` (`turn.rs:1081`) |
 | `src/doctor.rs` | 952 | `doctor/domain/diagnose.rs` | Split: `check.rs`, `report.rs`, `inputs.rs`, `provider_checks.rs`, `machine_checks.rs`, `first_run_hint.rs`; `gather` to `application/gather_inputs.rs`; machine probing to `infrastructure/machine_facts.rs`; `install_hint`, `login_command`, `login_instruction` to `providers/domain/setup_guide.rs` together with `providers::login_target` (they are provider knowledge, and this removes the `doctor <-> uifmt` cycle) |
 | `src/usage.rs` | 676 | `gateway/application/usage_tap.rs` | Split: `turn_rollup.rs` (`Turns`), domain `usage_record.rs`, `gateway_turn.rs`, `similarity.rs`; record shapes to `infrastructure/usage_log_wire.rs` |
 | `src/prefix.rs` | 243 | `gateway/domain/prefix_fingerprint.rs` | Split: `cache_break.rs` (the comparison), `application/prefix_watch.rs` (the recent-request memory) |
-| `src/bin/gateway.rs` | 1063 | `gateway/interface/http/proxy_handler.rs` | Split, see 7.3; `src/bin/gateway.rs` remains as a 30-line root |
+| `src/bin/gateway.rs` | 1063 | `gateway/interface/http/proxy_handler.rs` | Split, see 7.3; `cli/bin/gateway.rs` remains as a 30-line root |
 | `src/bin/delegate_mcp.rs` | 596 | `orchestration/interface/mcp/mcp_server.rs` | Split: `json_rpc.rs`, `tool_schema.rs`, `tool_arguments.rs`, `lazy_delegator.rs`, `compose.rs`; root remains |
 | `src/bin/code.rs` | 405 | `tui/app/interactive_session.rs` | Split: `compose.rs`, `print_mode.rs`, `startup.rs`, `doctor_command.rs`; root remains |
-| `src/bin/ask.rs` | 52 | `src/bin/ask.rs` | Logic to `backend/application/ask_once.rs` |
-| `src/bin/chat.rs` | 121 | `src/bin/chat.rs` | Loop to `chat/interface/chat_repl.rs` |
-| `src/bin/tune.rs` | 106 | `src/bin/tune.rs` | Logic to `calibration/application/sweep_cheap_threshold.rs` |
-| `src/bin/route.rs` | 306 | `src/bin/route.rs` | Logic to `calibration/application/dry_run_routes.rs` |
-| `src/bin/orch_tune.rs` | 115 | `src/bin/orch_tune.rs` | Logic to `calibration/application/sweep_orchestration_cutoff.rs` |
+| `src/bin/ask.rs` | 52 | `cli/bin/ask.rs` | Logic to `backend/application/ask_once.rs` |
+| `src/bin/chat.rs` | 121 | `cli/bin/chat.rs` | Loop to `chat/interface/chat_repl.rs` |
+| `src/bin/tune.rs` | 106 | `cli/bin/tune.rs` | Logic to `calibration/application/sweep_cheap_threshold.rs` |
+| `src/bin/route.rs` | 306 | `cli/bin/route.rs` | Logic to `calibration/application/dry_run_routes.rs` |
+| `src/bin/orch_tune.rs` | 115 | `cli/bin/orch_tune.rs` | Logic to `calibration/application/sweep_orchestration_cutoff.rs` |
 | `src/cli.rs` | 263 | `tui/cli_args.rs` | Move |
 | `src/commands.rs` | 294 | `tui/command.rs` | Move |
-| `src/console.rs` | 1234 | `tui/console/console.rs` | Split, see 7.3 |
-| `src/lineedit.rs` | 543 | `tui/input/line_editor.rs` | Split: `completion_helper.rs`, `history_file.rs`, `interrupt_guard.rs`, `answer_key.rs`; raw-mode calls to `shared/infrastructure/sys_unix.rs` |
+| `src/console.rs` | 1433 | `tui/console/console.rs` | Split, see 7.3 |
+| `src/lineedit.rs` | 575 | `tui/input/line_editor.rs` | Split: `completion_helper.rs`, `history_file.rs`, `interrupt_guard.rs`, `answer_key.rs`; raw-mode calls to `shared/infrastructure/sys_unix.rs` |
 | `src/repl.rs` | 785 | `tui/repl/repl.rs` | Split: `turn_race.rs` (the Ctrl-C race, `SigInt`), `command_handlers.rs`, `pager.rs` |
 | `src/views.rs` | 555 | `tui/views/status_facts.rs` | Split one screen per file |
 | `src/terminal.rs` | 215 | `tui/tty/terminal_guard.rs` | Split: `terminal_size.rs`, `screen.rs`, `panic_hook.rs`; termios and ioctl calls to `sys_unix.rs` |
@@ -583,6 +754,8 @@ the `git mv` history (it holds the largest part).
 | `src/uifmt/complete.rs` | 227 | `tui/render/completion.rs` | Move |
 | `src/uifmt/{ansi,changes,failure,markdown,permissions,provider_view,route,screens,status,style,summary,text,width,wrap}.rs` | 3,253 | `tui/render/<same name>.rs` | Move, file for file |
 | `src/uifmt/testutil.rs` | 70 | `tui/render/test_facts.rs` | Move |
+| `tests/fixtures/**` (26 files) | | `tests/fixtures/**` | Not moved |
+| `scripts/*` (10 files) | | `scripts/*` | Not moved, not edited, except the docstring of `test_provider_eval.py` (3.5) and line 23 of `provider_eval_README.md` (a path) |
 
 ---
 
@@ -606,13 +779,26 @@ Strictest codebase ever." In Rust terms, seven policies.
 ### 5.2 Where untyped JSON is still allowed, and why
 
 Three situations cannot be fully typed without changing behaviour, because the program must
-pass through data whose shape it does not own. Each gets one private wire file. `Value` there is
-a private field or local variable; the file's public functions take and return defined types.
+pass through data whose shape it does not own (decision U3: accepted). Each gets one private
+wire file. `Value` there is a private field or local variable; the file's public functions take
+and return defined types.
+
+Why typed structs cannot replace them, checked against the code and the dependency features:
+
+| Alternative | Why it changes bytes or does not remove `Value` |
+|-------------|--------------------------------------------------|
+| A struct with `#[serde(flatten)] rest: BTreeMap<String, Value>` | Still a `Value`. Known fields are written first and the rest after, while today's output is one object with all keys in byte order (`serde_json` is built without `preserve_order`: `cargo tree -e features` shows only `raw_value`, and that one only through another crate) |
+| `Box<RawValue>` for unknown parts | `RawValue` cannot be used under `flatten`, and it keeps the sender's bytes, while today's code re-serialises: keys sorted, whitespace dropped, numbers normalised (`1e2` becomes `100.0`). Keeping the original bytes would be a behaviour change |
+| Typing every field | The fields are not ours: Claude Code adds settings keys and the Anthropic API adds request parameters without notice |
+
+Each of the three files is held to the same limits (check A6): no `pub` item whose signature
+names `Value` or `Map`; a round-trip unit test with unknown keys, nested objects, a key order
+that is not sorted and the number forms above, compared with a golden; under 150 lines.
 
 | Allow-listed file | Why `Value` is needed | Typed surface the rest of the program sees |
 |-------------------|-----------------------|--------------------------------------------|
 | `approval/infrastructure/claude_settings_wire.rs` | `.claude/settings.local.json` belongs to Claude Code. Keys we do not know must survive a rewrite, in the same order and form as today. | `PermissionSettings { allow: Vec<PermissionRule>, directories: Vec<PathBuf> }`, `add_allow_rule`, `remove_allow_rule`, `add_directory` |
-| `gateway/infrastructure/anthropic_wire.rs` | The gateway forwards requests with fields it does not know (new API parameters) and must only replace `model` and adapt a few fields for Haiku. | `MessagesRequest` view: `model`, `messages: Vec<WireMessage>`, `system`, `tools`, `metadata`; `with_model(ModelId) -> Vec<u8>` |
+| `gateway/infrastructure/anthropic_wire.rs` | The gateway forwards requests with fields it does not know (new API parameters) and must only replace `model` and adapt a few fields for Haiku. `set_model` (`bin/gateway.rs:849`) first swaps the model inside the original bytes and re-serialises through `Value` only when that fails; `adapt_for_haiku` (`:827`) always re-serialises. Both paths are kept and each has a golden. | `MessagesRequest` view: `model`, `messages: Vec<WireMessage>`, `system`, `tools`, `metadata`; `with_model(ModelId) -> Vec<u8>` |
 | `backend/infrastructure/claude/permission_wire.rs` | A tool's input is echoed back to the CLI as `updatedInput`. Today it is re-serialised from a `Value`, which sorts keys. To keep the bytes identical, the echo is canonicalised once at this boundary into `OpaqueJson`. | `ToolInput` (typed, for review and rules) plus `OpaqueJson` (a validated JSON text with a redacting `Debug`, never inspected) |
 
 `gateway/domain/prefix_fingerprint.rs` hashes arbitrary request blocks today (`prefix.rs:39`).
@@ -628,28 +814,50 @@ change to that test, which is a reviewed decision, not a drive-by.
 derived `Deserialize` is strict by default. To keep behaviour, every wire type follows these
 rules, and every conversion is proved by a differential test before the old code is deleted.
 
-- Events are `#[serde(tag = "type")]` enums with an `#[serde(other)] Unknown` variant; every
-  field is `Option<T>` or `#[serde(default)]`; unknown fields are ignored (never
-  `deny_unknown_fields`).
+- Events are `#[serde(tag = "type")]` enums with an `#[serde(other)] Unknown` variant;
+  unknown fields are ignored (never `deny_unknown_fields`).
+- A derived `Option<String>` fails the whole line when the field holds a number, where
+  `v["x"].as_str()` gives `None` and the rest of the line is still used. Every field is
+  therefore `#[serde(default, deserialize_with = "lenient::...")]`, from one file
+  `backend/infrastructure/lenient.rs` (string, unsigned, float, bool, array, object: each
+  yields the default on a wrong type, as `as_str`, `as_u64`, `as_f64` do today).
+- A line whose `type` is missing or not a string must give what it gives today. The adapter
+  reads the tag leniently first and maps both cases to `Unknown`.
 - Number readers keep today's tolerance (`count(v, key)` in `claude.rs:134`, `codex.rs:145`,
   `gemini.rs:143`, `grok.rs:54` accept what they accept today) through one shared
   `deserialize_with` function in the adapter folder.
 - **Differential oracle.** In the commit that introduces a typed parser, the old `Value`
-  parser moves into the test module. A test feeds both every fixture line in
-  `tests/fixtures/<cli>/`, plus mutated lines (each field removed, each field given the wrong
-  type, unknown `type`, truncated JSON), and requires identical `Vec<Event>`. The next commit
-  deletes the old parser.
+  parser moves into the test module unchanged. A test feeds both parsers the same input and
+  requires identical `Vec<Event>` and identical final result (`Finish`, usage, session id).
+  The input is every file in `tests/fixtures/<cli>/`, fed whole and in order because Codex and
+  Gemini keep state between lines (`backend/codex.rs:70`, `backend/gemini.rs:102`), and then
+  the same files with one mutation at a time, generated by a loop with no randomness. For
+  every key at every depth of every line: remove it; replace its value with `null`, `0`, `1.5`,
+  `"x"`, `true`, `[]`, `{}`. For every line: unknown `type`, missing `type`, numeric `type`,
+  the line cut at each quarter, an empty line, a line that is not JSON. A mismatch prints the
+  mutated line. The oracle stays for one commit; the next commit deletes it and the old parser.
 - **Output bytes.** `serde_json` is built without `preserve_order` here, so every `json!`
-  object is written with keys in alphabetical order, and `Option::None` is written as `null`.
-  A typed row struct therefore declares its fields in alphabetical order and never uses
-  `skip_serializing_if` unless the old code omitted the key. `tests/formats.rs` pins one
-  golden line per format **before** the conversion (step P0-3), so a byte difference fails.
+  object is written with its keys in byte order, at every depth. A derived `Serialize` writes
+  fields in declaration order. The rules that keep the bytes:
+
+| Trap | Rule |
+|------|------|
+| Key order | Fields are declared in byte order of their serialised names (`error` before `error_kind`, `session` before `session_id`, capitals before lower case). A unit test per row struct serialises it, reads the keys back and asserts they are sorted |
+| `#[serde(flatten)]` | Not used in a row struct: it writes the inner keys in one block and cannot interleave them (D18) |
+| Absent or `null` | `Option::None` is written as `null`, as `json!` does. `skip_serializing_if` only where today's code inserts the key conditionally: `failover_notes`, `cancelled` (`turn.rs:1094-1100`) |
+| A key written twice | `error_kind` is overwritten with `"cancelled"` today (`turn.rs:1095`); the typed row computes the one value |
+| Numbers | Counts stay `u64` and probabilities stay `f64` in the row structs; no `f32` exists today and none is introduced (an `f32` prints different digits). A non-finite `f64` is `null` both ways |
+| Nested objects | `signals`, `usage`, `plan` are row structs under the same rules |
+| Text | Strings go through the same `serde_json` escaper either way |
+
+  The goldens of 4.1 are written from today's code in P0-3, **before** any conversion, with at
+  least two cases per format: every optional key present, and every optional key absent.
 
 | Payload | Today (untyped) | Typed replacement |
 |---------|-----------------|-------------------|
 | Jev request | `state: Value, questions: Value` (`typesafe.rs:58-112`), 8 question builders and 3 state builders returning `Value` (`router.rs:528-693`) | `JudgmentState { request, recent_context, previous: Option<PreviousTurn> }`, `Question { id: QuestionId, kind: Choice(Vec<Criterion>) \| Noul(TrueFalse), instructions }`; serialised by `typesafe_wire.rs` |
 | Jev response | `ask* -> Result<Value>`, `decode_choice(&Value, key)`, `decode_noul` (`typesafe.rs:132-138`), `decode_provider_want(&Value, ...)` (`router.rs:704`) | `Answers` (map `QuestionId -> Answer::{Choice(ChoiceAnswer), Noul(Probability)}`) deserialised in `typesafe_wire.rs` |
-| Signals for the log | `pub signals: Value` in `CodeWant` (`router.rs:27`) and `ProviderWant` (`router.rs:53`); `Value::Null` for "not asked" (`router.rs:462`); `Judged::log_signals -> Value` (`turn.rs:270`); `jev: &Value` (`turn.rs:1062`, `delegate.rs:1356`, `delegate.rs:1373`) | `Signals` struct in `judgment/domain/signals.rs`; "not asked" is `Option<Signals>`; `SignalsRow` in the log wire files writes the same keys |
+| Signals for the log | `pub signals: Value` in `CodeWant` (`router.rs:27`) and `ProviderWant` (`router.rs:53`); `Value::Null` for "not asked" (`router.rs:462`); `Judged::log_signals -> Value` (`turn.rs:289`); `jev: &Value` (`turn.rs:1081`, `delegate.rs:1356`, `delegate.rs:1373`) | `Signals` struct in `judgment/domain/signals.rs`; "not asked" is `Option<Signals>`; `SignalsRow` in the log wire files writes the same keys |
 | Signals read back by key | `worker_alias(tier: usize, signals: &Value, ...)` reads `signals["edit_p"]`, `["confidence"]`, `["choice"]` (`router.rs:225-235`); `worker_want -> Option<(&'static str, String, Value)>` (`router.rs:264`) | `fn worker_alias(want: &TierWant, ...) -> WorkerAlias` (enum `Haiku \| Sonnet \| Opus`); `worker_want -> Option<WorkerJudgment>` |
 | Orchestration fields | `Orchestration::fields -> Value` (`router.rs:121`) | `OrchestrationRow` in `gateway/infrastructure/decision_log_wire.rs` |
 | Claude stream | 10 functions over `&Value` (`backend/claude.rs:97-181`) | `ClaudeLine` enum in `claude_wire.rs` |
@@ -664,7 +872,7 @@ rules, and every conversion is proved by a differential test before the old code
 | Saved session | `Sessions::to_json/from_json(&Value)` (`handoff.rs:359-382`), `SavedSession::to_json/from_json` (`handoff.rs:469-480`), `read_session` (`handoff.rs:572`) | `SavedSessionFile` DTO in `session_wire.rs` with the same leniency as `from_json` today |
 | Cooldown file | `Cooldowns::to_json/from_json(&Value)` (`cooldown.rs:314-320`) | `CooldownFile` DTO |
 | Chain overrides | `let value: Value = serde_json::from_str(json)` (`catalog.rs:271`) | `ChainsFile` DTO; error text kept |
-| Codex auth token | two `Value` parses (`availability.rs:381-383`) | `CodexAuthFile`, `CodexIdClaims` DTOs |
+| Codex auth token | two `Value` parses (`availability.rs:387-389`) | `CodexAuthFile`, `CodexIdClaims` DTOs |
 | Worker record | `Saved` built with `json!` (`delegate.rs:676-733`) | `WorkerFile` DTO |
 | MCP protocol | 22 uses of `Value` in `bin/delegate_mcp.rs` (`tools_list`, `parse_delegate`, `rpc_result`, `handle`) | `JsonRpcRequest`, `JsonRpcResponse`, `ToolCallParams`, `DelegateArguments`, `ShowDiffArguments` in `json_rpc.rs`, `tool_arguments.rs`. The tool input schemas are static JSON text checked by a test |
 | Gateway usage | `UsageTap.record: Value` (`usage.rs:113`), `set(key, Value)` (`usage.rs:147`), `error: Option<Value>` (`usage.rs:106`), SSE handling over `&Value` (`usage.rs:194-213`), `decision: Value` (`usage.rs:335`, `usage.rs:457`), `finish_check(.., Option<Value>)` (`usage.rs:472`) | `UsageRecord`, `SseEvent` enum, `ModelChoiceRecord`, `CheckResult` enum |
@@ -674,15 +882,15 @@ rules, and every conversion is proved by a differential test before the old code
 
 | Where | Today | Becomes |
 |-------|-------|---------|
-| `router.rs:14-19` | `Decision { model: &'static str, kind: String, reason: &'static str }` | `TierRoute { tier: LegacyTier, kind: RequestKind, reason: TierReason }` |
+| `router.rs:14-19` | `Decision { model: &'static str, kind: String, confidence: f64, reason: &'static str }` | `TierRoute { tier: LegacyTier, kind: RequestKind, confidence: Probability, reason: TierReason }` in `judgment` |
 | `router.rs:23`, `orchestrate.rs:45`, `orchestrate.rs:57`, `router.rs:225` | tier as `usize`, indexing `TIERS` arrays (`bin/gateway.rs:51`, `bin/route.rs:38`, `turn.rs:45`) | `LegacyTier` enum with `model_id()` |
 | `anthropic.rs:23` | `Message.role: String` | `Role` enum |
 | `backend/mod.rs:106` | `PlanUsage.window: String` | `PlanWindow` enum with `Other(String)` for a window name the CLI invents |
-| `backend/mod.rs:203`, `handoff.rs:22`, `turn.rs:237`, `delegate.rs:892` | model as `String` | `ModelId` |
+| `backend/mod.rs:203`, `handoff.rs:22`, `turn.rs:256`, `delegate.rs:892` | model as `String` | `ModelId` |
 | `backend/mod.rs:86-88` | `ErrorKind::Quota { resets_at: Option<String> }` | keeps the CLI's wording as `ResetText` (newtype); parsed by `providers::reset_time` |
-| `turn.rs:49-91` | `Ui::route(&str)`, `note(&str)`, `no_route(.., text: &str)`, `cancelled(text: &str)`: the engine formats text for the screen | `TurnObserver` receives typed facts (`RouteDecision`, `Note` enum, `NoRouteInfo`, `CancelInfo`); `tui/render` writes the words |
-| `turn.rs:279-281`, `delegate.rs:978-979` | `BackendFactory`, `GitStatus`, `Clock`, `Judge` as `Box<dyn Fn ...>` aliases | named traits in `ports.rs` |
-| 33 signatures | `Result<_, String>` in `delegate.rs` (12), `bin/delegate_mcp.rs` (10), `catalog.rs` (3), `permissions.rs` (3), `bin/code.rs` (2), `backend/mod.rs`, `handoff.rs`, `repl.rs`, `routing.rs` (1 each) | the context's `Error` enum; the text shown to the user is produced by `Display` and pinned by tests |
+| `turn.rs:49-97` | `Ui::route(&str)`, `note(&str)`, `no_route(.., text: &str)`, `cancelled(text: &str)`: the engine formats text for the screen | `TurnObserver` receives typed facts (`RouteDecision`, `Note` enum, `NoRouteInfo`, `CancelInfo`); `tui/render` writes the words |
+| `turn.rs:298-300`, `delegate.rs:978-979` | `BackendFactory`, `GitStatus`, `Clock`, `Judge` as `Box<dyn Fn ...>` aliases | named traits in `ports.rs` |
+| 34 signatures | `Result<_, String>` in `delegate.rs` (12), `bin/delegate_mcp.rs` (10), `catalog.rs` (3), `permissions.rs` (3), `bin/code.rs` (2), `backend/mod.rs`, `handoff.rs`, `repl.rs`, `routing.rs` (1 each) | the context's `Error` enum; the text shown to the user is produced by `Display` and pinned by tests |
 | `router.rs`, `typesafe.rs`, `delegate.rs`, `anthropic.rs` | `anyhow::Result` in four library files | `judgment::Error`, `orchestration::Error`, `chat::Error` |
 | `usage.rs:147`, `usage.rs:472` | record fields set by string key | fields of `UsageRecord` |
 
@@ -693,7 +901,7 @@ Production code today has 11 panic sites, `unsafe` in 3 files, and 1 downcast.
 | Where | Today | Fix |
 |-------|-------|-----|
 | `catalog.rs:180` | `panic!("catalog chain names unknown model ...")` | Chains name `&'static ModelSpec` constants instead of ids, so an unknown name is a compile error |
-| `turn.rs:1123` | `.expect("legacy tiers are catalog models")` | `LegacyTier::spec()` returns the constant |
+| `turn.rs:1142` | `.expect("legacy tiers are catalog models")` | `LegacyTier::spec()` returns the constant |
 | `handoff.rs:541` | `.expect("an unbounded range")` | a `loop` that returns |
 | `permissions.rs:666-669` | three `.expect("checked in parse")` on a `Value` | the typed settings view owns the lists |
 | `usage.rs:522` | `.expect("checked")` | `if let Some(open) = ...` |
@@ -701,26 +909,38 @@ Production code today has 11 panic sites, `unsafe` in 3 files, and 1 downcast.
 | `bin/gateway.rs:297`, `:607` | `.unwrap()` on a response builder and on a checked `Option` | a fallible builder mapped to a fixed 502 response; `let Some(prompt) = ... else` |
 | `bin/route.rs:284` | two `.expect("object")` on `Value` | a typed output row |
 | `backend/mod.rs:877`, `:945` | `unsafe` `killpg` and `kill(pid, 0)` | `sys_unix::signal_process_group`, `sys_unix::process_exists` |
-| `lineedit.rs:303-352` | `unsafe` `read`, `tcgetattr`, `tcsetattr` (7 blocks) | `sys_unix::RawMode` guard, `sys_unix::read_byte` |
+| `lineedit.rs:318-384` | `unsafe` `poll`, `read`, `tcgetattr`, `tcsetattr` (8 blocks) | `sys_unix::RawMode` guard, `sys_unix::read_byte` |
 | `terminal.rs:36-136` | `unsafe` termios save and restore, `ioctl(TIOCGWINSZ)` (6 blocks) | `sys_unix::saved_termios`, `restore_termios`, `set_echo`, `window_size` |
 | `terminal.rs:169-171` | `payload().downcast_ref::<&str>()` and `::<String>()` | `PanicHookInfo::payload_as_str()` (stable since Rust 1.81; the toolchain here is 1.97), same result for both payload kinds |
 
-`shared/infrastructure/sys_unix.rs` is the only file with `#![allow(unsafe_code)]`. Each block
-gets a `// SAFETY:` comment; `clippy::undocumented_unsafe_blocks` is denied. The crate root has
-`#![deny(unsafe_code)]` (not `forbid`, because `forbid` cannot be relaxed for that one file);
-every `src/bin/*.rs` has `#![forbid(unsafe_code)]`. Check A7 makes the file list explicit.
+`shared/infrastructure/sys_unix.rs` is the only file with `unsafe`. Each block gets a
+`// SAFETY:` comment; `clippy::undocumented_unsafe_blocks` is denied. Every crate root except
+`shared`'s, and every binary, has `#![forbid(unsafe_code)]`; `shared` has `deny` from the
+workspace table and one `#[expect(unsafe_code, reason = "...")]` on that module (check A7).
+
+The audit's "2 hits" for `unsafe` in `router.rs` are the word in a security keyword list, not
+code.
 
 44 `as` numeric casts exist in production code; each becomes `From`, `TryFrom` with a typed
 error, or a named saturating conversion in `UnixMillis`/`TokenUsage`.
 
 ### 5.6 Lint configuration
 
-`Cargo.toml` (the workspace root; the Flashboard design already plans a
-`[workspace.lints]` table, so the engine opts in with `lints.workspace = true`):
+The root `Cargo.toml` holds the tables once; every member opts in with
+
+```toml
+[lints]
+workspace = true
+```
+
+(check C1). Tried on this toolchain in a scratch workspace: every lint name below exists in
+clippy 0.1.97, a member that opts in is held to the tables, and a `[workspace.lints]` table
+that no package opts into is silently ignored, which is why C1 exists. `clippy.toml` is read
+from the workspace root for every member.
 
 ```toml
 [workspace.lints.rust]
-unsafe_code = "deny"
+unsafe_code = "deny"                # crate roots add forbid, except shared
 unreachable_pub = "deny"
 missing_debug_implementations = "deny"
 unused_must_use = "deny"
@@ -744,7 +964,7 @@ disallowed_macros = "deny"
 dbg_macro = "deny"
 print_stdout = "deny"            # allowed by attribute in tui/console and interface output files only
 print_stderr = "deny"
-exit = "deny"                    # only src/bin/* may exit
+exit = "deny"                    # only the binaries may exit
 mem_forget = "deny"
 undocumented_unsafe_blocks = "deny"
 allow_attributes_without_reason = "deny"
@@ -761,7 +981,7 @@ missing_errors_doc = "allow"        # reviewed: the Error enum documents itself
 disallowed-types = [
   { path = "serde_json::Value", reason = "untyped data: define a wire struct (docs/architecture/DDD.md 5.2)" },
   { path = "serde_json::Map",   reason = "untyped data" },
-  { path = "anyhow::Error",     reason = "use the context's Error; anyhow only in src/bin" },
+  { path = "anyhow::Error",     reason = "use the context's Error; anyhow only in crates/cli" },
 ]
 disallowed-macros = [{ path = "serde_json::json", reason = "untyped data: serialise a wire struct" }]
 too-many-lines-threshold = 60
@@ -779,8 +999,32 @@ The three wire files of 5.2 carry
 three do. `#![deny(warnings)]` is not written in source (a new compiler release would break old
 commits); the gate passes `-D warnings` instead, which has the same effect at every check.
 
-CI: the repository has no CI today. `scripts/check.sh` is the gate; decision U4 is whether to
-add a GitHub Actions workflow that runs it on every push.
+What clippy cannot see, and what covers it:
+
+| Gap (tried in the scratch crate) | Covered by |
+|----------------------------------|------------|
+| `disallowed_types` on `anyhow::Error` does not fire on `anyhow::Result<T>` written as an alias | `anyhow` is a dependency of `crates/cli` only, so no library crate can name it (Cargo) |
+| `allow-unwrap-in-tests` and its siblings cover `#[test]` functions and `#[cfg(test)]` modules, but `as_conversions`, `string_slice`, `print_stdout` and `wildcard_enum_match_arm` have no test switch | each `mod tests` item carries `#[allow(..., reason = "test code")]` for those four; `testkit` and `testing` modules carry the same line |
+| a `Value` hidden behind a type alias | check A6 scans tokens, not types |
+
+**What turning the tables on costs.** Measured with the lints as warnings on today's production
+code (library and binaries, tests excluded): 866 findings.
+
+| Group | Findings | Nature |
+|-------|---------:|--------|
+| `must_use_candidate`, `return_self_not_must_use` | 280 | add `#[must_use]`; no behaviour |
+| `indexing_slicing`, `string_slice` | 147 | each becomes `get`/`split_at_checked`; these are the real panic risks and the reason P4-11 is risk M |
+| `as_conversions` and the `cast_*` lints | 93 | `From`/`TryFrom` (5.5 counted 44 cast sites; several lints fire per site) |
+| `print_stdout`, `print_stderr` | 61 | move behind `tui` console and the binaries' output files |
+| `doc_markdown` | 59 | backticks in comments |
+| `missing_debug_implementations` | 32 | derive or hand-write (redacting where a field is a `Secret`) |
+| `wildcard_enum_match_arm` | 25 | name the variants |
+| everything else in `pedantic` | 169 | mostly mechanical |
+
+These are fixed lint group by lint group in P4-12, one commit per group and crate, never mixed
+with a move.
+
+CI is section 3.6.
 
 ---
 
@@ -790,9 +1034,9 @@ add a GitHub Actions workflow that runs it on every push.
 |-----------|-------------------------------|
 | Single responsibility | One concept per file; a README purpose without "and"; size budgets force the split when a second responsibility grows. |
 | Open/closed | A new provider is a new folder under `backend/infrastructure/` and `providers/infrastructure/probes/`, a row in `model_table.rs`, and one `ProviderId` variant; `wildcard_enum_match_arm` makes the compiler list every `match` to extend. No existing rule is edited. |
-| Liskov | Every backend passes the same contract tests (`backend/infrastructure/contract_tests.rs`: scripted CLI, same assertions for all five). Fakes in `testkit` implement the same ports. |
-| Interface segregation | Small ports per use case (`TurnRunner`, `Approver`, `WorkingTree`, `SessionStore`, `CooldownStore`, `JudgmentService`, `Clock`, `Env`). `Engine` today takes 11 builder options and reaches into `Runtime`'s public fields; in the target it holds ports. `Ui` (8 methods, seven for the screen, one for approvals) splits into `TurnObserver` and `Approver`. |
-| Dependency inversion | Use cases name traits from `application/ports.rs`; adapters implement them; `src/bin/*` and `compose.rs` are the only places that name a concrete adapter. |
+| Liskov | Every backend passes the same contract tests (`backend/infrastructure/contract_tests.rs`: scripted CLI, same assertions for all five). Fakes in each crate's `testing` module implement the same ports. |
+| Interface segregation | Small ports per use case (`TurnRunner`, `Approver`, `WorkingTree`, `SessionStore`, `CooldownStore`, `JudgmentService`, `Clock`, `Env`). `Engine` today takes 11 builder options and reaches into `Runtime`'s public fields; in the target it holds ports. `Ui` (9 methods, seven for the screen, two for approvals) splits into `TurnObserver` and `Approver`. |
+| Dependency inversion | Use cases name traits from `application/ports.rs`; adapters implement them; the binaries in `crates/cli` and `compose.rs` files are the only places that name a concrete adapter. |
 
 ---
 
@@ -802,11 +1046,11 @@ add a GitHub Actions workflow that runs it on every push.
 
 | # | Where | Finding | Removed by |
 |---|-------|---------|------------|
-| V1 | `turn.rs:335-370`, `:371-1120` | `Engine` is routing state, session store, change tracker, orchestration planner, logger, approver and failover loop in one 750-line `impl` with 50 methods. | Split into the files of `turn/application/` (7.3) |
+| V1 | `turn.rs:354-389`, `:390-1139` | `Engine` is routing state, session store, change tracker, orchestration planner, logger, approver and failover loop in one 750-line `impl` with 50 methods. | Split into the files of `turn/application/` (7.3) |
 | V2 | `delegate.rs:1-1643` | Worker policy, patch parsing, git worktrees, a persisted record store, process liveness, crash recovery and the delegation use cases in one file. | `orchestration/` layers (7.3) |
 | V3 | `backend/mod.rs` | Domain types (`ProviderId`, `Event`, `ErrorKind`), the approval port, error-text heuristics, prompt temp files, and a 450-line child-process runner in one file. Every module that needs `ProviderId` imports the process runner's module. | `shared/domain/provider_id.rs`, `backend/domain`, `backend/infrastructure/process` |
 | V4 | `bin/gateway.rs` (1,063 lines), `bin/delegate_mcp.rs` (596), `bin/code.rs` (405) | Business rules and their tests live in binaries, where no other code (Flashboard) can reuse them. `forward` is 145 lines, `choose_model` 93. | `gateway/`, `orchestration/interface/mcp/`, `tui/app/`; binaries become roots |
-| V5 | `providers.rs:455-510`, `availability.rs:168-198`, `turn.rs:591-600` | Screen text is produced in domain and engine code. | `tui/render/providers_text.rs` |
+| V5 | `providers.rs:455-510`, `availability.rs:168-198`, `turn.rs:610-619` | Screen text is produced in domain and engine code. | `tui/render/providers_text.rs` |
 | V6 | `uifmt/failure.rs:33`, `uifmt/permissions.rs:145`, `uifmt/mod.rs` (imports `backend`) | The presentation module, documented as "input structs hold plain strings and numbers, never engine types", imports `doctor`, `permissions` and `backend`. | `tui/views` builds facts; `render` takes facts only |
 | V7 | `commands.rs:6-8` | A module documented as pure imports `uifmt`, `turn`, `permissions`, `backend`. | `tui/command.rs` depends on `command_table.rs` and context roots |
 | V8 | `catalog.rs:252`, `router.rs:239`, `backend/claude.rs:60-64`, `backend/codex.rs:52-53`, `backend/grok.rs:43`, `backend/gemini.rs:114`, `providers.rs:245`, `:384`, `orchestrate.rs:135` | Constructors and pure modules read the environment themselves (hidden input, not testable without process state). | `config.rs` per context, built once from `&dyn Env` |
@@ -816,20 +1060,20 @@ add a GitHub Actions workflow that runs it on every push.
 | V12 | `handoff.rs` | Provider session ids, the turn log, catch-up rendering, the saved-session format and its file handling in one file. | `session/` split |
 | V13 | `doctor.rs:218-259`, `providers.rs:515` | Provider setup knowledge (install hint, login command) is owned by `doctor` but used by `uifmt` and `providers`. | `providers/domain/setup_guide.rs` |
 | V14 | `delegate.rs:61` | Orchestration imports the turn engine for an idle timeout and a factory alias, closing a cycle. | `backend::BackendFactory` port; idle timeout in `backend` config |
-| V15 | `turn.rs:49-91` | `Ui` mixes progress reporting and tool approval, and takes pre-formatted text. | `TurnObserver` + `Approver`, typed facts |
-| V16 | 16 production files over 400 lines; 10 functions over 60 lines (`bin/gateway.rs:302` 145, `bin/route.rs:137` 119, `turn.rs:679` 109, `bin/gateway.rs:565` 93, `bin/chat.rs:37` 85, `usage.rs:379` 76, `delegate.rs:1369` 72, `changes.rs:714` 67, `bin/tune.rs:40` 67, `turn.rs:932` 64) | Size hides structure. | Budgets (9.2) |
+| V15 | `turn.rs:49-97` | `Ui` mixes progress reporting and tool approval, and takes pre-formatted text. | `TurnObserver` + `Approver`, typed facts |
+| V16 | 16 production files over 400 lines; 12 functions over 60 lines (`bin/gateway.rs:302` 145, `bin/route.rs:137` 119, `turn.rs:698` 109, `bin/gateway.rs:565` 93, `bin/chat.rs:37` 85, `lineedit.rs:306` 81, `usage.rs:379` 76, `delegate.rs:1369` 72, `changes.rs:714` 67, `bin/tune.rs:40` 67, `turn.rs:951` 64, `console.rs:601` 64) | Size hides structure. | Budgets (9.2) |
 
 ### 7.2 Duplication
 
 | # | What is duplicated | Where | One home |
 |---|--------------------|-------|----------|
-| D1 | Running `git` | `changes.rs:245` (`git`), `changes.rs:302`, `delegate.rs:386` (`git`), `turn.rs:284` (`git_status_short`), `doctor.rs:463` (`in_git_repo`) | `shared/infrastructure/git_command.rs` |
-| D2 | Current time in ms | `log.rs:28`, `doctor.rs:543`; clock closure aliases `turn.rs:281`, `delegate.rs:979`; nanosecond stamps for unique names at `changes.rs:268`, `backend/mod.rs:430`, `delegate.rs:1119` | `Clock` port; `private_file::unique_name` |
+| D1 | Running `git` | `changes.rs:245` (`git`), `changes.rs:302`, `delegate.rs:386` (`git`), `turn.rs:303` (`git_status_short`), `doctor.rs:463` (`in_git_repo`) | `shared/infrastructure/git_command.rs` |
+| D2 | Current time in ms | `log.rs:28`, `doctor.rs:543`; clock closure aliases `turn.rs:300`, `delegate.rs:979`; nanosecond stamps for unique names at `changes.rs:268`, `backend/mod.rs:430`, `delegate.rs:1119` | `Clock` port; `private_file::unique_name` |
 | D3 | Write a private file atomically | `handoff.rs:546` (`write_atomic`), `permissions.rs:711` (`write_private_atomic`), `backend/mod.rs:425` (`write_private`), `cooldown.rs:343-349`, `delegate.rs:758-764`, mode setting at `lineedit.rs:163` | `shared/infrastructure/private_file.rs` |
 | D4 | Parse a float from the environment | `bin/gateway.rs:105` (`env_f64`), `bin/route.rs:132` (`env_or`), `envfile.rs:54` (`lookup_f64`). The first two skip the env file and accept non-finite values, the third does not | `Env::f64(EnvVar, default)`; the difference is kept per variable and written down in `EnvVar` |
-| D5 | Idle timeout from the environment | `turn.rs:298-307` (`CODE_IDLE_TIMEOUT_SECS`), `bin/ask.rs:21` (`ASK_IDLE_SECS`) | `backend/infrastructure/config.rs` |
+| D5 | Idle timeout from the environment | `turn.rs:317-326` (`CODE_IDLE_TIMEOUT_SECS`), `bin/ask.rs:21` (`ASK_IDLE_SECS`) | `backend/infrastructure/config.rs` |
 | D6 | Home directory | eight reads of `HOME`: `envfile.rs:43`, `doctor.rs:491`, `providers.rs:106`, `log.rs:14`, `availability.rs:233`, `bin/code.rs:222`, `:271`, `permissions.rs:547` | `Env::home()` |
-| D7 | Lock a mutex ignoring poison | `usage.rs:368`, `providers.rs:282`, `backend/codex.rs:70`, `console.rs:130`, `backend/gemini.rs:102`, `delegate.rs:990`, `backend/mod.rs:489`, `:496`, `turn.rs:95` | `shared/domain/lock.rs` |
+| D7 | Lock a mutex ignoring poison | `usage.rs:368`, `providers.rs:282`, `backend/codex.rs:70`, `console.rs:186`, `backend/gemini.rs:102`, `delegate.rs:990`, `backend/mod.rs:489`, `:496`, `turn.rs:107` | `shared/domain/lock.rs` |
 | D8 | Cut text to a length | `handoff.rs:298` (`truncate_chars`), `handoff.rs:308` (`truncate_lines`), `delegate.rs:339` (`truncate_with_note`), `backend/mod.rs:585` (`last_chars`) | `shared/domain/truncation.rs` (four named functions, since their outputs differ) |
 | D9 | "How long" in words | `providers.rs:165` (`format_left`), `views.rs:186` (`human_ago`), `uifmt/text.rs` | `shared/domain/duration_text.rs` |
 | D10 | Legacy tier table | `bin/gateway.rs:51`, `bin/route.rs:38`, `turn.rs:45`, plus `router.rs:9` and `routing.rs:18` importing the constants | `catalog/domain/legacy_tier.rs` |
@@ -838,37 +1082,37 @@ add a GitHub Actions workflow that runs it on every push.
 | D13 | Is this file executable | `changes.rs:487`, `availability.rs:215` | `shared/infrastructure/private_file.rs` neighbour `file_mode` function in `sys_unix.rs` |
 | D14 | Usable models list | `availability.rs:156` (`usable_models`), `views.rs:61` (`usable_models`) | `providers::ProviderRegistry::usable` |
 | D15 | Per-CLI JSON number reader | `backend/claude.rs:134` (`count`), `backend/codex.rs:145` (`count`), `backend/gemini.rs:143` (`uint`), `backend/grok.rs:54` (`count`); four `usage_of` functions | one `deserialize_with` in `backend/infrastructure/` |
-| D16 | Test scaffolding | temp dir helpers at `cooldown.rs:763`, `lineedit.rs:486`, `views.rs:474`, `permissions.rs:849`, `console.rs:971`, `delegate.rs:1880`, `backend/mod.rs:1369`, `changes.rs:826`; fake script backends at `turn.rs:1157`, `repl.rs:433`, `delegate.rs:1825`, `backend/mod.rs:975`, `:1600`; temp git repos at `changes.rs:859`, `repl.rs:500`, `turn.rs:2103`, `delegate.rs:2161` | `src/testkit/` |
+| D16 | Test scaffolding | temp dir helpers at `cooldown.rs:763`, `lineedit.rs:518`, `views.rs:474`, `permissions.rs:849`, `console.rs:1084`, `delegate.rs:1880`, `backend/mod.rs:1369`, `changes.rs:826`; fake script backends at `turn.rs:1176`, `repl.rs:433`, `delegate.rs:1825`, `backend/mod.rs:975`, `:1600`; temp git repos at `changes.rs:859`, `repl.rs:500`, `turn.rs:2122`, `delegate.rs:2161` | `crates/testkit/` and each crate's `testing` module (3.3) |
 | D17 | Tool summary formatted then parsed | written as `"Name args"` by each backend, split again in `handoff.rs:225` | `ToolCall` (5.3) |
-| D18 | Attempt logging | `turn.rs:1062` (`log_attempt`), `delegate.rs:1332` (`log_attempt`), both building a `turn_row` | `turn_log.rs` writer taking a typed `AttemptLog`, used by both through a port |
+| D18 | Attempt logging | `turn.rs:1081` (`log_attempt`), `delegate.rs:1332` (`log_attempt`): both call `turn_row` and then insert their own keys into the `Value` (`attempt`, `orchestrated`, `cancelled`, `failover_notes`; `kind`, `planner`, `worker_id`, `task`, `read_only`, `files_changed`, `tool_calls`) | The parts both rows share are typed once: `UsageRow`, `PlanRow`, `error_kind_name` in `backend/infrastructure/outcome_wire.rs`, `SignalsRow` in `judgment`. `TurnLogRow` and `DelegateLogRow` are two structs, each listing all of its keys in alphabetical order (a shared struct with `#[serde(flatten)]` cannot interleave keys, so it would change the bytes) |
 
 ### 7.3 How the big files split
 
 Line ranges are today's; each destination file is within the 400-line budget.
 
-**`turn.rs` (2,743: 1,125 production, 1,618 tests)**
+**`turn.rs` (2,835: 1,144 production, 1,690 tests)**
 
 | Today | Destination |
 |-------|-------------|
-| `Ui` trait 49-91 | `turn/application/ports.rs` (`TurnObserver`) |
-| `EngineApprover` 100-141 | `turn/application/approve_tool.rs` |
-| `Failover`, `NoRouteInfo` 143-168 | `turn/domain/failover.rs`, `no_route_info.rs` |
-| `Cancel` 170-213 | `turn/application/cancel.rs` |
-| `TurnStatus`, `TurnReport` 216-252 | `turn/domain/turn_report.rs` |
-| `Judged` 254-277 | `turn/domain/judged.rs` |
-| aliases, `git_status_short`, idle timeout 279-307 | `ports.rs`, `infrastructure/git_status.rs`, `backend` config |
-| `Chosen`, `Attempt` 310-333 | `turn/domain/attempt.rs` |
-| `Engine` struct and builder 335-462 | `engine.rs`, `engine_builder.rs` |
-| accessors, `new_session`, save, resume 464-590 | `session_commands.rs` |
-| `last_changes`, `last_diff`, `undo_last` 509-536 | `change_commands.rs` |
-| `run*`, `judge` 606-662 | `run_turn.rs` |
-| `run_attempts` 679-790 | `run_attempts.rs` (the loop, with the body of one iteration as its own function) |
-| `choose`, `legacy_choice` 791-832, 885-920 | `choose_model.rs` |
-| `plan_orchestration`, `apply_orchestration`, `mcp_providers` 833-884 | `plan_orchestration.rs` |
-| `prompt_for`, `run_attempt` 921-998 | `run_attempt.rs` |
-| `finish`, `cancelled_report`, `record_failed`, `no_route_message` 999-1120 | `finish_turn.rs` |
-| `log_attempt` 1062-1086 | `infrastructure/turn_log.rs` |
-| tests 1126-2743 | `turn/application/tests/`: `fakes.rs`, `routing.rs`, `failover.rs`, `handoff.rs`, `approval.rs`, `orchestration.rs`, `cancel.rs`, `changes.rs`, `persistence.rs` |
+| `Ui` trait, `Answer` 49-101 | `turn/application/ports.rs` (`TurnObserver`) |
+| `SharedUi`, `EngineApprover` 104-160 | `turn/application/approve_tool.rs` |
+| `Failover`, `NoRouteInfo` 162-187 | `turn/domain/failover.rs`, `no_route_info.rs` |
+| `Cancel` 189-232 | `turn/application/cancel.rs` |
+| `TurnStatus`, `TurnReport` 235-271 | `turn/domain/turn_report.rs` |
+| `Judged` 273-296 | `turn/domain/judged.rs` |
+| aliases, `git_status_short`, idle timeout 298-326 | `ports.rs`, `infrastructure/git_status.rs`, `backend` config |
+| `Chosen`, `Attempt` 329-352 | `turn/domain/attempt.rs` |
+| `Engine` struct and builder 354-481 | `engine.rs`, `engine_builder.rs` |
+| accessors, `new_session`, save, resume 483-609 | `session_commands.rs` |
+| `last_changes`, `last_diff`, `undo_last` 528-555 | `change_commands.rs` |
+| `run*`, `judge` 625-681 | `run_turn.rs` |
+| `run_attempts` 698-809 | `run_attempts.rs` (the loop, with the body of one iteration as its own function) |
+| `choose`, `legacy_choice` 810-851, 904-939 | `choose_model.rs` |
+| `plan_orchestration`, `apply_orchestration`, `mcp_providers` 852-903 | `plan_orchestration.rs` |
+| `prompt_for`, `run_attempt` 940-1017 | `run_attempt.rs` |
+| `finish`, `cancelled_report`, `record_failed`, `no_route_message` 1018-1139 | `finish_turn.rs` |
+| `log_attempt` 1081-1104 | `infrastructure/turn_log.rs` |
+| tests 1145-2835 | `turn/application/tests/`: `fakes.rs`, `routing.rs`, `failover.rs`, `handoff.rs`, `approval.rs`, `orchestration.rs`, `cancel.rs`, `changes.rs`, `persistence.rs` |
 
 **`delegate.rs` (2,856: 1,643 production)**
 
@@ -930,15 +1174,16 @@ to `infrastructure/directory_path.rs`; `Listing` 780-816 to `domain/listing.rs` 
 `application/list_rules.rs`; `/permissions` argument parsing 818-840 to
 `tui/permissions_command.rs` (it is command-line syntax, not approval policy).
 
-**`console.rs` (1,234: 606 production)**: `Console`, `ConsoleConfig`, `Inner` output
+**`console.rs` (1,433: 676 production)**: `Console`, `ConsoleConfig`, `Inner` output
 serialisation to `tui/console/console.rs`; `Ticker` and the live status line to
-`status_ticker.rs`; `impl Ui for Console` (391-473) to `turn_observer.rs`; the approval
-question, key reading and "always" handling (501-568) to `approval_prompt.rs`; `Buf` test
+`status_ticker.rs`; `impl Ui for Console` (457-553) to `turn_observer.rs`; the approval
+question, key reading (`TerminalKey` 67-107) and "always" handling (587-666) to `approval_prompt.rs`; `Buf` test
 writer to `testkit`.
 
-**`router.rs` (1,197: 832 production)**: `Decision`, `Sticky`, the tier mapping (14-200) to
-`routing/domain/legacy_tier_route.rs`; `ProviderWant` to `judgment/domain/judgment.rs`,
-`CodeWant` to `tier_want.rs`; thresholds 57-151 to `thresholds.rs`; `Orchestration` 88-136 to
+**`router.rs` (1,197: 832 production)**: `Sticky` (157-200) to
+`routing/domain/legacy_tier_route.rs`; `Decision` (14-19, becomes `TierRoute`) and `CodeWant` to
+`judgment/domain/tier_want.rs`, because `Router::route` returns `Decision` and `judgment` may
+not import `routing`; `ProviderWant` to `judgment/domain/judgment.rs`; thresholds 57-151 to `thresholds.rs`; `Orchestration` 88-136 to
 `orchestration_judgment.rs`; `Router` 202-526 to `application/judge.rs`, with `worker_want`
 and `worker_alias` to `judge_worker.rs` and `answer_is_adequate` to `verify_answer.rs`; the
 question texts 528-693 to `domain/question_catalog.rs`; decoding 704-737 to
@@ -962,194 +1207,238 @@ functions 664-825 to `domain/prompt_text.rs`, `harness_message.rs`, `recent_cont
 
 ### 8.1 Ground rules
 
-1. One step is one commit. After every commit `scripts/check.sh` passes. A commit either moves
-   code or changes code, never both.
-2. Files move with `git mv`, in a commit that changes nothing but `mod` lines and `use` paths,
-   so git records a rename with near-100% similarity and `git log --follow` keeps working. A
-   split comes in later commits: the original file keeps the largest part (it carries the
-   history), the extracted parts are new files (`git blame -C -C` still finds their origin).
-3. Old import paths keep working during the migration through alias modules in `lib.rs`
-   (`pub mod router { pub use crate::judgment::*; }`). They are in the architecture baseline
-   and are removed in the last phase. This is what lets workers split different contexts at
-   the same time without editing each other's files.
-4. **Ownership is by folder.** In a parallel phase one worker owns one context folder and may
-   not edit any file outside it. `lib.rs`, `Cargo.toml`, `clippy.toml`, `scripts/`,
-   `tests/architecture*` and `src/shared/` are edited only in serial steps.
-5. No reformatting. The code is not `rustfmt`-default formatted today (138 lines of `turn.rs`
+1. One step is one or more commits; after **every commit** `scripts/check.sh` passes. A commit
+   either moves code or changes code, never both.
+2. Files move with `git mv`, so `git log --follow` keeps working (tried: it follows a file out
+   of `src/bin/` even when a new stub takes the old path in the same commit). A split comes in
+   later commits: the original file keeps the largest part (it carries the history), the
+   extracted parts are new files (`git blame -C -C` still finds their origin).
+3. A move commit is proved to be a move by `scripts/move_check.py HEAD`: for every renamed
+   file, the removed and added lines are equal as multisets, apart from lines matching an
+   allow list (`mod`, `use`, `pub use`, visibility keywords, `#[cfg(...)]` on a test seam,
+   `Cargo.toml` lines). A `git diff --stat` cannot show this; the script can.
+4. Old paths keep working while files are split, through each crate's `legacy.rs`
+   (`pub mod router { pub use crate::application::judge::*; }`). They are listed in the
+   baseline and removed in P5-1. This lets lanes split different crates at the same time.
+5. **Ownership is by crate.** In a parallel phase one worker owns one `crates/<context>/`
+   folder, its `Cargo.toml` and its baseline file, and edits nothing else. The root
+   `Cargo.toml`, `Cargo.lock`, `clippy.toml`, `scripts/`, `tests/architecture.rs`,
+   `crates/shared/` and `crates/testkit/` are edited only in serial steps.
+6. **Expand, then contract.** A lane never changes or removes a `pub` item that another crate
+   uses, because that would break a crate the lane does not own. It adds the new item beside
+   the old one. A serial step after the lanes switches the callers and deletes the old item.
+   A change to a type that crosses crates (`Event`, `Signals`, `ModelId`) is always serial.
+7. No reformatting. The code is not `rustfmt`-default formatted today (138 lines of `turn.rs`
    alone exceed 100 columns), and a reformat inside a move would destroy rename detection.
-   Formatting is decision U5 and, if wanted, is one separate commit at the very end.
-6. Nothing observable changes: binary names, flags, every environment variable, file names
+   One `rustfmt` commit after `ddd-done` is recommended (U5), with a committed `rustfmt.toml`
+   and the commit listed in `.git-blame-ignore-revs`.
+8. Nothing observable changes: binary names, flags, every environment variable, file names
    and formats under the state directory, log row bytes, CLI argument lists, exit codes, screen
-   text. `tests/formats.rs`, `scripts/test_pty_ux.py` and `scripts/parity.sh` check this.
-7. Freeze: all open work (`fix-orch-trigger`, review fixes) merges before P1 starts, because P1
-   moves every file. Flashboard starts after P5 or imports only `jev_router::embed`.
-8. No step runs `grok`, `agy`, `gemini`, `claude` or `codex`, and none calls Jev. All tests use
-   the existing fakes.
+   text. The golden tests, `scripts/test_pty_ux.py` and `scripts/parity.py` check this.
+9. Freeze: all open work (`fix-orch-trigger`, review fixes, the worker now fixing code on its
+   own branch) merges before P1a starts, and this document's line numbers are then pinned
+   again (they refer to `296bd5b`). Feature work is frozen from P1a to `ddd-p1`.
+10. No step runs `grok`, `agy`, `gemini`, `claude` or `codex`, and none calls Jev. All tests
+    use the existing fakes; CI has none of the CLIs installed (3.6).
+11. No secret enters the repository, a golden, a fixture or a log of the migration. Goldens
+    are built from literal fake values (`"k"`, `"sk-test"`), never from the developer's
+    environment; `check.sh` clears the key variables before running (3.6).
 
 ### 8.2 Steps
 
 Risk: L = mechanical, compiler-checked; M = structural, covered by existing tests; H = changes
 how data is parsed or written, needs the oracle or golden tests named in the step.
 
-**Phase 0: safety net (serial, one worker, 7 steps)**
+**Phase 0: safety net (serial, in today's single crate)**
 
 | Step | What | Risk | Verification beyond the gate |
 |------|------|------|------------------------------|
-| P0-1 | Add `scripts/check.sh` with today's checks only (build, clippy at the current level, tests, PTY, Python). Record the baseline: warnings and clippy findings today. | L | The script passes on the unchanged tree |
-| P0-2 | Add the `fixture!` macro; replace the 24 relative `include_str!` paths (`backend/*.rs`, `permissions.rs:1145`). | L | Same tests pass |
-| P0-3 | Add `tests/formats.rs`: one golden byte string for each format: turn log row, `jev-ask` line, gateway request/turn/decision/check records, delegate log row, `cooldowns.json`, saved session file, worker record, MCP config file, `settings.local.json` after each edit, the Jev request body, Claude `control_response` lines, and each backend's argument list. | L | Goldens generated from the current code and reviewed by reading |
-| P0-4 | Add `tests/architecture.rs` with checks A1-A12 and `tests/architecture_baseline.txt` listing every current violation. | L | The test passes with the baseline; deleting a baseline line makes it fail |
-| P0-5 | Add `scripts/budget.py` in report mode (lists offenders, exits 0) and `scripts/parity.sh` (builds the tagged base and HEAD, runs both `jev-code --help`, `jev-code doctor` in a hermetic HOME with fake CLIs, `jev-delegate-mcp` `initialize` and `tools/list`, `jev-ask` against a fake CLI, and diffs the outputs). | L | Parity of the tree against itself is empty |
-| P0-6 | Create `src/testkit/` and move the duplicated test scaffolding of D16 into it, one helper kind per commit (4 commits: scratch dir, temp git repo, scripted backend, capture writer). | M | Test count unchanged (764) |
+| P0-1 | `scripts/check.sh` (3.5), `rust-toolchain.toml`, `.github/workflows/check.yml` (3.6). Fix today's 23 default clippy findings and move the code that follows the test module in `anthropic.rs`, one lint per commit. | L | The script passes locally and in CI |
+| P0-2 | Add `fixture!` and replace the 24 relative `include_str!` paths (6 in `backend/claude.rs`, 3 in `codex.rs`, 10 in `gemini.rs`, 4 in `grok.rs`, `permissions.rs:1145`). | L | Same tests pass |
+| P0-3 | Goldens (4.1), written from today's code: turn log row, delegate log row, `jev-ask` line, gateway request/turn/decision/check records, `cooldowns.json`, saved session file, worker record, MCP config file, `settings.local.json` after each kind of edit, the Jev request body, Claude `control_response` lines, the forwarded gateway body on both `set_model` paths, and each backend's argument list. Two cases each (5.3). | L | Each golden is read by a reviewer; each test fails when one byte of its golden is changed |
+| P0-4 | `tests/architecture.rs` with its lexer tests, check T1 (flat modules against the map) and the baseline. | L | Passes with the baseline; removing any baseline line fails; a planted violation fails |
+| P0-5 | `scripts/budget.py` in report mode, `scripts/move_check.py`, `scripts/parity.py`: builds `ddd-base` and HEAD into separate target folders and compares, in a hermetic `HOME` with fake CLIs on `PATH`, the stdout, stderr and exit code of `jev-code --help`, `jev-code doctor`, `jev-code -p` against the fake `claude`, `jev-delegate-mcp` `initialize` and `tools/list`, `jev-ask` against a fake CLI, and the files each run leaves in the state directory (timestamps masked). | L | Parity of the tree against itself is empty; a planted text change is reported |
+| P0-6 | Gather the duplicated test scaffolding of D16: context-free helpers into `src/testkit/`, the scripted fake backend into `src/backend/testing.rs`. One helper kind per commit (4 commits). | M | Test count unchanged (769) |
 | P0-7 | Tag `ddd-base`. | L | none |
 
-**Phase 1: whole-file moves (serial, one worker, 15 steps, scripted)**
+**Phase 1a: untangle in place (serial, still one crate)**
 
-Each step creates one context folder with `README.md` and `mod.rs`, `git mv`s that context's
-files to the first destination named in 4.5, fixes `mod`/`use` lines, and adds the alias module
-in `lib.rs`. No file content changes otherwise. Order is upstream first.
+Crates cannot have cycles, and today's modules do (1.3). Each step moves a few items to the
+module of the context that owns them, always upstream, so the old path can stay as a
+re-export where callers are many. After the last step the T1 baseline is empty: the flat
+modules already form the map of 1.3, and every later extraction is a file move.
 
-| Step | Context | Files moved | Risk |
-|------|---------|-------------|------|
-| P1-1 | `shared` | `envfile.rs`, `log.rs` | L |
-| P1-2 | `catalog` | `catalog.rs` | L |
-| P1-3 | `judgment` | `typesafe.rs`, `router.rs` | L |
-| P1-4 | `routing` | `routing.rs` | L |
-| P1-5 | `approval` | `permissions.rs` | L |
-| P1-6 | `backend` | `backend/*` (5 files) | L |
-| P1-7 | `providers` | `providers.rs`, `availability.rs`, `cooldown.rs` | L |
-| P1-8 | `session` | `handoff.rs` | L |
-| P1-9 | `changes` | `changes.rs` | L |
-| P1-10 | `orchestration` | `orchestrate.rs`, `delegate.rs` | L |
-| P1-11 | `turn` | `turn.rs`, `turnlog.rs` | L |
-| P1-12 | `doctor` | `doctor.rs` | L |
-| P1-13 | `gateway`, `chat` | `usage.rs`, `prefix.rs`, `anthropic.rs`, `transcript.rs` | L |
-| P1-14 | `tui` | `uifmt/*` (17 files), `console.rs`, `lineedit.rs`, `repl.rs`, `views.rs`, `terminal.rs`, `commands.rs`, `cli.rs` | L |
-| P1-15 | binaries | Move the bodies of the 8 binaries into `interface/` files as whole files (`git mv src/bin/gateway.rs src/gateway/interface/http/proxy_handler.rs`, then a new 30-line `src/bin/gateway.rs`), including `calibration`. | M (binary tests move with the file; `parity.sh` must be empty) |
+| Step | Items | From | To | Edge removed |
+|------|-------|------|----|--------------|
+| P1a-1 | `ProviderId`, `Usage` | `backend/mod.rs:31-85` | new `src/shared/` (with `envfile`, `log`) | `catalog`, `routing`, `handoff`, `cooldown` -> `backend` |
+| P1a-2 | `MODEL_CHEAP/MID/STRONG/TOP` | `anthropic.rs` | `catalog` | `router`, `routing`, `turn` -> `anthropic` |
+| P1a-3 | `is_limit_phrase`, `is_limit_message` | `anthropic.rs` | `backend` | `backend` -> `anthropic` |
+| P1a-4 | `PermissionRequest`, `Decision` | `backend/mod.rs:142-199` | `permissions` | the approval types sit below their user |
+| P1a-5 | `backend_for`, `session_backend_for`, `deepseek_env`, gemini flavor (`providers.rs:43-116`); `installed_for_real`, PATH and mise checks (`availability.rs`) | `providers`, `availability` | `backend` | prepares `providers -> backend` only |
+| P1a-6 | `install_hint`, `login_command`, `login_instruction` | `doctor.rs:218-259` | `providers` | `uifmt -> doctor` |
+| P1a-7 | `write_mcp_config` | `orchestrate.rs:172` | `backend/claude.rs` | `orchestrate` -> a `backend` adapter |
+| P1a-8 | `BackendFactory`, `idle_timeout_from_env`, `idle_timeout` | `turn.rs:298-326` | `backend` | `delegate -> turn` |
+| P1a-9 | all of `turnlog.rs` | `turnlog` | `backend` | `delegate -> turnlog` |
+| P1a-10 | `Sticky` | `router.rs:157-200` | `routing` | a hold rule leaves `judgment` |
+| P1a-11 | `RouteFacts` (a plain struct) to `turn`; `denied_without_asking` (approval wording, `turn.rs:142`) to `permissions` | `uifmt` | `turn`, `permissions` | `turn -> uifmt` |
+| P1a-12 | the test at `doctor.rs:943` | `doctor` | `uifmt/failure.rs` tests | `doctor -> uifmt` (test only) |
 
-After P1: tag `ddd-p1`. Verification for every P1 step adds `git diff -M --stat HEAD~1`
-showing only renames plus `lib.rs`/`mod.rs` lines.
+Tag `ddd-p1a`. Verification for every step: `move_check.py`, and the T1 baseline shrinks.
 
-**Phase 2: split inside each context (parallel, up to 14 workers, one lane per context or small group)**
+**Phase 1b: extract the crates, leaves first (serial, scripted)**
 
-Each lane is a sequence of extraction commits following 7.3 and 4.5: move items to a new file
-in the right layer folder, re-export them from the context `mod.rs` under the same names, move
-their tests with them. No signature changes. A lane removes its own lines from the
-architecture baseline in its last commit, which is the only file outside its folder it touches;
-those baseline commits are rebased in order by the integrator.
+| Step | What | Risk |
+|------|------|------|
+| P1b-0 | Make the workspace. `git mv src crates/cli/src`, `git mv Cargo.toml crates/cli/Cargo.toml`; new virtual root `Cargo.toml` with `[workspace.dependencies]` copied from today's versions and features; `fixture!` gains `/../..`. `Cargo.lock` stays at the root. Package `jev-router` now lives in `crates/cli` and still holds everything. | M: `git diff ddd-p1a -- Cargo.lock` shows no package added or changed; `scripts/install.sh "$tmp"` works |
+| P1b-1 ... P1b-17 | One crate per step, in the order below. | L |
+| P1b-18 | The eight binaries: each body moves with `git mv` into its context crate (`crates/cli/src/bin/gateway.rs` to `crates/gateway/src/interface/http/proxy_handler.rs`, with its tests) and a new root of 30 lines or fewer takes its place. `crates/cli/src/lib.rs` is deleted; binaries name `jev_<context>::`. | M: `parity.py` empty |
 
-| Lane | Context | Extraction commits (about) | Risk | Depends on |
-|------|---------|---------------------------:|------|-----------|
-| P2-a | `shared` | 6 | L | P1 |
-| P2-b | `catalog` | 8 | L | P1 |
-| P2-c | `judgment` | 10 | M | P1 |
-| P2-d | `routing` | 8 | L | P1 |
-| P2-e | `approval` | 10 | M | P1 |
-| P2-f | `backend` | 22 | M (the process runner is timing-sensitive; its tests at `backend/mod.rs:965-1874` run unchanged) | P1 |
-| P2-g | `providers` | 20 | M | P1 |
-| P2-h | `session` | 9 | L | P1 |
-| P2-i | `changes` | 12 | M | P1 |
-| P2-j | `orchestration` | 30 | M | P1 |
-| P2-k | `turn` | 20 | M | P1 |
-| P2-l | `doctor`, `chat`, `calibration` | 14 | L | P1 |
-| P2-m | `gateway` | 22 | M | P1 |
-| P2-n | `tui` | 25 | M (PTY test is the judge) | P1 |
+Order of P1b-1 to P1b-17 (the levels of 1.3): `testkit`, `shared`, `catalog`, `approval`,
+`changes`, `judgment`, `backend`, `routing`, `providers`, `session`, `orchestration`, `doctor`,
+`chat`, `turn`, `gateway`, `tui`, `calibration` (created empty here, filled in P1b-18).
+`embed` is created in P5-4.
 
-Items that change context during the split (for example `ProviderId` from `backend` to
-`shared`, `PermissionRequest` from `backend` to `approval`, backend construction from
-`providers` to `backend`, setup hints from `doctor` to `providers`, `render*` to `tui`) are a
-serial sub-phase **P2-x** (8 commits, one worker) run before the lanes start, because each
-touches two contexts. The old path stays as a re-export.
+What one extraction step does, the same every time:
 
-After P2: tag `ddd-p2`. Every file is in its final folder; budgets are met for files; names
-are unchanged.
+| # | Action | Effect |
+|---|--------|--------|
+| 1 | Create `crates/<context>/Cargo.toml` and `README.md` (purpose line only). | |
+| 2 | `git mv` the context's files to the first destination named in 4.5. | The file is byte-identical, so rename similarity is 100% |
+| 3 | Write `src/lib.rs`: the `mod` lines, a glob `pub use` of the moved modules, and private aliases for the paths the file already uses (`use jev_shared::{envfile, log};`). | `crate::envfile::lookup` inside the moved file still resolves, so the file needs no edit |
+| 4 | In `crates/cli/src/lib.rs`, replace `pub mod catalog;` by `pub use jev_catalog as catalog;`. | Every module not yet extracted, and every binary, compiles unchanged |
+| 5 | Fix what the compiler reports, and only that: `pub(crate)` items another crate uses become `pub`; a `#[cfg(test)]` seam used from another crate (`Runtime::for_tests`) becomes `#[cfg(any(test, feature = "testing"))] pub`. | The only edits inside moved files; `move_check.py` allows exactly these |
+| 6 | `ARCH_BASELINE=write`, gate. | The moved file's layer violations enter that crate's baseline |
 
-**Phase 3: seams and duplication (introduce serially, adopt in parallel, remove serially)**
+Tag `ddd-p1`. Measure clean build, test build and one-file rebuild again and write them in 3.2.
+
+**Phase 2: split inside each crate (parallel, one lane per crate)**
+
+Each lane is a sequence of extraction commits following 7.3 and 4.5, one destination file per
+commit: move the items to the new file in the right layer folder, keep them reachable under
+the old path through `legacy.rs`, move their tests with them. No signature changes. A lane
+touches only its crate folder and its own baseline file.
+
+| Lane | Crate | Commits (about) | Risk |
+|------|-------|----------------:|------|
+| P2-a | `shared` (serial, before the others) | 6 | L |
+| P2-b | `catalog` | 8 | L |
+| P2-c | `judgment` | 10 | M |
+| P2-d | `routing` | 8 | L |
+| P2-e | `approval` | 10 | M |
+| P2-f | `backend` | 22 | M (the process runner is timing-sensitive; its tests at `backend/mod.rs:965-1874` run unchanged) |
+| P2-g | `providers` | 20 | M |
+| P2-h | `session` | 9 | L |
+| P2-i | `changes` | 12 | M |
+| P2-j | `orchestration` | 30 | M |
+| P2-k | `turn` | 20 | M |
+| P2-l | `doctor`, `chat`, `calibration` | 14 | L |
+| P2-m | `gateway` | 22 | M |
+| P2-n | `tui` | 25 | M (PTY test is the judge) |
+
+Tag `ddd-p2`. Every file is in its final folder and within the file budget; names are
+unchanged.
+
+**Phase 3: seams and duplication**
 
 | Step | What | Mode | Risk |
 |------|------|------|------|
 | P3-1 | `shared`: `Env` port, `EnvVar` enum, `Secret`; `Clock`, `StateDir` ports; `private_file`, `git_command`, `lock`, `truncation`, `duration_text`, `unix_millis`. The old free functions stay and delegate to the new code. | serial | M |
-| P3-2 | Each context adds `config.rs` and takes configuration and clock through constructors; replaces its copies of D1-D15 with the shared ones. One lane per context (14 lanes, 2-6 commits each). | parallel | M (D4: keep each variable's exact parsing; a test per variable) |
-| P3-3 | Remove the old free functions (`envfile::lookup`, `log::now_ms`, `log::state_dir`) once no caller remains; A8 leaves the baseline. | serial | L |
-| P3-4 | Ports: `TurnRunner` and `BackendFactory` in `backend`; `WorkingTree` in `changes`; `SessionStore` in `session`; `CooldownStore` in `providers`; `JudgmentService` in `judgment`; `Worktrees`/`Records`/`Liveness` moved to `ports.rs`. Adapters implement them; closure aliases removed. One lane per context. | parallel | M |
-| P3-5 | `turn`: `Ui` becomes `TurnObserver` + `Approver` with typed facts; `tui/console/turn_observer.rs` produces the same text. `ProviderRegistry` hides its fields. | serial (touches `turn`, `tui`, `orchestration`) | H (screen text: PTY test plus `parity.sh`) |
-| P3-6 | Remove cycles V14, V6, V7; A1-A5 leave the baseline. | serial | M |
+| P3-2 | Each crate adds `config.rs`, takes configuration and clock through **new** constructors beside the old ones, and replaces its copies of D1-D15 with the shared ones. | parallel, one lane per crate | M (D4: keep each variable's exact parsing; a test per variable) |
+| P3-3 | Ports: `TurnRunner`, `BackendFactory`, `McpConfigWriter` in `backend`; `WorkingTree` in `changes`; `SessionStore` in `session`; `CooldownStore` in `providers`; `JudgmentService` in `judgment`; `Worktrees`/`Records`/`Liveness` to `ports.rs`. Adapters implement them beside the closure aliases. | parallel | M |
+| P3-4 | Contract: `tui`, `cli` and the `compose.rs` files switch to the new constructors and ports; the old constructors, the closure aliases and the free functions (`envfile::lookup`, `log::now_ms`, `log::state_dir`) are deleted. A8 leaves the baseline. | serial | M |
+| P3-5 | `turn`: `Ui` becomes `TurnObserver` + `Approver` with typed facts; `tui/console/turn_observer.rs` produces the same text. `ProviderRegistry` hides its fields. `render*` leaves `providers` for `tui`. | serial (touches `turn`, `tui`, `orchestration`, `providers`) | H (screen text: PTY test plus `parity.py`) |
+| P3-6 | Layer cleanup V5-V7: A1, A4, A5 leave the baseline. | parallel | M |
 
-After P3: tag `ddd-p3`.
+Tag `ddd-p3`.
 
-**Phase 4: type strictness (shared types first, then parallel lanes)**
+**Phase 4: type strictness**
 
 | Step | What | Mode | Risk |
 |------|------|------|------|
 | P4-1 | `shared`: `ModelId`, `Probability`, `UnixMillis`, `TokenUsage`, `OpaqueJson`; `jsonl_log::append<T: Serialize>` beside the old one. | serial | L |
-| P4-2 | `backend`: typed wire enums for claude, codex, gemini, agy, grok, each with the differential oracle of 5.3 (one commit adds the typed parser and oracle, the next deletes the old parser). `ToolCall`, `ToolInput`. | lane | H |
-| P4-3 | `judgment`: typed `Question`, `Answers`, `Signals`; golden Jev request body unchanged. | lane | H |
-| P4-4 | `turn` + `orchestration`: `TurnLogRow`, `AttemptLog`, typed delegate log; `signals: Value` removed. | lane (after P4-3) | H (golden rows) |
-| P4-5 | `session`, `providers`, `catalog`: file DTOs (`session_wire`, `cooldown_wire`, `chains_wire`, `codex_auth_wire`). Old files written by the current release must still load: a test loads a file captured before the change. | 3 lanes | H |
-| P4-6 | `approval`: `ToolInput` in review and rule policy; settings wire file. | lane (after P4-2) | H (rule policy is a security boundary: every existing rule test runs unchanged) |
-| P4-7 | `orchestration/interface/mcp`: typed JSON-RPC. | lane | M |
-| P4-8 | `gateway`: `MessagesRequest` view, `UsageRecord`, `SseEvent`; `Value` confined to `anthropic_wire.rs`. A test forwards a recorded request and requires the upstream body to be byte-identical to today's. | lane | H |
-| P4-9 | Typed errors: one `Error` per context; `Result<_, String>` and `anyhow` removed from the library. User-visible error text is pinned by tests first. | lanes | M |
-| P4-10 | Newtypes and enums of 5.4 (`LegacyTier`, `Role`, `PlanWindow`, `WorkerId`, `PermissionRule`, ...). | lanes | M |
-| P4-11 | Remove the 11 panic sites and 44 `as` casts; move `unsafe` to `sys_unix.rs`; replace the downcast. | lanes, then serial for `sys_unix` | M |
-| P4-12 | Turn on the lint tables of 5.6 one group at a time (`unsafe_code`, `unwrap_used` group, `disallowed_*`, `pedantic`), each commit fixing what the group reports. A6, A7 leave the baseline. | serial | M |
+| P4-2 | `backend`: typed wire enums for claude, codex, gemini, agy, grok, each with the differential oracle of 5.3 (one commit adds the typed parser and oracle, the next deletes the old parser). Private to the crate. | lane | H |
+| P4-3 | `judgment`: typed `Question`, `Answers` inside the crate; golden Jev request body unchanged. | lane | H |
+| P4-4 | `session`, `providers`, `catalog`, `orchestration` (worker record): file DTOs. A file written by the current release must still load: a test loads a file captured at `ddd-base`. | 4 lanes | H |
+| P4-5 | `orchestration/interface/mcp`: typed JSON-RPC. | lane | M |
+| P4-6 | `gateway`: `MessagesRequest` view, `UsageRecord`, `SseEvent`; `Value` confined to `anthropic_wire.rs`. Golden upstream body on both `set_model` paths. | lane | H |
+| P4-7 | Cross-crate types, one per commit, each expand-then-contract: `Signals` replaces `signals: Value` (`judgment`, then `turn`, `orchestration`, `gateway`, `backend`'s `outcome_wire`); `ToolCall` replaces `Event::Tool(String)` (`backend`, then `session`, `turn`, `tui`); `ToolInput` replaces `PermissionRequest.input` (`approval`, then `backend`, `tui`); `TurnLogRow`, `DelegateLogRow`. | serial | H (golden rows; rule policy is a security boundary, every existing rule test runs unchanged) |
+| P4-8 | `approval`: settings wire file; `permission_wire.rs` with `OpaqueJson`. | lane (after P4-7) | H |
+| P4-9 | Typed errors: one `Error` per crate; `Result<_, String>` and `anyhow` removed from the libraries. User-visible error text is pinned by tests first. Callers in other crates switch in a serial commit per crate. | lanes, then serial | M |
+| P4-10 | Newtypes and enums of 5.4 (`LegacyTier`, `Role`, `PlanWindow`, `WorkerId`, `PermissionRule`, `ModelId` adoption). | serial where the type crosses crates, lane otherwise | M |
+| P4-11 | Remove the 11 panic sites and the `as` casts; move `unsafe` to `sys_unix.rs` (then `libc` leaves every `Cargo.toml` but `shared`'s); replace the downcast. | lanes, then serial for `sys_unix` | M |
+| P4-12 | Turn on the lint tables of 5.6 one group at a time (`unsafe_code` and `forbid`, the `unwrap_used` group, `indexing_slicing` and `string_slice`, `as_conversions`, `disallowed_*`, `print_*`, then `pedantic`), one commit per group and crate. A6, A7 leave the baseline. | serial per group, lanes per crate inside a group | M (866 findings today, 5.6) |
 
-After P4: tag `ddd-p4`.
+Tag `ddd-p4`.
 
-**Phase 5: closing (serial, 7 steps)**
+**Phase 5: closing (serial)**
 
 | Step | What | Risk |
 |------|------|------|
-| P5-1 | Remove the alias modules from `lib.rs`; rewrite remaining old paths (scripted). | L |
-| P5-2 | Rename to the glossary: `Runtime` to `ProviderRegistry`, `ChangeSummary` to `ChangeSet`, `ProviderWant` to `Judgment`, `Sessions` to `Session`, the second `Gate`/`Snapshot`/`Decision`/`SessionInfo`/`Interrupt`. One rename per commit. `embed.rs` keeps `Runtime` as an alias. | L |
+| P5-1 | Delete every `legacy.rs` and the lib-root aliases; rewrite remaining old paths to `jev_<context>::Name` (scripted); `lib.rs` re-exports become explicit lists; layer modules become private. | L |
+| P5-2 | Rename to the glossary: `Runtime` to `ProviderRegistry`, `ChangeSummary` to `ChangeSet`, `ProviderWant` to `Judgment`, `Sessions` to `Session`, the second `Gate`/`Snapshot`/`Decision`/`SessionInfo`/`Interrupt`. One rename per commit. `embed` keeps `Runtime` as an alias. | L |
 | P5-3 | Function budget: split the functions still over 60 lines. | M |
-| P5-4 | `src/embed.rs` and `tests/embed_api.rs`. | L |
-| P5-5 | Write every context `README.md` from the template (9.3); `//!` owns/must-not on every module; A10-A12 leave the baseline. | L |
-| P5-6 | `budget.py` to failing mode; delete `tests/architecture_baseline.txt` (it is empty); update the "Layout" section of `README.md` (lines 476-500) and `scripts/provider_eval_README.md:23`. | L |
-| P5-7 | Run `scripts/install.sh` into a temporary destination; run `parity.sh` against `ddd-base`; tag `ddd-done`. | L |
+| P5-4 | `crates/embed` and `crates/embed/tests/embed_api.rs`; update the three lines of the dashboard design (4.4). | L |
+| P5-5 | Write every crate `README.md` from the template (9.3); `//!` owns/must-not on every module; A10-A12, C1-C3 leave the baseline. | L |
+| P5-6 | `budget.py` to failing mode; delete `tests/architecture_baseline/` (every file is empty); update the "Files" section of `README.md` (lines 476-500) and `scripts/provider_eval_README.md:23`; add `scripts/dod.sh` (section 10). | L |
+| P5-7 | Run `scripts/dod.sh`; tag `ddd-done`. | L |
 
-**Count.** 7 + 15 + (1 serial sub-phase + 14 lanes) + 6 + 12 + 7 = **62 planned steps**, about
-330 commits. Serial: P0, P1, P2-x, P3-1, P3-3, P3-5, P3-6, P4-1, P4-12, P5. Parallel: the 14
-lanes of P2, the per-context lanes of P3-2 and P3-4, and the lanes of P4-2 to P4-11.
+**Count.** 7 + 12 + 20 + 14 lanes + 6 + 12 + 7 steps; about 430 commits: P0 15, P1a 12,
+P1b 20, P2 216, P3 60, P4 90, P5 20.
+
+**Is that realistic, and is there a faster path that is as safe?** The gate costs about two
+minutes (3.5), so 430 commits are about 15 hours of gate time; with the P2 lanes in parallel
+the wall time is set by the longest lane (30 commits, one hour of gate). What must not be done
+to go faster: merging moves with changes, or batching several destination files into one
+commit; both make a failure hard to locate and a revert wide. What is done:
+
+| Saving | How | Why it is as safe |
+|--------|-----|-------------------|
+| Lanes run a fast gate per commit | `scripts/check.sh --fast`: clippy and tests for the lane's crate and the crates that depend on it (`cargo test -p`), architecture test, budget. About 40 s | The integrator replays every lane with `git rebase --exec scripts/check.sh`, so no commit reaches `refactor/ddd` without the full gate, PTY suite included |
+| P1a and P1b are scripted | One script per phase, reviewed once, applied step by step | Each step is still its own commit and passes the gate and `move_check.py` |
+| No separate "move to layer folder" phase | P1b puts each file directly at its final first destination | One rename per file instead of two |
 
 ### 8.3 Parallel work without conflicts
 
 | Phase | Workers | Each worker owns | Shared files, and who edits them |
 |-------|--------:|------------------|----------------------------------|
-| P0, P1 | 1 | everything | n/a |
-| P2 | up to 14 | one context folder | `tests/architecture_baseline.txt`: each lane's last commit, applied in order by the integrator |
-| P3-2, P3-4 | up to 14 | one context folder | `src/bin/*` and `compose.rs` wiring: the integrator, after each lane lands |
-| P4-2 to P4-11 | up to 8 | one context folder | `tests/formats.rs` is split per context (`tests/formats/<context>.rs`) in P0-3 so lanes do not collide |
+| P0, P1a, P1b | 1 | everything | n/a |
+| P2 | up to 13 (after `shared`) | one `crates/<context>/` and `tests/architecture_baseline/<context>.txt` | none |
+| P3-2, P3-3, P3-6 | up to 14 | the same | none: rule 6, callers switch in P3-4 |
+| P4 lanes | up to 8 | the same, plus `tests/golden/<context>/` read-only | root `Cargo.toml` (a new feature of an outside crate): the integrator |
 | P5 | 1 | everything | n/a |
 
-Each worker uses its own git worktree and branch (`ddd/<phase>-<context>`); the integrator
-rebases lanes onto `refactor/ddd` one at a time and runs the gate after each.
+Why lanes cannot collide: a lane's files are all under one crate folder; the root manifest
+lists members by glob (`crates/*`), so no lane edits it; `Cargo.lock` does not change because
+no lane may add an outside dependency; baselines and goldens are per context. Each worker uses
+its own git worktree and branch (`ddd/<phase>-<context>`) and its own `CARGO_TARGET_DIR`; the
+integrator rebases lanes onto `refactor/ddd` one at a time with the full gate on every commit.
 
 ### 8.4 Verification
 
 | After | Run |
 |-------|-----|
-| every commit | `scripts/check.sh` (3.5): warning-free build, clippy, 764+ Rust tests including architecture and formats, PTY UX test, three Python test files |
-| every move commit | `git diff -M --stat HEAD~1`: renames only |
-| every phase | `scripts/parity.sh ddd-base`: empty diff; test count not lower than before; `python3 -I scripts/budget.py` offender count not higher than before |
+| every commit | `scripts/check.sh` (3.5): clippy with warnings denied, 769+ Rust tests including the architecture and golden tests, PTY UX test, three Python test files; the same in CI |
+| every move commit | `scripts/move_check.py HEAD` |
+| every phase | `scripts/parity.py ddd-base`: empty diff; the sum of passed tests over all crates is not lower than before; `python3 -I scripts/budget.py` offender count not higher than before; `git diff ddd-base -- tests/golden tests/fixtures scripts/install.sh` empty |
 | P4 lanes | the differential oracle and golden tests named in the step |
-| the end | `scripts/install.sh "$tmp"` then `"$tmp/jev-code" --help`, `"$tmp/jev-delegate-mcp"` `initialize`; `git log --follow` on five moved files reaches their pre-refactor history |
+| the end | `scripts/dod.sh` (section 10) |
 
-Review loop: after each phase a reviewer reads the phase diff; findings are fixed and the
-review repeats until a round finds nothing, as for all work on this project.
+Review loop: after each phase a reviewer who did not write it reads the phase diff; findings
+are fixed and the review repeats until a round finds nothing, as for all work on this project.
 
 ### 8.5 Rollback
 
 - All work is on `refactor/ddd`; `master` and the installed binaries are untouched until the
   final merge.
 - Every commit is green, so any single step is undone with `git revert <sha>`: a move commit
-  reverts to the old location, an extraction reverts to the unsplit file.
-- Phase tags (`ddd-base`, `ddd-p1` ... `ddd-p4`, `ddd-done`) are safe stopping points: each is a
-  working, shippable tree. If the work must stop, the branch is merged at the last tag; the
-  ratchet baseline documents exactly what remains.
+  reverts to the old location, an extraction reverts to the unsplit file. A crate extraction
+  (P1b) is reverted in reverse order only, since later crates depend on earlier ones.
+- Phase tags (`ddd-base`, `ddd-p1a`, `ddd-p1` ... `ddd-p4`, `ddd-done`) are safe stopping
+  points: each is a working, shippable tree. If the work must stop, the branch is merged at
+  the last tag; the ratchet baseline documents exactly what remains.
 - A P4 step that turns out to change bytes (a golden or oracle test cannot be made to pass
-  without changing behaviour) is not forced: the payload is added to the 5.2 allow list with a
-  written reason, or the step is dropped, and the user is told.
+  without changing behaviour) is not forced: the step is dropped and the user is asked whether
+  to add a fourth allow-listed wire file (U3 covers three).
 - After the final merge, a regression in the field is handled by reinstalling from the
   `ddd-base` tag (`git checkout ddd-base && scripts/install.sh`); state files and logs are
   format-compatible in both directions because no format changed.
@@ -1183,11 +1472,12 @@ done includes ten such questions with their expected answers, for example:
 |--------|------:|-------|
 | Lines per `.rs` file, including inline tests | 400 | 16 files exceed it on production code alone; the largest is 2,856 |
 | Lines per test-only file (`*_tests.rs`, `tests/*.rs`) | 600 | n/a |
-| Lines per function (also `clippy::too_many_lines`) | 60 | 10 functions exceed it; the largest is 145 |
+| Lines per function (also `clippy::too_many_lines`) | 60 | 12 production functions exceed it; the largest is 145 |
 | Function parameters | 6 | 2 `#[allow(clippy::too_many_arguments)]` |
-| `pub use` names in a context `mod.rs` | 25 | n/a |
-| Files in one folder (`src/` itself holds the 16 contexts, `lib.rs`, `embed.rs`, `testkit/`, `bin/`) | 20 | `src/` has 30 modules side by side |
-| `src/bin/*.rs` lines | 30 | up to 1,063 |
+| `pub use` names in a crate's `lib.rs`, grouped under the four headings of the README (types, use cases, ports, adapters) | 40 | n/a |
+| Files in one folder (`crates/` holds 19 crates) | 20 | `src/` has 30 modules side by side |
+| `crates/cli/src/bin/*.rs` lines | 30 | up to 1,063 |
+| Lines in a member `Cargo.toml` (the eight `[[bin]]` entries of `cli` aside) | 25 | n/a |
 
 The script prints every offender with its size and exits non-zero when one exists (report mode
 until P5-6). It has no exceptions list: a file that cannot meet the budget is two concepts.
@@ -1202,7 +1492,7 @@ until P5-6). It has no exceptions list: a file that cannot meet the budget is tw
 5. A context's purpose sentence has no "and" joining two responsibilities; neither does a
    module's "Owns" sentence. Reviewers check this; `budget.py` flags `" and "` in the first
    line of a `README.md` as a warning.
-6. The public surface of a context is the `pub use` list of its `mod.rs`, repeated in its
+6. The public surface of a context is the `pub use` list of its `lib.rs`, repeated in its
    README. Nothing else is importable.
 7. Every context README follows one template:
 
@@ -1211,7 +1501,7 @@ until P5-6). It has no exceptions list: a file that cannot meet the budget is tw
 <One sentence: the purpose.>
 
 ## Language        the glossary terms this context owns, one line each
-## Public surface  the names exported by mod.rs, grouped: types, use cases, ports, adapters
+## Public surface  the names exported by lib.rs, grouped: types, use cases, ports, adapters
 ## Layout          one line per file: what it owns
 ## Depends on      the contexts it may import, and what it takes from each
 ## Must not        the things this context never does (for example: "never reads the clock")
@@ -1220,34 +1510,36 @@ until P5-6). It has no exceptions list: a file that cannot meet the budget is tw
 
 ### 9.4 Before and after: the turn context
 
-**Before.** One file, `src/turn.rs`, 2,743 lines. To learn how a failed attempt moves to the
+**Before.** One file, `src/turn.rs`, 2,835 lines. To learn how a failed attempt moves to the
 next provider you open it, scroll past a UI trait, an approver, a cancel token, report types,
 three closure aliases and an 11-option builder, and find a 109-line `run_attempts` that calls
 ten private methods spread over the next 400 lines, three of which are about orchestration and
-two about logging. Its tests start at line 1,126 and run for 1,618 lines in one module.
+two about logging. Its tests start at line 1,145 and run for 1,690 lines in one module.
 
 ```
-src/turn.rs                                          2,743 lines
-  Ui (8 methods: progress + approval, takes formatted text)      49
-  EngineApprover                                                100
-  Failover, NoRouteInfo, Cancel                                 143
-  TurnStatus, TurnReport, Judged                                216
-  BackendFactory / GitStatus / Clock closure aliases            279
-  git_status_short (spawns git), idle_timeout_from_env          284
-  Engine { 21 fields }                                          335
-  impl Engine { 50 methods }                                    371-1120
+src/turn.rs                                          2,835 lines
+  Ui (9 methods: progress + approval, takes formatted text)      49
+  EngineApprover                                                112
+  Failover, NoRouteInfo, Cancel                                 162
+  TurnStatus, TurnReport, Judged                                235
+  BackendFactory / GitStatus / Clock closure aliases            298
+  git_status_short (spawns git), idle_timeout_from_env          303
+  Engine { 22 fields }                                          354
+  impl Engine { 50 methods }                                    390-1139
      builder, accessors, sessions, undo, save, resume,
      run, judge, snapshot, run_attempts, choose, orchestration,
      legacy choice, prompt, run_attempt, finish, logging, messages
-  mod tests { everything }                                      1126-2743
+  mod tests { everything }                                      1145-2835
 ```
 
 **After.** The folder reads as the steps of a turn. Each file fits on a few screens.
 
 ```
-src/turn/
+crates/turn/
+  Cargo.toml              depends on: the crates of its row in 1.3
   README.md               "Carrying one turn from prompt to report."
-  mod.rs                  pub use: Engine, EngineBuilder, TurnObserver, TurnReport, TurnStatus,
+  src/                    (the entries below are inside src/)
+  lib.rs                  pub use: Engine, EngineBuilder, TurnObserver, TurnReport, TurnStatus,
                                    Judged, Failover, NoRouteInfo, Cancel, Error
   error.rs
   domain/
@@ -1288,69 +1580,94 @@ opening `turn/application/run_attempts.rs`. "What does a turn log row contain?" 
 
 ## 10. Definition of done
 
-Every line is a command or a file check.
+Every line is a command or a file check, and all of them except the two marked "person" are
+run by `scripts/dod.sh` (added in P5-6), which exits non-zero on the first failure.
 
 **Readability**
 - [ ] `python3 -I scripts/budget.py` exits 0: no `.rs` file over 400 lines (test-only files
-      600), no function over 60 lines, no `src/bin/*.rs` over 30 lines, no folder over 20
-      files, no context `mod.rs` exporting more than 25 names.
-- [ ] Every context folder has a `README.md` with the seven template sections (check A11).
-- [ ] Every module starts with a `//!` "Owns / Must not" comment (check A11).
+      600), no function over 60 lines, no binary root over 30 lines, no folder over 20 files,
+      no `lib.rs` exporting more than 40 names, no member `Cargo.toml` over 25 lines.
+- [ ] Every crate folder has a `README.md` with the template's sections, and every module
+      starts with a `//!` "Owns / Must not" comment (check A11).
 - [ ] No file or module is named `util`, `utils`, `helpers`, `misc`, `common`, `types`,
-      `manager` (check A12).
-- [ ] Every `mod.rs` contains only docs, `mod` items and explicit `pub use` lists (check A10).
-- [ ] The ten questions of 9.1 are answered correctly from the tree and READMEs alone by
-      someone who did not do the refactor (or a fresh agent with no other context), each in
-      under a minute.
-- [ ] Each overloaded name of 1.1 (`Decision`, `Gate`, `Snapshot`, `SessionInfo`, `Usage`,
-      `Interrupt`, `run_turn`) has one definition: `grep` finds one `struct|enum|trait|fn`.
+      `manager`, `stuff` (check A12).
+- [ ] Every `lib.rs` and `mod.rs` contains only docs, attributes, `mod` items and explicit
+      `pub use` lists (check A10).
+- [ ] (person) The ten questions of 9.1 are answered correctly from the tree and READMEs alone
+      by someone who did not do the refactor, or by a fresh agent given only `ls -R crates` and
+      the READMEs: ten of ten, each in under a minute.
+- [ ] Each overloaded name of 1.1 has one definition:
+      `grep -rnE '(struct|enum|trait) (Decision|Gate|Snapshot|SessionInfo|Usage|Interrupt)\b' crates`
+      and `grep -rn 'fn run_turn\b' crates` print one line per name.
 
 **Architecture**
-- [ ] `tests/architecture_baseline.txt` does not exist and `cargo test --test architecture`
-      passes (checks A1-A12).
-- [ ] `src/lib.rs` declares exactly the 16 contexts, `embed` and `testkit`.
-- [ ] `tests/embed_api.rs` passes; `src/embed.rs` contains only `pub use` lines.
-- [ ] Each duplication D1-D18 has one definition (a `grep` per row finds one).
+- [ ] `cargo metadata --no-deps` lists exactly 19 workspace members: the 16 contexts,
+      `jev-embed`, `jev-testkit`, `jev-router`; the root manifest has no `[package]`.
+- [ ] `tests/architecture_baseline/` does not exist and `cargo test --test architecture`
+      passes (checks A1, A4-A12, C1-C3; T1 is gone with the flat modules).
+- [ ] `cargo test -p jev-embed` passes; `crates/embed/src/lib.rs` contains only `pub use` lines.
+- [ ] `grep -rn 'legacy' crates --include=*.rs` prints nothing.
+- [ ] The duplicated definitions of 7.2 are gone: `grep -rnE 'fn (write_atomic|write_private_atomic|write_private|env_f64|env_or|lookup_f64|human_ago|format_left|truncate_chars|truncate_lines|truncate_with_note|last_chars|git_status_short|in_git_repo|is_harness)\b' crates`
+      prints at most one line per name, and `grep -rn 'PoisonError::into_inner' crates` prints
+      one line (in `shared/domain/lock.rs`).
 
 **Type strictness**
-- [ ] `cargo clippy --all-targets -- -D warnings` passes with the lint tables of 5.6.
+- [ ] `cargo clippy --workspace --all-targets -- -D warnings` passes with the lint tables of 5.6.
 - [ ] `serde_json::Value`, `serde_json::Map` and `json!` appear in production code only in the
-      three files of 5.2 (check A6).
-- [ ] `unsafe` appears only in `src/shared/infrastructure/sys_unix.rs`, every block has a
-      `// SAFETY:` comment, and every `src/bin/*.rs` has `#![forbid(unsafe_code)]` (check A7).
-- [ ] No `unwrap`, `expect`, `panic!`, `unreachable!`, `todo!`, `as` cast, `dyn Any`, downcast,
-      `anyhow` or `Result<_, String>` in `src/` outside `#[cfg(test)]` and `src/bin/`.
-- [ ] `std::env` is read only in `src/shared/infrastructure/env.rs` (check A8);
+      three files of 5.2, each under 150 lines with no `pub` signature naming them (check A6).
+- [ ] `unsafe` appears only in `crates/shared/src/infrastructure/sys_unix.rs`, every block has
+      a `// SAFETY:` comment, and every other crate root and every binary has
+      `#![forbid(unsafe_code)]` (check A7).
+- [ ] No `unwrap`, `expect`, `panic!`, `unreachable!`, `todo!`, `as` cast, `dyn Any`, downcast
+      or `Result<_, String>` in production code (the clippy tables; the last three by
+      `grep -rnE 'dyn Any|downcast|Result<[^;{]*, ?String>' crates`, test modules excluded by
+      the architecture test's lexer, exposed as `cargo test --test architecture -- grep`).
+- [ ] `anyhow` and `libc` each appear in one member manifest:
+      `grep -ln anyhow crates/*/Cargo.toml` prints `crates/cli/Cargo.toml`,
+      `grep -ln libc crates/*/Cargo.toml` prints `crates/shared/Cargo.toml`.
+- [ ] `std::env` is read only in `crates/shared/src/infrastructure/env.rs` (check A8);
       `Secret::expose` is called only in `infrastructure/` (check A9).
 
 **No behaviour change**
-- [ ] `scripts/check.sh` passes: warning-free build, all Rust tests (at least the 764 that
-      exist today), `scripts/test_pty_ux.py`, the three Python test files.
-- [ ] `cargo test --test formats` passes with goldens unchanged since P0-3.
-- [ ] `scripts/parity.sh ddd-base` prints no difference.
+- [ ] `scripts/check.sh` passes locally and the CI run of the final commit is green: all Rust
+      tests (at least the 769 that exist today), `scripts/test_pty_ux.py` (35 scenarios), the
+      three Python test files.
+- [ ] `git diff ddd-base -- tests/golden tests/fixtures` is empty and the golden tests pass.
+- [ ] `scripts/parity.py ddd-base` prints no difference.
 - [ ] `scripts/install.sh "$tmp"` installs `jev-code`, `jev-ask`, `jev-delegate-mcp`,
-      `jev-chat`, `jev-gateway`, `jev-claude`; `scripts/install.sh` itself is unchanged
-      (`git diff ddd-base -- scripts/install.sh` is empty).
-- [ ] `Cargo.toml` has the same eight `[[bin]]` names and no new dependency
-      (`git diff ddd-base -- Cargo.lock` shows no added package).
-- [ ] `git log --follow --oneline` on `src/turn/application/engine.rs`,
-      `src/orchestration/application/delegator.rs`,
-      `src/backend/infrastructure/process/child.rs`,
-      `src/changes/infrastructure/git_working_tree.rs` and
-      `src/approval/domain/rule_policy.rs` shows commits older than `ddd-base`.
-- [ ] A final review round over the whole diff finds nothing.
+      `jev-chat`, `jev-gateway`, `jev-claude`; `"$tmp/jev-code" --help` runs;
+      `git diff ddd-base -- scripts/install.sh scripts/jev-claude mods` is empty.
+- [ ] The eight `[[bin]]` names are unchanged
+      (`cargo metadata` bin targets: `ask chat code delegate_mcp gateway orch_tune route tune`)
+      and no outside dependency was added or re-versioned: the `[[package]]` entries of
+      `Cargo.lock` with a `source` are identical to `ddd-base`.
+- [ ] `git log --follow --oneline` on `crates/turn/src/application/engine.rs`,
+      `crates/orchestration/src/application/delegator.rs`,
+      `crates/backend/src/infrastructure/process/child.rs`,
+      `crates/changes/src/infrastructure/git_working_tree.rs` and
+      `crates/approval/src/domain/rule_policy.rs` shows commits older than `ddd-base`.
+- [ ] No secret was added: `git diff ddd-base HEAD | grep -nE '^\+.*(sk-ant-|sk-[A-Za-z0-9]{20,}|AIza[0-9A-Za-z_-]{20,}|_API_KEY=[^ "$]{8,})'`
+      prints nothing (goldens and fixtures included).
+- [ ] (person) A final review round over the whole diff finds nothing.
 
 ---
 
 ## 11. Decisions for the user
 
+| # | Decision | Status | What follows |
+|---|----------|--------|--------------|
+| U1 | One crate with a test-enforced rule, or one crate per context | **Decided: one crate per context**, a Cargo workspace (3.2) | The compiler and Cargo enforce the context map. Costs accepted: 19 manifests, `pub` surfaces, the `testing` feature for cross-crate fakes, an untangling phase (P1a) before extraction, and three lines of the Flashboard design to update (4.4) |
+| U2 | Scope: structure only (phases 0-3 and 5), or structure plus type strictness (phase 4) | Taken as recommended: both, in this order | Stopping after phase 3 would leave `Value` and `json!` on about 400 production lines |
+| U3 | The three allow-listed wire files of 5.2 | **Decided: accepted** | They stay minimal and tested: under 150 lines each, no `Value` in a `pub` signature, a golden round-trip test each (check A6). A fourth file needs a new decision |
+| U4 | CI | **Decided: yes** | `.github/workflows/check.yml` runs `scripts/check.sh` on push and pull request in `putraridho/jev-switch`: no secrets, no provider CLIs, no Jev calls (3.6) |
+| U5 | Formatting | Taken as recommended: no reformat during the refactor | One `rustfmt` commit after `ddd-done`, listed in `.git-blame-ignore-revs`, is recommended; formatting during the moves would break `git log --follow` and `move_check.py` |
+| U6 | Glossary renames in P5-2 (`Runtime` to `ProviderRegistry`, `ChangeSummary` to `ChangeSet`, `ProviderWant` to `Judgment`) | Taken as recommended: do them | Compiler-checked; the names appear in no file format; `embed` keeps `Runtime` as an alias for the dashboard |
+| U7 | Budgets | Taken as recommended: 400 lines per file, 60 per function | The export budget is 40 names per crate, not 25: `backend` exports its types, ports, adapters and the CLI facts the probes read |
+| U8 | Timing | Taken as recommended: merge all open branches first, then freeze feature work from P1a to `ddd-p1` | P1a and P1b touch every file; Flashboard starts on `jev-embed` after `ddd-done` |
+
+Open, and the user's to make:
+
 | # | Decision | Recommendation | Consequence of the other choice |
 |---|----------|----------------|---------------------------------|
-| U1 | One crate with a test-enforced rule, or one crate per context | One crate now (3.2); revisit after done | Per-context crates give compiler enforcement and `forbid(unsafe_code)` in 15 of 16 crates, at roughly double the migration risk and a rewrite of the Flashboard `embed` plan |
-| U2 | Scope of this refactor: structure only (phases 0-3 and 5), or structure plus type strictness (phase 4) | Both, in this order; phase 4 is where the "strictest" requirement is met | Stopping after phase 3 gives the readable tree and the layering, but `Value` stays in about 300 places |
-| U3 | The three allow-listed wire files of 5.2 | Accept them: each exists only to pass through data the program does not own, byte for byte | Zero `Value` anywhere is possible only by changing bytes sent to Claude Code or written to its settings file, which breaks "no behaviour change" |
-| U4 | CI | Add a GitHub Actions workflow that runs `scripts/check.sh` on push | Without it the gate is run by hand and by the agents only |
-| U5 | Formatting | Leave formatting alone during the refactor; decide afterwards whether to adopt `rustfmt` with a `max_width` matching today's style, as one final commit | Formatting during the moves destroys `git log --follow` |
-| U6 | Glossary renames in P5-2 (`Runtime` to `ProviderRegistry`, `ChangeSummary` to `ChangeSet`, `ProviderWant` to `Judgment`) | Do them; they are compiler-checked and the names appear in no file format | Skipping them keeps three vague names in an otherwise consistent vocabulary |
-| U7 | Budgets | 400 lines per file, 60 per function, as in 9.2 | Looser numbers leave `run_attempts`-sized functions in place; tighter ones (300/40) add about 40 more files |
-| U8 | Timing | Merge all open branches first, then freeze feature work until `ddd-p1` (about one day of serial moves); Flashboard starts on `embed` after `ddd-done` | Feature work during P1 conflicts with every moved file |
+| U9 | The package that holds the binaries keeps the name `jev-router` (`crates/cli`), and the repository folder keeps its name | Keep | Renaming changes nothing a user sees, but touches the README and the dashboard design |
+| U10 | Pin the toolchain in `rust-toolchain.toml` (needed so CI and local runs use one clippy) | Pin to today's 1.97 and raise it deliberately | Without a pin a new clippy release can turn an old green commit red |
