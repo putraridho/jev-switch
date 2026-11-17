@@ -29,6 +29,9 @@ struct TurnState {
     answer: String,
 }
 
+/// Longest a single MCP tool call may run under Codex: one hour, enough for a worker turn.
+const MCP_TOOL_TIMEOUT_SECS: u64 = 3600;
+
 pub struct CodexBackend {
     pub bin: String,
     /// `read-only` or `workspace-write`; see [`CodexBackend::sandbox_arg`].
@@ -93,6 +96,11 @@ impl CodexBackend {
             format!("{key}.args=[{}]", args.join(",")),
             "-c".into(),
             format!("{key}.default_tools_approval_mode=\"approve\""),
+            // A `delegate` call runs a whole worker turn, so codex's default per-call
+            // timeout (60 s) would cancel it mid-run. The field name was checked with
+            // `codex exec --strict-config` (an invented field is rejected, this one is not).
+            "-c".into(),
+            format!("{key}.tool_timeout_sec={MCP_TOOL_TIMEOUT_SECS}"),
         ]
     }
 
@@ -409,6 +417,10 @@ mod tests {
         let fresh = args(&b.command(&req(None)));
         assert!(fresh.contains(&"mcp_servers.jev.command=\"/bin/delegate_mcp\"".to_string()), "{fresh:?}");
         assert!(fresh.contains(&"mcp_servers.jev.args=[\"--dir\",\"/my repo\"]".to_string()), "{fresh:?}");
+        assert!(
+            fresh.contains(&"mcp_servers.jev.tool_timeout_sec=3600".to_string()),
+            "a delegate call outlives codex's 60 s default: {fresh:?}"
+        );
         assert!(
             fresh.contains(&"mcp_servers.jev.default_tools_approval_mode=\"approve\"".to_string()),
             "headless codex refuses MCP tools unless this server's tools are pre-approved: {fresh:?}"
