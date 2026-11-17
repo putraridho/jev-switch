@@ -9,6 +9,7 @@
 
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
+use std::fmt;
 use std::path::PathBuf;
 use std::sync::{Mutex, PoisonError};
 
@@ -197,9 +198,22 @@ pub struct Runtime {
     /// a login problem or an unusable directory is not a limit, and an hour-long cooldown
     /// would only outlast a re-login. See [`BlockReason`] for what clears each.
     pub blocked: HashMap<ProviderId, BlockReason>,
-    /// Answers from the background retry of probes that timed out at startup, until
-    /// [`Runtime::absorb_late`] folds them into `avail`.
-    late: Option<tokio::sync::mpsc::UnboundedReceiver<Availability>>,
+    /// The background retry of probes that timed out at startup, until
+    /// [`Runtime::absorb_late`] has folded its answers into `avail`.
+    late: Option<LateProbes>,
+}
+
+/// Answers from the background retry, and what to tell the user about the ones applied.
+struct LateProbes {
+    answers: tokio::sync::mpsc::UnboundedReceiver<Availability>,
+    /// Called from `absorb_late`, only for a provider that really became Ready.
+    on_ready: Box<dyn Fn(&Availability) + Send>,
+}
+
+impl fmt::Debug for LateProbes {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("LateProbes")
+    }
 }
 
 /// Why a provider is skipped for the rest of the session.
@@ -376,9 +390,10 @@ impl Runtime {
 
     /// Re-check once, in the background, the providers whose startup probe could not tell
     /// (a lazy wrapper's first run can outlast the startup cap), with a longer cap. Startup
-    /// does not wait for it. `on_ready` runs on that task the moment a provider turns out to
-    /// be Ready; the answer itself reaches this runtime through [`Runtime::absorb_late`],
+    /// does not wait for it. The answers reach this runtime through [`Runtime::absorb_late`],
     /// where the caller holds `&mut self`, so a running turn never sees routing change under it.
+    /// `on_ready` runs there too, once per provider that was Unknown and is now Ready: a
+    /// late answer a `/providers refresh` already settled is refused, and so is not announced.
     pub fn retry_slow_probes(&mut self, on_ready: impl Fn(&Availability) + Send + 'static) {
         self.retry_slow_probes_with(availability::RETRY_CAP, availability::probe_provider, on_ready);
     }
@@ -392,37 +407,43 @@ impl Runtime {
         if providers.is_empty() {
             return;
         }
-        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
-        self.late = Some(rx);
+        let (tx, answers) = tokio::sync::mpsc::unbounded_channel();
+        self.late = Some(LateProbes { answers, on_ready: Box::new(on_ready) });
         tokio::spawn(availability::retry_unknown(providers, cap, probe, move |answer| {
-            if answer.state == State::Ready {
-                on_ready(&answer);
-            }
             let _ = tx.send(answer);
         }));
     }
 
-    /// Apply what the background retry has found so far. Returns whether anything changed.
-    /// Call it where no turn is running (before a command or a turn starts).
+    /// Apply what the background retry has found so far, announce (through the `on_ready`
+    /// given to [`Runtime::retry_slow_probes`]) each provider that became Ready by it, and
+    /// return whether anything changed. Call it where no turn is running (before a command
+    /// or a turn starts).
     pub fn absorb_late(&mut self) -> bool {
         use tokio::sync::mpsc::error::TryRecvError;
-        let Some(rx) = self.late.as_mut() else { return false };
+        let Some(late) = self.late.as_mut() else { return false };
         let mut merged = self.avail.clone();
-        let mut changed = false;
+        let mut applied = Vec::new();
         let finished = loop {
-            match rx.try_recv() {
-                Ok(answer) => changed |= availability::merge_late(&mut merged, answer),
+            match late.answers.try_recv() {
+                Ok(answer) => {
+                    if availability::merge_late(&mut merged, answer.clone()) {
+                        applied.push(answer);
+                    }
+                }
                 Err(TryRecvError::Empty) => break false,
                 Err(TryRecvError::Disconnected) => break true,
             }
         };
+        if !applied.is_empty() {
+            self.apply_probe(merged);
+        }
+        if let Some(late) = &self.late {
+            applied.iter().filter(|a| a.state == State::Ready).for_each(|a| (late.on_ready)(a));
+        }
         if finished {
             self.late = None;
         }
-        if changed {
-            self.apply_probe(merged);
-        }
-        changed
+        !applied.is_empty()
     }
 
     /// `/new`: the directory-dependent blocks end with the session they were learned in.
@@ -811,22 +832,21 @@ mod tests {
     async fn a_provider_that_timed_out_at_startup_becomes_usable_once_its_retry_succeeds() {
         let mut rt = slow_start();
         assert!(!rt.usable(NOW).contains(some_model(Codex)), "unknown is not routed to");
-        let (said_tx, mut said_rx) = tokio::sync::mpsc::unbounded_channel();
+        let said = std::sync::Arc::new(Mutex::new(Vec::new()));
+        let said_in = said.clone();
         // The fake CLI answers after 30 ms, well inside the retry cap.
         let probe = |p: ProviderId| async move {
             tokio::time::sleep(std::time::Duration::from_millis(30)).await;
             availability(p, State::Ready)
         };
-        rt.retry_slow_probes_with(std::time::Duration::from_secs(5), probe, move |a| {
-            let _ = said_tx.send(a.provider);
-        });
+        rt.retry_slow_probes_with(std::time::Duration::from_secs(5), probe, move |a| said_in.lock().unwrap().push(a.provider));
         assert!(!rt.absorb_late(), "nothing has arrived yet, and asking must not block");
-        assert_eq!(said_rx.recv().await, Some(Codex), "the ready callback fires from the background task");
-        // The task sends its answer right after the callback; wait for the channel to close.
+        assert!(said.lock().unwrap().is_empty(), "no notice before the answer is applied");
         while rt.late.is_some() {
             rt.absorb_late();
             tokio::task::yield_now().await;
         }
+        assert_eq!(*said.lock().unwrap(), vec![Codex], "announced once, when it was applied");
         assert_eq!(rt.avail.iter().find(|a| a.provider == Codex).map(|a| a.state), Some(State::Ready));
         assert!(rt.usable(NOW).contains(some_model(Codex)));
         assert_eq!(rt.avail.iter().find(|a| a.provider == Gemini).map(|a| a.state), Some(State::NotLoggedIn));
@@ -856,11 +876,29 @@ mod tests {
     #[tokio::test]
     async fn a_refresh_that_already_found_the_provider_is_not_overwritten_by_the_late_answer() {
         let mut rt = slow_start();
-        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
-        rt.late = Some(rx);
+        let said = std::sync::Arc::new(Mutex::new(Vec::new()));
+        let said_in = said.clone();
+        // The late probe answers Ready, but only after the test has let a refresh settle it.
+        let (release, gate) = tokio::sync::oneshot::channel::<()>();
+        let gate = std::sync::Arc::new(tokio::sync::Mutex::new(Some(gate)));
+        let probe = move |p: ProviderId| {
+            let gate = gate.clone();
+            async move {
+                if let Some(g) = gate.lock().await.take() {
+                    let _ = g.await;
+                }
+                availability(p, State::Ready)
+            }
+        };
+        rt.retry_slow_probes_with(std::time::Duration::from_secs(5), probe, move |a| said_in.lock().unwrap().push(a.provider));
         rt.apply_probe(vec![availability(Claude, State::Ready), availability(Codex, State::NotLoggedIn)]);
-        tx.send(availability(Codex, State::Ready)).unwrap();
-        assert!(!rt.absorb_late());
+        release.send(()).unwrap();
+        while rt.late.is_some() {
+            rt.absorb_late();
+            tokio::task::yield_now().await;
+        }
         assert_eq!(rt.avail[1].state, State::NotLoggedIn);
+        assert!(!rt.usable(NOW).contains(some_model(Codex)), "the refused answer does not make it routable");
+        assert!(said.lock().unwrap().is_empty(), "and nobody is told it is ready: {:?}", said.lock().unwrap());
     }
 }

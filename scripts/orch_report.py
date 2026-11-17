@@ -33,6 +33,28 @@ def family(model):
     return next((f for f in FAMILY if f in (model or "")), "sonnet")
 
 
+NEAR_MISS_BAND = 0.15  # how far under the cutoff still counts as "just under"
+
+
+def is_vetoed(check):
+    """The sequence veto held this prompt back. Rows from before the veto existed have no
+    `vetoed` field and were never vetoed."""
+    return bool(check.get("vetoed"))
+
+
+def near_misses(checks, cutoff):
+    """Checks that did not trigger but whose raw multi-part judgment came close, by raw
+    `multi_part_p` (what Jev said, before the veto; old rows only have that field).
+    Vetoed checks are left out: `vetoes` lists them, and their raw score is high on purpose."""
+    return [c for c in checks
+            if not c.get("trigger") and not is_vetoed(c) and (c.get("multi_part_p") or 0) >= cutoff - NEAR_MISS_BAND]
+
+
+def vetoes(checks):
+    """Multi-part prompts the sequential veto kept on one thread, highest raw score first."""
+    return sorted((c for c in checks if is_vetoed(c)), key=lambda c: -(c.get("multi_part_p") or 0))
+
+
 def tokens_cost(u):
     return (
         u.get("input_tokens", 0) * IN
@@ -101,16 +123,22 @@ def main():
     checks = [c for c in logged if c.get("kind") != "worker"]
     workers = [c for c in logged if c.get("kind") == "worker"]
     cutoff = checks[-1]["cutoff"] if checks else None
-    vetoed = [c for c in checks if c.get("skipped")]
-    if vetoed:
-        print(f"multi-part prompts left on normal routing because it would not use Opus: {len(vetoed)}")
+    not_opus = [c for c in checks if c.get("skipped")]
+    if not_opus:
+        print(f"multi-part prompts left on normal routing because it would not use Opus: {len(not_opus)}")
     print(f"orchestrate checks: {len(checks)}, triggered: {sum(1 for c in checks if c.get('trigger'))}"
           + (f" (cutoff {cutoff})" if cutoff else ""))
     if cutoff:
-        near = [c for c in checks if not c.get("trigger") and (c.get("multi_part_p") or 0) >= cutoff - 0.15]
-        print(f"  just under the cutoff (within 0.15): {len(near)}")
+        near = near_misses(checks, cutoff)
+        print(f"  just under the cutoff (within {NEAR_MISS_BAND}, raw multi_part, vetoes excluded): {len(near)}")
         for c in near[:5]:
             print(f"    p={c['multi_part_p']:.2f}  {c.get('prompt', '')[:80]!r}")
+    held = vetoes(checks)
+    if held:
+        print(f"  multi-part prompts the sequence veto kept on one thread: {len(held)}")
+        for c in held[:5]:
+            print(f"    multi_part={c.get('multi_part_p') or 0:.2f} sequential={c.get('sequential_p') or 0:.2f} "
+                  f"score={c.get('orch_score') or 0:.2f}  {c.get('prompt', '')[:80]!r}")
 
     if workers:
         picked = collections.Counter(w.get("model") or "planner's choice" for w in workers)

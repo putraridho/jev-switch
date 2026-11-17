@@ -275,22 +275,45 @@ fn temp_index_path() -> PathBuf {
 /// protection, so a same-size edit made within the same second as the last index write
 /// (e.g. "two" -> "TWO") would be trusted from the stat cache and missed by the
 /// snapshot. Keeping the original mtime keeps git's check intact.
-fn copy_index_keeping_mtime(real: &Path, tmp: &Path) {
-    if std::fs::copy(real, tmp).is_err() {
-        return;
-    }
-    let mtime = std::fs::metadata(real).and_then(|m| m.modified());
-    let file = std::fs::OpenOptions::new().write(true).open(tmp);
-    if let (Ok(mtime), Ok(file)) = (mtime, file) {
-        if file.set_modified(mtime).is_err() {
-            // Without the original mtime the stat cache cannot be trusted: drop the copy,
-            // git then builds a fresh index and hashes every tracked file (slower, correct).
-            drop(file);
-            let _ = std::fs::remove_file(tmp);
-        }
-    } else {
+///
+/// True when `tmp` is a trustworthy copy. On any failure `tmp` is removed (a failed copy
+/// can leave a truncated file that git would read as the index) and the caller must seed
+/// the index another way. The copy itself is injected so tests can fail it.
+fn copy_index_with(real: &Path, tmp: &Path, copy: impl FnOnce(&Path, &Path) -> std::io::Result<u64>) -> bool {
+    let ok = copy(real, tmp).is_ok() && {
+        let mtime = std::fs::metadata(real).and_then(|m| m.modified());
+        let file = std::fs::OpenOptions::new().write(true).open(tmp);
+        // Without the original mtime the stat cache cannot be trusted.
+        matches!((mtime, file), (Ok(mtime), Ok(file)) if file.set_modified(mtime).is_ok())
+    };
+    if !ok {
         let _ = std::fs::remove_file(tmp);
     }
+    ok
+}
+
+/// Build `tmp` from the real index's entries (mode, object, path) when it cannot be
+/// copied. It carries no stat cache, so git hashes every tracked file: slower, correct.
+/// An absent index is NOT the same: git would see no tracked files and the snapshot would
+/// be the empty tree, so a failure here means no snapshot at all.
+fn seed_index_from_entries(root: &Path, tmp: &Path) -> Option<()> {
+    use std::io::Write;
+    let entries = git(root, None, &["ls-files", "--stage", "-z"])?;
+    let mut child = Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(["update-index", "-z", "--index-info"])
+        .env("GIT_OPTIONAL_LOCKS", "0")
+        .env_remove("GIT_DIR")
+        .env_remove("GIT_WORK_TREE")
+        .env("GIT_INDEX_FILE", tmp)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .ok()?;
+    child.stdin.take()?.write_all(&entries).ok()?;
+    child.wait().ok()?.success().then_some(())
 }
 
 fn remove_temp_index(tmp: PathBuf) {
@@ -336,6 +359,11 @@ fn untracked_manifest(root: &Path) -> Option<HashMap<String, Stamp>> {
 /// real one), and only stats the untracked ones. Blocking: call it from `spawn_blocking`,
 /// or use [`snapshot_until`].
 pub fn snapshot(dir: &Path) -> Option<Snapshot> {
+    snapshot_with(dir, |from, to| std::fs::copy(from, to))
+}
+
+/// [`snapshot`] with the index copy injected.
+fn snapshot_with(dir: &Path, copy: impl FnOnce(&Path, &Path) -> std::io::Result<u64>) -> Option<Snapshot> {
     let taken_ns = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_nanos() as i128)
@@ -344,10 +372,10 @@ pub fn snapshot(dir: &Path) -> Option<Snapshot> {
     let tmp = temp_index_path();
     // Starting from a copy of the real index keeps git's stat cache, so only files that
     // really changed are hashed again; without one it still works, just slower.
-    if real.is_file() {
-        copy_index_keeping_mtime(&real, &tmp);
-    }
-    let tree = git(&root, Some(&tmp), &["add", "-u"])
+    let seeded = !real.is_file() || copy_index_with(&real, &tmp, copy) || seed_index_from_entries(&root, &tmp).is_some();
+    let tree = seeded
+        .then(|| git(&root, Some(&tmp), &["add", "-u"]))
+        .flatten()
         .and_then(|_| git_text(&root, Some(&tmp), &["write-tree"]))
         .map(|t| t.trim().to_string())
         .filter(|t| is_object_id(t));
@@ -924,6 +952,32 @@ mod tests {
         let m = parse_ls_tree_paths(raw);
         assert!(m.contains("a.txt") && m.contains("run.sh") && m.contains("link"));
         assert!(!m.contains("sub"));
+    }
+
+    /// A copy that dies halfway: leaves a truncated file behind, then reports the error.
+    fn copy_that_fails_halfway(_from: &Path, to: &Path) -> std::io::Result<u64> {
+        std::fs::write(to, b"DIRC-truncated")?;
+        Err(std::io::Error::other("disk full"))
+    }
+
+    #[test]
+    fn a_failed_index_copy_leaves_no_partial_file_behind() {
+        let s = Scratch::new("copyfail");
+        s.write("index", "the real index");
+        let tmp = s.path().join("tmp-index");
+        assert!(!copy_index_with(&s.path().join("index"), &tmp, copy_that_fails_halfway), "the caller must know the copy failed");
+        assert!(!tmp.exists(), "git would read a truncated index as the real one");
+    }
+
+    #[test]
+    fn a_snapshot_after_a_failed_index_copy_matches_one_after_a_good_copy() {
+        let s = repo();
+        s.write("a.txt", "edited\n");
+        s.write("untracked.txt", "u\n");
+        let good = snapshot(s.path()).expect("snapshot");
+        let after_failure = snapshot_with(s.path(), copy_that_fails_halfway).expect("a failed copy must not break the snapshot");
+        assert_eq!(after_failure.tree, good.tree, "the fallback sees the same tracked files");
+        assert_eq!(after_failure.untracked.keys().collect::<Vec<_>>(), good.untracked.keys().collect::<Vec<_>>());
     }
 
     #[test]

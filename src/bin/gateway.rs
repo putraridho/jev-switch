@@ -39,7 +39,7 @@ use tokio::sync::Mutex;
 use jev_router::anthropic::{MODEL_CHEAP, MODEL_MID, MODEL_STRONG, MODEL_TOP};
 use jev_router::log;
 use jev_router::orchestrate::{orch_gate, Gate};
-use jev_router::router::{Router, Sticky, CODE_STRONG_THRESHOLD, ORCH_TRIGGER_P, TOP_THRESHOLD};
+use jev_router::router::{Orchestration, Router, Sticky, CODE_STRONG_THRESHOLD, ORCH_TRIGGER_P, TOP_THRESHOLD};
 use jev_router::typesafe::TypeSafe;
 use jev_router::prefix::PrefixWatch;
 use jev_router::usage::{find_cwd, project_of, request_params, Turns, UsageTap};
@@ -61,8 +61,9 @@ struct SessionState {
     model: Option<&'static str>,
     /// Routing record of the current turn, attached to the usage rows of its requests.
     decision: Option<Value>,
-    /// The latest orchestrate check for this session (`multi_part_p`), recorded on the
-    /// next turn's decision whether or not it triggered, as a label for tuning.
+    /// The latest orchestrate check for this session (`orch_score`, the raw `multi_part_p`,
+    /// `sequential_p`, `vetoed`), recorded on the next turn's decision whether or not it
+    /// triggered, as a label for tuning.
     orch_check: Option<Value>,
     /// The planner model of the current turn when it is orchestrated, else `None`: a
     /// worker may be Opus only when this is Fable.
@@ -86,7 +87,8 @@ struct App {
 struct Orch {
     /// `JEV_ORCH=off` turns the trigger off for every session.
     enabled: bool,
-    /// `ORCH_TRIGGER_P`: `multi_part` probability at or above which a prompt triggers.
+    /// `ORCH_TRIGGER_P`: orchestration score (`multi_part`, held back to 0.30 for a
+    /// sequence) at or above which a prompt triggers.
     cutoff: f64,
     /// The model the main thread runs on for an orchestrated turn when Jev has no say:
     /// Opus, or `ORCH_PLANNER` if set.
@@ -183,9 +185,9 @@ async fn orchestrate_check(State(app): State<Arc<App>>, Json(c): Json<OrchCheck>
     let Some(words) = words else {
         return Json(json!({ "trigger": false, "enabled": true, "skipped": "not typed" }));
     };
-    let check = async { app.router.orchestration_p(&words, &c.context).await.map(|(score, _, _)| score) };
-    let p = match tokio::time::timeout(std::time::Duration::from_secs(10), check).await {
-        Ok(Ok(p)) => Some(p),
+    let check = app.router.orchestration_p(&words, &c.context);
+    let judgment = match tokio::time::timeout(std::time::Duration::from_secs(10), check).await {
+        Ok(Ok(j)) => Some(j),
         Ok(Err(e)) => {
             eprintln!("[warn] orchestrate check: jev failed: {e:#}");
             None
@@ -198,6 +200,7 @@ async fn orchestrate_check(State(app): State<Arc<App>>, Json(c): Json<OrchCheck>
     // A prompt that clears the multi-part cutoff is also routed the normal way, which
     // tells us whether Opus would have run it anyway, and which planner it needs: Fable
     // when routing escalates it as very hard (and ORCH_PLANNER doesn't pin one).
+    let p = judgment.map(|j| j.score);
     let mut route_tier = None;
     let mut hard_p = None;
     if p.is_some_and(|p| p >= app.orch.cutoff) {
@@ -211,10 +214,10 @@ async fn orchestrate_check(State(app): State<Arc<App>>, Json(c): Json<OrchCheck>
     let trigger = gate == Gate::Trigger;
     let planner = if trigger && !app.orch.planner_pinned && route_tier.is_some_and(|t| t >= 3) { MODEL_TOP } else { app.orch.planner };
     let skipped = (gate == Gate::SingleModelRoute).then_some("normal routing would not use Opus");
-    let record = json!({
-        "multi_part_p": p, "trigger": trigger, "cutoff": app.orch.cutoff, "planner": planner, "hard_p": hard_p,
-        "route_tier": route_tier, "skipped": skipped,
-    });
+    let record = check_record(
+        judgment.as_ref(),
+        json!({ "trigger": trigger, "cutoff": app.orch.cutoff, "planner": planner, "hard_p": hard_p, "route_tier": route_tier, "skipped": skipped }),
+    );
     if !c.session.is_empty() {
         app.sessions.lock().await.entry(c.session.clone()).or_default().orch_check = Some(record.clone());
     }
@@ -225,7 +228,21 @@ async fn orchestrate_check(State(app): State<Arc<App>>, Json(c): Json<OrchCheck>
         line["prompt"] = json!(c.prompt.chars().take(200).collect::<String>());
         log::append(path, &line);
     }
-    Json(json!({ "trigger": trigger, "enabled": true, "multi_part_p": p, "cutoff": app.orch.cutoff, "planner": planner, "skipped": skipped }))
+    Json(check_record(
+        judgment.as_ref(),
+        json!({ "trigger": trigger, "enabled": true, "cutoff": app.orch.cutoff, "planner": planner, "skipped": skipped }),
+    ))
+}
+
+/// An orchestrate check's log row and response: Jev's judgment (score, the raw
+/// `multi_part_p`, `sequential_p`, `vetoed`; `orch_report` and `orch_tune` read the raw
+/// value to see what the sequence veto held back) beside the gateway's own `rest`.
+fn check_record(judgment: Option<&Orchestration>, rest: Value) -> Value {
+    let mut record = Orchestration::fields(judgment);
+    if let (Some(fields), Value::Object(rest)) = (record.as_object_mut(), rest) {
+        fields.extend(rest);
+    }
+    record
 }
 
 #[derive(serde::Deserialize)]
@@ -990,6 +1007,20 @@ mod tests {
         let err = client.get("http://127.0.0.1:1/").send().await.unwrap_err();
         assert!(err.is_connect(), "a refused connection is a connect error: {err}");
         assert!(error_chain(&err).contains("onnect"), "{}", error_chain(&err));
+    }
+
+    #[test]
+    fn an_orchestrate_check_logs_the_raw_judgment_and_that_it_was_vetoed() {
+        // Multi-part 0.95 but a sequence: the trigger sees 0.30, the log must still show 0.95.
+        let vetoed = Orchestration::new(0.95, 0.9);
+        let record = check_record(Some(&vetoed), json!({ "trigger": false, "cutoff": 0.7 }));
+        assert_eq!(record["multi_part_p"], 0.95);
+        assert_eq!(record["orch_score"], 0.3);
+        assert_eq!(record["sequential_p"], 0.9);
+        assert_eq!(record["vetoed"], true);
+        assert_eq!((record["trigger"].clone(), record["cutoff"].clone()), (json!(false), json!(0.7)));
+        let failed = check_record(None, json!({ "trigger": false }));
+        assert!(failed["multi_part_p"].is_null() && failed["vetoed"].is_null());
     }
 
     #[test]
