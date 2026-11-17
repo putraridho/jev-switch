@@ -252,14 +252,20 @@ struct Captured {
 
 /// Run `program args` with no stdin, and wait for it. `None` when it cannot start.
 /// The child is killed if the probe is cancelled by the time cap.
+/// A status probe's command. Probes run in mise's offline mode: on Omarchy the agent CLIs
+/// are mise launchers that update themselves before they run (at most every 4 hours), and a
+/// probe that triggers that update blows its 5 s cap (the `? codex` at startup) and can make
+/// mise install other tools. Offline, the installed version answers in well under a second
+/// (measured 0.4 s for `codex login status`, 0.6 s for `claude auth status`) and nothing is
+/// fetched. Real turns are NOT run offline: they behave exactly as when the user runs the tool.
+fn probe_command(program: &str, args: &[&str]) -> tokio::process::Command {
+    let mut cmd = tokio::process::Command::new(program);
+    cmd.args(args).env("MISE_OFFLINE", "1").stdin(Stdio::null()).kill_on_drop(true);
+    cmd
+}
+
 async fn run_capture(program: &str, args: &[&str]) -> Option<Captured> {
-    let out = tokio::process::Command::new(program)
-        .args(args)
-        .stdin(Stdio::null())
-        .kill_on_drop(true)
-        .output()
-        .await
-        .ok()?;
+    let out = probe_command(program, args).output().await.ok()?;
     let text = format!("{}\n{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
     Some(Captured { ok: out.status.success(), text })
 }
@@ -713,6 +719,13 @@ mod tests {
         assert_eq!(decide_grok(GrokFacts { real_binary: true, home_dir: false }).state, State::NotLoggedIn);
         let a = decide_grok(GrokFacts { real_binary: true, home_dir: true });
         assert_eq!((a.state, a.verified), (State::Ready, false));
+    }
+
+    #[test]
+    fn probes_run_in_mise_offline_mode_so_they_never_update_or_install() {
+        let cmd = probe_command("codex", &["login", "status"]);
+        let env: Vec<_> = cmd.as_std().get_envs().collect();
+        assert!(env.iter().any(|(k, v)| *k == "MISE_OFFLINE" && *v == Some(std::ffi::OsStr::new("1"))), "{env:?}");
     }
 
     #[test]
