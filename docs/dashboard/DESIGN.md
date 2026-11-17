@@ -30,6 +30,17 @@ The app is three layers with one dependency direction:
  jev-usage-core (domain, parsers, policy; pure, no IO)        jev-router (engine, reused)
 ```
 
+## 1a. User decisions (2026-11-17, normative)
+
+These answer the open questions and override any earlier default in this document.
+
+- **Name:** the app is **Flashboard**. Binary name `jev-dashboard`. Bundle/application id `dev.jev.flashboard`. Window title, tray tooltip, `.desktop` entry and About screen say "Flashboard".
+- **Claude live check:** built in v1, **off by default**, behind a setting; may be verified once with one tiny Haiku request.
+- **Start at login:** **on by default**, with a clear toggle in settings (the user prefers features that work without remembering to enable them).
+- **Account e-mail:** never displayed, stored, logged or sent over IPC; the UI shows the plan name only. There is no opt-in for it.
+- **After v1:** the routed chat window comes next (design for it now; do not build it in v1).
+- **Process rule:** every task is validated by the lead with its own tests and reviews, and review rounds repeat until a full round finds nothing. A task is not done while any review finding is open.
+
 ## 2. Goals, non-goals, user stories
 
 ### Goals (v1)
