@@ -79,13 +79,74 @@ fn avail(provider: ProviderId, state: State, detail: impl Into<String>) -> Avail
 /// Probe all five providers concurrently, each capped at [`PROBE_CAP`].
 pub async fn probe_all() -> Vec<Availability> {
     let (claude, deepseek, codex, gemini, grok) = tokio::join!(
-        capped(PROBE_CAP, ProviderId::Claude, probe_claude()),
-        capped(PROBE_CAP, ProviderId::DeepSeek, probe_deepseek()),
-        capped(PROBE_CAP, ProviderId::Codex, probe_codex()),
-        capped(PROBE_CAP, ProviderId::Gemini, probe_gemini()),
-        capped(PROBE_CAP, ProviderId::Grok, probe_grok()),
+        capped(PROBE_CAP, ProviderId::Claude, probe_provider(ProviderId::Claude)),
+        capped(PROBE_CAP, ProviderId::DeepSeek, probe_provider(ProviderId::DeepSeek)),
+        capped(PROBE_CAP, ProviderId::Codex, probe_provider(ProviderId::Codex)),
+        capped(PROBE_CAP, ProviderId::Gemini, probe_provider(ProviderId::Gemini)),
+        capped(PROBE_CAP, ProviderId::Grok, probe_provider(ProviderId::Grok)),
     );
     vec![claude, deepseek, codex, gemini, grok]
+}
+
+/// One provider's probe, with no time cap of its own: the caller says how long it may take.
+pub fn probe_provider(provider: ProviderId) -> impl Future<Output = Availability> + Send + 'static {
+    async move {
+        match provider {
+            ProviderId::Claude => probe_claude().await,
+            ProviderId::DeepSeek => probe_deepseek().await,
+            ProviderId::Codex => probe_codex().await,
+            ProviderId::Gemini => probe_gemini().await,
+            ProviderId::Grok => probe_grok().await,
+        }
+    }
+}
+
+// ------------------------------------------------------------- the slow-probe retry
+
+/// A probe that ended [`State::Unknown`] is tried once more, in the background, with this
+/// longer cap. `codex` and `claude` are often lazy wrappers (mise) whose first run can take
+/// longer than [`PROBE_CAP`] while they install or warm up; waiting that long at startup
+/// would stall the banner, and never asking again would leave the provider unused all session.
+pub const RETRY_CAP: Duration = Duration::from_secs(20);
+
+/// The providers whose first probe could not tell, and so deserve the retry.
+pub fn retry_candidates(first: &[Availability]) -> Vec<ProviderId> {
+    first.iter().filter(|a| a.state == State::Unknown).map(|a| a.provider).collect()
+}
+
+/// Probe each of `providers` once more, all at once, each under `cap`, and hand every
+/// answer to `done` as it arrives (so a quick one is not held back by a slow one). It is
+/// the whole policy: one retry, never a loop. `probe` is injected so tests need no CLI.
+pub async fn retry_unknown<P, Fut>(providers: Vec<ProviderId>, cap: Duration, probe: P, mut done: impl FnMut(Availability))
+where
+    P: Fn(ProviderId) -> Fut,
+    Fut: Future<Output = Availability> + Send + 'static,
+{
+    let mut running = tokio::task::JoinSet::new();
+    for provider in providers {
+        running.spawn(capped(cap, provider, probe(provider)));
+    }
+    while let Some(finished) = running.join_next().await {
+        if let Ok(answer) = finished {
+            done(answer);
+        }
+    }
+}
+
+/// Fold a late answer into `current`: it only fills in a provider that is still
+/// [`State::Unknown`] (a `/providers refresh` may have found a definite answer since), and an
+/// answer that is itself Unknown teaches nothing. True when something changed.
+pub fn merge_late(current: &mut [Availability], late: Availability) -> bool {
+    if late.state == State::Unknown {
+        return false;
+    }
+    match current.iter_mut().find(|a| a.provider == late.provider && a.state == State::Unknown) {
+        Some(slot) => {
+            *slot = late;
+            true
+        }
+        None => false,
+    }
 }
 
 /// The (provider, model) pairs a turn may be routed to: for each Ready provider, the
@@ -722,5 +783,61 @@ mod tests {
     async fn fast_probe_passes_through() {
         let a = capped(Duration::from_secs(1), ProviderId::Claude, async { ready(ProviderId::Claude, None) }).await;
         assert_eq!(a.state, State::Ready);
+    }
+
+    // ---- the slow-probe retry
+
+    fn unknown(p: ProviderId) -> Availability {
+        avail(p, State::Unknown, "probe timed out after 5s")
+    }
+
+    #[test]
+    fn only_providers_that_could_not_tell_are_retried() {
+        let first = [ready(ProviderId::Claude, None), unknown(ProviderId::Codex), avail(ProviderId::Gemini, State::NotLoggedIn, "x"), unknown(ProviderId::Grok)];
+        assert_eq!(retry_candidates(&first), [ProviderId::Codex, ProviderId::Grok]);
+        assert!(retry_candidates(&[ready(ProviderId::Claude, None)]).is_empty());
+    }
+
+    #[tokio::test]
+    async fn the_retry_asks_each_provider_once_under_the_cap_and_reports_answers_as_they_come() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+        let calls = Arc::new(AtomicUsize::new(0));
+        let counter = calls.clone();
+        // codex answers after 20 ms; claude never answers; both under a 150 ms cap.
+        let fake = move |p: ProviderId| {
+            counter.fetch_add(1, Ordering::SeqCst);
+            async move {
+                if p == ProviderId::Codex {
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                    ready(p, None)
+                } else {
+                    std::future::pending().await
+                }
+            }
+        };
+        let mut answers = Vec::new();
+        retry_unknown(vec![ProviderId::Claude, ProviderId::Codex], Duration::from_millis(150), fake, |a| answers.push((a.provider, a.state))).await;
+        assert_eq!(answers, [(ProviderId::Codex, State::Ready), (ProviderId::Claude, State::Unknown)], "the quick one is not held back by the slow one");
+        assert_eq!(calls.load(Ordering::SeqCst), 2, "one retry each, never a loop");
+    }
+
+    #[tokio::test]
+    async fn a_retry_with_nothing_to_retry_does_nothing() {
+        let mut seen = 0;
+        retry_unknown(Vec::new(), RETRY_CAP, |p| async move { ready(p, None) }, |_| seen += 1).await;
+        assert_eq!(seen, 0);
+    }
+
+    #[test]
+    fn a_late_answer_fills_in_only_a_provider_that_is_still_unknown() {
+        let mut now = vec![ready(ProviderId::Claude, None), unknown(ProviderId::Codex), avail(ProviderId::Gemini, State::NotLoggedIn, "x")];
+        assert!(merge_late(&mut now, ready(ProviderId::Codex, Some(vec!["m"]))));
+        assert_eq!((now[1].state, now[1].models.clone()), (State::Ready, Some(vec!["m".to_string()])));
+        assert!(!merge_late(&mut now, avail(ProviderId::Codex, State::NotLoggedIn, "x")), "a definite answer is never overwritten");
+        assert!(!merge_late(&mut now, ready(ProviderId::Gemini, None)), "nor is a refresh's result");
+        assert_eq!(now[2].state, State::NotLoggedIn);
+        let mut still = vec![unknown(ProviderId::Codex)];
+        assert!(!merge_late(&mut still, unknown(ProviderId::Codex)), "Unknown teaches nothing");
     }
 }

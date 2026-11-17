@@ -14,7 +14,7 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
 use crate::backend::Event;
-use crate::terminal;
+use crate::terminal::{self, Screen, StdScreen};
 use crate::turn::{Failover, NoRouteInfo, Ui};
 use crate::uifmt::{self, FileChange, RouteFacts, Style, SummaryFacts, Theme};
 
@@ -28,6 +28,8 @@ pub struct ConsoleConfig {
     pub out_style: Style,
     /// Styling for what goes to stderr (progress).
     pub err_style: Style,
+    /// The width to lay lines out for when the terminal cannot be asked (tests, pipes). A
+    /// console on a real terminal asks it again on every draw, so a resize is followed.
     pub width: usize,
     /// Draw the live status line (stderr is a terminal that takes escape sequences).
     pub live: bool,
@@ -58,6 +60,12 @@ struct Inner {
     cfg: ConsoleConfig,
     live: Option<Live>,
     cursor_hidden: bool,
+    /// The terminal itself, when there is one to ask; `None` in tests and pipes.
+    screen: Option<Box<dyn Screen>>,
+    /// Typed keys are not echoed while the status line is up.
+    echo_off: bool,
+    /// Notices that arrived while the user was at the prompt, printed at the next input.
+    deferred: Vec<String>,
     /// A failure whose "→ trying X" part is not known until the next route is chosen.
     pending: Option<Pending>,
     /// Set when no model could take the turn; the caller prints the full message, which
@@ -73,13 +81,20 @@ pub struct Console {
 
 impl Console {
     pub fn new(out: Box<dyn Write + Send>, err: Box<dyn Write + Send>, cfg: ConsoleConfig) -> Self {
-        let inner = Inner { out, err, cfg, live: None, cursor_hidden: false, pending: None, no_route_task: None };
+        let inner = Inner { out, err, cfg, live: None, cursor_hidden: false, screen: None, echo_off: false, deferred: Vec::new(), pending: None, no_route_task: None };
         Self { inner: Arc::new(Mutex::new(inner)) }
     }
 
     /// A console on the process's real stdout and stderr.
     pub fn stdio(cfg: ConsoleConfig) -> Self {
-        Self::new(Box::new(std::io::stdout()), Box::new(std::io::stderr()), cfg)
+        Self::new(Box::new(std::io::stdout()), Box::new(std::io::stderr()), cfg).with_screen(Box::new(StdScreen))
+    }
+
+    /// Follow this terminal: its live width replaces the configured one, and typed keys are
+    /// not echoed over the status line.
+    pub fn with_screen(self, screen: Box<dyn Screen>) -> Self {
+        self.lock().screen = Some(screen);
+        self
     }
 
     fn lock(&self) -> MutexGuard<'_, Inner> {
@@ -94,8 +109,9 @@ impl Console {
         self.lock().cfg.err_style
     }
 
+    /// The columns lines are laid out for right now.
     pub fn width(&self) -> usize {
-        self.lock().cfg.width
+        self.lock().width()
     }
 
     /// Print text on stdout (command output), with a newline.
@@ -140,6 +156,28 @@ impl Console {
         g.refresh();
     }
 
+    /// A line that is not part of any turn (a background check finished): printed at once
+    /// while a turn is running, through the same lock as everything else, so it lands
+    /// between lines and the status line is redrawn under it. At the prompt it is held until
+    /// [`Console::flush_notices`], because printing there would land inside the line being typed.
+    pub fn notify(&self, text: &str) {
+        let mut g = self.lock();
+        let line = format!("  {}", g.cfg.err_style.dim(text));
+        if g.live.is_some() {
+            g.emit_err(&line);
+        } else {
+            g.deferred.push(line);
+        }
+    }
+
+    /// Print the notices that were held for the prompt. Call when input has just been read.
+    pub fn flush_notices(&self) {
+        let mut g = self.lock();
+        for line in std::mem::take(&mut g.deferred) {
+            g.emit_err(&line);
+        }
+    }
+
     /// A task that redraws the status line every [`TICK`] until dropped. Does nothing
     /// unless the console is live. Needs a running tokio runtime.
     pub fn ticker(&self) -> Ticker {
@@ -165,7 +203,7 @@ impl Console {
     /// revert them, then a blank line.
     pub fn turn_end(&self, summary: &SummaryFacts, files: &[FileChange]) {
         let mut g = self.lock();
-        let (style, width) = (g.cfg.err_style, g.cfg.width);
+        let (style, width) = (g.cfg.err_style, g.width());
         let mut lines = vec![format!("  {}", uifmt::turn_summary(summary, style))];
         if !files.is_empty() {
             lines.push(uifmt::changes_block(files, style, width));
@@ -188,6 +226,11 @@ impl Drop for Ticker {
 }
 
 impl Inner {
+    /// Columns right now: what the terminal reports, else the configured width.
+    fn width(&self) -> usize {
+        self.screen.as_ref().and_then(|s| s.columns()).unwrap_or(self.cfg.width).max(1)
+    }
+
     /// Remove the status line from the screen (it is redrawn after the next print).
     fn erase(&mut self) {
         if let Some(l) = self.live.as_mut().filter(|l| l.drawn) {
@@ -197,10 +240,13 @@ impl Inner {
     }
 
     fn draw(&mut self, elapsed: Duration) {
-        let Some(l) = self.live.as_mut() else { return };
+        // The status line is redrawn in place (`\r`, erase the row), which only works while it
+        // is ONE row: so it is cut by display width to one column short of the live width,
+        // since a full row wraps on terminals that wrap at the last column.
+        let budget = self.width().saturating_sub(1);
         let style = self.cfg.err_style;
-        // One column short of the width, so a full line never wraps and scrolls the screen.
-        let line = uifmt::status_line(&l.label, elapsed, l.activity.as_deref(), self.cfg.width.saturating_sub(1), style);
+        let Some(l) = self.live.as_mut() else { return };
+        let line = uifmt::status_line(&l.label, elapsed, l.activity.as_deref(), budget, style);
         let mut frame = String::new();
         if !self.cursor_hidden {
             self.cursor_hidden = true;
@@ -247,6 +293,10 @@ impl Inner {
             return;
         }
         self.live = Some(Live { label: "routing".into(), activity: None, started: Instant::now(), drawn: false });
+        if let Some(screen) = &self.screen {
+            screen.set_echo(false);
+            self.echo_off = true;
+        }
         self.refresh();
     }
 
@@ -257,6 +307,11 @@ impl Inner {
             self.cursor_hidden = false;
             terminal::note_cursor_hidden(false);
             let _ = self.err.write_all(uifmt::show_cursor().as_bytes());
+        }
+        if std::mem::take(&mut self.echo_off) {
+            if let Some(screen) = &self.screen {
+                screen.set_echo(true);
+            }
         }
         let _ = self.err.flush();
         if let Some(p) = self.pending.take() {
@@ -315,7 +370,7 @@ impl Ui for Console {
         let mut g = self.lock();
         match e {
             Event::Tool(summary) => {
-                let (style, width) = (g.cfg.err_style, g.cfg.width);
+                let (style, width) = (g.cfg.err_style, g.width());
                 let line = uifmt::tool_line(summary, &g.cfg.project, style, width);
                 let activity = uifmt::relativize_paths(&uifmt::strip_ansi(summary), &g.cfg.project);
                 g.set_activity(&activity);
@@ -327,7 +382,7 @@ impl Ui for Console {
                 g.emit_err(&text);
             }
             Event::Text(t) if g.cfg.stream_answers => {
-                let text = uifmt::answer_text(t, g.cfg.out_style, g.cfg.width);
+                let text = uifmt::answer_text(t, g.cfg.out_style, g.width());
                 g.emit_out(&format!("{text}\n"));
             }
             _ => {}
@@ -417,6 +472,8 @@ pub(crate) mod testing {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
     use super::testing::Buf;
     use super::*;
     use crate::backend::{ErrorKind, ProviderId};
@@ -617,6 +674,112 @@ mod tests {
         c.turn_end(&SummaryFacts { ok: true, cancelled: true, elapsed_ms: 3000, ..SummaryFacts::default() }, &[]);
         let e = err.text();
         assert!(e.contains("■ stopped · 3s") && !e.contains("/diff"), "{e}");
+    }
+
+    /// A terminal whose width the test changes, and that remembers echo switches.
+    #[derive(Clone)]
+    struct FakeScreen {
+        cols: Arc<AtomicUsize>,
+        echo: Arc<Mutex<Vec<bool>>>,
+    }
+
+    impl FakeScreen {
+        fn new(cols: usize) -> Self {
+            Self { cols: Arc::new(AtomicUsize::new(cols)), echo: Arc::default() }
+        }
+    }
+
+    impl Screen for FakeScreen {
+        fn columns(&self) -> Option<usize> {
+            Some(self.cols.load(Ordering::SeqCst))
+        }
+        fn set_echo(&self, on: bool) {
+            self.echo.lock().unwrap().push(on);
+        }
+    }
+
+    fn on_screen(cols: usize) -> (Console, Buf, FakeScreen) {
+        let (c, _, err) = console(true, Style::off(), true);
+        let screen = FakeScreen::new(cols);
+        (c.with_screen(Box::new(screen.clone())), err, screen)
+    }
+
+    /// The status frames drawn since the last clear: each is what follows an erase-row.
+    fn frames(drawn: &str) -> Vec<String> {
+        drawn.split(uifmt::clear_line()).skip(1).map(|f| f.replace(uifmt::hide_cursor(), "")).collect()
+    }
+
+    const LONG_COMMAND: &str = "Bash ls -R | head -100 && echo --- && ls | wc -l && cat log --oneline --decorate --graph --all | head -50 && echo done and more and more text";
+
+    #[test]
+    fn the_status_line_follows_the_live_terminal_width_not_the_width_at_startup() {
+        let (mut c, err, screen) = on_screen(120);
+        c.begin_turn();
+        c.route_facts(&facts("claude", "claude-opus-5-5"));
+        c.event(&Event::Tool(LONG_COMMAND.into()));
+        for cols in [120, 70, 33, 61, 200, 5, 1] {
+            screen.cols.store(cols, Ordering::SeqCst);
+            err.clear();
+            c.tick_at(Duration::from_secs(9));
+            let drawn = frames(&err.text());
+            assert_eq!(drawn.len(), 1, "one frame per tick at {cols} columns");
+            let width = uifmt::display_width(&drawn[0]);
+            assert!(width < cols.max(2), "a {width}-column frame reaches the last of {cols} columns: {:?}", drawn[0]);
+            assert!(!drawn[0].contains('\n'), "one row: {:?}", drawn[0]);
+        }
+        assert_eq!(c.width(), 1);
+    }
+
+    #[test]
+    fn a_status_line_never_carries_control_characters_from_a_tool_summary() {
+        let (mut c, err, _screen) = on_screen(80);
+        c.begin_turn();
+        for hostile in ["Bash echo \x1b[31mred\x1b[0m\r\nnext\x07 bell \x1b]0;title\x07 end \x1b", "Bash tab\there\x08\x7f\u{9b}31m", "\x1b"] {
+            err.clear();
+            c.event(&Event::Tool(hostile.into()));
+            let all = err.text();
+            // Erase, the tool line (only its final newline is a control character), erase, the status frame: two parts after each erase.
+            let parts = frames(&all);
+            assert_eq!(parts.len(), 2, "{all:?}");
+            assert!(!parts[0].trim_end_matches('\n').chars().any(char::is_control), "{hostile:?} leaked into the tool line {:?}", parts[0]);
+            assert!(!parts[1].chars().any(char::is_control), "{hostile:?} leaked into the status line {:?}", parts[1]);
+        }
+    }
+
+    #[test]
+    fn keys_typed_during_a_turn_are_not_echoed_over_the_status_line() {
+        let (c, _, screen) = on_screen(80);
+        c.begin_turn();
+        c.end_turn();
+        assert_eq!(*screen.echo.lock().unwrap(), [false, true]);
+
+        // A console that draws nothing does not touch the terminal's modes either.
+        let (plain, _, _) = console(false, Style::off(), true);
+        let quiet = FakeScreen::new(80);
+        let plain = plain.with_screen(Box::new(quiet.clone()));
+        plain.begin_turn();
+        plain.end_turn();
+        assert!(quiet.echo.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_notice_waits_for_the_prompt_unless_a_turn_is_running() {
+        let (c, _, err) = console(true, Style::off(), true);
+        c.notify("codex is ready now");
+        assert_eq!(err.text(), "", "at the prompt it must not land inside the line being typed");
+        c.flush_notices();
+        assert_eq!(err.text(), "  codex is ready now\n");
+        c.flush_notices();
+        assert_eq!(err.text(), "  codex is ready now\n", "printed once");
+
+        err.clear();
+        c.begin_turn();
+        err.clear();
+        c.notify("codex is ready now");
+        let e = err.text();
+        let at = e.find("  codex is ready now\n").expect(&e);
+        assert!(e[..at].ends_with(uifmt::clear_line()), "the status line is erased first: {e:?}");
+        assert!(e[at..].contains("routing"), "and drawn again under it: {e:?}");
     }
 
     #[test]
