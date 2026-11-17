@@ -9,6 +9,18 @@
 //! newlines escaped); summary on stderr.
 //!
 //!   TYPESAFE_API_KEY=... CHEAP_THRESHOLD=0.30 cargo run --bin route prompts.tsv
+//!
+//! `ROUTE_MODE=provider` measures the multi-provider router's Jev judgment instead of
+//! the Claude tiers: per prompt it asks `provider_want` once and prints the task type
+//! with its confidence, the yes/no signals, and the model `routing::decide` would pick
+//! on a first turn for a user with Claude and Codex (Plus models) usable, or `none`.
+//! `ROUTE_JSON=1` prints JSONL (one object per prompt, `"failed": true` when Jev gave
+//! no answer) for `scripts/task_type_accuracy.py`. `ROUTE_CODEX_MODELS=id,id` sets the
+//! usable Codex models (default: every catalog Codex model except the very-hard-only
+//! Astra, which the Plus plan does not include) and `ROUTE_CREDITS=1` allows
+//! pay-as-you-go models such as Fable.
+//!
+//!   ROUTE_MODE=provider ROUTE_JSON=1 cargo run --release --bin route prompts.jsonl > out.jsonl
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -18,6 +30,9 @@ use tokio::sync::Semaphore;
 use tokio::task::JoinSet;
 
 use jev_router::anthropic::{MODEL_CHEAP, MODEL_MID, MODEL_STRONG};
+use jev_router::backend::ProviderId;
+use jev_router::catalog::{self, Allowances, Overrides, Usable};
+use jev_router::routing::{self, Pin, RouteInput, RoutingState, Signals};
 use jev_router::router::{security_level, Decision, Router, CODE_STRONG_THRESHOLD};
 
 const TIERS: [&str; 3] = [MODEL_CHEAP, MODEL_MID, MODEL_STRONG];
@@ -55,6 +70,63 @@ async fn code_signals(router: &Router, prompt: &str, context: &str) -> String {
         "sec_p": s.ok(),
     })
     .to_string()
+}
+
+/// What `ROUTE_MODE=provider` decides with: a user with Claude and Codex usable.
+struct ProviderSetup {
+    usable: Usable,
+    allow: Allowances,
+    overrides: Overrides,
+}
+
+impl ProviderSetup {
+    fn from_env() -> Self {
+        let codex: Vec<String> = match std::env::var("ROUTE_CODEX_MODELS") {
+            Ok(list) => list.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect(),
+            // Plus does not include the very-hard-only Astra.
+            Err(_) => catalog::models()
+                .iter()
+                .filter(|m| m.provider == ProviderId::Codex && !m.very_hard_only)
+                .map(|m| m.id.to_string())
+                .collect(),
+        };
+        let claude = catalog::models().iter().filter(|m| m.provider == ProviderId::Claude).map(|m| m.id.to_string());
+        let usable = Usable::new(
+            claude.map(|id| (ProviderId::Claude, id)).chain(codex.into_iter().map(|id| (ProviderId::Codex, id))),
+        );
+        let credits = std::env::var("ROUTE_CREDITS").is_ok_and(|v| !v.is_empty() && v != "0");
+        Self { usable, allow: Allowances { credits, per_token: false }, overrides: Overrides::from_env() }
+    }
+}
+
+/// One prompt in provider mode: the signals as a JSON object (with the model that
+/// `routing::decide` picks) or `None` when Jev gave no answer. The decision is the
+/// first turn of a fresh session, so no stickiness applies.
+async fn provider_row(router: &Router, setup: &ProviderSetup, prompt: &str, context: &str) -> Option<(serde_json::Value, &'static str)> {
+    let w = router.provider_want(prompt, context, None).await?;
+    let signals = Signals::from(&w);
+    let plan = |_: ProviderId| None;
+    let input = RouteInput {
+        signals: Some(&signals),
+        prompt_words: prompt.split_whitespace().count(),
+        pin: &Pin::Auto,
+        usable: &setup.usable,
+        allow: &setup.allow,
+        overrides: &setup.overrides,
+        context_tokens: 0,
+        plan_utilization: &plan,
+    };
+    let model = routing::decide(&mut RoutingState::default(), &input).map(|d| d.spec.id).unwrap_or("none");
+    let row = serde_json::json!({
+        "task": w.task.as_str(),
+        "task_confidence": w.task_confidence,
+        "security_p": w.security_p,
+        "very_hard_p": w.very_hard_p,
+        "continues_p": w.continues_p,
+        "multi_part_p": w.multi_part_p,
+        "model": model,
+    });
+    Some((row, model))
 }
 
 fn env_or(key: &str, default: f64) -> f64 {
@@ -104,15 +176,29 @@ async fn main() -> Result<()> {
     } else {
         (threshold, strong)
     };
+    let provider_mode = std::env::var("ROUTE_MODE").as_deref() == Ok("provider");
+    let as_json = std::env::var("ROUTE_JSON").is_ok_and(|v| !v.is_empty() && v != "0");
+    let setup = Arc::new(ProviderSetup::from_env());
     let router = Arc::new(Router::new(TypeSafe::from_env()?, threshold).with_strong_threshold(strong));
     let sem = Arc::new(Semaphore::new(CONCURRENCY));
     let mut tasks = JoinSet::new();
     for (i, Item { id, category: cat, prompt, context }) in prompts.into_iter().enumerate() {
-        let (router, sem) = (router.clone(), sem.clone());
+        let (router, sem, setup) = (router.clone(), sem.clone(), setup.clone());
         let (code_mode, signals) = (code_mode, signals);
         tasks.spawn(async move {
             let _permit = sem.acquire_owned().await;
-            let d = if code_mode {
+            let mut extra = None;
+            let d = if provider_mode {
+                match provider_row(&router, &setup, &prompt, &context).await {
+                    Some((row, model)) => {
+                        let conf = row["task_confidence"].as_f64().unwrap_or(0.0);
+                        let kind = row["task"].as_str().unwrap_or("").to_string();
+                        extra = Some(row);
+                        Ok(Decision { model, kind, confidence: conf, reason: "provider" })
+                    }
+                    None => Err(anyhow::anyhow!("Jev gave no usable answer (timeout, error or unreadable)")),
+                }
+            } else if code_mode {
                 let w = router.code_want(&prompt, &context, 1).await;
                 let mut kind = w.reason.clone();
                 if signals {
@@ -122,7 +208,7 @@ async fn main() -> Result<()> {
             } else {
                 router.route(&prompt, &context).await
             };
-            (i, id, cat, prompt, d)
+            (i, id, cat, prompt, d, extra)
         });
     }
 
@@ -136,9 +222,12 @@ async fn main() -> Result<()> {
     // category -> count per tier
     let mut by_cat: BTreeMap<String, [usize; 3]> = BTreeMap::new();
     let mut failed = 0;
+    if provider_mode {
+        return print_provider(&rows, as_json);
+    }
     let header = if signals { "kind\tsignals" } else { "kind" };
     println!("id\tcategory\t{header}\tconfidence\tmodel\treason\tprompt");
-    for (_, id, cat, prompt, d) in &rows {
+    for (_, id, cat, prompt, d, _) in &rows {
         let prompt = prompt.replace('\n', "\\n").replace('\t', " ");
         match d {
             Ok(d) => {
@@ -162,5 +251,56 @@ async fn main() -> Result<()> {
     }
     let t: usize = all.iter().sum();
     eprintln!("  {:<15} {:>6.0}% {:>6.0}% {:>6.0}%   ({} prompts)", "ALL", pct(all[0], t), pct(all[1], t), pct(all[2], t), t);
+    Ok(())
+}
+
+type Row = (usize, String, String, String, Result<Decision>, Option<serde_json::Value>);
+
+/// Provider-mode output: TSV or JSONL on stdout, failure count and task histogram on
+/// stderr. A prompt Jev did not answer is never dropped: JSONL carries it as
+/// `"failed": true`, TSV as a `FAILED` row.
+fn print_provider(rows: &[Row], as_json: bool) -> Result<()> {
+    let cols = ["task", "task_confidence", "security_p", "very_hard_p", "continues_p", "multi_part_p", "model"];
+    if !as_json {
+        println!("id\tcategory\t{}\tprompt", cols.join("\t"));
+    }
+    let (mut failed, mut tasks): (usize, BTreeMap<String, usize>) = (0, BTreeMap::new());
+    for (_, id, cat, prompt, d, extra) in rows {
+        let Some(row) = extra.as_ref().filter(|_| d.is_ok()) else {
+            failed += 1;
+            if let Err(e) = d {
+                eprintln!("  error on {:?}: {:#}", prompt, e);
+            }
+            if as_json {
+                println!("{}", serde_json::json!({"id": id, "category": cat, "failed": true}));
+            } else {
+                println!("{id}\t{cat}\tFAILED\t\t\t\t\t\t\t{}", prompt.replace('\n', "\\n").replace('\t', " "));
+            }
+            continue;
+        };
+        *tasks.entry(row["task"].as_str().unwrap_or("").to_string()).or_default() += 1;
+        if as_json {
+            let mut obj = serde_json::json!({"id": id, "category": cat, "prompt": prompt});
+            obj.as_object_mut().expect("object").extend(row.as_object().expect("object").clone());
+            println!("{obj}");
+        } else {
+            let num = |k: &str| format!("{:.2}", row[k].as_f64().unwrap_or(0.0));
+            println!(
+                "{id}\t{cat}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
+                row["task"].as_str().unwrap_or(""),
+                num("task_confidence"),
+                num("security_p"),
+                num("very_hard_p"),
+                num("continues_p"),
+                num("multi_part_p"),
+                row["model"].as_str().unwrap_or(""),
+                prompt.replace('\n', "\\n").replace('\t', " ")
+            );
+        }
+    }
+    eprintln!("\nprovider mode: {} prompts, {} failed (Jev gave no answer)", rows.len(), failed);
+    for (task, n) in &tasks {
+        eprintln!("  {task:<12} {n}");
+    }
     Ok(())
 }
