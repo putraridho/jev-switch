@@ -27,7 +27,8 @@ The app is three layers with one dependency direction:
  jev-usage-io (adapters: log tail, subprocess, HTTP, SQLite, service loop)   IO shell
         │                         │
         ▼                         ▼
- jev-usage-core (domain, parsers, policy; pure, no IO)        jev-router (engine, reused)
+ jev-usage-core (domain, parsers, policy; pure, no IO)        the engine, behind ONE port
+                                                             (io::engine_bridge, 5.1)
 ```
 
 ## 1a. User decisions (2026-11-17, normative)
@@ -55,7 +56,7 @@ These answer the open questions and override any earlier default in this documen
   loosely, in either language, in hand-written **or generated** code.
   *TypeScript*: no `any`, `unknown` or `never` written anywhere; no type assertion (`x as T`,
   `<T>x`; `as const` and `satisfies` are not assertions and are allowed); no non-null `!`; no
-  `@ts-ignore`, `@ts-expect-error` or `@ts-nocheck`; no `Function`, `Object` or `{}` types;
+  `@ts-ignore`, `@ts-expect-error` or `@ts-nocheck`; no `Function`, `Object`, `object` or `{}` types;
   no `catch` binding (so no `unknown` error value ever exists: failures arrive as typed
   `Outcome` values from the IPC layer and the UI never catches); exhaustiveness through
   `satisfies Record<Union, …>` tables and the switch-exhaustiveness lint, never a `never`
@@ -328,9 +329,10 @@ impl ProviderKey { pub const ALL: [Self; 6]; pub const fn as_str(self) -> &'stat
 tests): `claude`, `codex`, `deepseek`, `gemini`, `antigravity`, `grok` (explicit
 `#[serde(rename)]`, because `snake_case` would give `deep_seek`).
 `ProviderKey` is the dashboard's own list (Antigravity is separate from Gemini for billing).
-The mapping to the engine's `ProviderId` lives in `jev-usage-io::engine_bridge`
+The mapping to the engine's `ProviderId` lives inside `jev-usage-io::engine_bridge`
 (`engine_bridge::login_command(ProviderKey)`, the one v1 use: the engine's login command
-takes a `ProviderId`), so core does not depend on the engine.
+takes a `ProviderId`), so core does not depend on the engine and no engine type appears in
+any Flashboard signature (5.1).
 
 ### 4.2 Meters and readings
 ```rust
@@ -487,19 +489,24 @@ pub trait Notifier: Send + Sync { fn notify(&self, alert: &Alert, hour: HourCycl
 `HistoryStore` and `SettingsStore` are synchronous and do file IO; the service calls every
 method of both through `spawn_blocking`.
 A provider may have several sources (Claude: gateway log and the opt-in live check). The
-service keeps the reading with the greatest `observed_at`; a reading older than the one it
-holds is dropped.
+service keeps the reading with the greatest `observed_at`; a reading **strictly** older than
+the one it holds is dropped, and one of equal age replaces it (that is how a plan name that
+the login probe learned after the first log read reaches the card: when a probe changes a
+provider's facts, the service fetches that provider's `OnSignal` sources once more).
 
 ### 4.5 Policy (pure functions in core)
 - `assess::derive(state, now, policy) -> Usage` and `assess::phase(window, now) -> Phase`
   (`Current` or `Elapsed` when `resets_at <= now`).
-- `assess::severity(used, thresholds) -> Severity` (`Ok | Warn | Critical`), and `Unknown` for
-  an elapsed or absent meter. A balance meter is `Critical` when `usable` is false, else `Ok`.
+- `assess::severity(&Meter, now, &Thresholds) -> Severity`: a window meter is `Ok`, `Warn` or
+  `Critical` by its `used`, and `Unknown` when it is elapsed; a balance meter is `Critical`
+  when `usable` is false, else `Ok`. (It takes the meter, not a bare percentage: a
+  percentage alone cannot say "elapsed" or "balance".)
 - `alerts::step(memory, provider, reading, now, settings) -> (AlertMemory, Vec<Alert>)`:
   section 7.6.
-- `summary::headline(&[ (ProviderKey, Usage) ], now, &Settings) -> Option<Headline>`: the
-  window meter with the highest `used` among `Known` and non-elapsed `Stale` readings of
-  enabled providers.
+- `summary::headline(&[(ProviderKey, &Usage)], now, &Settings) -> Option<summary::Headline>`:
+  the window meter with the highest `used` among `Known` and non-elapsed `Stale` readings of
+  enabled providers. `summary::Headline` is the domain value (`MeterId`, `Percent`);
+  `view::snapshot` maps it to the IPC `Headline` of 7.4.
 - `history::should_store(last_stored, candidate) -> bool`, `history::downsample(points, max)`,
   `history::reset_marks(sorted_resets, kind) -> Vec<UnixSeconds>` (collapses a sliding
   `resets_at` into one mark per window instance: a new mark needs a jump of at least half the
@@ -517,32 +524,62 @@ holds is dropped.
 | Open/closed | New provider = new `UsageSource` + one registry line + one `ProviderKey` variant. The service, store, IPC and UI render from `Meter` generically. |
 | Liskov | Every `UsageSource` returns the same `Reading`/`SourceError`; the service never matches on `SourceId` to behave differently. Test: the service test-suite runs against a fake source and every real adapter driven by fixtures. |
 | Interface segregation | Four small ports in core (`UsageSource`, `HistoryStore`, `SettingsStore`, `Notifier`) plus `Clock`; three in io for its own IO seams (`WallTimer`, `LoginProbe`, `Jitter`). The UI gets one read model (`Snapshot`). |
-| Dependency inversion | `core` defines ports and depends on nothing but serde. `io` implements them. The Tauri shell wires them. Nothing in core or io knows Tauri exists. |
+| Dependency inversion | `core` defines ports and depends on no IO, runtime or engine crate (its whole list is in 8.9). `io` implements them. The Tauri shell wires them. Nothing in core or io knows Tauri exists. |
 
 DRY rules: one parser per wire format; one formatter per language with shared test vectors
 (`dashboard/fixtures/format-vectors.json`, consumed by Rust `text` tests and TS `format`
 tests); TypeScript IPC types are generated from Rust, never hand-written; engine facts
 (state dir, env file path, env parsing, the Codex login-status rule, the login commands) come
-from `jev_router::embed`. One deliberate exception, for privacy: the dashboard has its own
+from the engine through the one port `io::engine_bridge` (5.1). One deliberate exception, for privacy: the dashboard has its own
 allow-list parser for `claude auth status` (5.1), because the engine's parser builds a
 generic JSON value of the whole output, e-mail included.
 
 ## 5. Repository and crate structure
 
-**Decision: one Cargo workspace rooted at the repository, with `default-members = ["."]`.**
+**Decision: the three app crates are members of the repository's one Cargo workspace and
+are never default members.**
+
+The engine is about to be refactored into a workspace with one crate per bounded context
+and a dedicated facade crate (`docs/architecture/DDD.md`, on its own branch, still under
+review). **Ordering assumption: T00 may start before or after that refactor, and both
+orders are valid.** Everything below is therefore written as invariants that hold either
+way, plus the two concrete forms:
+
+| | **Path A**: T00 runs before the refactor | **Path B**: T00 runs after it |
+|---|---|---|
+| `[workspace]` table | T00 creates it (block below) | exists; T00 only appends the three members and the two `exclude` entries |
+| default members | `["."]` (the engine package) | whatever the refactor set; T00 does not touch it |
+| engine facade | the module `jev_router::embed`, created by T00 (5.1) | the refactor's facade crate; T00 creates no engine file |
+| what the refactor / T00 edits in Flashboard | later, the refactor changes the **two lines** of 5.1 and nothing else | T00 writes those two lines for the facade crate |
+
+Invariants (review-blocking in both paths):
+1. The three app crates are workspace members and **never** in `default-members`, so the
+   engine's root commands (`cargo build`, `cargo test`, `scripts/install.sh`) never build
+   or test Flashboard. Building the app is always explicit (`-p jev-dashboard`).
+2. Flashboard reaches the engine through **one port** (`io::engine_bridge`, 5.1). The
+   engine's crate name and path appear in exactly two lines of the whole app.
+3. Flashboard does **not** use `[workspace.lints]` or a root `clippy.toml`: each app crate
+   carries the same `[lints]` table in its own manifest (a test compares the three), and
+   the clippy configuration is `dashboard/clippy.toml`. The engine's refactor owns the
+   workspace-level lint table alone, and neither side can break the other's lint policy
+   (the two policies differ: the engine needs one `unsafe` file and attribute reasons;
+   Flashboard forbids `unsafe` and uses the fixed test header of 11.1).
+4. `[profile.dist]` is Flashboard's and is used by nothing else; no profile sets `panic`.
+5. No engine gate may compile the app crates by accident: they need webkit2gtk **and** the
+   built UI (invariant of 11.4), so an engine command that says `--workspace` must exclude
+   the three (`--exclude jev-usage-core --exclude jev-usage-io --exclude jev-dashboard`).
+   In Path B this is a request to the engine's owner, recorded in T00's report.
+6. T00 states in its report which path it took.
 
 ```toml
-# Cargo.toml (root): the ONLY additions
+# Cargo.toml (root), Path A: the ONLY additions. Path B: only the marked lines are added.
 [workspace]
-members = [".", "dashboard/crates/usage-core", "dashboard/crates/usage-io", "dashboard/src-tauri"]
+members = [".", "dashboard/crates/usage-core", "dashboard/crates/usage-io", "dashboard/src-tauri"]   # B: append the three
 default-members = ["."]
-exclude = [".claude", "dashboard/fuzz"]   # see below
+exclude = [".claude", "dashboard/fuzz"]   # see below                                                # B: append both
 resolver = "2"
 
-[workspace.lints.rust]   # opted into by dashboard crates with `lints.workspace = true`
-[workspace.lints.clippy]
-
-[profile.dist]           # used only by the dashboard release build
+[profile.dist]           # used only by the dashboard release build                                  # B: add
 inherits = "release"
 lto = "thin"
 codegen-units = 1
@@ -561,10 +598,9 @@ Why a workspace member and not a sibling repository or a separate nested workspa
 - **DRY, one lockfile**: engine and app resolve the same `tokio`, `serde`, `reqwest`; one
   `cargo deny`/`cargo audit` pass covers both; one `target/` avoids compiling shared
   dependencies twice.
-- **Root commands unchanged**: with a root package and `default-members = ["."]`,
-  `cargo build --all-targets`, `cargo test` and `scripts/install.sh`
-  (`cargo build --release --bin ...`) at the root select only `jev-router`, exactly as today.
-  Building the app is always explicit (`-p jev-dashboard`). With resolver 2, features are
+- **Root commands unchanged** (invariant 1): `cargo build --all-targets`, `cargo test` and
+  `scripts/install.sh` (`cargo build --release --bin ...`) at the root select only the
+  engine's packages, exactly as before Flashboard existed. With resolver 2, features are
   unified only across the packages being built, so the engine's feature set does not change.
 - **No change to the engine's release profile**: the app uses its own `dist` profile.
 - Cost accepted: `Cargo.lock` grows by the Tauri dependency tree. `cargo build --workspace`
@@ -578,9 +614,9 @@ Why a workspace member and not a sibling repository or a separate nested workspa
 
 Layout (ownership per task is in `TASKS.md`):
 ```
-Cargo.toml                         root manifest (+ workspace table)
-src/embed.rs                       engine facade for embedding apps (new, re-exports only)
-src/availability.rs                one word changes: `pub` on `parse_codex_login` (5.1)
+Cargo.toml                         root manifest (+ workspace members, exclude, profile.dist)
+src/embed.rs                       Path A only: engine facade module (new, re-exports only, 5.1)
+src/availability.rs                Path A only: one word changes, `pub` on `parse_codex_login`
 deny.toml                          cargo-deny policy (whole workspace)
 scripts/install.sh                 unchanged
 scripts/ci.sh                      one command that runs every gate (section 11)
@@ -593,7 +629,7 @@ dashboard/
   fixtures/                        shared fixtures (codex-app-server/, claude-gateway/, deepseek/, format-vectors.json, ipc-allowlist.txt)
   packaging/                       dev.jev.flashboard.desktop
   clippy.toml                      disallowed types/macros and the in-test switches (11.1); here, not at the root,
-                                   so it applies to the three app crates and never to the engine
+                                   so it applies to the three app crates and never to the engine (invariant 3)
   fuzz/                            cargo-fuzz targets (stage 12, needs nightly; excluded from the workspace)
   e2e/                             Playwright (mock IPC), the real-binary smoke test, and the required WebDriver tests
   scripts/                         install.sh, measure-idle.sh, check-types.ts
@@ -601,25 +637,64 @@ dashboard/
   eslint.config.ts, .stylelintrc.json, .prettierrc.json   (no svelte.config file: section 10)
 ```
 
-### 5.1 Engine facade: `jev_router::embed`
-A new module in the engine crate containing **re-exports only** (no logic), so the app's
-dependency on the engine is one named, reviewable surface. It exports exactly what v1 uses;
-the later chat window adds its own exports (`Runtime`, turn execution) through the same door:
+### 5.1 The engine port: `io::engine_bridge`
+Flashboard needs five small facts from the engine and nothing else. It owns the **port**
+(the functions it calls, in its own types); the engine supplies a **facade** behind it.
+
 ```rust
-//! The engine surface an embedding application may use.
-pub use crate::backend::ProviderId;
-pub use crate::log::state_dir;
-pub use crate::envfile::{env_file_path, parse as parse_env};
-pub use crate::availability::parse_codex_login;      // pure: (exit ok, text) -> Option<bool>
-pub use crate::doctor::login_command;                // fn(ProviderId) -> Option<&'static str>: the one source of "codex login" etc.
+// jev-usage-io::engine_bridge: the ONLY file that names the engine. No engine type appears
+// in any signature; `ProviderId` is mapped inside `login_command`.
+pub fn state_dir() -> Option<PathBuf>;                              // the gateway's state directory
+pub fn env_file() -> Option<PathBuf>;                               // ~/.jev-router.env or its override
+pub fn parse_env(text: &str, name: &str) -> Option<String>;         // pure: one key of env-file text
+pub fn codex_logged_in(exit_ok: bool, text: &str) -> Option<bool>;  // pure: the engine's rule for `codex login status`
+pub fn login_command(p: ProviderKey) -> Option<&'static str>;       // "codex login", "claude auth login"; None where the engine has none
+// Flashboard's own, built on the five above (no further engine call):
+pub fn usage_log_path() -> Option<PathBuf>;   pub fn dashboard_dir() -> Option<PathBuf>;
 ```
-(All five items are already `pub` in `pub` modules except `parse_codex_login`; checked in
-`src/`. `state_dir()` and `env_file_path(jev_router_env, home)` take or read the environment
-as the engine does; `ProviderId` is exported because `login_command` takes it.)
-The dashboard crates MUST import engine items only through `jev_router::embed` (enforced by
-an architecture test). The only other change to engine code is the word `pub` on
-`availability::parse_codex_login` (a pure function that keeps nothing); behaviour and tests
-of the engine are unchanged.
+It is a module of plain functions, not a trait: all five are pure or only read the
+environment, tests call them directly, and an injectable trait would add a seam nobody
+needs. Every other Flashboard module (`envfile`, `probe`, `secrets`, the shell, the tests)
+calls `engine_bridge::*` and never the engine.
+
+**The two lines.** The engine's crate name and path are written in exactly two places:
+```toml
+# dashboard/crates/usage-io/Cargo.toml: the one dependency line (renamed, so code says `jev_engine`)
+jev-engine = { package = "jev-router", path = "../../.." }           # Path A
+jev-engine = { package = "<facade crate>", path = "<its path>" }      # Path B, names from DDD.md when final
+```
+```rust
+// dashboard/crates/usage-io/src/engine_bridge.rs: the one import line
+use jev_engine::embed as engine;    // Path A (a module of the engine crate)
+use jev_engine as engine;           // Path B (the facade crate's root)
+```
+`usage-core` and the shell do not declare the dependency at all, so the compiler, not a
+convention, keeps them off the engine. The architecture test adds: the identifiers
+`jev_engine` and `jev_router` occur in no `.rs` file under `dashboard/` except
+`engine_bridge.rs`, and in no `Cargo.toml` except `usage-io`'s.
+
+**What the facade must offer** (the contract between the two projects; it may offer more,
+for example for the later chat window, and Flashboard ignores the rest):
+`ProviderId`, `state_dir() -> Option<PathBuf>`,
+`env_file_path(Option<String>, Option<String>) -> Option<PathBuf>`,
+`parse_env(&str, &str) -> Option<String>`, `parse_codex_login(bool, &str) -> Option<bool>`,
+`login_command(ProviderId) -> Option<&'static str>`. All exist in `src/` today with these
+signatures (checked: `log::state_dir`, `envfile::env_file_path`, `envfile::parse`,
+`availability::parse_codex_login`, `doctor::login_command`); only `parse_codex_login` is
+not yet `pub`.
+- *Path A*: T00 adds `src/embed.rs` (the six `pub use` lines, **re-exports only**), one
+  `pub mod embed;` line and the word `pub` on `parse_codex_login`. Nothing else in the
+  engine changes; its behaviour and tests are unchanged.
+- *Path B*: the facade crate already exists. If it lacks one of the six names, that is a
+  request to the engine's owner, never a T00 edit of an engine crate.
+- **Contract tests** (`usage-io/tests/engine_bridge.rs`, T00) pin the *behaviour* Flashboard
+  relies on, so a refactor that changes it fails here and not in a user's tray: the
+  env-file cases (`export`, quotes, comments, missing key), the Codex login rule's truth
+  table, the two exact login command strings, the state directory under a temp
+  `XDG_STATE_HOME`/`HOME`, and the env-file path with and without its override.
+- **Ripple check**: moving from Path A to Path B is a diff of the two lines above (plus the
+  workspace member list, which the refactor owns). If it needs more, the port has leaked
+  and that is a design defect to fix here, not to absorb.
 
 `state_dir()` **creates** `~/.local/state/jev-router` when it is missing. Harmless (the
 gateway would create the same directory) and, after `hardening::apply`, created 0700.
@@ -640,18 +715,18 @@ gateway would create the same directory) and, after `hardening::apply`, created 
 Instead the dashboard has **its own narrow login probe** (`io::probe::CliProbe`, specified
 in 8.6) and its own zeroizing env-file reader (`io::envfile`), and takes only pure rules
 from the engine. The usage-log path is: the `JEV_USAGE_LOG` process variable, else that key
-in the env file (read by `io::envfile`, parsed by `embed::parse_env`), else
-`embed::state_dir()/usage.jsonl`: the same order as the engine's `path_from_env`, proven
-equal by a test over a temp home.
+in the env file (read by `io::envfile`, parsed by `engine_bridge::parse_env`), else
+`engine_bridge::state_dir()/usage.jsonl`: the same order as the engine's `path_from_env`,
+proven equal by a test over a temp home.
 
-Known cost: `jev-router` as a library pulls `axum` and `rustyline` into the app's build
-(unused code is dropped at link time). Splitting a lean `jev-engine` crate out of
-`jev-router` is the right long-term fix and is deliberately deferred (section 17).
+Known cost, Path A only: `jev-router` as a library pulls `axum` and `rustyline` into the
+app's build (unused code is dropped at link time). The refactor's facade crate is the fix;
+Flashboard does nothing about it.
 
 ### 5.2 Module ownership
 ```
 jev-usage-core            jev-usage-io                     jev-dashboard (shell)
-  time quantity label       engine_bridge  (embed → paths)   app       (wiring only; lib.rs lists modules, main.rs calls run)
+  time quantity label       engine_bridge  (the engine port) app       (wiring only; lib.rs lists modules, main.rs calls run)
   provider meter usage      clock          (SystemClock)     commands  (6 commands)
   port                      fsutil         (0600, atomic)    events    (emit snapshot)
   secret                    diag           (typed log)       tray      (menu + icon swap)
@@ -1003,9 +1078,10 @@ type RefreshTarget = { kind: "all" } | { kind: "provider"; provider: ProviderKey
                    | { kind: "live_check"; provider: ProviderKey };   // the only one that may spend
 type HistoryRange  = "day" | "week" | "month" | "quarter";
 type HistoryQuery  = { provider: ProviderKey; meter_id: string; range: HistoryRange };
+type SeriesUnit    = "basis_points" | "micros";
 type HistoryPoint  = { t: number /* epoch s */; v: number; lo: number; hi: number };
 type HistorySeries = { provider: ProviderKey; meter_id: string; from: number; to: number;
-                       unit: "basis_points" | "micros"; points: HistoryPoint[];
+                       unit: SeriesUnit; points: HistoryPoint[];
                        gap_s: number;       // a hole longer than this is drawn as a gap (history::gap_for)
                        resets: number[] };  // window ends inside the range (epoch s), at most 64; may be empty (7.5)
 
@@ -1215,7 +1291,7 @@ screen-reader user hears what a sighted user sees change, once. No extra IPC is 
   an `anthropic-ratelimit-unified-*` key.
 - Codex `account/read` is never called.
 - From `~/.jev-router.env`: `io::envfile` reads the file into a zeroizing buffer, hands it to
-  the engine's pure `embed::parse_env` for one named key (`DEEPSEEK_API_KEY` at fetch time,
+  the engine's pure rule (`engine_bridge::parse_env`) for one named key (`DEEPSEEK_API_KEY` at fetch time,
   `JEV_USAGE_LOG` once at start) and zeroizes the buffer. The engine's own file readers
   (`envfile::lookup`, `path_from_env`) are never called.
 
@@ -1251,7 +1327,7 @@ screen-reader user hears what a sighted user sees change, once. No extra IPC is 
   by `core::text` from typed inputs.
 - **Clipboard**: written only by the Copy buttons, only with constant command strings from
   `copy.ts` (`codex login`, `claude auth login`, `jev-claude`, `DEEPSEEK_API_KEY=`; a test
-  keeps the two login commands equal to the engine's `embed::login_command`); never read.
+  keeps the two login commands equal to `engine_bridge::login_command`); never read.
 - **Network**: only what 8.7 lists.
 
 ### 8.5 Secrets in memory
@@ -1275,7 +1351,7 @@ impl<T: Zeroize> Drop for Secret<T> { /* zeroize */ }
   value: a `Secret` cannot be cloned out of a borrow; the
   sources are injected, so tests never touch the real environment or home): process environment
   first, else the env file through `io::envfile` (a `Zeroizing<String>` parsed with the
-  engine's pure `embed::parse_env`; DRY: same parsing rules as the engine).
+  engine's pure rule through `engine_bridge::parse_env`; DRY: same parsing rules as the engine).
 - The header value is marked sensitive (`HeaderValue::set_sensitive(true)`), so the HTTP
   stack will not print it.
 - Honest limits: the allocator may have left copies in freed memory before zeroization of
@@ -1312,7 +1388,12 @@ One module, `io::proc`, is the only place `std::process`/`tokio::process` may be
   by comparing mise's `installs/`, `downloads/` and `incomplete-installs/` listings and a
   hash of `~/.config/mise/config.toml` before and after a real status run). The
   process-group kill below is the backstop for a download; nothing in the app can undo a
-  configuration write, which is why the executable check above comes first. Honest limits:
+  configuration write, which is why the executable check above comes first. `codex` and
+  `claude` are tools Omarchy declares, so the wrapper's branch for them is `mise install`
+  (blocked by offline), not `mise use -g`. Honest limits: the check proves that *a* version
+  is on disk, not that it is the version mise's configuration selects; when those differ
+  the wrapper's `mise install` is reached and fails offline without a download (T04 shows
+  this case with a stub, and the real run compares the listings);
   the switches are inherited by the real tool and anything it starts through mise; and a
   CLI's **own** updater (not mise's) is outside the app's control: the same before/after
   listing shows whether a status run triggers one.
@@ -1323,7 +1404,9 @@ One module, `io::proc`, is the only place `std::process`/`tokio::process` may be
   that keeps its login in the session keyring needs the bus), `CODEX_HOME`,
   `CLAUDE_CONFIG_DIR`, `MISE_DATA_DIR`, `MISE_CONFIG_DIR` (so the child finds the same login
   and the same installed tool the user's shell does; all four are directory paths, not
-  secrets); plus the constants `TERM=dumb` and the four `MISE_*` switches above. No
+  secrets); plus the constants `TERM=dumb`, `DISABLE_AUTOUPDATER=1` (Claude Code's switch for
+  its **own** updater; that this is its name and that it is honoured is **assumed**, checked
+  by T04's before/after listing) and the four `MISE_*` switches above. No
   `*_API_KEY`, `*_TOKEN` or proxy variable ever reaches a child. For `ClaudeLive`,
   `ANTHROPIC_BASE_URL` is not set, so it does not go through the gateway.
 - Working directory: `<state_dir>/dashboard/run` (empty, 0700), so no project config is read.
@@ -1344,7 +1427,7 @@ One module, `io::proc`, is the only place `std::process`/`tokio::process` may be
   1. `proc::resolve`; `NotInstalled` ends here with nothing run.
   2. Run `codex login status` or `claude auth status` through `proc` under every rule
      above, deadline 5 s, output collected into one zeroizing buffer.
-  3. Codex: `embed::parse_codex_login(exit_ok, text)` (the engine's pure rule; non-UTF-8
+  3. Codex: `engine_bridge::codex_logged_in(exit_ok, text)` (the engine's pure rule; non-UTF-8
      output is `Unknown`). Claude: `core::parse::claude_auth::parse(&[u8])`, the three-field
      allow-list of 8.3, with the engine's text fallback re-stated on bytes (contains
      "not logged in" or "not authenticated" → logged out; else contains "logged in" →
@@ -1369,14 +1452,23 @@ One module, `io::proc`, is the only place `std::process`/`tokio::process` may be
 ### 8.8 Tauri hardening
 - Plugins compiled in: `tauri-plugin-single-instance` only, registered first. Because the
   service is created in Tauri's `setup` hook, which runs after plugin initialisation, a
-  second process exits before it opens the store, the log or a child. The plugin's lock is
+  second process exits before it opens the store, the log or a child. The plugin hands the
+  first instance the second one's arguments **and working directory** (a path); the shell
+  tests the arguments for `--hidden` and drops both, never storing or logging them. The plugin's lock is
   a name on the session bus derived from the identifier, so a debug build or a test run
   would be swallowed by the user's resident Flashboard (autostart is on by default).
   Therefore: `pnpm dev` passes `--config` with the identifier `dev.jev.flashboard.dev`, debug
   builds keep their files in `<state_dir>/dashboard-dev`, and every automated launch of the
   real binary (11.4 stages 10 and 13, `measure-idle.sh`) runs under `dbus-run-session`,
-  which gives it a private bus (no clash, and its notifications and tray item never reach
-  the user's desktop). **Not** compiled in:
+  which gives it a private bus (no clash). A private bus alone still **activates** services
+  from the system's service files (a notification daemon, portals), which would then draw on
+  the user's desktop with the test's environment; so the launches pass
+  `--config-file dashboard/e2e/smoke/session-bus.conf`, a bus configuration with no service
+  directory, on which nothing can be activated: notifications fail into
+  `DiagEvent::NotifyFailed` and no tray host exists. That WebKitGTK and GTK start without
+  a portal or accessibility service on that bus is **assumed** (first run of stage 10; the
+  fallback is a service directory holding only the services that prove necessary, never a
+  notification daemon). **Not** compiled in:
   shell, opener, fs, http, dialog, clipboard, notification, updater, process, os,
   global-shortcut, window-state, autostart.
 - Notifications are sent from Rust with `notify-rust` (the library the Tauri plugin wraps on
@@ -1457,7 +1549,8 @@ One module, `io::proc`, is the only place `std::process`/`tokio::process` may be
   `tokio`, `inotify` (default features off: its descriptor is driven by tokio's `AsyncFd`
   like the timerfd, so no stream adapter crate is needed), `rusqlite` (bundled), `reqwest`
   (the engine's line: no default features, `rustls-tls`; never `native-tls`),
-  `rustix`, `zeroize`, `serde_json`, `jev-router`; dev: `tempfile`, `proptest`. shell:
+  `rustix`, `zeroize`, `serde_json`, and the engine facade as `jev-engine` (the one line of
+  5.1); dev: `tempfile`, `proptest`. shell:
   `jev-usage-core`, `jev-usage-io`, `tokio` (signals, the 30 s timer, channel types),
   `tauri` (feature `tray-icon` added to the defaults; dev: feature `test`), `tauri-build`,
   `tauri-plugin-single-instance`, `notify-rust` (default features off, `z` only: the zbus
@@ -1472,7 +1565,8 @@ One module, `io::proc`, is the only place `std::process`/`tokio::process` may be
   font packages (assets only). Everything else is a dev dependency: `vite`,
   `@sveltejs/vite-plugin-svelte`, `svelte-check`, `typescript`, `vitest`,
   `@vitest/coverage-v8`, `jsdom`, `@testing-library/svelte`, `@testing-library/user-event`,
-  `axe-core`, `@axe-core/playwright`, `@playwright/test`, `eslint`, `typescript-eslint`,
+  `axe-core`, `@axe-core/playwright`, `@playwright/test`, `@types/node` (the config files,
+  `check-types.ts` and the e2e specs use Node's API), `eslint`, `typescript-eslint`,
   `eslint-plugin-svelte`, `jiti` (ESLint needs it to load a TypeScript config), `stylelint`,
   `stylelint-declaration-strict-value` and `postcss-html` (the token rule inside `.svelte`
   files), `prettier`, `prettier-plugin-svelte`, `@tauri-apps/cli`. T00 may swap one of these
@@ -1489,7 +1583,7 @@ One module, `io::proc`, is the only place `std::process`/`tokio::process` may be
 | End to end: nothing leaks to IPC, store, settings, logs | `io` integration test: a service wired with canary-fed sources and a temp state dir runs a full cycle; then every emitted `Snapshot` (JSON), every file under the temp dir (raw bytes, including SQLite WAL), and captured `diag` output are searched for `JEVCANARY`, the canary e-mail and the canary key. The real-binary smoke test (11.4) repeats the search over its whole temp tree, including `XDG_DATA_HOME`, `XDG_CACHE_HOME`, `XDG_CONFIG_HOME` and `XDG_RUNTIME_DIR`, and over the binary's stderr. |
 | IPC carries only allowed fields | Test serialises generated values (proptest strategies for every IPC type) and walks the JSON: every key must be in `ipc-allowlist.txt`; no key matches `(?i)email|token|secret|password|prompt|message|content|account|session|cwd|path|url|auth|key$`; every string leaf must match a closed-vocabulary set or `^[a-z0-9_:.+-]{1,48}$`. The same walk runs over the generated `.ts` bindings' property names. |
 | `Secret` cannot be printed/cloned/serialised | `static_assertions::assert_not_impl_any!(Secret<String>: Debug, Display, Clone, Serialize, PartialEq)`. |
-| One exit for secrets, one HTTP client, one process spawner, one D-Bus user | Architecture test (plain Rust test that scans `dashboard/**/*.rs`, tests excluded where noted): `expose_secret(` only in `io/src/http.rs`; `reqwest` only in `io/src/http.rs`; `process::Command` only in `io/src/proc.rs`; `zbus` only in `src-tauri/src/bus.rs`; `notify_rust` only in `src-tauri/src/notifier.rs`; `jev_router::` only as `jev_router::embed`; forbidden file names (8.3) nowhere; no `println!`/`eprintln!`/`dbg!`; no `serde_json::Value`, `json!` or `unwrap`/`expect` outside tests, and `#![forbid(unsafe_code)]` at the top of all three crate roots (1a); the **type-file rule**: a `syn`-based test walks every struct field and enum variant field in the core type files (`time quantity label provider meter usage port secret ipc`) and fails on any field whose type mentions `String`, `str`, `Cow`, `OsString`, `PathBuf`, `Vec<u8>` or `Value`, with exactly two exceptions: `Label`'s own `Box<str>` and `Diagnostics.app_version: &'static str`. (Function signatures such as `MeterId::key() -> String` are not fields and are allowed.) `text.rs` builds display strings from typed inputs only and is not a type file. |
+| One exit for secrets, one HTTP client, one process spawner, one D-Bus user | Architecture test (plain Rust test that scans `dashboard/**/*.rs`, tests excluded where noted): `expose_secret(` only in `io/src/http.rs`; `reqwest` only in `io/src/http.rs`; `process::Command` only in `io/src/proc.rs`; `zbus` only in `src-tauri/src/bus.rs`; `notify_rust` only in `src-tauri/src/notifier.rs`; the engine's crate identifiers only in `io/src/engine_bridge.rs` (5.1); forbidden file names (8.3) nowhere; no `println!`/`eprintln!`/`dbg!`; no `serde_json::Value`, `json!` or `unwrap`/`expect` outside tests, and `#![forbid(unsafe_code)]` at the top of all three crate roots (1a); the **type-file rule**: a `syn`-based test walks every struct field and enum variant field in the core type files (`time quantity label provider meter usage port secret ipc`) and fails on any field whose type mentions `String`, `str`, `Cow`, `OsString`, `PathBuf`, `Vec<u8>` or `Value`, with exactly two exceptions: `Label`'s own `Box<str>` and `Diagnostics.app_version: &'static str`. (Function signatures such as `MeterId::key() -> String` are not fields and are allowed.) `text.rs` builds display strings from typed inputs only and is not a type file. |
 | Children the dashboard spawns get no secrets | Test spawns a stub program through `proc` with `DEEPSEEK_API_KEY=JEVCANARY...` in the parent environment; the stub prints its environment; assert no canary and only allow-listed names plus the constants of 8.6. The login probe's two status commands go through the same `proc` and are covered by the same test. |
 | Files are private | Test asserts 0700 on the directory and 0600 on `history.db`, `-wal`, `-shm`, `settings.json`, with a process umask of 022. |
 | The web view stores nothing | ESLint bans `localStorage`, `sessionStorage`, `indexedDB`, `document.cookie`, `caches`; the smoke test finds no WebKit data directory in its temp tree. |
@@ -1629,6 +1723,10 @@ quiet line at the bottom.
 │  [ Check now ]  uses one small request          (if enabled) │
 └──────────────────────────────────────────────────────────────┘
 ```
+- The top row is the one shared header (back, the provider's name, freshness, refresh,
+  settings: the same component on every view). The plan name is the first element of the
+  screen's own content, on the first meter's heading line; the wireframe draws it on the
+  header row only to save a line, and omits the settings icon for the same reason.
 - Chart: a **step** line (usage is piecewise constant between samples) with a soft area
   fill, vertical hairlines at window resets, dashed threshold lines labelled in text, gaps
   drawn as gaps (never interpolated across missing data). Rollup ranges draw the `lo..hi`
@@ -1932,6 +2030,10 @@ hidden element referenced by `aria-describedby`.
   outline keeps it legible on light and dark panels.
 - Linux has no tray tooltip (the StatusNotifier library Tauri uses exposes none), so the
   "tray tooltip" of 1a is the item's title: the tray item's id and title are "Flashboard".
+  **Assumed**: that this host shows the title as a name (in its own tooltip or list) and
+  not as a text label painted beside the icon, which is what the library's Linux `set_title`
+  maps to in some hosts. T11's manual list checks it; if a label appears in the panel, the
+  title is left unset and the id alone names the item.
 - Menu (Linux tray hosts deliver the menu, not click events, so everything is in the menu):
   ```
   Claude · 5-hour 50% · resets 14:00          (a row opens that provider's detail view)
@@ -2033,7 +2135,7 @@ hidden element referenced by `aria-describedby`.
    `--max-warnings 0`, so no rule can be switched off in a file): `no-explicit-any`,
    the `no-unsafe-*` family, `consistent-type-assertions` set to `never`,
    `no-non-null-assertion`, `ban-ts-comment` (all directives, no descriptions accepted),
-   `no-restricted-types` for `Function`, `Object` and `{}`, `switch-exhaustiveness-check`,
+   `no-restricted-types` for `Function`, `Object`, `object` and `{}`, `switch-exhaustiveness-check`,
    `explicit-module-boundary-types`, and `no-restricted-syntax` for the AST nodes
    `TSAnyKeyword`, `TSUnknownKeyword`, `TSNeverKeyword`, `TSTypeAssertion`, `TSAsExpression`
    (except `as const`), `TSNonNullExpression` and `CatchClause[param]`, plus the
@@ -2115,8 +2217,11 @@ defect has a mechanical check, that the dangerous classes are unrepresentable in
 and that nothing merges without the gates below and a lead review.
 
 ### 11.1 Static
-- Rust: `cargo fmt --check`; `cargo clippy --all-targets -- -D warnings` with workspace
-  lints: `clippy::all`, `pedantic` (selected allow-list written in the manifest),
+- Rust, always scoped to the three app crates (`P` = `-p jev-usage-core -p jev-usage-io
+  -p jev-dashboard`; at the root a bare command selects the engine, which is not formatted
+  with rustfmt today and has its own lint policy): `cargo fmt --check P`;
+  `cargo clippy P --all-targets --locked -- -D warnings` with the `[lints]` table each app
+  crate carries (5, invariant 3): `clippy::all`, `pedantic` (selected allow-list written in the manifest),
   `unwrap_used`, `expect_used`, `panic`, `indexing_slicing`, `arithmetic_side_effects`,
   `as_conversions`, `print_stdout`, `print_stderr`, `dbg_macro`, `todo`, `unimplemented`
   denied outside tests; `unsafe_code` **forbidden in all three crates**; no
@@ -2177,13 +2282,17 @@ and that nothing merges without the gates below and a lead review.
 ### 11.4 `scripts/ci.sh`
 One script, fail-fast, prints a table of stages. Stages: (1) engine: `cargo build
 --all-targets --locked` and `cargo test --locked` at the root (every existing engine test
-must stay green); (2) fmt, clippy; (3) dashboard Rust tests incl. property tests at CI case
-counts; (4) bindings drift; (5) `cargo deny check`, `cargo audit`; (6) `pnpm install
---frozen-lockfile`, lint, typecheck, `check-types.ts` (1a), unit and component tests (with
-axe), `pnpm audit --prod`; (7) UI build and bundle budgets; (8) Playwright screens, visual, accessibility,
+must stay green; when the engine ships its own gate script, stage 1 runs that instead);
+(2) `pnpm install --frozen-lockfile` and the UI build, then fmt and clippy over the three
+app crates (11.1). The UI build comes first because the shell crate embeds `dashboard/dist`
+at compile time (`generate_context!` fails when the directory is missing), so **every**
+cargo command that compiles `jev-dashboard` needs it; (3) dashboard Rust tests incl. property tests at CI case
+counts; (4) bindings drift; (5) `cargo deny check`, `cargo audit`; (6) UI lint, typecheck, `check-types.ts` (1a), unit and component tests (with
+axe), `pnpm audit --prod`; (7) bundle budgets, from the stage-2 build; (8) Playwright screens, visual, accessibility,
 keyboard, no-network; (9) release build (`--profile dist`) and manifest snapshot tests;
 (10) **real-binary smoke test** (no driver needed): start the `dist` binary on the current
-Wayland display but isolated from the user's session: under `dbus-run-session` (8.8), with
+Wayland display but isolated from the user's session: under `dbus-run-session` with the
+activation-free bus configuration (8.8), with
 `HOME`, every `XDG_*_HOME` and `XDG_RUNTIME_DIR` pointing into a temp tree (0700) that holds
 a synthetic `usage.jsonl`, `WAYLAND_DISPLAY` set to the **absolute path** of the real socket
 (it is otherwise looked up in `XDG_RUNTIME_DIR`), and a `PATH` that contains only stub
@@ -2204,7 +2313,10 @@ cached here). A stage whose tool is missing prints **SKIPPED (reason, how to ins
 loudly and the summary lists it; no stage is ever skipped silently. Stage 13 without
 `WebKitWebDriver` prints **NOT RUN (the user installs it: `sudo pacman -S webkitgtk-6.0`)**,
 because that one tool needs root. `scripts/ci.sh --release` treats SKIPPED **and NOT RUN**
-as failures: per 1a the WebDriver stage is required, and NOT RUN is never a pass. Stages 10
+as failures: per 1a the WebDriver stage is required, and NOT RUN is never a pass. The one
+exception is stage 12: fuzzing needs a nightly toolchain and is **advisory** (its SKIPPED
+is listed and does not fail `--release`), because the same seven entry points are always
+run by the stable byte-level property tests of stage 3 (11.2). Stages 10
 and 13 need a graphical session. Stage 13 runs the same isolated launch as stage 10 through
 `tauri-driver`; that the 2.54.1 driver from `webkitgtk-6.0` drives a `webkit2gtk-4.1` app of
 the same version, that automation works with the incognito web view, and that the driver
@@ -2299,15 +2411,17 @@ and v1 is not done while one is open (1a).
 | A mise wrapper starts an install or the four-hourly self-update when we run `codex`/`claude` (both are `lazy`, `auto_update = "4h"` here) | medium | 8.6: install-on-disk check before any start; `MISE_OFFLINE=1` and the three auto-install switches in the child environment; process-group kill as backstop; before/after listing check in T04 |
 | The scrubbed child environment breaks `codex app-server` or `claude` (login or account wrapper not found; `MISE_OFFLINE` refused) | medium | allow-list includes the home, bus and tool-home variables (8.6); one real, free Codex run and both status commands under the scrubbed environment in T04's manual list |
 | `notify-rust`/`zbus` API or version drift | low | pinned; one module each; the Notifier and tray-host checks are behind traits with fakes |
-| The engine library drags heavy dependencies into the app | certain, low impact | link-time removal; split `jev-engine` later |
+| The engine library drags heavy dependencies into the app (Path A) | certain, low impact | link-time removal; the refactor's facade crate removes it |
+| The engine refactor (one crate per context, a facade crate) lands before, during or after T00 | certain | 5 and 5.1: one port, two lines, contract tests; both orders are specified; Flashboard's lints and clippy file are its own |
 | Web view memory when open (WebKit processes, 100 MB+) | certain | web view destroyed when the window is closed; that its helper processes exit is measured by `measure-idle.sh` over the process tree |
 | DeepSeek adapter unverified until a key exists | certain | built against the documented shape with fixtures; marked unverified in Diagnostics until first success |
 | Shared `Cargo.lock` churn for the engine | low | `default-members`, `--locked`, engine tests in stage 1 |
 
 ## 15. Designing for the later chat window (not built)
-- The engine is reached only through `jev_router::embed`; the chat feature adds `Runtime`
-  and turn execution exports there and a `jev-chat-io` crate beside
-  `jev-usage-io`. The usage service is unaffected.
+- The usage side keeps reaching the engine only through `io::engine_bridge`. The chat
+  feature gets its **own** port of the same kind in a `jev-chat-io` crate beside
+  `jev-usage-io` (turn execution, events), over the same engine facade. The usage service
+  is unaffected.
 - Turns run by the chat engine yield `PlanUsage`/rate-limit events; a `ChatTurnSource`
   implementing `UsageSource` with `Trigger::OnSignal` keeps the latest event and signals the
   service through the same `signals` channel the file watcher uses, so Claude usage becomes
@@ -2352,7 +2466,13 @@ URL fragment; Svelte 5 runs under `freezePrototype`; Tauri's macros compile unde
 `#![forbid(unsafe_code)]` and pass `disallowed_types`; `svelte-check` and the ESLint Svelte
 plugin work without a `svelte.config.js`; WebKitGTK paints nothing before the entry module
 has set the theme; the WebDriver session can inject axe under the CSP; the scaffold's idle
-floor is inside the budgets; WebKitGTK exposes `role="meter"` with
+floor is inside the budgets; the `inotify` crate's descriptor and a `rustix` timerfd can be
+driven by tokio's `AsyncFd` under `forbid(unsafe_code)` (T03, T08); the tray host shows the
+item title as a name, not a panel label (T11); GTK and WebKitGTK start on a session bus
+that activates nothing (T12, stage 10); `DISABLE_AUTOUPDATER=1` is honoured by `claude`
+(T04); in Path B the engine's facade crate offers the six names of 5.1 (T00);
+`generate_context!` needs the built UI at compile time (T00: if it does not, stage 2's
+order is merely harmless); WebKitGTK exposes `role="meter"` with
 `aria-valuetext` to Orca. Each of these has a named check in
 the task that depends on it, and none blocks the design if it turns out false: the fallback
 is written where the assumption is used, or, for the two idle-budget assumptions and the
@@ -2369,7 +2489,7 @@ The interrupted `antigravity-cli` directory has been removed by the lead.
 
 Still for the user: none.
 
-For the lead (resolved during implementation, not user-owned): split of `jev-engine` from
-`jev-router`; moving the engine's own `probe_all` onto the narrow probe of 8.6 (it has the
+For the lead (resolved during implementation, not user-owned): which path of 5 applies when
+T00 starts (the engine refactor's schedule decides; both are specified); moving the engine's own `probe_all` onto the narrow probe of 8.6 (it has the
 same wrapper and token-file behaviour, outside this project's scope); whether to store a
 last reading for instant cold-start display; PKGBUILD.

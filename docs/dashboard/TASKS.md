@@ -14,7 +14,8 @@ everything, including this file.
    task. If you need a change in a file you do not own, or in a **frozen** file (list
    below), stop and send the lead a contract change request; do not edit it.
 2. **Frozen after T00** (lead approval to change): every `Cargo.toml`, `Cargo.lock`,
-   `deny.toml`, every `lib.rs`/`mod.rs`, `src/embed.rs`, `dashboard/package.json`,
+   `deny.toml`, every `lib.rs`/`mod.rs`, `src/embed.rs` (Path A, D5), `engine_bridge.rs` and
+   its dependency line (D5.1), `dashboard/package.json`,
    `pnpm-lock.yaml`, `.npmrc`, `tsconfig.json`, `vite.config.ts`, `vitest.config.ts`,
    `playwright.config.ts`, lint configs,
    `dashboard/src-tauri/{build.rs,tauri.conf.json,capabilities/}`, the core type files
@@ -41,7 +42,7 @@ everything, including this file.
    (`std::io::Error` included, D8.4).
    **TypeScript (D1a, D10 "Type discipline")**: no `any`, `unknown` or `never`, no type
    assertion (`as const` and `satisfies` are fine), no non-null `!`, no `@ts-` directive, no
-   `Function`/`Object`/`{}` type, no `catch` binding and no parameter on a rejection
+   `Function`/`Object`/`object`/`{}` type, no `catch` binding and no parameter on a rejection
    callback, no type predicate (`x is T`, `asserts`), no `declare`, no definite `!`, no
    `JSON.parse`, no value whose inferred type is `any`, no `.js` file, every component
    `lang="ts"` with typed props, exhaustiveness by `satisfies Record<…>` tables. This holds
@@ -51,10 +52,13 @@ everything, including this file.
    Report with: files changed, tests added (names), how each security rule of the task is
    proven, anything you could not verify, and every assumption of D16 you confirmed or
    found false.
-8. The engine (`src/`, root tests, `scripts/install.sh`) must stay green and untouched
-   except `src/embed.rs`, one `pub mod embed;` line and the word `pub` on
-   `availability::parse_codex_login` (T00, D5.1). No dashboard code calls
-   `availability::probe_all` or `log::path_from_env`.
+8. The engine (its sources, root tests, `scripts/install.sh`) must stay green and untouched.
+   The engine may be refactored into per-context crates with a facade crate before, during
+   or after this project (D5): in **Path A** (not yet refactored when T00 starts) T00 adds
+   `src/embed.rs`, one `pub mod embed;` line and the word `pub` on
+   `availability::parse_codex_login`, and nothing else; in **Path B** nobody here edits an
+   engine file. Either way only `usage-io/src/engine_bridge.rs` names the engine, and no
+   dashboard code reaches `probe_all` or `path_from_env`.
 9. Names (D1a): the product is **Flashboard**, the identifier `dev.jev.flashboard`, the
    binary and crates `jev-dashboard`/`jev-usage-*`. No file, string or test says
    "Jev Dashboard" or `dev.jev.dashboard`.
@@ -118,11 +122,14 @@ the engine facade, the generated TypeScript bindings, the UI skeleton, the fixtu
 first `scripts/ci.sh`, so that everything compiles and every later task only fills bodies.
 
 **Owns (creates).**
-- Root: the `[workspace]` (with `exclude = [".claude", "dashboard/fuzz"]`, D5),
-  `[workspace.lints]`, `[profile.dist]` tables in `Cargo.toml` (nothing else in that file
-  changes; no `panic = "abort"`, D5), `Cargo.lock`, `deny.toml`, `dashboard/clippy.toml`
-  (D11.1; not at the root), `src/embed.rs`, one line `pub mod embed;` in
-  `src/lib.rs`, the word `pub` on `parse_codex_login` in `src/availability.rs`,
+- Root `Cargo.toml`, per the path of D5 (say which in the report). Path A: the
+  `[workspace]` table (with `exclude = [".claude", "dashboard/fuzz"]`) and `[profile.dist]`.
+  Path B: only the three members, the two `exclude` entries and `[profile.dist]` are added
+  to the existing workspace. Never `[workspace.lints]` and never `default-members` beyond
+  D5; no `panic = "abort"`. Also `Cargo.lock`, `deny.toml`, `dashboard/clippy.toml`
+  (D11.1; not at the root), the same `[lints]` table in each of the three app manifests
+  (D5 invariant 3), and **in Path A only** `src/embed.rs`, one line `pub mod embed;` in
+  `src/lib.rs` and the word `pub` on `parse_codex_login` in `src/availability.rs`,
   `scripts/ci.sh` (stages 1–9 of D11.4 working, so every wave-1 to wave-3 task, the UI tasks'
   Playwright specs included, is gated from its first merge; stages 10–13 present and
   reporting SKIPPED with a reason until T12), `.gitignore` additions.
@@ -131,8 +138,9 @@ first `scripts/ci.sh`, so that everything compiles and every later task only fil
   `parse/{claude_log,claude_event,claude_auth,codex,deepseek}.rs`, `assess.rs alerts.rs summary.rs
   history.rs text.rs settings.rs view.rs` (types complete, functions returning a neutral
   value: `None`, `Err(Unavailable::Internal)`, an empty vec; no `todo!`, no lint allows).
-- `dashboard/crates/usage-io/**`: manifests, `lib.rs`, **complete** `engine_bridge.rs`,
-  `envfile.rs`, `clock.rs`, `diag.rs`; stubs for `fsutil tail watch proc probe http secrets
+- `dashboard/crates/usage-io/**`: manifests (with the one engine dependency line, renamed
+  to `jev-engine`, D5.1), `lib.rs`, **complete** `engine_bridge.rs` (the engine port, with
+  its contract tests in `tests/engine_bridge.rs`), `envfile.rs`, `clock.rs`, `diag.rs`; stubs for `fsutil tail watch proc probe http secrets
   store settings_file timer registry service` and `sources/{claude_log,claude_live,codex,deepseek,placeholder}.rs`
   (`placeholder.rs` complete).
 - `dashboard/src-tauri/**`: `Cargo.toml` (a library target plus the binary, so the shell's
@@ -146,7 +154,8 @@ first `scripts/ci.sh`, so that everything compiles and every later task only fil
 - `dashboard/` UI: `package.json` (exact versions, scripts `dev dev:real build check lint
   test test:screens tauri`; `dev` passes the identifier `dev.jev.flashboard.dev`, D8.8, and
   runs against stub CLIs and a temp home, rule 11; two stub programs under
-  `dashboard/e2e/smoke/stubs/`, later T12's),
+  `dashboard/e2e/smoke/stubs/` and the activation-free bus configuration
+  `dashboard/e2e/smoke/session-bus.conf` (D8.8), all later T12's),
   `pnpm-lock.yaml`, `.npmrc`, `tsconfig.json`, `vite.config.ts`
   (`build.assetsInlineLimit: 0`), `vitest.config.ts`, `playwright.config.ts` (Chromium
   project; the static server sends the CSP of `tauri.conf.json` as a header),
@@ -173,7 +182,8 @@ first `scripts/ci.sh`, so that everything compiles and every later task only fil
 **Interfaces to expose (exactly as written in the design).**
 - D4.1–D4.4 types and ports, D7.4 IPC types (`core::ipc`, including the generic
   `Outcome<T>`), D8.5 `Secret<T>`, D7.8
-  `LocalStamp`/`LocalTime` (in `core::text`), D5.1 `jev_router::embed`.
+  `LocalStamp`/`LocalTime` (in `core::text`), D5.1 the engine port `io::engine_bridge`
+  (and, in Path A, the facade module behind it).
 - Additional types the stubs need, defined here and frozen:
   ```rust
   // core::assess
@@ -222,14 +232,17 @@ first `scripts/ci.sh`, so that everything compiles and every later task only fil
   pub struct FactsCell(/* RwLock<LoginFacts> */);                      // shared read handle
   impl FactsCell { pub fn new(f: LoginFacts) -> Arc<Self>; pub fn get(&self) -> LoginFacts; pub fn set(&self, f: LoginFacts); }
   // io::envfile (complete here): the only reader of ~/.jev-router.env
-  /// Reads the file into a zeroizing buffer, returns `embed::parse_env(text, name)`, zeroizes the buffer.
+  /// Reads the file into a zeroizing buffer, returns `engine_bridge::parse_env(text, name)`, zeroizes the buffer.
   pub fn read_value(path: &Path, name: &str) -> Option<Zeroizing<String>>;
-  // io::engine_bridge (complete here): paths only
+  // io::engine_bridge (complete here): the engine port of D5.1, the ONLY file that names the engine
+  pub fn state_dir() -> Option<PathBuf>;
+  pub fn parse_env(text: &str, name: &str) -> Option<String>;
+  pub fn codex_logged_in(exit_ok: bool, text: &str) -> Option<bool>;
   /// Pure and tested: process variable, else the env-file key, else `<state_dir>/usage.jsonl` (D5.1).
   pub fn usage_log_path_from(env: Option<String>, env_file: Option<&Path>, state_dir: Option<PathBuf>) -> Option<PathBuf>;
   pub fn usage_log_path() -> Option<PathBuf>;                           // the above over the real environment
   pub fn dashboard_dir() -> Option<PathBuf>;                            // <state_dir>/dashboard (debug builds: dashboard-dev, D8.8)
-  pub fn env_file() -> Option<PathBuf>;                                 // embed::env_file_path(...)
+  pub fn env_file() -> Option<PathBuf>;                                 // the facade's env_file_path over the real environment
   /// The engine's login command for a dashboard provider (D4.1); None where the engine has none.
   pub fn login_command(p: ProviderKey) -> Option<&'static str>;
   // io::clock
@@ -275,9 +288,11 @@ first `scripts/ci.sh`, so that everything compiles and every later task only fil
 **Acceptance.**
 - `cargo build --all-targets --locked` and `cargo test --locked` at the root: unchanged
   behaviour, all existing engine tests pass; `scripts/install.sh` untouched and working.
-- `cargo test -p jev-usage-core -p jev-usage-io --locked` passes; `cargo build -p
-  jev-dashboard --locked` passes; `pnpm --dir dashboard install --frozen-lockfile && pnpm
-  --dir dashboard build && pnpm --dir dashboard check && pnpm --dir dashboard lint` pass;
+- `pnpm --dir dashboard install --frozen-lockfile && pnpm --dir dashboard build && pnpm
+  --dir dashboard check && pnpm --dir dashboard lint` pass; then (the shell embeds the built
+  UI, D11.4 stage 2) `cargo test -p jev-usage-core -p jev-usage-io --locked` and `cargo
+  build -p jev-dashboard --locked` pass; `cargo fmt --check` and clippy pass **scoped to
+  the three app crates** (D11.1);
   `pnpm --dir dashboard tauri build --no-bundle -- --profile dist` produces a binary that
   opens an empty window.
 - Unit and property tests for the frozen types: `Percent` (saturation, NaN/negative
@@ -295,6 +310,14 @@ first `scripts/ci.sh`, so that everything compiles and every later task only fil
   `log::path_from_env("JEV_USAGE_LOG", "usage.jsonl")` rule for the same inputs (table test
   over a temp env file; the engine function itself is not called). `envfile::read_value`:
   `export`, quotes, comments, missing file, missing key.
+- **Engine port** (D5.1): the contract tests of `tests/engine_bridge.rs` pass (env-file
+  cases, the Codex login truth table, the two login command strings, state directory and
+  env-file path under a temp environment); `jev_engine`/`jev_router` occur in no dashboard
+  `.rs` file except `engine_bridge.rs` and in no manifest except `usage-io`'s (a grep test
+  here; T12's architecture test takes it over); `usage-core` and the shell do not depend
+  on the engine (`cargo tree -p jev-usage-core -i jev-engine` finds nothing). Report the
+  path taken and, in Path B, any of the six facade names that was missing (a request to
+  the engine's owner, not an edit).
 - **Type discipline** (D1a): `#![forbid(unsafe_code)]` is the first line of all three crate
   roots and the Tauri scaffold compiles under it (report if a Tauri macro does not);
   `check-types.ts` passes over the stubs, the configs and the generated bindings, and a
@@ -305,7 +328,8 @@ first `scripts/ci.sh`, so that everything compiles and every later task only fil
   `svelte-ignore`, a `<script>` without `lang="ts"`, a tracked `.js` file)
   and sees each one reported, while `as const`, `satisfies` and the word "never" in a string
   pass; ESLint reports the same constructs.
-- Lints (D11.1): `dashboard/clippy.toml` is picked up by the three app crates and not by
+- Lints (D11.1): the three app manifests carry an identical `[lints]` table (compared by
+  a test) and none says `lints.workspace`; `dashboard/clippy.toml` is picked up by the three app crates and not by
   the engine (a `serde_json::Value` in a stub fails clippy; the engine's own use does not);
   the fixed test header and the single float cast are the only `allow`s in the tree.
 - `scripts/ci.sh` runs and prints the stage table.
@@ -319,7 +343,8 @@ first `scripts/ci.sh`, so that everything compiles and every later task only fil
   needs the placeholder icons or not; that Tauri's macros pass `forbid(unsafe_code)` and
   `disallowed_types`; that `svelte-check` and ESLint work with no `svelte.config.js`; the
   final npm dev-dependency list against D8.9; whether two major versions of `zbus` resolve.
-- Idle floor: the empty scaffold, started hidden under `dbus-run-session` for the D11.3
+- Idle floor: the empty scaffold, started hidden under `dbus-run-session` (with the bus
+  configuration of D8.8; report whether GTK and WebKitGTK start on it) for the D11.3
   window, has its CPU time, wakeups and RSS reported (by hand here; T12 scripts it).
 
 **Security rules.** D8.4 (no string in errors, `diag` typed), D8.5, D8.8 (capabilities, CSP,
@@ -329,10 +354,12 @@ blocking and release-age rule), fixtures contain no real data.
 **Depends on.** nothing.
 
 **Review checklist (lead).**
-- [ ] Root `Cargo.toml` diff is only the three tables; engine build and tests identical.
-- [ ] `default-members = ["."]`; `exclude` has `.claude` and `dashboard/fuzz`; `resolver = "2"`;
-      `profile.dist` separate from `release`.
-- [ ] `src/embed.rs` is re-exports only and matches D5.1; the only other engine diff is one `pub`.
+- [ ] Root `Cargo.toml` diff is only what D5 allows for the path taken; no
+      `[workspace.lints]`; engine build and tests identical.
+- [ ] The app crates are members and not default members; `exclude` has `.claude` and
+      `dashboard/fuzz`; `profile.dist` separate from `release`.
+- [ ] The engine is named in two lines only (D5.1); Path A: `src/embed.rs` is re-exports
+      only and the only other engine diff is one `pub`; Path B: no engine diff at all.
 - [ ] Every IPC type matches D7.4 field for field; bindings generated, not hand-edited, and
       free of `any`/`unknown`/`never`; `tsconfig.json` and the ESLint rule set match D10.
 - [ ] No type in core can hold a free string except `Label`.
@@ -445,14 +472,14 @@ when the bytes are not that JSON, the text rule of D8.6 on bytes; anything else 
 // assess
 pub fn derive(state: &SourceState, now: UnixMillis, policy: &FreshnessPolicy) -> Usage;
 pub fn phase(w: &WindowReading, now: UnixMillis) -> Phase;
-pub fn severity(used: Percent, t: &Thresholds) -> Severity;
+pub fn severity(m: &Meter, now: UnixMillis, t: &Thresholds) -> Severity;   // D4.5: Unknown when elapsed; balance by `usable`
 // alerts (D7.6)
 pub fn step(memory: &AlertMemory, provider: ProviderKey, reading: &Reading, now: UnixMillis,
             settings: &Settings) -> (AlertMemory, Vec<Alert>);
 // summary
 pub struct Headline { pub provider: ProviderKey, pub meter: MeterId, pub used: Percent,
                       pub severity: Severity, pub resets_at: Option<UnixSeconds> }
-pub fn headline(providers: &[(ProviderKey, Usage)], now: UnixMillis, settings: &Settings) -> Option<Headline>;
+pub fn headline(providers: &[(ProviderKey, &Usage)], now: UnixMillis, settings: &Settings) -> Option<Headline>;   // the domain value; view::snapshot maps it to ipc::Headline
 // history
 pub fn should_store(last: Option<&StoredSample>, candidate: &StoredSample) -> bool;   // D7.5 write rule (a candidate not newer than `last` is dropped)
 pub fn downsample(points: Vec<SamplePoint>, max: u16) -> Vec<SamplePoint>;           // keeps first, last, extremes per bucket
@@ -504,7 +531,8 @@ pub fn same_content(a: &Snapshot, b: &Snapshot) -> bool;                        
 - `reset_marks`: a fixed `resets_at` gives one mark per window; a `resets_at` that slides by
   seconds on every sample still gives one mark per window length; at most 64. `gap_for`
   values for each range's bucket.
-- `severity` for a balance: `Critical` when not usable, else `Ok`.
+- `severity`: a window by its `used` against the thresholds, `Unknown` when elapsed; a
+  balance `Critical` when not usable, else `Ok`.
 - `should_store`/`downsample`: bounds (`len ≤ max`), first and last kept, extremes kept,
   monotone timestamps; `range_bounds` for each range.
 - `Settings`: defaults (80/95; notifications master on and both levels on; system theme;
@@ -663,7 +691,7 @@ impl ProcRunner {
     pub async fn run(&self, spec: &ProcSpec, on_line: &mut (dyn FnMut(&[u8]) -> Flow + Send)) -> Result<Exit, Unavailable>;
 }
 pub const ENV_ALLOW: &[&str];            // D8.6 list of inherited names
-pub const ENV_CONST: &[(&str, &str)];    // TERM=dumb and the four MISE_* switches of D8.6
+pub const ENV_CONST: &[(&str, &str)];    // TERM=dumb, DISABLE_AUTOUPDATER=1 and the four MISE_* switches of D8.6
 // probe — body of `CliProbe` (types are T00's): D8.6 steps 1–4, output into a zeroizing buffer
 // sources::codex
 pub struct CodexAppServerSource;
@@ -707,7 +735,9 @@ is not part of this task.
   file named `mise` → `Installed` only when `installs/<tool>/<version>/<tool>` or
   `…/<version>/bin/<tool>` is an executable regular file, and `NotInstalled` with no
   version directory, an empty one, one that holds only other files (an interrupted
-  download) or a non-executable file of that name; the mise data directory
+  download) or a non-executable file of that name; a stub wrapper that behaves like the
+  account wrapper when the selected version is missing (it calls a stub `mise install`)
+  shows the D8.6 limit: the stub `mise` sees `MISE_OFFLINE=1` and nothing is written; the mise data directory
   follows `MISE_DATA_DIR`, then `XDG_DATA_HOME`, then the home. With `NotInstalled` the
   stub's marker file is never written by the probe or by either source.
 - **Login probe** (stubs): `codex` stub that prints `Logged in using ChatGPT` on **stderr**
@@ -777,7 +807,7 @@ impl HttpClient {
 // secrets
 pub struct KeySources { pub env: Option<Secret<String>>, pub env_file: Option<PathBuf> }
 impl KeySources { pub fn system() -> Self; }                           // process env + engine_bridge::env_file()
-/// Environment first, else the env file through `io::envfile::read_value` (T00; zeroizing, embed::parse_env).
+/// Environment first, else the env file through `io::envfile::read_value` (T00; zeroizing, the engine's parse rule).
 /// By value: `Secret` is not `Clone`, so the environment's key is moved out, never copied.
 pub fn deepseek_key(sources: KeySources) -> Option<Secret<String>>;
 // sources::deepseek
@@ -948,8 +978,16 @@ export interface IpcClient {
 // lib/ipc/tauri.ts: `invoke<Outcome<T>>` with generated type arguments; the rejection handler
 // takes NO parameter and returns the constant invalid_argument outcome (D7.3).
 export function createTauriClient(): IpcClient;
-export function createMockClient(script?: MockScript): MockIpcClient;   // lib/ipc/mock.ts (push snapshots, fail commands)
-export const fixtures: Record<FixtureName, Snapshot>;            // lib/ipc/fixtures.ts: one per state of D9.5 + mixed
+// lib/ipc/mock.ts and fixtures.ts: every name is a declared type (D1a)
+export type FixtureName = "pending" | "known" | "stale_quiet" | "stale_failing" | "elapsed" | "unavailable"
+                        | "not_configured" | "first_run" | "mixed";    // one per state of D9.5 + mixed
+export type MockScript = { snapshot: Snapshot; settings: Settings; history: HistorySeries; diagnostics: Diagnostics;
+                           fail: Partial<Record<"refresh" | "getHistory" | "updateSettings", CommandError>> };
+export interface MockIpcClient extends IpcClient { push(s: Snapshot): void; navigate(r: Route): void;
+                                                   readonly calls: readonly MockCall[] }
+export type MockCall = { command: "getSnapshot" | "refresh" | "getHistory" | "getSettings" | "updateSettings" | "getDiagnostics" };
+export function createMockClient(script: MockScript): MockIpcClient;
+export const fixtures: Record<FixtureName, Snapshot>;
 
 // lib/stores
 export const usage:    { readonly snapshot: Snapshot | null; readonly refreshing: boolean; refresh(t?: RefreshTarget): Promise<Outcome<null>> };
@@ -1081,8 +1119,9 @@ injected `LoginProbe`, called with the providers that are not hidden and have a
 others keep what they had, D7.1); freshness from each descriptor's
 `fresh_for`; only `SourceError::Unavailable` is a failure, and a `Manual` source's failure
 goes to `RefreshView.live_check_error` when the provider holds a reading (D4.3); merge of several sources per provider by
-greatest `observed_at` (an older reading is dropped; a future `observed_at` is clamped to
-now, D4.3); `assess::derive` per provider; `store.record` and `alerts::step` +
+greatest `observed_at` (a strictly older reading is dropped, an equal one replaces; when a
+probe changes a provider's facts its `OnSignal` sources are fetched once more, D4.4; a
+future `observed_at` is clamped to now, D4.3); `assess::derive` per provider; `store.record` and `alerts::step` +
 `notifier.notify(alert, settings.hour_cycle)` + `save_alerts` on each new reading, every store and settings call through
 `spawn_blocking`; snapshot emitted only when `view::same_content` is false; the first-run
 backfill (`ServiceDeps.backfill`) once, on a blocking thread, with `record` for that
@@ -1143,6 +1182,9 @@ fetches and ends the task within 2 s; dropping all handles does the same.
   `Unavailable(Internal)`, others continue). This holds in the shipped binary too, because
   `dist` keeps unwinding (D5); a manifest test asserts that no profile sets `panic`.
 - A probe answer for Codex only leaves Claude's cached facts untouched.
+- **Late plan**: the log source answers before the probe; when the probe then reports plan
+  `max_5x`, the log source is fetched once more and the next snapshot carries the plan,
+  with no new log row and no further fetch after that.
 
 **Security rules.** D8.4 (`diag` only; no reading content logged), D6.2 (spending source
 manual only), D7.4 (snapshot built only by `view::snapshot`).
@@ -1263,6 +1305,8 @@ their tests, `dashboard/e2e/screens/{detail,settings}.spec.ts` and baselines.
 ```ts
 // lib/chart (pure, unit-tested)
 export type Scale = { x(t: number): number; y(v: number): number };
+export type Pad = { top: number; right: number; bottom: number; left: number };
+export type Tick = { at: number; label: string };
 export function makeScale(series: HistorySeries, width: number, height: number, pad: Pad): Scale;
 export function stepPath(points: HistoryPoint[], scale: Scale, gapSeconds: number): string;   // breaks at gaps; gapSeconds is always series.gap_s
 export function bandPath(points: HistoryPoint[], scale: Scale, gapSeconds: number): string;   // lo..hi
@@ -1425,7 +1469,7 @@ field-less `AutostartError`, which the command maps to the `io` outcome.
   D7.3).
 - Manual check list (recorded in the report), on this machine, in the real session with any
   installed Flashboard quit first (it holds the same single-instance name): tray icon,
-  title and menu in the quickshell host, a menu row opens that provider, the menu is not
+  title (shown as a name, not as a label painted beside the icon, D9.11) and menu in the quickshell host, a menu row opens that provider, the menu is not
   rebuilt while only refresh bookkeeping changes; a warn and a critical notification
   appear once each with the right urgency; a second launch opens the window; the size is
   remembered; light and dark follow the OS in the real WebKitGTK view and the Theme setting
@@ -1475,9 +1519,11 @@ programs), `dashboard/e2e/webdriver/**`, `dashboard/e2e/screens/security.spec.ts
 **Delivers.**
 - Every proof in the table of D8.10 that is not already owned by T01–T11, in particular:
   the **architecture test** (allowed locations of `expose_secret` and `reqwest` (`http.rs`),
-  process APIs (`proc.rs`), `zbus` (`bus.rs`), `notify_rust` (`notifier.rs`), `jev_router::`
-  paths; forbidden file names, CLI home paths and `probe_all`/`path_from_env`; forbidden
-  macros; the type-file rule; the login commands in `copy.ts` equal `embed::login_command`),
+  process APIs (`proc.rs`), `zbus` (`bus.rs`), `notify_rust` (`notifier.rs`), the engine's
+  crate identifiers (`engine_bridge.rs` and one manifest line, D5.1); forbidden file names,
+  CLI home paths and `probe_all`/`path_from_env`; forbidden macros; the type-file rule; the
+  three `[lints]` tables equal; the login commands in `copy.ts` equal
+  `engine_bridge::login_command`),
   the **IPC audit** (key allow-list, forbidden key pattern, string-leaf vocabulary, over
   proptest-generated values of every IPC type and over the generated `.ts` files), the
   **end-to-end canary** (service + real adapters over stubs + real store in a temp state
@@ -1486,8 +1532,9 @@ programs), `dashboard/e2e/webdriver/**`, `dashboard/e2e/screens/security.spec.ts
 - Fuzz targets for the seven entry points of D11.2 with seed corpora from the fixtures, and
   the stable byte-level proptests that mirror them.
 - **Real-binary smoke test** (stage 10 of D11.4, no driver): start the `dist` binary on the
-  current Wayland display under `dbus-run-session` (D8.8: a private bus, so a resident
-  Flashboard cannot swallow the launch), with `HOME`, every `XDG_*_HOME` and
+  current Wayland display under `dbus-run-session --config-file` with the activation-free
+  `e2e/smoke/session-bus.conf` (D8.8: a private bus, so a resident Flashboard cannot
+  swallow the launch, and no notification daemon or portal can be started by it), with `HOME`, every `XDG_*_HOME` and
   `XDG_RUNTIME_DIR` inside a temp tree (0700) containing a synthetic, canary-laced
   `usage.jsonl`, `WAYLAND_DISPLAY` set to the absolute path of the real socket, and a `PATH`
   that contains only stub `codex` and `claude` programs (no real CLI is ever run; the
@@ -1516,7 +1563,9 @@ programs), `dashboard/e2e/webdriver/**`, `dashboard/e2e/screens/security.spec.ts
 - `ci.sh`: all thirteen stages of D11.4, `--bootstrap` (no root: cargo tools, pinned
   nightly, `tauri-driver`, Playwright Chromium), `--release`, a final table with
   PASS/FAIL/SKIPPED/NOT RUN per stage and total time; non-zero exit on any FAIL (and on
-  SKIPPED or NOT RUN with `--release`).
+  SKIPPED or NOT RUN with `--release`, except the advisory fuzz stage 12, D11.4). Stage 2
+  builds the UI before any cargo command compiles the shell, and fmt and clippy are scoped
+  to the three app crates (D11.1, D11.4).
 - Accessibility gate: stage 6 and stage 8 fail on any axe violation, on the contrast test,
   and on the keyboard-path and live-region tests of D9.10; a table in the report maps every
   bullet of D9.10 to the test (or manual step) that checks it.
