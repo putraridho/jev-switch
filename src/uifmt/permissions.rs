@@ -6,40 +6,117 @@ use std::path::Path;
 use super::changes::relativize_paths;
 use super::style::Style;
 use super::text::one_line;
-use super::width::{clamp_width, display_width, truncate_to_width};
+use super::width::{char_width, clamp_width, display_width};
 
-/// Columns the summary of an approval question must keep before the choices move to a
-/// line of their own.
-const MIN_SUMMARY_COLUMNS: usize = 12;
+/// The most rows of input the question prints itself; more goes through the pager, so that
+/// the whole of it is on screen before a key approves it.
+const MAX_INLINE_ROWS: usize = 20;
 
-/// The question for one tool call: `Allow Bash: cargo test --quiet? [y]es  [n]o  [a]lways
-/// in this project`. `summary` is cut to the width (never wrapped, never hidden by the
-/// choices) and shown with paths inside the project relative; when the width leaves it
-/// less than a few columns the choices go on the next line. `always` is whether a rule
-/// could be saved, which decides if that choice is offered.
-pub fn permission_prompt(tool: &str, summary: &str, always: bool, project_dir: &Path, style: Style, width: usize) -> String {
-    let width = clamp_width(width).saturating_sub(1);
-    let choices_plain = if always { "[y]es  [n]o  [a]lways in this project" } else { "[y]es  [n]o" };
-    // The key letter in each choice is the one to press: `[y]es` is cyan, `es` dim.
-    let choices = choices_plain
-        .split("  ")
-        .map(|choice| match choice.split_once(']') {
+/// Rows of a long input kept in the question next to the pager's.
+const PEEK_ROWS: usize = 6;
+
+/// What to ask. `lines` is everything the answer approves, already safe to print (see
+/// `permissions::review`); it is wrapped, never cut.
+pub struct Question<'a> {
+    pub tool: &'a str,
+    /// Facts about the call that are not its input, printed apart from the input rows.
+    pub notes: &'a [String],
+    pub lines: &'a [String],
+    /// Whether the `a` choice is offered.
+    pub always: bool,
+    /// A dim line under the choices: why `a` is missing, or what it would also allow.
+    pub note: Option<&'a str>,
+    pub project_dir: &'a Path,
+    pub style: Style,
+    pub width: usize,
+}
+
+/// A laid-out question.
+pub struct Prompt {
+    /// What to print once everything the answer approves has been shown. When the input is
+    /// long this keeps its first rows and says that the pager showed the rest.
+    pub text: String,
+    /// For a long input, all of it (the question's first line and every row): the caller
+    /// pages it, or, with no pager to run, prints it and then [`Prompt::tail`] instead of
+    /// [`Prompt::text`].
+    pub full: Option<String>,
+    /// The choices and the note.
+    pub tail: String,
+}
+
+/// `text` as rows of at most `width` columns, cut by display width and never dropped. Every
+/// character is kept, so a row break is the only change.
+fn wrap_hard(text: &str, width: usize) -> Vec<String> {
+    let (mut rows, mut row, mut used) = (Vec::new(), String::new(), 0);
+    for c in text.chars() {
+        let w = char_width(c);
+        if used + w > width && !row.is_empty() {
+            rows.push(std::mem::take(&mut row));
+            used = 0;
+        }
+        row.push(c);
+        used += w;
+    }
+    rows.push(row);
+    rows
+}
+
+/// The choices on one line: each key letter cyan (`[y]es`), the rest dim.
+fn choices(always: bool, style: Style) -> String {
+    let items: &[&str] = if always { &["[y]es", "[n]o", "[a]lways in this project"] } else { &["[y]es", "[n]o"] };
+    items
+        .iter()
+        .map(|item| match item.split_once(']') {
             Some((key, rest)) => format!("{}{}", style.cyan(&format!("{key}]")), style.dim(rest)),
-            None => choice.to_string(),
+            None => (*item).to_string(),
         })
         .collect::<Vec<_>>()
-        .join("  ");
-    let head = format!("Allow {}: ", one_line(tool));
-    let summary = relativize_paths(&one_line(summary), project_dir);
-    // The head, the `?`, two spaces and the choices; what is left is the summary's.
-    let fixed = display_width(&head) + 1 + 2 + display_width(choices_plain);
-    if width.saturating_sub(fixed) >= MIN_SUMMARY_COLUMNS {
-        let shown = truncate_to_width(&summary, width - fixed);
-        format!("{}{shown}{}  {choices}", style.bold(&head), style.bold("?"))
-    } else {
-        let shown = truncate_to_width(&summary, width.saturating_sub(display_width(&head) + 1));
-        format!("{}{shown}{}\n{choices}", style.bold(&head), style.bold("?"))
+        .join("  ")
+}
+
+/// The question for one tool call. A short single-line input and the choices share a line
+/// (`Allow Bash: cargo test --quiet?  [y]es  [n]o  [a]lways in this project`); anything else
+/// is the first line, every row of the input wrapped to the width (a gutter marks where a
+/// line starts and where one only continues), then the choices. Nothing is cut: an input
+/// of more than a screenful comes as [`Prompt::full`] too.
+pub fn permission_prompt(q: &Question) -> Prompt {
+    let (style, width) = (q.style, clamp_width(q.width).saturating_sub(1));
+    let tool = one_line(q.tool);
+    let lines: Vec<String> = q.lines.iter().map(|l| relativize_paths(l, q.project_dir)).collect();
+    let choices_plain = if q.always { "[y]es  [n]o  [a]lways in this project" } else { "[y]es  [n]o" };
+    let note_rows: Vec<String> = q.note.map(|n| wrap_hard(&one_line(n), width).into_iter().map(|r| style.dim(&r)).collect()).unwrap_or_default();
+    let join = |parts: &[&[String]]| parts.iter().flat_map(|p| p.iter()).map(String::as_str).collect::<Vec<_>>().join("\n");
+
+    let head = format!("Allow {tool}: ");
+    if let ([line], true) = (lines.as_slice(), q.notes.is_empty()) {
+        if display_width(&head) + display_width(line) + 1 + 2 + display_width(choices_plain) <= width {
+            let first = format!("{}{line}{}  {}", style.bold(&head), style.bold("?"), choices(q.always, style));
+            return Prompt { text: join(&[&[first], &note_rows]), full: None, tail: String::new() };
+        }
     }
+
+    let text_width = width.saturating_sub(2).max(1);
+    let rows: Vec<String> = lines
+        .iter()
+        .flat_map(|l| {
+            wrap_hard(l, text_width).into_iter().enumerate().map(|(i, r)| format!("{}{r}", style.dim(if i == 0 { "\u{2502} " } else { "\u{2506} " })))
+        })
+        .collect();
+    let mut top = vec![style.bold(&format!("Allow {tool}:"))];
+    if !q.notes.is_empty() {
+        top.extend(wrap_hard(&format!("options: {}", q.notes.join(" ")), width).into_iter().map(|r| style.yellow(&r)));
+    }
+    let tail = join(&[&[choices(q.always, style)], &note_rows]);
+    if rows.len() <= MAX_INLINE_ROWS {
+        return Prompt { text: join(&[&top, &rows, &[tail.clone()]]), full: None, tail };
+    }
+    let more = style.dim(&format!(
+        "\u{2026} {} more rows ({} lines in all): the pager above showed all of it",
+        rows.len() - PEEK_ROWS,
+        lines.len()
+    ));
+    let text = join(&[&top, &rows[..PEEK_ROWS], &[more], &[tail.clone()]]);
+    Prompt { text, full: Some(join(&[&top, &rows])), tail }
 }
 
 /// What the answer to an approval question looks like once given.
@@ -97,45 +174,114 @@ mod tests {
 
     // ---------------------------------------------------------- permissions
 
-    #[test]
-    fn the_approval_question_has_the_tool_the_command_and_the_three_choices() {
-        let p = Path::new("/proj");
-        assert_eq!(
-            permission_prompt("Bash", "cargo test --quiet", true, p, OFF, 100),
-            "Allow Bash: cargo test --quiet?  [y]es  [n]o  [a]lways in this project"
-        );
-        assert_eq!(permission_prompt("Bash", "x", false, p, OFF, 100), "Allow Bash: x?  [y]es  [n]o");
-        // Paths in the project are shown relative, like tool lines.
-        assert!(permission_prompt("Write", "/proj/src/a.rs (12 bytes)", true, p, OFF, 100).contains("Allow Write: src/a.rs (12 bytes)?"));
+    const PROJECT: &str = "/proj";
+
+    /// Lay out a question about `lines` with the defaults the tests share.
+    fn ask(lines: &[&str], always: bool, style: Style, width: usize) -> Prompt {
+        let lines: Vec<String> = lines.iter().map(|l| (*l).to_string()).collect();
+        permission_prompt(&Question { tool: "Bash", notes: &[], lines: &lines, always, note: None, project_dir: Path::new(PROJECT), style, width })
+    }
+
+    fn many(n: usize) -> Vec<String> {
+        (1..=n).map(|i| format!("echo line-{i}")).collect()
+    }
+
+    fn rows_of(p: &Prompt) -> Vec<&str> {
+        p.text.lines().collect()
     }
 
     #[test]
-    fn the_approval_question_fits_the_width_without_hiding_the_choices() {
-        let p = Path::new("/proj");
-        let long = "x".repeat(300);
+    fn a_short_command_and_the_choices_share_one_line() {
+        assert_eq!(ask(&["cargo test --quiet"], true, OFF, 100).text, "Allow Bash: cargo test --quiet?  [y]es  [n]o  [a]lways in this project");
+        assert_eq!(ask(&["x"], false, OFF, 100).text, "Allow Bash: x?  [y]es  [n]o");
+        // Paths in the project are shown relative, like tool lines.
+        let p = permission_prompt(&Question {
+            tool: "Write",
+            notes: &[],
+            lines: &["/proj/src/a.rs (12 bytes)".to_string()],
+            always: true,
+            note: None,
+            project_dir: Path::new(PROJECT),
+            style: OFF,
+            width: 100,
+        });
+        assert!(p.text.contains("Allow Write: src/a.rs (12 bytes)?"), "{}", p.text);
+    }
+
+    #[test]
+    fn a_command_that_does_not_fit_is_wrapped_never_cut() {
+        let long = format!("echo {}", "x".repeat(300));
         // The choices alone are 38 columns, so the question needs at least 40.
         for width in [40usize, 50, 60, 80, 120] {
-            let q = permission_prompt("Bash", &long, true, p, OFF, width);
-            for line in q.lines() {
+            let p = ask(&[&long], true, OFF, width);
+            for line in p.text.lines() {
                 assert!(display_width(line) < width.max(MIN_WIDTH), "width {width}: {line:?}");
             }
-            assert!(q.contains("[y]es") && q.contains("[n]o") && q.contains("[a]lways"), "{q}");
-            assert!(q.contains('…'));
+            assert!(p.text.contains("[y]es") && p.text.contains("[n]o") && p.text.contains("[a]lways"), "{}", p.text);
+            assert!(!p.text.contains('\u{2026}'), "nothing is cut: {}", p.text);
+            let kept: String = p.text.lines().filter_map(|l| l.strip_prefix("\u{2502} ").or_else(|| l.strip_prefix("\u{2506} "))).collect();
+            assert_eq!(kept, long, "every character is on screen at width {width}");
+            assert!(p.full.is_none(), "{width}");
         }
-        // Wide enough: one line. Narrow: the choices move to a second line.
-        assert_eq!(permission_prompt("Bash", &long, true, p, OFF, 100).lines().count(), 1);
-        assert_eq!(permission_prompt("Bash", &long, true, p, OFF, 50).lines().count(), 2);
+        assert_eq!(ask(&[&long], true, OFF, 100).text.lines().count(), 1 + 4 + 1);
     }
 
     #[test]
-    fn the_approval_question_is_one_clean_line_of_text_and_styled_only_when_asked() {
-        let p = Path::new("/proj");
-        let q = permission_prompt("Bash", "echo a\n\x1b[2Jb\x07", true, p, OFF, 100);
-        assert_eq!(q, "Allow Bash: echo a b?  [y]es  [n]o  [a]lways in this project");
-        no_esc(&q);
-        let q = permission_prompt("Bash", "ls", true, p, ON, 100);
-        assert!(q.contains("\x1b[1mAllow Bash: \x1b[0m") && q.contains("\x1b[36m[y]\x1b[0m"), "{q:?}");
-        assert_eq!(strip_ansi(&q), "Allow Bash: ls?  [y]es  [n]o  [a]lways in this project");
+    fn every_line_of_a_multi_line_command_is_shown_with_a_gutter_and_a_continuation_mark() {
+        let p = ask(&["echo hi", "rm -rf ~", &"y".repeat(60)], true, OFF, 40);
+        let rows = rows_of(&p);
+        assert_eq!(rows[0], "Allow Bash:");
+        assert_eq!(rows[1], "\u{2502} echo hi");
+        assert_eq!(rows[2], "\u{2502} rm -rf ~");
+        assert!(rows[3].starts_with("\u{2502} y") && rows[4].starts_with("\u{2506} y"), "{rows:?}");
+        assert!(rows.last().unwrap().contains("[y]es"), "{rows:?}");
+    }
+
+    #[test]
+    fn a_long_input_is_kept_whole_for_the_pager_and_says_so_without_cutting_silently() {
+        let lines = many(40);
+        let refs: Vec<&str> = lines.iter().map(String::as_str).collect();
+        let p = ask(&refs, true, OFF, 80);
+        let full = p.full.as_deref().expect("more than a screenful comes with the whole of it");
+        for line in &lines {
+            assert!(full.contains(line.as_str()), "{line}");
+        }
+        assert!(!full.contains("[y]es"), "the choices are not in the paged text");
+        assert!(p.text.contains("more rows (40 lines in all): the pager above showed all of it"), "{}", p.text);
+        assert!(p.text.lines().count() < 15 && p.text.contains("[y]es") && !p.text.contains("line-30"), "{}", p.text);
+        assert!(p.tail.contains("[y]es") && !p.tail.contains("echo"), "{}", p.tail);
+        // Exactly at the limit nothing is held back.
+        let twenty = many(MAX_INLINE_ROWS);
+        let refs: Vec<&str> = twenty.iter().map(String::as_str).collect();
+        let p = ask(&refs, true, OFF, 80);
+        assert!(p.full.is_none() && p.text.contains("line-20"), "{}", p.text);
+    }
+
+    #[test]
+    fn options_of_the_call_are_printed_apart_from_the_input() {
+        let lines = vec!["ls".to_string()];
+        let notes = vec!["dangerouslyDisableSandbox=true".to_string()];
+        let p = permission_prompt(&Question { tool: "Bash", notes: &notes, lines: &lines, always: false, note: None, project_dir: Path::new(PROJECT), style: OFF, width: 100 });
+        assert_eq!(rows_of(&p)[..3], ["Allow Bash:", "options: dangerouslyDisableSandbox=true", "\u{2502} ls"]);
+    }
+
+    #[test]
+    fn the_note_goes_under_the_choices_and_is_wrapped() {
+        let lines = vec!["ls".to_string()];
+        let note = "can't remember this one: it runs other commands and then some more words to make it long";
+        let p = permission_prompt(&Question { tool: "Bash", notes: &[], lines: &lines, always: false, note: Some(note), project_dir: Path::new(PROJECT), style: OFF, width: 50 });
+        let rows = rows_of(&p);
+        assert_eq!(rows[0], "Allow Bash: ls?  [y]es  [n]o");
+        assert!(rows.len() >= 3 && rows.iter().all(|r| display_width(r) < 50), "{rows:?}");
+        assert_eq!(rows[1..].concat(), note, "wrapped by columns, no character lost");
+    }
+
+    #[test]
+    fn the_question_is_plain_text_and_styled_only_when_asked() {
+        let p = ask(&["ls"], true, ON, 100);
+        assert!(p.text.contains("\x1b[1mAllow Bash: \x1b[0m") && p.text.contains("\x1b[36m[y]\x1b[0m"), "{:?}", p.text);
+        assert_eq!(strip_ansi(&p.text), "Allow Bash: ls?  [y]es  [n]o  [a]lways in this project");
+        no_esc(&ask(&["ls", "pwd"], true, OFF, 100).text);
     }
 
     #[test]
