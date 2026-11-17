@@ -396,11 +396,9 @@ auth/session edits) overrides Jev's task label and never goes to DeepSeek or Gro
 **Modes.** `Shift-Tab` at the prompt (or `/mode ask|edit|plan|auto`) cycles how much a turn may do
 without asking; an empty prompt line shows the current one. `ask` asks before every edit and
 command, `edit` (the default) accepts edits and asks about commands, `plan` only reads and
-proposes a plan, and `auto` also allows, without asking, every call that is safe to remember
-with `a` (read-only commands, `sed -n 10,40p file`, `git branch -a`, `git tag -l`, `git remote -v`,
-the project's build and test commands, chains of those, files inside the project),
-printing `✓ auto-allowed ...` for each. Anything `a` would refuse (`rm`, `curl`, `git push`,
-`npm install`, a path outside your folders) is still asked in `auto`. No mode uses
+proposes a plan, and `auto` allows tool requests without asking, including commands that delete,
+install, or send data and access outside the project. It prints `✓ auto-allowed ...` for each
+request and does not save permission rules. No mode uses
 `bypassPermissions`. The mode you pick (`Shift-Tab` or `/mode`) is kept in
 `~/.local/state/jev-router/mode` and the next `jev-code` starts in it; `--mode` wins for its own
 session without replacing it, and a one-shot `-p` never reads it. Without a kept mode,
@@ -409,7 +407,7 @@ the starting mode. Modes apply on Claude and DeepSeek (both run through
 Claude Code); the other providers keep their own fixed sandbox.
 
 **Permissions.** Edits are auto-accepted on Claude in the default `edit` mode.
-Anything else that needs approval (a command, a read outside the project, a write to
+In `ask` and `edit` modes, anything else that needs approval (a command, a read outside the project, a write to
 `.claude/settings.local.json`) is asked to you in the terminal on Claude and DeepSeek (both
 run through Claude Code, which `jev-code` starts with `--input-format stream-json
 --permission-prompt-tool stdio`, so it asks its host instead of denying):

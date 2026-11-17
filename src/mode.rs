@@ -2,9 +2,7 @@
 //! asking. One value is shared by the line editor (Shift-Tab cycles it), `/mode`, the
 //! engine (which passes it to every turn) and the approver (which answers in [`Mode::Auto`]).
 //!
-//! No mode skips every check: `bypassPermissions` and the other approve-everything flags
-//! are never used. [`Mode::Auto`] answers only what jev-code would also offer to remember
-//! for good (see [`crate::permissions::always_plan`]); anything else is still asked.
+//! [`Mode::Auto`] approves tool requests without prompting or saving permission rules.
 
 use std::fmt;
 use std::path::{Path, PathBuf};
@@ -21,8 +19,7 @@ pub enum Mode {
     Edit,
     /// Read and plan only; the model proposes a plan and changes nothing (`plan`).
     Plan,
-    /// Edits are accepted, and so is every call that is safe to remember (read-only
-    /// commands, the project's build and test commands, files inside the project).
+    /// Edits and tool requests are accepted without prompting.
     Auto,
 }
 
@@ -44,7 +41,7 @@ impl Mode {
             Mode::Ask => "asks before every edit and command",
             Mode::Edit => "accepts edits, asks before commands",
             Mode::Plan => "plans only, changes nothing",
-            Mode::Auto => "accepts edits and safe commands, asks about the rest",
+            Mode::Auto => "accepts edits and tool requests without asking",
         }
     }
 

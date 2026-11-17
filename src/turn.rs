@@ -154,7 +154,7 @@ struct EngineApprover<'a> {
     cancel: &'a Cancel,
     /// The project folder, where "always" saves its rule.
     dir: &'a Path,
-    /// The turn's mode: in [`Mode::Auto`] a call that is safe to remember is allowed unasked.
+    /// The turn's mode: [`Mode::Auto`] allows tool requests without asking.
     mode: Mode,
 }
 
@@ -167,13 +167,11 @@ impl EngineApprover<'_> {
             lock_ui(self.ui).event(&Event::Hint(uifmt::remembered_allowed(&req.summary)));
             return Decision::Allow;
         }
-        let offer = permissions::always_plan(&req.tool, &req.input, req.blocked_path.as_deref(), &places);
-        // Auto answers exactly what would be offered to remember for good: nothing that
-        // deletes, pushes, installs or sends data, and nothing outside the project's reach.
-        if self.mode == Mode::Auto && offer.is_ok() {
+        if self.mode == Mode::Auto {
             lock_ui(self.ui).event(&Event::Hint(uifmt::auto_allowed(&req.summary)));
             return Decision::Allow;
         }
+        let offer = permissions::always_plan(&req.tool, &req.input, req.blocked_path.as_deref(), &places);
         // The question goes up under the lock; the wait for the person does not hold it, so
         // the turn's own events can still be shown, and dropping this future ends the wait.
         let question = lock_ui(self.ui).ask_permission(req, &offer);
@@ -2821,6 +2819,20 @@ mod tests {
         assert_eq!((report.status, report.text.as_str()), (TurnStatus::Answered, "ran"));
         assert!(ui.questions.is_empty(), "nobody was asked: {:?}", ui.questions);
         assert!(ui.hints.iter().any(|h| h.contains("auto-allowed") && h.contains("cargo test --quiet")), "{:?}", ui.hints);
+        assert!(!permissions::local_settings_path(&dir).exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn auto_mode_allows_a_call_that_cannot_be_remembered() {
+        let script = r#"read p; echo "ASK:Bash:git push"; read ans; case "$ans" in ALLOW) echo "FIN:ran";; *) echo "FIN:refused";; esac"#;
+        let (engine, dir) = ask_engine_running("auto-push", Box::new(move |_| Box::new(AskFake(script))));
+        let mut engine = engine.with_mode(Mode::Auto);
+        let mut ui = Asked::default();
+        let report = ask_turn(&mut engine, &mut ui).await;
+        assert_eq!((report.status, report.text.as_str()), (TurnStatus::Answered, "ran"));
+        assert!(ui.questions.is_empty());
+        assert!(ui.hints.iter().any(|h| h.contains("auto-allowed") && h.contains("git push")));
         assert!(!permissions::local_settings_path(&dir).exists());
         let _ = std::fs::remove_dir_all(&dir);
     }
