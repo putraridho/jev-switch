@@ -1,0 +1,1 @@
+{"id":4,"result":{"account":{"type":"chatgpt","email":"canary-email@example.invalid","planType":"free","workspaceName":null},"userId":"user-REDACTED0000000000000000","requiresOpenaiAuth":true,"workspaceRouting":{"chatgptAccountId":"00000000-0000-4000-8000-000000000002","backendOrigin":"https://chatgpt.com","accountRoutingOverride":"NO_CONSTRAINT"}}}

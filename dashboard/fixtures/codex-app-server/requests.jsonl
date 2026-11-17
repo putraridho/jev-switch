@@ -1,0 +1,5 @@
+{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"clientInfo":{"name":"jev-dashboard","version":"0.1.0"}}}
+{"jsonrpc":"2.0","method":"initialized"}
+{"jsonrpc":"2.0","id":2,"method":"account/rateLimits/read","params":{"excludeResetCreditDetails":true}}
+{"jsonrpc":"2.0","id":3,"method":"account/usage/read"}
+{"jsonrpc":"2.0","id":4,"method":"account/read","params":{"refreshToken":false}}
