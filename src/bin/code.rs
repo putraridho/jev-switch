@@ -179,8 +179,9 @@ async fn start_runtime(console: &Console) -> Runtime {
 /// Settings come from the environment or `~/.jev-router.env`, like every other setting.
 /// `can_ask`: the console can put an approval question to a person
 /// ([`Console::can_ask`]); otherwise the CLIs run without the host prompt protocol.
-fn engine_for(args: &Args, runtime: Runtime, router: Router, dir: PathBuf, can_ask: bool) -> Engine {
-    let mode = args.mode.unwrap_or_else(|| mode::initial(envfile::lookup("CODE_PERMISSION_MODE").as_deref()));
+/// `saved`: the mode the last session ended in; a run nobody can answer passes `None`.
+fn engine_for(args: &Args, runtime: Runtime, router: Router, dir: PathBuf, can_ask: bool, saved: Option<mode::Mode>) -> Engine {
+    let mode = mode::start(args.mode, saved, envfile::lookup("CODE_PERMISSION_MODE").as_deref());
     let engine = Engine::new(runtime, router, dir)
         .with_backend_factory(Box::new(providers::run_backends(can_ask)))
         .with_enabled(commands::routing_enabled(envfile::lookup("JEV_PROVIDERS").as_deref()))
@@ -238,7 +239,7 @@ async fn print_mode(args: &Args, source: &PromptSource, dir: &Path, term: &Term,
     let runtime = start_runtime(&console).await;
     // A one-shot starts a fresh conversation and leaves the saved session alone, unless -c asks to continue it.
     let persist = if args.resume { state_dir } else { None };
-    let engine = engine_for(args, runtime, router, dir.to_path_buf(), console.can_ask()).with_persistence(persist);
+    let engine = engine_for(args, runtime, router, dir.to_path_buf(), console.can_ask(), None).with_persistence(persist);
     let mut repl = Repl::new(engine, console.clone(), std::env::var("HOME").ok(), false);
     if args.resume {
         resume_quietly(&mut repl, &console);
@@ -287,7 +288,8 @@ async fn session(args: &Args, dir: &Path, term: &Term, console: Console, state_d
         }
     };
     let runtime = start_runtime(&console).await;
-    let engine = engine_for(args, runtime, router, dir.to_path_buf(), console.can_ask()).with_persistence(state_dir.clone());
+    let saved = state_dir.as_deref().and_then(mode::load_saved);
+    let engine = engine_for(args, runtime, router, dir.to_path_buf(), console.can_ask(), saved).with_persistence(state_dir.clone());
     let home = std::env::var("HOME").ok();
     let mut repl = Repl::new(engine, console.clone(), home.clone(), term.stdout_tty).with_state_dir(state_dir.clone());
     startup(&mut repl, args, term, &console, state_dir.as_deref(), home.as_deref());
@@ -379,6 +381,7 @@ async fn edit_loop(repl: &mut Repl, term: &Term, console: &Console, state_dir: O
         // A mode picked with Shift-Tab holds even when the line was thrown away.
         if shared_mode.get() != repl.engine.mode() {
             repl.engine.set_mode(shared_mode.get());
+            repl.remember_mode();
             console.out(&format!("  mode: {}", views::mode_line(shared_mode.get())));
         }
         match input {

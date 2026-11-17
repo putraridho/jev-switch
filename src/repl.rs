@@ -204,6 +204,15 @@ impl Repl {
         Self { engine, console, home, paging, last_summary: None, log: SessionLog::default(), carry: Vec::new(), state_dir: None }
     }
 
+    /// Keep the mode the person just chose for the next session. Only their choices come
+    /// here: the read-only mode `/review` and `/compact` borrow for one turn is not kept.
+    pub fn remember_mode(&self) {
+        let Some(dir) = &self.state_dir else { return };
+        if let Err(e) = crate::mode::save(dir, self.engine.mode()) {
+            self.console.err(&format!("  could not keep the mode for the next session: {e}"));
+        }
+    }
+
     /// Keep scratch files (the message `/edit` composes) in the state folder.
     pub fn with_state_dir(mut self, dir: Option<std::path::PathBuf>) -> Self {
         self.state_dir = dir;
@@ -261,6 +270,7 @@ impl Repl {
             Command::ShowOrchestrate => self.console.out(&format!("  orchestrate: {}", on_off(self.engine.orchestrate()))),
             Command::SetMode(mode) => {
                 self.engine.set_mode(mode);
+                self.remember_mode();
                 self.console.out(&format!("  mode: {}", views::mode_line(mode)));
             }
             Command::ShowMode => self.console.out(&format!("  mode: {}", views::mode_line(self.engine.mode()))),

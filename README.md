@@ -400,8 +400,11 @@ proposes a plan, and `auto` also allows, without asking, every call that is safe
 with `a` (read-only commands, the project's build and test commands, files inside the project),
 printing `✓ auto-allowed ...` for each. Anything `a` would refuse (`rm`, `curl`, `git push`,
 `npm install`, a path outside your folders) is still asked in `auto`. No mode uses
-`bypassPermissions`. `CODE_PERMISSION_MODE` (`ask|edit|plan|auto`, or Claude Code's `default`
-and `acceptEdits`) sets the starting mode. Modes apply on Claude and DeepSeek (both run through
+`bypassPermissions`. The mode you pick (`Shift-Tab` or `/mode`) is kept in
+`~/.local/state/jev-router/mode` and the next `jev-code` starts in it; `--mode` wins for its own
+session without replacing it, and a one-shot `-p` never reads it. Without a kept mode,
+`CODE_PERMISSION_MODE` (`ask|edit|plan|auto`, or Claude Code's `default` and `acceptEdits`) sets
+the starting mode. Modes apply on Claude and DeepSeek (both run through
 Claude Code); the other providers keep their own fixed sandbox.
 
 **Permissions.** Edits are auto-accepted on Claude in the default `edit` mode.

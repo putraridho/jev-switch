@@ -1483,9 +1483,10 @@ def arguments_help_version_and_errors_never_panic(w):
     h = run_cli(w, ["--help"])
     if h.returncode != 0 or "-p, --print" not in h.stdout or "doctor" not in h.stdout:
         raise Fail(f"--help: {h.returncode} {h.stdout[:300]!r}")
-    v = run_cli(w, ["--version"])
-    if v.returncode != 0 or not v.stdout.startswith("jev-code "):
-        raise Fail(f"--version: {v.returncode} {v.stdout!r}")
+    for flag in ["--version", "-V", "-v"]:
+        v = run_cli(w, [flag])
+        if v.returncode != 0 or not v.stdout.startswith("jev-code "):
+            raise Fail(f"{flag}: {v.returncode} {v.stdout!r}")
     bad = run_cli(w, ["--frobnicate"])
     if bad.returncode != 2 or "unknown option --frobnicate" not in bad.stderr or "panicked" in bad.stderr:
         raise Fail(f"an unknown flag is a usage error (2), got {bad.returncode}: {bad.stderr!r}")
@@ -1530,6 +1531,57 @@ def continue_resumes_the_saved_session(w):
         quit_with_ctrl_d(c)
     finally:
         c.close()
+
+
+@scenario
+def the_permission_mode_carries_over_to_the_next_session(w):
+    def start(args, name):
+        p = Pty(w, args + [w.repo], name)
+        prompt_ready(p)
+        return p
+
+    def hint(p):
+        m = MODE_HINT.search(p.visible().rstrip("\n").split("\n")[-1])
+        return m.group(1) if m else None
+
+    # /mode is kept: the next session starts in it, with no flag.
+    p = start([], "mode-1")
+    try:
+        if hint(p) != "edit":
+            raise Fail(f"a first session starts in edit mode:\n{p.tail()}")
+        p.send("/mode auto\r")
+        p.expect("mode: auto", 10, "/mode confirms")
+        quit_with_ctrl_d(p)
+    finally:
+        p.close()
+    # Shift-Tab is kept too, even when the line is thrown away: auto -> ask.
+    q = start([], "mode-2")
+    try:
+        if hint(q) != "auto":
+            raise Fail(f"the mode set with /mode should carry over:\n{q.tail()}")
+        q.send("\x1b[Z")
+        q.expect("ask mode", 10, "shift-tab moves to the next mode")
+        quit_with_ctrl_d(q)
+    finally:
+        q.close()
+    # --mode wins for its own session but is not itself kept.
+    r = start(["--mode", "plan"], "mode-3")
+    try:
+        if hint(r) != "plan":
+            raise Fail(f"--mode should win over the kept mode:\n{r.tail()}")
+        quit_with_ctrl_d(r)
+    finally:
+        r.close()
+    t = start([], "mode-4")
+    try:
+        if hint(t) != "ask":
+            raise Fail(f"the mode kept by Shift-Tab should carry over, and --mode should not replace it:\n{t.tail()}")
+        quit_with_ctrl_d(t)
+    finally:
+        t.close()
+    saved = os.path.join(w.state, "jev-router", "mode")
+    if not os.path.isfile(saved) or os.stat(saved).st_mode & 0o777 != 0o600:
+        raise Fail(f"the kept mode should be a private file at {saved}")
 
 
 @scenario

@@ -7,6 +7,7 @@
 //! for good (see [`crate::permissions::always_plan`]); anything else is still asked.
 
 use std::fmt;
+use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::Arc;
@@ -138,6 +139,28 @@ pub fn initial(env: Option<&str>) -> Mode {
     env.and_then(|v| v.parse().ok()).unwrap_or_default()
 }
 
+/// The file in the state folder that keeps the mode between sessions.
+pub fn saved_path(state_dir: &Path) -> PathBuf {
+    state_dir.join("mode")
+}
+
+/// The mode the last session ended in, when one was kept. A missing or unreadable file, or
+/// a word that names no mode, is no choice at all.
+pub fn load_saved(state_dir: &Path) -> Option<Mode> {
+    std::fs::read_to_string(saved_path(state_dir)).ok()?.parse().ok()
+}
+
+/// Keep `mode` for the next session. Whole-file replace, so a crash never leaves half a word.
+pub fn save(state_dir: &Path, mode: Mode) -> std::io::Result<()> {
+    crate::handoff::write_atomic(&saved_path(state_dir), mode.name())
+}
+
+/// The mode an interactive session starts in: what was asked on the command line, else what
+/// the last session left (`/mode`, Shift-Tab), else [`initial`].
+pub fn start(flag: Option<Mode>, saved: Option<Mode>, env: Option<&str>) -> Mode {
+    flag.or(saved).unwrap_or_else(|| initial(env))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -174,5 +197,35 @@ mod tests {
         assert_eq!(initial(None), Mode::Edit);
         assert_eq!(initial(Some("plan")), Mode::Plan);
         assert_eq!(initial(Some("bypassPermissions")), Mode::Edit);
+    }
+
+    #[test]
+    fn a_kept_mode_survives_and_a_bad_file_is_no_choice() {
+        let dir = std::env::temp_dir().join(format!("jev-mode-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        assert_eq!(load_saved(&dir), None);
+        for m in Mode::ALL {
+            save(&dir, m).unwrap();
+            assert_eq!(load_saved(&dir), Some(m));
+        }
+        std::fs::write(saved_path(&dir), "bypassPermissions").unwrap();
+        assert_eq!(load_saved(&dir), None);
+        std::fs::write(saved_path(&dir), "").unwrap();
+        assert_eq!(load_saved(&dir), None);
+        // A folder that does not exist yet is made, and nothing else is left in it.
+        let nested = dir.join("a/b");
+        save(&nested, Mode::Auto).unwrap();
+        assert_eq!(load_saved(&nested), Some(Mode::Auto));
+        assert_eq!(std::fs::read_dir(&nested).unwrap().count(), 1);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn the_flag_beats_the_kept_mode_which_beats_the_environment() {
+        assert_eq!(start(Some(Mode::Plan), Some(Mode::Auto), Some("ask")), Mode::Plan);
+        assert_eq!(start(None, Some(Mode::Auto), Some("ask")), Mode::Auto);
+        assert_eq!(start(None, None, Some("ask")), Mode::Ask);
+        assert_eq!(start(None, None, None), Mode::Edit);
     }
 }

@@ -91,7 +91,7 @@ where
                 out.action = Action::Help;
                 return Ok(out);
             }
-            "-V" | "--version" => {
+            "-v" | "-V" | "--version" => {
                 out.action = Action::Version;
                 return Ok(out);
             }
@@ -151,7 +151,7 @@ OPTIONS:
       --mode <mode>      start in a permission mode, as /mode: ask, edit, plan or auto
       --no-color         no colours or styling (also: NO_COLOR=1)
   -h, --help             this text
-  -V, --version          version
+  -v, -V, --version      version
 
 IN SESSION: type /help for the commands and keys. Tab completes commands, models and
 @paths; Esc or Ctrl-C stops the running turn (Ctrl-C twice at the prompt, or Ctrl-D, to
@@ -259,6 +259,7 @@ mod tests {
         assert_eq!(ok(&["-h"]).action, Action::Help);
         assert_eq!(ok(&["--help"]).action, Action::Help);
         assert_eq!(ok(&["-V"]).action, Action::Version);
+        assert_eq!(ok(&["-v"]).action, Action::Version);
         assert_eq!(ok(&["--version"]).action, Action::Version);
         assert_eq!(ok(&["proj", "--help"]).action, Action::Help);
     }
@@ -295,7 +296,7 @@ mod tests {
 
     #[test]
     fn help_mentions_every_option_the_parser_accepts() {
-        for flag in ["-p, --print", "-c, --continue", "-m, --model", "--mode", "--no-color", "-h, --help", "-V, --version", "doctor"] {
+        for flag in ["-p, --print", "-c, --continue", "-m, --model", "--mode", "--no-color", "-h, --help", "-v, -V, --version", "doctor"] {
             assert!(HELP.contains(flag), "{flag}");
         }
     }
