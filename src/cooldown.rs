@@ -129,13 +129,24 @@ fn is_bare_time_of_day(body: &str) -> bool {
     numeric && fields.len() <= 3 && (meridiem || fields.len() > 1)
 }
 
+/// GNU `date` rejects "Nov 20, 5pm" and "Nov 20 at 5pm" but takes "Nov 20 5pm": drop
+/// the commas and the word "at" from spaced text. Text without spaces (ISO-8601) is
+/// left alone.
+fn normalize_for_date(body: &str) -> String {
+    if !body.contains(' ') {
+        return body.to_string();
+    }
+    let spaced = body.replace(',', " ");
+    spaced.split_whitespace().filter(|w| !w.eq_ignore_ascii_case("at")).collect::<Vec<_>>().join(" ")
+}
+
 /// A wall-clock reset (time of day, date and time, ISO-8601) via `resolve`.
 fn wall_clock_ms(text: &str, now_ms: u64, resolve: Resolver) -> Option<u64> {
     if !is_safe_text(text) {
         return None;
     }
     let (body, zone) = split_zone(text)?;
-    let body = body.replace(" at ", " ");
+    let body = normalize_for_date(body);
     let mut ms = resolve(&body, zone)?.saturating_mul(1000);
     if ms <= now_ms && is_bare_time_of_day(&body) {
         ms = ms.saturating_add(DAY_MS); // "resets 5pm" said after 5pm means tomorrow
@@ -393,11 +404,11 @@ mod tests {
         let seen = RefCell::new(vec![]);
         let in_three_days = fixed(NOW / 1000 + 3 * 86_400, &seen);
         assert_eq!(cooldown_ms_with(Some("Nov 20, 5pm (Asia/Jakarta)"), NOW, &in_three_days), 3 * DAY_MS);
-        assert_eq!(seen.borrow()[0], ("Nov 20, 5pm".to_string(), Some("Asia/Jakarta".to_string())));
+        assert_eq!(seen.borrow()[0], ("Nov 20 5pm".to_string(), Some("Asia/Jakarta".to_string())));
         // In the past it is not "tomorrow": it clamps like any stale timestamp.
         let past = fixed(NOW / 1000 - 3600, &seen);
         assert_eq!(cooldown_ms_with(Some("Nov 20, 5pm (Asia/Jakarta)"), NOW, &past), MIN_MS);
-        // "at" is dropped, which GNU date does not understand.
+        // GNU date rejects the comma and "at"; both are dropped.
         cooldown_ms_with(Some("Nov 20 at 5pm"), NOW, &in_three_days);
         assert_eq!(seen.borrow().last().unwrap().0, "Nov 20 5pm");
     }
@@ -475,6 +486,11 @@ mod tests {
             return;
         };
         assert!((now + 3590..=now + 3700).contains(&at), "{at} vs {now}");
+        // The forms Claude Code prints, after normalizing, are ones GNU date accepts.
+        for text in ["5pm (Asia/Jakarta)", "Nov 20, 5pm (Asia/Jakarta)", "Nov 20 at 5:30pm (UTC)"] {
+            let (body, zone) = split_zone(text).unwrap();
+            assert!(system_date(&normalize_for_date(body), zone).is_some(), "{text}");
+        }
     }
 
     #[test]
