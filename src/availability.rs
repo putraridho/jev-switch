@@ -229,15 +229,6 @@ fn path_dirs() -> Vec<PathBuf> {
     std::env::var_os("PATH").map(|p| std::env::split_paths(&p).collect()).unwrap_or_default()
 }
 
-/// Installed means "found on PATH"; the binary is not run, since some are lazy
-/// wrappers whose first run starts an install.
-pub(crate) fn on_path(name: &str) -> bool {
-    if name.contains('/') {
-        return is_executable_file(Path::new(name));
-    }
-    !find_on_path(name, &path_dirs(), &is_executable_file).is_empty()
-}
-
 fn home() -> Option<PathBuf> {
     std::env::var_os("HOME").map(PathBuf::from)
 }
@@ -317,7 +308,7 @@ fn decide_claude(installed: bool, login: Option<ClaudeLogin>) -> Availability {
 }
 
 async fn probe_claude() -> Availability {
-    let installed = on_path("claude");
+    let installed = installed_for_real("claude");
     let login = match installed {
         true => run_capture("claude", &["auth", "status"]).await.and_then(|c| parse_claude_login(&c.text)),
         false => None,
@@ -341,7 +332,7 @@ fn decide_deepseek(claude_installed: bool, key_present: bool) -> Availability {
 }
 
 async fn probe_deepseek() -> Availability {
-    decide_deepseek(on_path("claude"), envfile::lookup("DEEPSEEK_API_KEY").is_some())
+    decide_deepseek(installed_for_real("claude"), envfile::lookup("DEEPSEEK_API_KEY").is_some())
 }
 
 // ------------------------------------------------------------------------ Codex
@@ -412,7 +403,7 @@ fn decide_codex(installed: bool, login_ok: Option<bool>, plan: Option<&str>, mod
 }
 
 async fn probe_codex() -> Availability {
-    let installed = on_path("codex");
+    let installed = installed_for_real("codex");
     if !installed {
         return decide_codex(false, None, None, None);
     }
@@ -479,8 +470,8 @@ async fn probe_gemini() -> Availability {
     let settings = read_home_file(".gemini/settings.json");
     let (api_key_env, settings_auth) = gemini_login_facts(settings.as_deref(), |n| envfile::lookup(n).is_some());
     decide_gemini(GeminiFacts {
-        gemini_installed: on_path("gemini"),
-        agy_installed: on_path("agy"),
+        gemini_installed: installed_for_real("gemini"),
+        agy_installed: installed_for_real("agy"),
         api_key_env,
         settings_auth,
         oauth_creds: home_path_exists(".gemini/oauth_creds.json"),
@@ -508,9 +499,39 @@ fn decide_grok(f: GrokFacts) -> Availability {
     }
 }
 
-/// A command-wrapper is the lazy launcher that installs the tool on first run.
+/// A lazy mise launcher: a command-wrapper or a shim. Running one for a tool that is not
+/// installed yet STARTS A LONG INSTALL (it happened with `grok` and `agy`), so a probe
+/// must never execute one unless mise already has that tool installed.
 fn is_mise_wrapper(path: &Path) -> bool {
-    path.components().any(|c| c.as_os_str() == "command-wrappers")
+    let parts: Vec<&std::ffi::OsStr> = path.components().map(|c| c.as_os_str()).collect();
+    parts.iter().any(|c| *c == "command-wrappers")
+        || parts.windows(2).any(|w| w[0] == "mise" && w[1] == "shims")
+}
+
+/// The mise tool name for a binary when they differ (the binary `agy` comes from the
+/// `antigravity-cli` tool); otherwise the binary name itself.
+fn mise_tool_for(bin: &str) -> &str {
+    match bin {
+        "agy" => "antigravity-cli",
+        other => other,
+    }
+}
+
+/// The pure decision: `bin` is really installed when some candidate on PATH is a real
+/// binary, or when every candidate is a lazy launcher but mise already has the tool.
+fn really_installed(candidates: &[PathBuf], mise_has_tool: bool) -> bool {
+    candidates.iter().any(|p| !is_mise_wrapper(p)) || (!candidates.is_empty() && mise_has_tool)
+}
+
+/// Whether running `bin` is safe for a probe: a real binary, never a lazy launcher that
+/// would install it. Use this, not [`on_path`], before executing any provider CLI.
+pub(crate) fn installed_for_real(bin: &str) -> bool {
+    if bin.contains('/') {
+        return is_executable_file(Path::new(bin)) && !is_mise_wrapper(Path::new(bin));
+    }
+    let candidates = find_on_path(bin, &path_dirs(), &is_executable_file);
+    let data = mise_data_dir(std::env::var("MISE_DATA_DIR").ok(), std::env::var("XDG_DATA_HOME").ok(), home());
+    really_installed(&candidates, data.is_some_and(|d| mise_has_install(&d, mise_tool_for(bin))))
 }
 
 /// mise's data directory: `$MISE_DATA_DIR`, else `$XDG_DATA_HOME/mise`, else
@@ -522,18 +543,16 @@ fn mise_data_dir(mise_data_dir: Option<String>, xdg_data_home: Option<String>, h
         .or_else(|| home.map(|h| h.join(".local/share/mise")))
 }
 
-/// True when some version directory under `<data>/installs/grok/` has files in it.
-fn mise_has_grok_install(data_dir: &Path) -> bool {
-    std::fs::read_dir(data_dir.join("installs/grok"))
+/// True when some version directory under `<data>/installs/<tool>/` has files in it.
+fn mise_has_install(data_dir: &Path, tool: &str) -> bool {
+    std::fs::read_dir(data_dir.join("installs").join(tool))
         .map(|versions| versions.flatten().any(|v| dir_has_entries(&v.path())))
         .unwrap_or(false)
 }
 
 async fn probe_grok() -> Availability {
-    let data = mise_data_dir(std::env::var("MISE_DATA_DIR").ok(), std::env::var("XDG_DATA_HOME").ok(), home());
-    let on_path_real = find_on_path("grok", &path_dirs(), &is_executable_file).iter().any(|p| !is_mise_wrapper(p));
     decide_grok(GrokFacts {
-        real_binary: on_path_real || data.is_some_and(|d| mise_has_grok_install(&d)),
+        real_binary: installed_for_real("grok"),
         home_dir: home().is_some_and(|h| grok::session_dir_exists(&h)),
     })
 }
@@ -694,6 +713,26 @@ mod tests {
         assert_eq!(decide_grok(GrokFacts { real_binary: true, home_dir: false }).state, State::NotLoggedIn);
         let a = decide_grok(GrokFacts { real_binary: true, home_dir: true });
         assert_eq!((a.state, a.verified), (State::Ready, false));
+    }
+
+    #[test]
+    fn lazy_launchers_are_never_counted_as_installed() {
+        let wrapper = PathBuf::from("/h/.local/share/mise/command-wrappers/bin/codex");
+        let shim = PathBuf::from("/h/.local/share/mise/shims/agy");
+        let real = PathBuf::from("/usr/bin/codex");
+        assert!(is_mise_wrapper(&shim), "mise shims install on first run too (the agy accident)");
+        assert!(!is_mise_wrapper(Path::new("/opt/shims/tool")), "only mise's shims directory");
+        // Only a lazy launcher and mise has nothing installed: never run it.
+        assert!(!really_installed(&[wrapper.clone()], false));
+        assert!(!really_installed(&[shim.clone()], false));
+        // A lazy launcher for a tool mise already installed is safe to run.
+        assert!(really_installed(&[wrapper.clone()], true));
+        // A real binary anywhere on PATH is installed.
+        assert!(really_installed(&[shim, real], false));
+        // Nothing on PATH is never installed, whatever mise says.
+        assert!(!really_installed(&[], true));
+        assert_eq!(mise_tool_for("agy"), "antigravity-cli");
+        assert_eq!(mise_tool_for("codex"), "codex");
     }
 
     #[test]
