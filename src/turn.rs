@@ -23,7 +23,7 @@ use tokio::sync::watch;
 use crate::anthropic::{MODEL_CHEAP, MODEL_MID, MODEL_STRONG};
 use crate::backend::{self, Backend, ErrorKind, Event, McpAttachment, ProviderId, TurnError, TurnOutcome, TurnRequest, Usage};
 use crate::catalog::{self, find, ModelSpec};
-use crate::changes::{self, ChangeSummary, UndoError, UndoReport};
+use crate::changes::{self, ChangeSummary, Snapshot, UndoError, UndoReport};
 use crate::handoff::{self, ResumeError, SavedSession, Sessions, TurnRecord};
 use crate::log;
 use crate::orchestrate::{self, Outcome, Setup};
@@ -132,6 +132,15 @@ impl Cancel {
             // Unreachable while `self` holds the sender; never report a cancel that did not happen.
             std::future::pending::<()>().await;
         }
+    }
+}
+
+/// Resolves when `cancel` fires, or never when `honor` is false.
+async fn stop_signal(cancel: &Cancel, honor: bool) {
+    if honor {
+        cancel.cancelled().await;
+    } else {
+        std::future::pending::<()>().await;
     }
 }
 
@@ -440,7 +449,7 @@ impl Engine {
     /// text, for the UI to colour. `None` when there is no summary or git fails.
     pub fn last_diff(&self, path: Option<&str>) -> Option<String> {
         let c = self.last_changes.as_ref()?;
-        changes::diff_text(&self.dir, &c.before, &c.after, path)
+        changes::diff_text(&self.dir, c, path)
     }
 
     /// Put back what the last turn changed, and only that, if nothing it touched was
@@ -558,32 +567,33 @@ impl Engine {
     /// [`Engine::run_judged`] that `cancel` can stop. Around the turn proper it takes
     /// the working-tree snapshots (for [`TurnReport::changes`]) and saves the session.
     pub async fn run_judged_cancellable(&mut self, prompt: &str, judged: Judged, ui: &mut dyn Ui, cancel: &Cancel) -> TurnReport {
-        let mut before: Option<String> = None;
+        let mut before: Option<Snapshot> = None;
         let mut report = self.run_attempts(prompt, judged, ui, cancel, &mut before).await;
         if report.attempts > 0 {
-            report.changes = self.changes_since(before).await;
+            // A turn the user cancelled has spent its signal, so its summary is not raced
+            // against it; a Ctrl-C while summarising a finished turn still returns at once.
+            report.changes = self.changes_since(before, cancel, report.status != TurnStatus::Cancelled).await;
             self.last_changes = report.changes.clone();
             self.save_quietly();
         }
         report
     }
 
-    /// The working tree as a git tree id, or `None` (changes are not tracked, not a repo, git failed).
-    async fn snapshot_tree(&self) -> Option<String> {
+    /// The working tree as a [`Snapshot`], or `None` (changes are not tracked, not a repo,
+    /// git failed, or `cancel` fired while `honor_cancel`; git then finishes in the background).
+    async fn snapshot_tree(&self, cancel: &Cancel, honor_cancel: bool) -> Option<Snapshot> {
         if !self.track_changes {
             return None;
         }
-        let dir = self.dir.clone();
-        tokio::task::spawn_blocking(move || changes::snapshot(&dir)).await.ok().flatten()
+        changes::snapshot_until(self.dir.clone(), stop_signal(cancel, honor_cancel)).await
     }
 
     /// What differs from the `before` snapshot now; `None` if there is no `before`, git
     /// fails, or nothing changed.
-    async fn changes_since(&self, before: Option<String>) -> Option<ChangeSummary> {
+    async fn changes_since(&self, before: Option<Snapshot>, cancel: &Cancel, honor_cancel: bool) -> Option<ChangeSummary> {
         let before = before?;
-        let after = self.snapshot_tree().await?;
-        let dir = self.dir.clone();
-        let summary = tokio::task::spawn_blocking(move || changes::summarize(&dir, &before, &after)).await.ok().flatten()?;
+        let after = self.snapshot_tree(cancel, honor_cancel).await?;
+        let summary = changes::summarize_until(self.dir.clone(), before, after, stop_signal(cancel, honor_cancel)).await?;
         (!summary.is_empty()).then_some(summary)
     }
 
@@ -593,7 +603,7 @@ impl Engine {
         judged: Judged,
         ui: &mut dyn Ui,
         cancel: &Cancel,
-        before: &mut Option<String>,
+        before: &mut Option<Snapshot>,
     ) -> TurnReport {
         let signals = judged.signals();
         let jev = judged.log_signals();
@@ -630,7 +640,7 @@ impl Engine {
             attempts += 1;
             if attempts == 1 {
                 // The state the first model starts from, so a failover's changes count too.
-                *before = self.snapshot_tree().await;
+                *before = self.snapshot_tree(cancel, true).await;
             }
             ui.route_facts(&chosen.facts);
             let attempt = self.run_attempt(chosen, prompt, ui, cancel).await;

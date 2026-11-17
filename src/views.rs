@@ -117,6 +117,7 @@ fn change_letter(s: ChangeStatus) -> char {
         ChangeStatus::Modified => 'M',
         ChangeStatus::Deleted => 'D',
         ChangeStatus::Renamed => 'R',
+        ChangeStatus::ModifiedUntracked => 'U',
     }
 }
 
@@ -399,6 +400,7 @@ mod tests {
                 files: vec![GitChange { path: "a.rs".into(), status: ChangeStatus::Modified, added: 12, removed: 4, old_path: None }],
                 before: "b".into(),
                 after: "a".into(),
+                added_stamps: Default::default(),
             }),
         };
         let f = summary_facts(&report, 14_000, &rt);
@@ -422,6 +424,7 @@ mod tests {
                 .collect(),
             before: String::new(),
             after: String::new(),
+            added_stamps: Default::default(),
         };
         assert_eq!(file_changes(&s).iter().map(|f| f.status).collect::<String>(), "AMDR");
     }
