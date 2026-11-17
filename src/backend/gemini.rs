@@ -15,7 +15,7 @@ use tokio::process::Command;
 
 use super::claude::tool_summary;
 use super::{
-    classify_common, Backend, ErrorKind, Event, Finish, ProviderId, TurnRequest, Usage,
+    classify_common, Backend, ErrorKind, Event, Finish, PromptFiles, ProviderId, TurnRequest, Usage,
 };
 
 /// Which of Google's two CLIs a [`GeminiBackend`] drives.
@@ -63,11 +63,13 @@ pub struct GeminiBackend {
     pub flavor: Flavor,
     pub bin: String,
     pending: Mutex<Pending>,
+    /// Antigravity takes the prompt as an argument, so a long one goes to a file.
+    prompts: PromptFiles,
 }
 
 impl GeminiBackend {
     pub fn new(flavor: Flavor, bin: impl Into<String>) -> Self {
-        Self { flavor, bin: bin.into(), pending: Mutex::new(Pending::default()) }
+        Self { flavor, bin: bin.into(), pending: Mutex::new(Pending::default()), prompts: PromptFiles::default() }
     }
 
     /// Gemini CLI; the binary is `GEMINI_BIN` else `gemini`.
@@ -89,7 +91,7 @@ impl GeminiBackend {
     fn args(&self, req: &TurnRequest) -> Vec<String> {
         match self.flavor {
             Flavor::GeminiCli => gemini_args(req),
-            Flavor::Antigravity => agy_args(req),
+            Flavor::Antigravity => agy_args(req, self.prompts.arg(&req.prompt).text()),
         }
     }
 }
@@ -111,15 +113,16 @@ fn gemini_args(req: &TurnRequest) -> Vec<String> {
 }
 
 /// `-p` must come last because it takes the next word as the prompt, and `agy -p`
-/// ignores stdin, so the prompt has to be in argv.
-fn agy_args(req: &TurnRequest) -> Vec<String> {
+/// ignores stdin, so the prompt has to be in argv (`prompt` is the request's prompt,
+/// or the instruction to read it from a file when it is too long for one argument).
+fn agy_args(req: &TurnRequest, prompt: &str) -> Vec<String> {
     let mut args: Vec<String> = ["--output-format", "stream-json", "--mode", AGY_MODE, "--model", &req.model]
         .map(String::from)
         .into();
     if let Some(id) = &req.session_id {
         args.extend(["--conversation".into(), id.clone()]);
     }
-    args.extend(["-p".into(), req.prompt.clone()]);
+    args.extend(["-p".into(), prompt.to_string()]);
     args
 }
 
@@ -291,6 +294,8 @@ fn classify_text(message: &str) -> Option<ErrorKind> {
         Some(ErrorKind::Auth)
     } else if has(&["empty response", "empty answer"]) {
         Some(ErrorKind::Empty)
+    } else if has(&["not trusted", "trust_workspace", "trust this folder", "trust this directory"]) {
+        Some(ErrorKind::UnusableHere)
     } else {
         None
     }
@@ -320,6 +325,10 @@ impl Backend for GeminiBackend {
             Flavor::GeminiCli => self.gemini_events(&ev),
             Flavor::Antigravity => agy_events(&ev),
         }
+    }
+
+    fn cleanup(&self) {
+        self.prompts.cleanup();
     }
 
     fn classify_error(&self, message: &str) -> ErrorKind {
@@ -552,6 +561,38 @@ mod tests {
             ["--output-format", "stream-json", "--mode", "accept-edits", "--model", "m-1", "--conversation", "cid", "-p", "do the thing"]
         );
         assert_eq!(b.stdin_payload(&req(None)), None);
+    }
+
+    #[test]
+    fn untrusted_workspace_is_unusable_here() {
+        let msg = "Gemini CLI is not running in a trusted directory. To proceed, either use `--skip-trust`, set the \
+                   `GEMINI_CLI_TRUST_WORKSPACE=true` environment variable, or trust this directory in interactive mode.";
+        assert_eq!(gemini().classify_error(msg), ErrorKind::UnusableHere);
+        assert_eq!(gemini().classify_error("The workspace is not trusted"), ErrorKind::UnusableHere);
+        assert_eq!(agy().classify_error("folder is not trusted"), ErrorKind::UnusableHere);
+    }
+
+    #[test]
+    fn a_huge_prompt_never_becomes_an_oversized_argument() {
+        let dir = std::env::temp_dir().join(format!("jev-agy-prompt-{}", std::process::id()));
+        let prompt = "q".repeat(500_000);
+        let request = TurnRequest { prompt: prompt.clone(), ..req(Some("cid")) };
+        let mut b = agy();
+        b.prompts = PromptFiles::in_dir(dir.clone());
+        let all = args(&b.command(&request));
+        assert!(all.iter().all(|a| a.len() <= crate::backend::MAX_PROMPT_ARG_BYTES), "an argument is too long");
+        assert_eq!(all[all.len() - 2], "-p");
+        let instruction = &all[all.len() - 1];
+        let path = std::fs::read_dir(&dir).unwrap().next().unwrap().unwrap().path();
+        assert!(instruction.contains(&path.display().to_string()));
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), prompt);
+        b.cleanup();
+        assert!(!path.exists());
+        // Gemini CLI sends the prompt on stdin, which has no such limit.
+        let g = gemini();
+        assert!(args(&g.command(&request)).iter().all(|a| a.len() < 100));
+        assert_eq!(g.stdin_payload(&request).as_deref(), Some(prompt.as_str()));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

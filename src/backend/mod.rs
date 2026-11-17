@@ -9,9 +9,10 @@ pub mod codex;
 pub mod gemini;
 pub mod grok;
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::str::FromStr;
+use std::sync::{Mutex, PoisonError};
 use std::time::Duration;
 
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
@@ -89,6 +90,9 @@ pub enum ErrorKind {
     Empty,
     /// No output for the whole idle timeout.
     Stalled,
+    /// The CLI refuses to run in this directory (Codex outside a git repo, Gemini CLI
+    /// in an untrusted workspace). Another provider would work, so a turn fails over.
+    UnusableHere,
     Other,
 }
 
@@ -203,6 +207,10 @@ pub trait Backend: Send + Sync {
     /// Classify an error message from the CLI (a `Failed` text or a stderr tail).
     /// Implementations call [`classify_common`] first and may add their own rules.
     fn classify_error(&self, message: &str) -> ErrorKind;
+
+    /// Called by [`run_turn`] once the turn is over, whatever its result: remove
+    /// anything [`Backend::command`] left on disk (see [`PromptFiles`]).
+    fn cleanup(&self) {}
 }
 
 /// True when `needle` (a number) appears in `hay` not glued to other digits or
@@ -247,8 +255,18 @@ fn is_auth_text(lower: &str) -> bool {
             .any(|p| lower.contains(p))
 }
 
-/// Phrases every CLI uses for the three errors callers act on. Backends call this
-/// first so quota, plan and login failures read the same whichever CLI said them.
+/// "I will not run here": a workspace-trust or git-repository check. Codex says
+/// "Not inside a trusted directory and --skip-git-repo-check was not specified" and
+/// Gemini CLI "is not running in a trusted directory ... --skip-trust".
+fn is_unusable_here_text(lower: &str) -> bool {
+    ["trusted directory", "trusted folder", "trusted workspace", "untrusted", "skip-git-repo-check", "skip-trust"]
+        .iter()
+        .any(|p| lower.contains(p))
+}
+
+/// Phrases every CLI uses for the errors callers act on. Backends call this first
+/// so quota, plan, login and "cannot run here" failures read the same whichever
+/// CLI said them.
 pub fn classify_common(message: &str) -> Option<ErrorKind> {
     let lower = message.to_lowercase().replace('\u{2019}', "'");
     if is_quota_text(&lower) {
@@ -257,8 +275,133 @@ pub fn classify_common(message: &str) -> Option<ErrorKind> {
         Some(ErrorKind::NotEntitled)
     } else if is_auth_text(&lower) {
         Some(ErrorKind::Auth)
+    } else if is_unusable_here_text(&lower) {
+        Some(ErrorKind::UnusableHere)
     } else {
         None
+    }
+}
+
+// ------------------------------------------------------- prompts as arguments
+
+/// Longest prompt handed to a CLI as ONE command-line argument. Linux refuses a
+/// single argument over 131072 bytes (`E2BIG`, "Argument list too long"), so stay well under.
+pub const MAX_PROMPT_ARG_BYTES: usize = 100_000;
+
+/// A prompt as a CLI that has no stdin hand-off has to receive it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PromptArg {
+    /// Short enough to be the argument itself.
+    Inline(String),
+    /// Too long: the prompt is in `path` (private to the user) and `instruction` is a
+    /// short argument that tells the model to read it.
+    File { path: PathBuf, instruction: String },
+}
+
+impl PromptArg {
+    /// The text for the CLI's prompt argument: the prompt, or the instruction to read the file.
+    pub fn text(&self) -> &str {
+        match self {
+            Self::Inline(prompt) => prompt,
+            Self::File { instruction, .. } => instruction,
+        }
+    }
+
+    /// The file holding a long prompt, if there is one.
+    pub fn file(&self) -> Option<&Path> {
+        match self {
+            Self::Inline(_) => None,
+            Self::File { path, .. } => Some(path),
+        }
+    }
+}
+
+/// Where long prompts are written: `<state dir>/prompts`, else the OS temp dir.
+fn default_prompt_dir() -> PathBuf {
+    crate::log::state_dir().map_or_else(|| std::env::temp_dir().join("jev-prompts"), |d| d.join("prompts"))
+}
+
+/// A new, uniquely named file in `dir` (created if missing), readable by the owner only.
+fn write_private(dir: &Path, content: &str) -> std::io::Result<PathBuf> {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+
+    std::fs::create_dir_all(dir)?;
+    let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.subsec_nanos());
+    let name = format!("prompt-{}-{nanos}-{}.txt", std::process::id(), COUNTER.fetch_add(1, Ordering::Relaxed));
+    let path = dir.join(name);
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+    std::io::Write::write_all(&mut options.open(&path)?, content.as_bytes())?;
+    Ok(path)
+}
+
+/// The one rule for a prompt that must travel as a command-line argument (Grok,
+/// Antigravity): the prompt itself up to [`MAX_PROMPT_ARG_BYTES`], else a private
+/// file in `dir` plus a short instruction. The caller must remove the file, see
+/// [`PromptFiles`]. If the file cannot be written the prompt is passed inline anyway,
+/// so the CLI's own error is what the user sees rather than a silent loss.
+pub fn prompt_arg_in(dir: &Path, prompt: &str) -> PromptArg {
+    if prompt.len() <= MAX_PROMPT_ARG_BYTES {
+        return PromptArg::Inline(prompt.to_string());
+    }
+    match write_private(dir, prompt) {
+        Ok(path) => {
+            let instruction = format!(
+                "Your task is written in the file {}. Read that file completely and carry out what it says.",
+                path.display()
+            );
+            PromptArg::File { path, instruction }
+        }
+        Err(_) => PromptArg::Inline(prompt.to_string()),
+    }
+}
+
+/// [`prompt_arg_in`] in the default directory.
+pub fn prompt_arg(prompt: &str) -> PromptArg {
+    prompt_arg_in(&default_prompt_dir(), prompt)
+}
+
+/// Owns the prompt files one backend instance wrote, so they are removed when the
+/// turn ends ([`Backend::cleanup`]) and, as a safety net, when the backend is dropped
+/// (a turn cancelled mid-way). The files can hold code and must never be left behind.
+#[derive(Default)]
+pub struct PromptFiles {
+    dir: Option<PathBuf>,
+    written: Mutex<Vec<PathBuf>>,
+}
+
+impl PromptFiles {
+    /// Write into `dir` instead of the default directory.
+    pub fn in_dir(dir: PathBuf) -> Self {
+        Self { dir: Some(dir), written: Mutex::default() }
+    }
+
+    /// [`prompt_arg_in`], remembering the file for [`PromptFiles::cleanup`].
+    pub fn arg(&self, prompt: &str) -> PromptArg {
+        let arg = match &self.dir {
+            Some(dir) => prompt_arg_in(dir, prompt),
+            None => prompt_arg(prompt),
+        };
+        if let Some(path) = arg.file() {
+            self.written.lock().unwrap_or_else(PoisonError::into_inner).push(path.to_path_buf());
+        }
+        arg
+    }
+
+    /// Remove every file written so far.
+    pub fn cleanup(&self) {
+        for path in self.written.lock().unwrap_or_else(PoisonError::into_inner).drain(..) {
+            let _ = std::fs::remove_file(path);
+        }
+    }
+}
+
+impl Drop for PromptFiles {
+    fn drop(&mut self) {
+        self.cleanup();
     }
 }
 
@@ -396,6 +539,17 @@ async fn explain_eof(child: &mut Child, stderr: JoinHandle<String>) -> String {
 /// `on_event` sees `Tool`, `Text` and `Plan` events while the turn runs. The child
 /// is killed if the future is dropped, and after `idle_timeout` of silence.
 pub async fn run_turn(
+    backend: &dyn Backend,
+    req: &TurnRequest,
+    idle_timeout: Duration,
+    on_event: &mut (dyn FnMut(&Event) + Send),
+) -> Result<TurnOutcome, TurnError> {
+    let result = run_child(backend, req, idle_timeout, on_event).await;
+    backend.cleanup();
+    result
+}
+
+async fn run_child(
     backend: &dyn Backend,
     req: &TurnRequest,
     idle_timeout: Duration,
@@ -607,6 +761,118 @@ mod tests {
         assert_eq!(classify_common("Not logged in"), Some(ErrorKind::Auth));
         assert_eq!(classify_common("token expired"), Some(ErrorKind::Auth));
         assert_eq!(classify_common("Please log in again"), Some(ErrorKind::Auth));
+    }
+
+    #[test]
+    fn cannot_run_here_wording_is_unusable_here() {
+        let here = |m: &str| classify_common(m) == Some(ErrorKind::UnusableHere);
+        // Codex outside a git repository.
+        assert!(here("Not inside a trusted directory and --skip-git-repo-check was not specified."));
+        // Gemini CLI in an untrusted workspace.
+        assert!(here(
+            "Gemini CLI is not running in a trusted directory. To proceed, either use `--skip-trust`, set the \
+             `GEMINI_CLI_TRUST_WORKSPACE=true` environment variable, or trust this directory in interactive mode."
+        ));
+        assert!(here("this is an untrusted workspace"));
+        // Quota and login wording still win over it.
+        assert!(matches!(classify_common("usage limit, resets 5pm"), Some(ErrorKind::Quota { .. })));
+        assert_eq!(classify_common("please log in"), Some(ErrorKind::Auth));
+    }
+
+    fn scratch_dir(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("jev-prompt-test-{}-{name}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        dir
+    }
+
+    #[test]
+    fn a_prompt_under_the_limit_is_passed_through_unchanged() {
+        let dir = scratch_dir("short");
+        let prompt = "x".repeat(MAX_PROMPT_ARG_BYTES);
+        let arg = prompt_arg_in(&dir, &prompt);
+        assert_eq!(arg, PromptArg::Inline(prompt.clone()));
+        assert_eq!(arg.text(), prompt);
+        assert!(arg.file().is_none());
+        assert!(!dir.exists(), "no file, not even the directory, is made for a short prompt");
+    }
+
+    #[test]
+    fn a_long_prompt_goes_to_a_private_file_and_the_arg_is_a_short_instruction() {
+        let dir = scratch_dir("long");
+        let prompt = format!("{}\u{e9}end", "y".repeat(MAX_PROMPT_ARG_BYTES));
+        let arg = prompt_arg_in(&dir, &prompt);
+        let path = arg.file().expect("long prompt is written to a file").to_path_buf();
+        assert!(arg.text().len() < 500, "{}", arg.text());
+        assert!(arg.text().contains(&path.display().to_string()));
+        assert!(arg.text().contains("Read that file completely"));
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), prompt);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(std::fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o600);
+        }
+        // Two prompts never share a file.
+        let other = prompt_arg_in(&dir, &prompt);
+        assert_ne!(other.file(), Some(path.as_path()));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn prompt_files_cleanup_removes_what_was_written_and_drop_is_a_safety_net() {
+        let dir = scratch_dir("cleanup");
+        let long = "z".repeat(MAX_PROMPT_ARG_BYTES + 1);
+        let files = PromptFiles::in_dir(dir.clone());
+        let a = files.arg(&long).file().unwrap().to_path_buf();
+        assert!(a.exists());
+        files.cleanup();
+        assert!(!a.exists());
+        let b = files.arg(&long).file().unwrap().to_path_buf();
+        drop(files);
+        assert!(!b.exists(), "dropping the owner removes its files too");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn run_turn_cleans_up_the_backends_files_after_every_kind_of_turn() {
+        struct Writes {
+            files: PromptFiles,
+            path: Mutex<Option<PathBuf>>,
+            script: &'static str,
+        }
+        impl Backend for Writes {
+            fn provider(&self) -> ProviderId {
+                ProviderId::Grok
+            }
+            fn command(&self, req: &TurnRequest) -> Command {
+                *self.path.lock().unwrap() = self.files.arg(&req.prompt).file().map(Path::to_path_buf);
+                let mut c = Command::new("sh");
+                c.arg("-c").arg(self.script).current_dir(&req.dir);
+                c
+            }
+            fn parse_line(&self, line: &str) -> Vec<Event> {
+                match line.trim_end().split_once(':') {
+                    Some(("FIN", t)) => vec![Event::Finished(Finish { text: t.into(), session_id: None, usage: Usage::default() })],
+                    _ => vec![],
+                }
+            }
+            fn classify_error(&self, _: &str) -> ErrorKind {
+                ErrorKind::Other
+            }
+            fn cleanup(&self) {
+                self.files.cleanup();
+            }
+        }
+        let dir = scratch_dir("runner");
+        let mut request = req();
+        request.prompt = "p".repeat(MAX_PROMPT_ARG_BYTES + 1);
+        for script in ["echo FIN:ok", "exit 1"] {
+            let b = Writes { files: PromptFiles::in_dir(dir.clone()), path: Mutex::new(None), script };
+            let r = run_turn(&b, &request, Duration::from_secs(5), &mut |_| {}).await;
+            assert_eq!(r.is_ok(), script.contains("FIN"));
+            let path = b.path.lock().unwrap().clone().expect("the long prompt was written");
+            assert!(!path.exists(), "{script}: left {path:?} behind");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

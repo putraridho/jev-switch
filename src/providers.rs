@@ -150,10 +150,31 @@ pub struct Runtime {
     pub unusable_models: HashSet<(ProviderId, String)>,
     /// The latest plan utilization each provider reported.
     pub plan: HashMap<ProviderId, PlanUsage>,
-    /// Providers whose login failed this run. Kept out of the persisted cooldowns on
-    /// purpose: a login problem is not a usage limit, and `/providers refresh` (or the
-    /// next start) re-checks it, so an hour-long cooldown would only outlast a re-login.
-    pub auth_failed: HashSet<ProviderId>,
+    /// Providers that failed in a way another provider can cover and that is not a usage
+    /// limit, with why. Session-only and kept out of the persisted cooldowns on purpose:
+    /// a login problem or an unusable directory is not a limit, and an hour-long cooldown
+    /// would only outlast a re-login. See [`BlockReason`] for what clears each.
+    pub blocked: HashMap<ProviderId, BlockReason>,
+}
+
+/// Why a provider is skipped for the rest of the session.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BlockReason {
+    /// The login failed. `/providers refresh` clears it once the probe sees a login.
+    Auth,
+    /// The CLI refuses to run in this directory (Codex outside a git repo, Gemini in an
+    /// untrusted workspace). Probing cannot change that, so only `/new` or another
+    /// project directory (a new session) clears it.
+    UnusableHere,
+}
+
+/// What the user can do about [`BlockReason::UnusableHere`] for `provider`.
+fn unusable_here_hint(provider: ProviderId) -> &'static str {
+    match provider {
+        ProviderId::Codex => "needs a git repository here (git init, or work in a repo)",
+        ProviderId::Gemini => "needs a trusted workspace here (run gemini in this directory once to trust it)",
+        _ => "refuses to run in this directory",
+    }
 }
 
 impl Runtime {
@@ -182,7 +203,7 @@ impl Runtime {
             cooldown_path,
             unusable_models: HashSet::new(),
             plan: HashMap::new(),
-            auth_failed: HashSet::new(),
+            blocked: HashMap::new(),
         }
     }
 
@@ -194,12 +215,12 @@ impl Runtime {
 
     /// The (provider, model) pairs routing may pick right now.
     pub fn usable(&self, now_ms: u64) -> Usable {
-        if self.auth_failed.is_empty() {
+        if self.blocked.is_empty() {
             return usable_from(&self.avail, &self.cooldowns, &self.unusable_models, now_ms);
         }
-        let logged_in: Vec<Availability> =
-            self.avail.iter().filter(|a| !self.auth_failed.contains(&a.provider)).cloned().collect();
-        usable_from(&logged_in, &self.cooldowns, &self.unusable_models, now_ms)
+        let unblocked: Vec<Availability> =
+            self.avail.iter().filter(|a| !self.blocked.contains_key(&a.provider)).cloned().collect();
+        usable_from(&unblocked, &self.cooldowns, &self.unusable_models, now_ms)
     }
 
     /// Skip `p` until its limit resets, and remember that across runs. A failed save
@@ -251,11 +272,15 @@ impl Runtime {
                 Some(format!("{provider}:{model} is not on your plan: trying the next model"))
             }
             ErrorKind::Auth => {
-                self.auth_failed.insert(provider);
+                self.blocked.insert(provider, BlockReason::Auth);
                 Some(format!(
                     "{provider} is not logged in or its login expired (log in to {} again, then /providers refresh): trying the next model",
                     login_target(provider)
                 ))
+            }
+            ErrorKind::UnusableHere => {
+                self.blocked.insert(provider, BlockReason::UnusableHere);
+                Some(format!("{provider} {}: trying the next model", unusable_here_hint(provider)))
             }
             ErrorKind::Stalled | ErrorKind::Empty => {
                 excluded.insert((provider, model.to_string()));
@@ -279,7 +304,14 @@ impl Runtime {
         self.avail = avail;
         self.allow.per_token = deepseek_ready(&self.avail);
         let avail = &self.avail;
-        self.auth_failed.retain(|p| !avail.iter().any(|a| a.provider == *p && a.state == State::Ready));
+        self.blocked.retain(|p, reason| {
+            *reason != BlockReason::Auth || !avail.iter().any(|a| a.provider == *p && a.state == State::Ready)
+        });
+    }
+
+    /// `/new`: the directory-dependent blocks end with the session they were learned in.
+    pub fn forget_unusable_here(&mut self) {
+        self.blocked.retain(|_, reason| *reason != BlockReason::UnusableHere);
     }
 
     /// The text of `/providers`: probe results, then what has changed since.
@@ -287,6 +319,7 @@ impl Runtime {
         let mut out = vec![availability::render(&self.avail)];
         out.extend(self.cooldown_lines(now_ms));
         out.extend(self.unusable_lines());
+        out.extend(self.blocked_lines());
         out.push(format!(
             "allowed: credits {}, per-token {}",
             yes_no(self.allow.credits),
@@ -311,6 +344,25 @@ impl Runtime {
         ALL_PROVIDERS
             .iter()
             .filter_map(|p| Some(format!("{p} cooling for {}", format_left(self.cooldowns.active(*p, now_ms)?))))
+            .collect()
+    }
+
+    /// One line per provider blocked for this session, with why and what clears it.
+    fn blocked_lines(&self) -> Vec<String> {
+        ALL_PROVIDERS
+            .iter()
+            .filter_map(|p| {
+                let line = match self.blocked.get(p)? {
+                    BlockReason::Auth => format!(
+                        "{p} blocked this session: not logged in (log in to {}, then /providers refresh)",
+                        login_target(*p)
+                    ),
+                    BlockReason::UnusableHere => {
+                        format!("{p} blocked this session: {} (/new clears it)", unusable_here_hint(*p))
+                    }
+                };
+                Some(line)
+            })
             .collect()
     }
 
@@ -493,6 +545,31 @@ mod tests {
     }
 
     #[test]
+    fn a_directory_refusal_blocks_the_provider_with_a_reason_until_new_session() {
+        let ready = |p| Availability { provider: p, state: State::Ready, plan: None, models: None, detail: String::new(), verified: true };
+        let mut rt = Runtime::for_tests(vec![ready(ProviderId::Claude), ready(ProviderId::Codex)]);
+        let mut excluded = HashSet::new();
+        let err = TurnError { kind: ErrorKind::UnusableHere, message: "Not inside a trusted directory".into() };
+        let note = rt.react(ProviderId::Codex, "gpt-6-luna", &err, &mut excluded, 1_000).unwrap();
+        assert!(note.contains("codex needs a git repository here") && note.contains("trying the next model"), "{note}");
+        assert_eq!(rt.blocked.get(&ProviderId::Codex), Some(&BlockReason::UnusableHere));
+        assert!(rt.cooldowns.active(ProviderId::Codex, 1_000).is_none(), "not a usage limit");
+        assert!(!rt.usable(1_000).contains(catalog::find(ProviderId::Codex, "gpt-6-luna").unwrap()));
+        assert!(rt.usable(1_000).contains(catalog::find(ProviderId::Claude, "claude-sonnet-5-5").unwrap()));
+        assert!(rt.render(1_000).contains("codex blocked this session: needs a git repository here"), "{}", rt.render(1_000));
+        // A probe that sees codex logged in does not change the directory ...
+        rt.apply_probe(vec![ready(ProviderId::Claude), ready(ProviderId::Codex)]);
+        assert_eq!(rt.blocked.get(&ProviderId::Codex), Some(&BlockReason::UnusableHere));
+        // ... but a login block still clears while this one stays; /new clears this one.
+        rt.blocked.insert(ProviderId::Claude, BlockReason::Auth);
+        rt.apply_probe(vec![ready(ProviderId::Claude), ready(ProviderId::Codex)]);
+        assert_eq!(rt.blocked.len(), 1);
+        rt.forget_unusable_here();
+        assert!(rt.blocked.is_empty());
+        assert!(rt.usable(1_000).contains(catalog::find(ProviderId::Codex, "gpt-6-luna").unwrap()));
+    }
+
+    #[test]
     fn a_failed_login_is_session_only_and_clears_when_the_probe_sees_a_login() {
         let ready = |p| Availability { provider: p, state: State::Ready, plan: None, models: None, detail: String::new(), verified: true };
         let mut rt = Runtime::for_tests(vec![ready(ProviderId::Claude), ready(ProviderId::Codex)]);
@@ -508,10 +585,10 @@ mod tests {
         let mut not_logged = ready(ProviderId::Codex);
         not_logged.state = State::NotLoggedIn;
         rt.apply_probe(vec![ready(ProviderId::Claude), not_logged]);
-        assert!(rt.auth_failed.contains(&ProviderId::Codex));
+        assert_eq!(rt.blocked.get(&ProviderId::Codex), Some(&BlockReason::Auth));
         // ... and one that sees the login again offers it right away
         rt.apply_probe(vec![ready(ProviderId::Claude), ready(ProviderId::Codex)]);
-        assert!(rt.auth_failed.is_empty());
+        assert!(rt.blocked.is_empty());
         assert!(rt.usable(1_000).contains(catalog::find(ProviderId::Codex, "gpt-6-luna").unwrap()));
     }
 }

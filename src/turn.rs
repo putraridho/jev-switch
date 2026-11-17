@@ -146,6 +146,8 @@ struct Attempt {
     tools: Vec<String>,
     wall_ms: u64,
     result: Result<TurnOutcome, TurnError>,
+    /// The attempt failed after it had produced text, which was therefore never shown.
+    discarded: bool,
 }
 
 pub struct Engine {
@@ -285,6 +287,7 @@ impl Engine {
         self.sticky = Sticky::default();
         self.previous = None;
         self.last_context_tokens = 0;
+        self.runtime.forget_unusable_here();
     }
 
     /// The text of `/providers`.
@@ -366,6 +369,11 @@ impl Engine {
             let retry_note = self.runtime.react(spec.provider, spec.id, &err, &mut excluded, now);
             match retry_note {
                 Some(note) if attempts < max_attempts => {
+                    let note = if attempt.discarded {
+                        format!("{note} (output of the failed attempt discarded)")
+                    } else {
+                        note
+                    };
                     ui.note(&note);
                     notes.push(note);
                     last_failure = Some((attempt, err));
@@ -535,29 +543,41 @@ impl Engine {
             session_id: self.sessions.session_id(provider).map(String::from),
         };
         let mut tools: Vec<String> = Vec::new();
-        let mut said: Vec<String> = Vec::new();
+        // Progress (tools, plan) is shown as it happens; assistant text is held back until
+        // the attempt is known to have succeeded, so a failed attempt's partial commentary
+        // never sits on screen as if it were an answer.
+        let mut held: Vec<Event> = Vec::new();
         let idle = self.idle_timeout;
         let started = Instant::now();
         let runtime = &mut self.runtime;
         let result = {
-            let mut on_event = |e: &Event| {
-                ui.event(e);
-                match e {
-                    Event::Tool(summary) => tools.push(summary.clone()),
-                    Event::Text(t) if !t.starts_with('\u{2717}') => said.push(t.trim().to_string()),
-                    Event::Plan(plan) => runtime.note_plan(provider, plan.clone()),
-                    _ => {}
+            let mut on_event = |e: &Event| match e {
+                Event::Text(_) => held.push(e.clone()),
+                other => {
+                    ui.event(other);
+                    match other {
+                        Event::Tool(summary) => tools.push(summary.clone()),
+                        Event::Plan(plan) => runtime.note_plan(provider, plan.clone()),
+                        _ => {}
+                    }
                 }
             };
             backend::run_turn(&*backend, &req, idle, &mut on_event).await
         };
-        // Some CLIs deliver the answer only in the final event; show it unless it was already streamed.
+        let discarded = result.is_err() && !held.is_empty();
         if let Ok(out) = &result {
-            if !out.text.trim().is_empty() && !said.iter().any(|t| *t == out.text.trim()) {
-                ui.event(&Event::Text(out.text.trim().to_string()));
+            let streamed = |t: &str| held.iter().any(|e| matches!(e, Event::Text(s) if !s.starts_with('\u{2717}') && s.trim() == t));
+            // Some CLIs deliver the answer only in the final event; show it unless it was already among the texts.
+            let answer = out.text.trim();
+            let missing = !answer.is_empty() && !streamed(answer);
+            for e in &held {
+                ui.event(e);
+            }
+            if missing {
+                ui.event(&Event::Text(answer.to_string()));
             }
         }
-        Attempt { chosen, tools, wall_ms: started.elapsed().as_millis() as u64, result }
+        Attempt { chosen, tools, wall_ms: started.elapsed().as_millis() as u64, result, discarded }
     }
 
     // ------------------------------------------------------------------ outcomes
@@ -690,6 +710,11 @@ mod tests {
     const EMPTY: &str = "printf 'FIN:\\n'";
     const OTHER: &str = "printf 'FAIL:segmentation fault\\n'";
     const STALL: &str = "sleep 5";
+    const UNUSABLE_HERE: &str = "printf 'FAIL:Not inside a trusted directory and --skip-git-repo-check was not specified.\\n'";
+    const FAILS_AFTER_TALKING: &str =
+        "printf 'TOOL:Read a.rs\\nTEXT:let me try this approach\\nFAIL:usage limit reached|1794853451\\n'";
+    const TALKS_THEN_ANSWERS: &str = "printf 'TEXT:first\\nTOOL:Edit b.rs\\nTEXT:second\\nFIN:final\\n'";
+    const ANSWER_ALREADY_SAID: &str = "printf 'TEXT:thinking\\nTEXT:done\\nFIN:done\\n'";
 
     /// A "CLI" that is a shell script, with a grammar of canned lines (see backend tests).
     struct Fake {
@@ -732,6 +757,7 @@ mod tests {
                 }),
                 Some(("FAIL", m)) => Event::Failed { message: m.into() },
                 Some(("TOOL", t)) => Event::Tool(t.into()),
+                Some(("TEXT", t)) => Event::Text(t.into()),
                 _ => return vec![],
             };
             vec![ev]
@@ -753,19 +779,28 @@ mod tests {
         routes: Vec<String>,
         texts: Vec<String>,
         notes: Vec<String>,
+        /// Everything in the order the Ui saw it: "route:", "tool:", "text:", "note:".
+        seen: Vec<String>,
     }
 
     impl Ui for Recorder {
         fn route(&mut self, line: &str) {
             self.routes.push(line.into());
+            self.seen.push("route:".into());
         }
         fn event(&mut self, e: &Event) {
-            if let Event::Text(t) = e {
-                self.texts.push(t.clone());
+            match e {
+                Event::Text(t) => {
+                    self.texts.push(t.clone());
+                    self.seen.push(format!("text:{t}"));
+                }
+                Event::Tool(t) => self.seen.push(format!("tool:{t}")),
+                _ => {}
             }
         }
         fn note(&mut self, line: &str) {
             self.notes.push(line.into());
+            self.seen.push("note:".into());
         }
     }
 
@@ -950,8 +985,86 @@ mod tests {
         // A login problem is not a usage limit: it is kept out of the persisted cooldowns,
         // blocked for this session, and cleared by `/providers refresh`.
         assert!(r.engine.runtime.cooldowns.active(a, NOW).is_none());
-        assert!(r.engine.runtime.auth_failed.contains(&a));
+        assert_eq!(r.engine.runtime.blocked.get(&a), Some(&providers::BlockReason::Auth));
         assert!(r.ui.notes.iter().any(|n| n.contains("log in to") && n.contains(providers::login_target(a))), "{:?}", r.ui.notes);
+    }
+
+    #[tokio::test]
+    async fn a_directory_refusal_fails_over_blocks_the_provider_and_new_session_lifts_it() {
+        let ready = [Claude, Codex];
+        let mut r = rig(&ready);
+        let a = first_choice(TaskType::Feature, &ready);
+        let b = if a == Claude { Codex } else { Claude };
+        r.script(a, UNUSABLE_HERE);
+
+        let report = r.turn("add a retry to the client", want(TaskType::Feature)).await;
+        assert_eq!(report.status, TurnStatus::Answered);
+        assert_eq!(report.provider, Some(b));
+        assert_eq!(report.attempts, 2);
+        assert_eq!(r.started().iter().map(|x| x.provider).collect::<Vec<_>>(), vec![a, b], "rerun on the other provider");
+        assert_eq!(r.engine.runtime.blocked.get(&a), Some(&providers::BlockReason::UnusableHere));
+        assert!(r.engine.runtime.cooldowns.active(a, NOW).is_none(), "not a usage limit");
+        assert!(r.ui.notes.iter().any(|n| n.contains("trying the next model") && n.contains(&a.to_string())), "{:?}", r.ui.notes);
+
+        // Blocked for the rest of the session, even after a probe ...
+        r.engine.runtime.avail = ready.iter().map(|p| availability(*p, State::Ready)).collect();
+        r.turn(LONG, new_task(TaskType::Feature)).await;
+        assert_eq!(r.started().iter().filter(|x| x.provider == a).count(), 1, "never started again");
+        // ... until /new.
+        r.engine.new_session();
+        assert!(r.engine.runtime.blocked.is_empty());
+        r.script(a, OK);
+        r.script(b, UNUSABLE_HERE);
+        r.turn(LONG, new_task(TaskType::Feature)).await;
+        assert_eq!(r.started().iter().filter(|x| x.provider == a).count(), 2);
+    }
+
+    #[tokio::test]
+    async fn a_failed_attempts_text_never_reaches_the_ui_and_the_note_says_so() {
+        let ready = [Claude, Codex];
+        let mut r = rig(&ready);
+        let a = first_choice(TaskType::Feature, &ready);
+        r.script(a, FAILS_AFTER_TALKING);
+
+        let report = r.turn("add a retry to the client", want(TaskType::Feature)).await;
+        assert_eq!(report.status, TurnStatus::Answered);
+        assert!(r.ui.texts.iter().all(|t| t == "the answer"), "{:?}", r.ui.texts);
+        assert!(r.ui.notes.iter().any(|n| n.contains("(output of the failed attempt discarded)")), "{:?}", r.ui.notes);
+        // The failed attempt's tool call was progress and stays visible, ahead of the failover.
+        let tool = r.ui.seen.iter().position(|s| s == "tool:Read a.rs").expect("tool shown");
+        let note = r.ui.seen.iter().position(|s| s == "note:").expect("failover note");
+        assert!(tool < note);
+    }
+
+    #[tokio::test]
+    async fn a_failed_attempt_without_text_has_nothing_to_say_was_discarded() {
+        let ready = [Claude, Codex];
+        let mut r = rig(&ready);
+        let a = first_choice(TaskType::Feature, &ready);
+        r.script(a, QUOTA);
+        r.turn("add a retry to the client", want(TaskType::Feature)).await;
+        assert!(r.ui.notes.iter().all(|n| !n.contains("discarded")), "{:?}", r.ui.notes);
+    }
+
+    #[tokio::test]
+    async fn a_successful_attempts_text_arrives_in_order_after_its_tools_which_stream_live() {
+        let mut r = rig(&[Claude]);
+        r.script(Claude, TALKS_THEN_ANSWERS);
+        let report = r.turn("add a retry to the client", want(TaskType::Feature)).await;
+        assert_eq!(report.status, TurnStatus::Answered);
+        // The tool came through while the attempt ran, ahead of text that was said before it.
+        assert_eq!(
+            &r.ui.seen[1..],
+            ["tool:Edit b.rs", "text:first", "text:second", "text:final"],
+            "{:?}",
+            r.ui.seen
+        );
+
+        // An answer already among the texts is not shown a second time.
+        r.script(Claude, ANSWER_ALREADY_SAID);
+        r.ui = Recorder::default();
+        r.turn("and add a test", want(TaskType::Feature)).await;
+        assert_eq!(r.ui.texts, ["thinking", "done"]);
     }
 
     #[tokio::test]

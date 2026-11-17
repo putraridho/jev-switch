@@ -2,7 +2,9 @@
 //!
 //! Written from the official docs only, never against a recorded run (see
 //! `tests/fixtures/grok/README.md`). Two choices follow from the docs:
-//! - Headless Grok does not read stdin, so the prompt travels in the args.
+//! - Headless Grok does not read stdin, so the prompt travels in the args. A prompt
+//!   too long for one argument goes through the documented `--prompt-file <PATH>`
+//!   instead (user guide 14-headless-mode.md), see [`PromptFiles`].
 //! - `streaming-messages-json` is used instead of `streaming-json` because only it
 //!   has one line holding the whole answer (`result`). `streaming-json` sends the
 //!   answer as `text` fragments and its `end` line has no text, which a stateless
@@ -14,7 +16,9 @@ use serde_json::Value;
 use tokio::process::Command;
 
 use super::claude::tool_summary;
-use super::{classify_common, Backend, ErrorKind, Event, Finish, ProviderId, TurnRequest, Usage};
+use super::{
+    classify_common, Backend, ErrorKind, Event, Finish, PromptArg, PromptFiles, ProviderId, TurnRequest, Usage,
+};
 
 /// Permission mode for headless turns. Never `bypassPermissions` or
 /// `--always-approve`: a routed turn must not get blanket tool access.
@@ -25,12 +29,18 @@ const ALLOWED_TOOLS: [&str; 2] = ["Edit", "Write"];
 
 pub struct GrokBackend {
     pub bin: String,
+    /// Prompt files of the current turn; one instance serves one turn.
+    prompts: PromptFiles,
 }
 
 impl GrokBackend {
+    pub fn new(bin: impl Into<String>) -> Self {
+        Self { bin: bin.into(), prompts: PromptFiles::default() }
+    }
+
     /// Grok Build with the user's own login; the binary can be overridden with `GROK_BIN`.
     pub fn grok() -> Self {
-        Self { bin: std::env::var("GROK_BIN").unwrap_or_else(|_| "grok".into()) }
+        Self::new(std::env::var("GROK_BIN").unwrap_or_else(|_| "grok".into()))
     }
 }
 
@@ -119,8 +129,11 @@ impl Backend for GrokBackend {
     fn command(&self, req: &TurnRequest) -> Command {
         let mut cmd = Command::new(&self.bin);
         // `--single=` (not `-p <prompt>`) so a prompt that starts with `-` is not read as a flag.
-        cmd.arg(format!("--single={}", req.prompt))
-            .args(["--model", &req.model, "--output-format", "streaming-messages-json"])
+        match self.prompts.arg(&req.prompt) {
+            PromptArg::Inline(prompt) => cmd.arg(format!("--single={prompt}")),
+            PromptArg::File { path, .. } => cmd.arg("--prompt-file").arg(path),
+        };
+        cmd.args(["--model", &req.model, "--output-format", "streaming-messages-json"])
             .args(["--no-auto-update", "--no-alt-screen", "--permission-mode", PERMISSION_MODE])
             .current_dir(&req.dir);
         for tool in ALLOWED_TOOLS {
@@ -135,6 +148,10 @@ impl Backend for GrokBackend {
     /// Headless Grok ignores piped stdin; the prompt is in the args.
     fn stdin_payload(&self, _req: &TurnRequest) -> Option<String> {
         None
+    }
+
+    fn cleanup(&self) {
+        self.prompts.cleanup();
     }
 
     fn parse_line(&self, line: &str) -> Vec<Event> {
@@ -173,7 +190,7 @@ mod tests {
     const EMPTY: &str = include_str!("../../tests/fixtures/grok/empty.jsonl");
 
     fn backend() -> GrokBackend {
-        GrokBackend { bin: "grok".into() }
+        GrokBackend::new("grok")
     }
 
     fn parse_all(fixture: &str) -> Vec<Event> {
@@ -283,6 +300,23 @@ mod tests {
         let r = TurnRequest { prompt: "--looks-like-a-flag".into(), ..req(None) };
         assert_eq!(backend().stdin_payload(&r), None);
         assert_eq!(args(&backend().command(&r))[0], "--single=--looks-like-a-flag");
+    }
+
+    #[test]
+    fn a_huge_prompt_goes_through_prompt_file_and_no_argument_is_over_the_limit() {
+        let dir = std::env::temp_dir().join(format!("jev-grok-prompt-{}", std::process::id()));
+        let mut b = backend();
+        b.prompts = PromptFiles::in_dir(dir.clone());
+        let prompt = "q".repeat(500_000);
+        let all = args(&b.command(&TurnRequest { prompt: prompt.clone(), ..req(None) }));
+        assert!(all.iter().all(|a| a.len() <= crate::backend::MAX_PROMPT_ARG_BYTES), "an argument is too long");
+        assert_eq!(all[0], "--prompt-file");
+        let path = std::path::PathBuf::from(&all[1]);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), prompt);
+        assert!(!all.iter().any(|a| a.starts_with("--single")));
+        b.cleanup();
+        assert!(!path.exists());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

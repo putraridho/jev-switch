@@ -13,6 +13,7 @@ pub fn error_kind_name(kind: &ErrorKind) -> &'static str {
         ErrorKind::Auth => "auth",
         ErrorKind::Empty => "empty",
         ErrorKind::Stalled => "stalled",
+        ErrorKind::UnusableHere => "unusable_here",
         ErrorKind::Other => "other",
     }
 }
