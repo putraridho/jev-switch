@@ -24,6 +24,7 @@ pub mod handoff;
 pub mod lineedit;
 pub mod log;
 pub mod orchestrate;
+pub mod permissions;
 pub mod prefix;
 pub mod providers;
 pub mod repl;

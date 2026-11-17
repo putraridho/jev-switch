@@ -1,11 +1,13 @@
 # jev-router
 
-A small, reliable LLM router, in Rust. Jev (TypeSafe System One) judges each request;
-code maps the judgment to a model and gates the cheap route on confidence. Chat, the
-Claude Code gateway and `jev-claude` route between Claude models. `jev-code` is a
-coding agent that routes each turn across several providers' coding CLIs (Claude,
-Codex, Gemini, DeepSeek, Grok), using only the ones you can really use right now (see
-[Code mode](#code-mode-jev-code)). The router fixes the two things that make routers bad:
+A Jev-gated LLM router for Claude Code, in Rust. Jev (TypeSafe System One) judges each
+request; code maps the judgment to a model and gates the cheap route on confidence. The
+gateway, started by `jev-claude`, sits in front of Claude Code and routes each turn between
+Claude models, and in orchestrate mode splits a big task across workers. `jev-code` is a
+terminal coding agent that routes each turn across Claude, Codex, Gemini, Grok and DeepSeek,
+using only the providers you can really use right now and failing over when one cannot take
+the turn (see [Code mode](#code-mode-jev-code)). A chat REPL and the `tune` calibration
+sweep complete the set. The router fixes the two things that make routers bad:
 
 1. **Memory across switches.** The model has no memory — the *transcript* does.
    One canonical history (`Transcript`) is sent in full to whichever model a turn
@@ -142,8 +144,17 @@ strong model and carried out by Sonnet subagents. Everything else routes as abov
   The Fable-planner and Opus-worker path is unmeasured. `scripts/orch_report.py` prices real
   tasks. Turn it on per session with `/orchestrate on`; `JEV_ORCH=off` in the gateway's
   environment disables the check everywhere.
-- **Logs.** `orch.jsonl` (`JEV_ORCH_LOG`): one line per check (`multi_part_p`,
-  `trigger`, `cutoff`, `planner`, `hard_p`, prompt start) and one per worker
+- **Sequences are not orchestrated.** The same Jev request also asks whether the prompt is
+  a sequence of dependent steps ("run the tests, then check the report, then refactor",
+  "do 1 -> 2 -> 3"); at `sequential_p` 0.70 or more the check is vetoed, because parallel
+  workers gain nothing there. The veto is its own decision, not a lowered score: the gate
+  refuses a vetoed prompt whatever `ORCH_TRIGGER_P` is, and `multi_part_p` is never rewritten.
+  Measured on 1,651 logged prompts: every parallel task kept its score, and the one clearly
+  sequential trigger (0.76) was held back.
+- **Logs.** `orch.jsonl` (`JEV_ORCH_LOG`): one line per check (the raw `multi_part_p` (what the cutoff
+  is compared with), `sequential_p`, `vetoed` (a sequence, never orchestrated), `trigger`, `cutoff`,
+  `planner`, `hard_p`, prompt start; rows from before the veto have only `multi_part_p`, and
+  rows from the first veto version also an `orch_score` that is no longer written) and one per worker
   (`kind: "worker"`, `model`, `planner`, `prompt_id`, `tool_use_id`, `reason`, `signals`).
   Every `usage.jsonl` row has `orch_planner`, set while the session's turn is orchestrated
   (workers' rows included). `scripts/orch_report.py --exclude PREFIX` skips test sessions. Each turn's `decision.orchestrate`
@@ -363,10 +374,35 @@ downgrade is held for a few turns (the prompt cache).
 **Hard security rule.** Security work (strong keywords, a high `security_review`, or
 auth/session edits) overrides Jev's task label and never goes to DeepSeek or Grok.
 
-**Permissions.** Edits are auto-accepted on Claude (`CODE_PERMISSION_MODE=acceptEdits`);
-its commands need your Claude Code allowlist or `CODE_ALLOWED_TOOLS="Bash(cargo test) Bash(git status)"`.
-Codex runs in a workspace-write sandbox (`CODEX_SANDBOX`, never full access). Denied
-actions are reported, never silently skipped. Use it inside a git repo.
+**Permissions.** Edits are auto-accepted on Claude (`CODE_PERMISSION_MODE=acceptEdits`).
+Anything else that needs approval (a command, a read outside the project, a write to
+`.claude/settings.local.json`) is asked to you in the terminal on Claude and DeepSeek (both
+run through Claude Code, which `jev-code` starts with `--input-format stream-json
+--permission-prompt-tool stdio`, so it asks its host instead of denying):
+
+    Allow Bash: cargo test --quiet?  [y]es  [n]o  [a]lways in this project
+
+One key answers. `a` also saves a rule in `<project>/.claude/settings.local.json`
+(`Bash(cargo test:*)`, `Read(//abs/dir/**)`, `Write(//abs/file)`), which Claude Code reads
+itself, so it does not ask again. `a` is offered only for what is safe to remember for
+good: read-only programs (`ls`, `cat`, `grep`, ...) and the project's build/test commands
+(`cargo test`, `git diff`, `npm test`, ...), never a program that overwrites, deletes, sends
+data, installs, pushes or runs scripts (`tee`, `cp`, `curl`, `git push`, `npm install`); a
+folder outside the project only when it is inside your home folder (not home itself, not a
+hidden or credentials folder such as `~/.ssh`) or inside the temp folder. Otherwise the
+question says why and offers only y/n. The question shows the call exactly as it will run
+(a sub-agent's whole prompt included); only path fields are shown relative to the project.
+Ctrl-C at the question denies it and stops the turn. The
+idle timeout does not run while a question waits. `/permissions` lists the rules (and your
+user-level `~/.claude/settings.json` ones, read only); `/permissions allow <rule>`,
+`/permissions remove <rule>` and `/permissions dir <path>` (an additional folder, which is
+how reads outside the project are allowed) edit the project file, keeping every other key,
+refusing a file that is not valid JSON, writing it atomically with mode 0600. Where no one
+can be asked (`-p`, piped input) the call is denied at once with a hint; `CODE_ALLOWED_TOOLS="Bash(cargo test) Bash(git status)"`
+still pre-allows. The model is told (a fixed `--append-system-prompt`) that it runs inside
+jev-code, that approvals are asked automatically, and not to suggest Claude Code UI keys.
+Codex, Gemini and Grok have no host approval protocol here: Codex runs in a workspace-write
+sandbox (`CODEX_SANDBOX`, never full access) and decides for itself. Use it inside a git repo.
 
 **Logs.** `JEV_CODE_LOG` (turn log, one row per attempt with the decision reason, Jev's
 signals, attempt number and failover notes). A crash writes a short note to
@@ -459,7 +495,7 @@ beat any guess. Re-run `tune` when prompts, models, or request mix change.
 - `src/bin/code.rs` — thin shell for the routed coding agent (arguments, terminal, the loop);
   `src/cli.rs` parses arguments, `src/repl.rs` runs commands and turns (Ctrl-C included),
   `src/console.rs` prints a turn and the live status line, `src/lineedit.rs` is the line editor
-  (history, Tab, hint), `src/views.rs` builds each screen's facts, `src/uifmt.rs` formats every string,
+  (history, Tab, hint), `src/views.rs` builds each screen's facts, `src/uifmt/` formats every string,
   `src/terminal.rs` restores the terminal; `src/turn.rs` runs one turn
   (Jev, choose, hand off, run, fail over), `src/routing.rs` picks the model, `src/catalog.rs`
   lists the models and chains, `src/providers.rs` and `src/availability.rs` know who is

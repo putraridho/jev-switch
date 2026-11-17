@@ -9,6 +9,7 @@
 
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
+use std::fmt;
 use std::path::PathBuf;
 use std::sync::{Mutex, PoisonError};
 
@@ -61,8 +62,22 @@ pub fn choose_gemini_flavor(gemini_on_path: bool, gemini_configured: bool) -> Fl
 /// the instance, so sharing one across turns would mix their output: build a new one
 /// every time (construction is cheap).
 pub fn backend_for(provider: ProviderId) -> Box<dyn Backend> {
+    build_backend(provider, false)
+}
+
+/// [`backend_for`] for the `jev-code` session: the Claude Code CLIs (Claude, DeepSeek)
+/// ask the host about tool approvals and know where they run. The other CLIs are the same
+/// as in [`backend_for`]: they have no host approval protocol, Codex's sandbox decides.
+pub fn session_backend_for(provider: ProviderId) -> Box<dyn Backend> {
+    build_backend(provider, true)
+}
+
+fn build_backend(provider: ProviderId, session: bool) -> Box<dyn Backend> {
+    let claude_code = |backend: ClaudeBackend| -> Box<dyn Backend> {
+        Box::new(if session { backend.in_session() } else { backend })
+    };
     match provider {
-        ProviderId::Claude => Box::new(ClaudeBackend::claude()),
+        ProviderId::Claude => claude_code(ClaudeBackend::claude()),
         ProviderId::Codex => Box::new(CodexBackend::codex()),
         ProviderId::Grok => Box::new(GrokBackend::grok()),
         ProviderId::Gemini => Box::new(match detect_gemini_flavor() {
@@ -72,7 +87,7 @@ pub fn backend_for(provider: ProviderId) -> Box<dyn Backend> {
         // No key means the caller never routes here; an empty key just fails the turn.
         ProviderId::DeepSeek => {
             let key = envfile::lookup("DEEPSEEK_API_KEY").unwrap_or_default();
-            Box::new(ClaudeBackend::with_profile(ProviderId::DeepSeek, deepseek_env(&key)))
+            claude_code(ClaudeBackend::with_profile(ProviderId::DeepSeek, deepseek_env(&key)))
         }
     }
 }
@@ -92,7 +107,7 @@ fn detect_gemini_flavor() -> Flavor {
         .and_then(|h| std::fs::read_to_string(PathBuf::from(h).join(".gemini/settings.json")).ok());
     // The same rule the availability probe uses, so "ready" and "which CLI" agree.
     let configured = crate::backend::gemini::is_configured(settings.as_deref(), |n| envfile::lookup(n).is_some());
-    choose_gemini_flavor(crate::availability::on_path(&GeminiBackend::gemini_cli().bin), configured)
+    choose_gemini_flavor(crate::availability::installed_for_real(&GeminiBackend::gemini_cli().bin), configured)
 }
 
 // ------------------------------------------------------------- pure decisions
@@ -183,6 +198,22 @@ pub struct Runtime {
     /// a login problem or an unusable directory is not a limit, and an hour-long cooldown
     /// would only outlast a re-login. See [`BlockReason`] for what clears each.
     pub blocked: HashMap<ProviderId, BlockReason>,
+    /// The background retry of probes that timed out at startup, until
+    /// [`Runtime::absorb_late`] has folded its answers into `avail`.
+    late: Option<LateProbes>,
+}
+
+/// Answers from the background retry, and what to tell the user about the ones applied.
+struct LateProbes {
+    answers: tokio::sync::mpsc::UnboundedReceiver<Availability>,
+    /// Called from `absorb_late`, only for a provider that really became Ready.
+    on_ready: Box<dyn Fn(&Availability) + Send>,
+}
+
+impl fmt::Debug for LateProbes {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("LateProbes")
+    }
 }
 
 /// Why a provider is skipped for the rest of the session.
@@ -233,6 +264,7 @@ impl Runtime {
             unusable_models: HashSet::new(),
             plan: HashMap::new(),
             blocked: HashMap::new(),
+            late: None,
         }
     }
 
@@ -354,6 +386,64 @@ impl Runtime {
         self.blocked.retain(|p, reason| {
             *reason != BlockReason::Auth || !avail.iter().any(|a| a.provider == *p && a.state == State::Ready)
         });
+    }
+
+    /// Re-check once, in the background, the providers whose startup probe could not tell
+    /// (a lazy wrapper's first run can outlast the startup cap), with a longer cap. Startup
+    /// does not wait for it. The answers reach this runtime through [`Runtime::absorb_late`],
+    /// where the caller holds `&mut self`, so a running turn never sees routing change under it.
+    /// `on_ready` runs there too, once per provider that was Unknown and is now Ready: a
+    /// late answer a `/providers refresh` already settled is refused, and so is not announced.
+    pub fn retry_slow_probes(&mut self, on_ready: impl Fn(&Availability) + Send + 'static) {
+        self.retry_slow_probes_with(availability::RETRY_CAP, availability::probe_provider, on_ready);
+    }
+
+    fn retry_slow_probes_with<P, Fut>(&mut self, cap: std::time::Duration, probe: P, on_ready: impl Fn(&Availability) + Send + 'static)
+    where
+        P: Fn(ProviderId) -> Fut + Send + 'static,
+        Fut: std::future::Future<Output = Availability> + Send + 'static,
+    {
+        let providers = availability::retry_candidates(&self.avail);
+        if providers.is_empty() {
+            return;
+        }
+        let (tx, answers) = tokio::sync::mpsc::unbounded_channel();
+        self.late = Some(LateProbes { answers, on_ready: Box::new(on_ready) });
+        tokio::spawn(availability::retry_unknown(providers, cap, probe, move |answer| {
+            let _ = tx.send(answer);
+        }));
+    }
+
+    /// Apply what the background retry has found so far, announce (through the `on_ready`
+    /// given to [`Runtime::retry_slow_probes`]) each provider that became Ready by it, and
+    /// return whether anything changed. Call it where no turn is running (before a command
+    /// or a turn starts).
+    pub fn absorb_late(&mut self) -> bool {
+        use tokio::sync::mpsc::error::TryRecvError;
+        let Some(late) = self.late.as_mut() else { return false };
+        let mut merged = self.avail.clone();
+        let mut applied = Vec::new();
+        let finished = loop {
+            match late.answers.try_recv() {
+                Ok(answer) => {
+                    if availability::merge_late(&mut merged, answer.clone()) {
+                        applied.push(answer);
+                    }
+                }
+                Err(TryRecvError::Empty) => break false,
+                Err(TryRecvError::Disconnected) => break true,
+            }
+        };
+        if !applied.is_empty() {
+            self.apply_probe(merged);
+        }
+        if let Some(late) = &self.late {
+            applied.iter().filter(|a| a.state == State::Ready).for_each(|a| (late.on_ready)(a));
+        }
+        if finished {
+            self.late = None;
+        }
+        !applied.is_empty()
     }
 
     /// `/new`: the directory-dependent blocks end with the session they were learned in.
@@ -730,5 +820,85 @@ mod tests {
         assert!(allowances_for(None, &[claude("Ultra")]).credits);
         assert!(!allowances_for(None, &[claude("pro")]).credits);
         assert!(allowances_for(Some("1"), &[claude("pro")]).credits, "the env opt-in still works on Pro");
+    }
+
+    // ---- a slow probe is re-checked once, in the background
+
+    fn slow_start() -> Runtime {
+        Runtime::for_tests(vec![availability(Claude, State::Ready), availability(Codex, State::Unknown), availability(Gemini, State::NotLoggedIn)])
+    }
+
+    #[tokio::test]
+    async fn a_provider_that_timed_out_at_startup_becomes_usable_once_its_retry_succeeds() {
+        let mut rt = slow_start();
+        assert!(!rt.usable(NOW).contains(some_model(Codex)), "unknown is not routed to");
+        let said = std::sync::Arc::new(Mutex::new(Vec::new()));
+        let said_in = said.clone();
+        // The fake CLI answers after 30 ms, well inside the retry cap.
+        let probe = |p: ProviderId| async move {
+            tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+            availability(p, State::Ready)
+        };
+        rt.retry_slow_probes_with(std::time::Duration::from_secs(5), probe, move |a| said_in.lock().unwrap().push(a.provider));
+        assert!(!rt.absorb_late(), "nothing has arrived yet, and asking must not block");
+        assert!(said.lock().unwrap().is_empty(), "no notice before the answer is applied");
+        while rt.late.is_some() {
+            rt.absorb_late();
+            tokio::task::yield_now().await;
+        }
+        assert_eq!(*said.lock().unwrap(), vec![Codex], "announced once, when it was applied");
+        assert_eq!(rt.avail.iter().find(|a| a.provider == Codex).map(|a| a.state), Some(State::Ready));
+        assert!(rt.usable(NOW).contains(some_model(Codex)));
+        assert_eq!(rt.avail.iter().find(|a| a.provider == Gemini).map(|a| a.state), Some(State::NotLoggedIn));
+        assert!(!rt.absorb_late(), "applied once");
+    }
+
+    #[tokio::test]
+    async fn a_retry_that_ends_unknown_again_changes_nothing_and_is_not_repeated() {
+        let mut rt = slow_start();
+        let probe = |p: ProviderId| async move { availability(p, State::Unknown) };
+        rt.retry_slow_probes_with(std::time::Duration::from_secs(5), probe, |_| panic!("not ready"));
+        while rt.late.is_some() {
+            assert!(!rt.absorb_late());
+            tokio::task::yield_now().await;
+        }
+        assert_eq!(rt.avail[1].state, State::Unknown);
+        assert!(rt.late.is_none(), "one retry only: the receiver is gone");
+    }
+
+    #[tokio::test]
+    async fn nothing_is_retried_when_every_probe_gave_an_answer() {
+        let mut rt = runtime();
+        rt.retry_slow_probes_with(std::time::Duration::from_secs(5), |p| async move { availability(p, State::Ready) }, |_| panic!("no retry"));
+        assert!(rt.late.is_none());
+    }
+
+    #[tokio::test]
+    async fn a_refresh_that_already_found_the_provider_is_not_overwritten_by_the_late_answer() {
+        let mut rt = slow_start();
+        let said = std::sync::Arc::new(Mutex::new(Vec::new()));
+        let said_in = said.clone();
+        // The late probe answers Ready, but only after the test has let a refresh settle it.
+        let (release, gate) = tokio::sync::oneshot::channel::<()>();
+        let gate = std::sync::Arc::new(tokio::sync::Mutex::new(Some(gate)));
+        let probe = move |p: ProviderId| {
+            let gate = gate.clone();
+            async move {
+                if let Some(g) = gate.lock().await.take() {
+                    let _ = g.await;
+                }
+                availability(p, State::Ready)
+            }
+        };
+        rt.retry_slow_probes_with(std::time::Duration::from_secs(5), probe, move |a| said_in.lock().unwrap().push(a.provider));
+        rt.apply_probe(vec![availability(Claude, State::Ready), availability(Codex, State::NotLoggedIn)]);
+        release.send(()).unwrap();
+        while rt.late.is_some() {
+            rt.absorb_late();
+            tokio::task::yield_now().await;
+        }
+        assert_eq!(rt.avail[1].state, State::NotLoggedIn);
+        assert!(!rt.usable(NOW).contains(some_model(Codex)), "the refused answer does not make it routable");
+        assert!(said.lock().unwrap().is_empty(), "and nobody is told it is ready: {:?}", said.lock().unwrap());
     }
 }

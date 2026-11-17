@@ -9,7 +9,10 @@ pub mod codex;
 pub mod gemini;
 pub mod grok;
 
+use std::collections::VecDeque;
+use std::future::Future;
 use std::path::{Path, PathBuf};
+use std::pin::Pin;
 use std::process::Stdio;
 use std::str::FromStr;
 use std::sync::{Mutex, PoisonError};
@@ -17,6 +20,7 @@ use std::time::Duration;
 
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command};
+use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
 use crate::anthropic::{is_limit_message, is_limit_phrase};
@@ -122,6 +126,74 @@ pub enum Event {
     Finished(Finish),
     Failed { message: String },
     Plan(PlanUsage),
+    /// The CLI is waiting for the host to say whether it may run a tool. Only backends
+    /// that are [`Backend::interactive`] produce it; [`run_turn_with`] answers it through
+    /// the [`Approver`] and it never reaches `on_event`.
+    PermissionRequest(PermissionRequest),
+    /// The CLI no longer needs the answer to the request `id` (the turn was interrupted, a
+    /// hook settled it, it timed out). [`run_turn_with`] drops the pending question, tells the
+    /// [`Approver`] ([`Approver::withdrawn`]) and writes no answer for it; it never reaches
+    /// `on_event`. An id that is not waiting (answered already, or not a question) is ignored.
+    PermissionWithdrawn { id: String },
+}
+
+/// A tool call the CLI wants approval for.
+#[derive(Clone, PartialEq)]
+pub struct PermissionRequest {
+    /// The CLI's id for the question; the answer must carry it back.
+    pub id: String,
+    pub tool: String,
+    /// One line for the person: the command, or the path (and size) for a file write.
+    pub summary: String,
+    /// The tool's input exactly as the CLI sent it. It can hold secrets: it is only ever
+    /// echoed back to the CLI, never logged or shown.
+    pub input: serde_json::Value,
+    /// The path outside the allowed folders that made the CLI ask, when it said.
+    pub blocked_path: Option<String>,
+}
+
+impl std::fmt::Debug for PermissionRequest {
+    /// Leaves out the summary and the input: both can hold a secret, and `{:?}` ends up in logs.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PermissionRequest").field("id", &self.id).field("tool", &self.tool).finish_non_exhaustive()
+    }
+}
+
+/// What happens to a [`PermissionRequest`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Decision {
+    /// Run it this once.
+    Allow,
+    /// Run it, and the approver has remembered a rule so the CLI does not ask again.
+    AllowAlways,
+    /// Do not run it; the model is told `reason`.
+    Deny { reason: String },
+}
+
+/// Why a request is denied when nobody can be asked.
+pub const NO_ONE_TO_ASK: &str = "no one to ask: this session has no terminal to approve tool calls";
+
+/// Whoever answers [`PermissionRequest`]s while a turn runs. The turn waits for the answer
+/// without any idle timeout: a person can take as long as they need. The turn keeps reading
+/// the CLI meanwhile, so the decision may be abandoned: the future is dropped and
+/// [`Approver::withdrawn`] follows. Only a future that yields can be abandoned, so an
+/// implementation that waits for a person must wait asynchronously.
+pub trait Approver: Send + Sync {
+    fn decide<'a>(&'a self, req: &'a PermissionRequest) -> Pin<Box<dyn Future<Output = Decision> + Send + 'a>>;
+
+    /// The question for `req` was asked and then dropped without an answer: the CLI withdrew
+    /// it, finished, or died. Take the question off the screen. Called after the `decide`
+    /// future is dropped, once per such question, never for one that was answered.
+    fn withdrawn(&self, _req: &PermissionRequest) {}
+}
+
+/// The approver of a run that has no one to ask: every request is denied at once.
+pub struct NoApprover;
+
+impl Approver for NoApprover {
+    fn decide<'a>(&'a self, _: &'a PermissionRequest) -> Pin<Box<dyn Future<Output = Decision> + Send + 'a>> {
+        Box::pin(async { Decision::Deny { reason: NO_ONE_TO_ASK.to_string() } })
+    }
 }
 
 /// Everything a backend needs to run one turn.
@@ -193,6 +265,19 @@ pub trait Backend: Send + Sync {
 
     /// Parse ONE stdout line. Non-JSON or irrelevant lines give an empty Vec.
     fn parse_line(&self, line: &str) -> Vec<Event>;
+
+    /// Whether this CLI asks the host before running a tool ([`Event::PermissionRequest`])
+    /// and waits for [`Backend::permission_response`] on stdin. Such a CLI keeps stdin open
+    /// until it has answered the turn; every other CLI gets its prompt and EOF at once.
+    fn interactive(&self) -> bool {
+        false
+    }
+
+    /// The line (without the newline) that answers `req` on the CLI's stdin. Only called
+    /// when [`Backend::interactive`].
+    fn permission_response(&self, _req: &PermissionRequest, _decision: &Decision) -> Option<String> {
+        None
+    }
 
     /// Whether [`Backend::attach_mcp`] works for this CLI. Orchestration only picks a
     /// planner among providers that say yes: a planner that cannot call the delegate
@@ -436,15 +521,45 @@ enum Ended {
 /// Marker for "no stdout line within the idle timeout".
 struct Idle;
 
-/// Write the prompt on its own task and close stdin. A separate task so a big
-/// prompt cannot deadlock against a CLI that starts printing before it reads all
-/// of stdin; closing matters because some CLIs wait forever for end of input.
-fn feed_stdin(stdin: Option<ChildStdin>, payload: Option<String>) {
-    let (Some(mut stdin), Some(payload)) = (stdin, payload) else { return };
-    tokio::spawn(async move {
-        // A CLI that exits early closes the pipe; its exit is reported by the runner.
-        let _ = stdin.write_all(payload.as_bytes()).await;
-    });
+/// Everything written to the CLI's stdin goes through one task, so a big prompt cannot
+/// deadlock against a CLI that starts printing before it reads all of stdin, and so the
+/// runner can keep writing (permission answers) while it reads stdout. Stdin closes when
+/// the feed is closed or dropped; some CLIs wait forever for end of input.
+struct StdinFeed(Option<mpsc::UnboundedSender<String>>);
+
+impl StdinFeed {
+    /// Send `payload`, then close stdin at once unless `keep_open`.
+    fn start(stdin: Option<ChildStdin>, payload: Option<String>, keep_open: bool) -> Self {
+        let Some(mut stdin) = stdin else { return Self(None) };
+        let (tx, mut rx) = mpsc::unbounded_channel::<String>();
+        tokio::spawn(async move {
+            while let Some(text) = rx.recv().await {
+                // A CLI that exits early closes the pipe; its exit is reported by the runner.
+                if stdin.write_all(text.as_bytes()).await.is_err() {
+                    break;
+                }
+            }
+        });
+        let mut feed = Self(Some(tx));
+        if let Some(payload) = payload {
+            feed.send(payload);
+        }
+        if !keep_open {
+            feed.close();
+        }
+        feed
+    }
+
+    fn send(&self, text: String) {
+        if let Some(tx) = &self.0 {
+            let _ = tx.send(text);
+        }
+    }
+
+    /// Close stdin once what was sent has been written.
+    fn close(&mut self) {
+        self.0 = None;
+    }
 }
 
 /// Drain stderr concurrently, keeping only the tail: an unread pipe fills up and
@@ -473,40 +588,187 @@ fn last_chars(s: &str, n: usize) -> String {
     s.chars().skip(skip).collect()
 }
 
-/// Read stdout until the CLI fails, ends, or goes quiet for `idle`. After a
-/// `Finished` the stream is still read to EOF so the process can exit cleanly,
-/// but a CLI that then hangs does not lose the answer it already gave.
-async fn pump(
-    backend: &dyn Backend,
-    stdout: ChildStdout,
+/// Reads the CLI's stdout to its end and acts on what it finds.
+///
+/// Outside a question the read has the idle watchdog: `idle` of silence is a stall, unless
+/// the answer already came. During a question (a [`PermissionRequest`] being decided) stdout
+/// is read too, with no watchdog, so a [`Event::PermissionWithdrawn`], the result, or the CLI
+/// dying reach the runner while the person is still deciding. Events that arrive then are
+/// held and delivered, in order, once the question is over.
+struct Pump<'a> {
+    backend: &'a dyn Backend,
+    reader: BufReader<ChildStdout>,
+    /// The line being read. Kept until it is complete: a read that lost a `select!` race
+    /// leaves its partial bytes here and the next read continues them.
+    raw: Vec<u8>,
     idle: Duration,
-    on_event: &mut (dyn FnMut(&Event) + Send),
-    plan: &mut Option<PlanUsage>,
-) -> Result<Ended, Idle> {
-    let mut reader = BufReader::new(stdout);
-    let mut finished: Option<Finish> = None;
-    let mut raw = Vec::new();
-    loop {
-        raw.clear();
-        match tokio::time::timeout(idle, reader.read_until(b'\n', &mut raw)).await {
-            Err(_) if finished.is_some() => break,
-            Err(_) => return Err(Idle),
-            Ok(Ok(n)) if n > 0 => {}
-            Ok(_) => break,
+    on_event: &'a mut (dyn FnMut(&Event) + Send),
+    plan: &'a mut Option<PlanUsage>,
+    approver: &'a dyn Approver,
+    feed: &'a mut StdinFeed,
+    finished: Option<Finish>,
+    /// Questions the CLI asked while another was being decided, oldest first.
+    queue: VecDeque<PermissionRequest>,
+}
+
+/// What a line did to the wait it arrived in.
+enum Signal {
+    Failed(String),
+    Finished,
+    Withdrawn(String),
+}
+
+/// How the read of one line went.
+enum Line {
+    Events(Vec<Event>),
+    Eof,
+    Idle,
+}
+
+/// What a question did to the stream.
+enum Asked {
+    /// Over, answered or withdrawn: read on.
+    Over,
+    /// The stream ended or failed while it was waiting.
+    Ended(Ended),
+}
+
+impl Pump<'_> {
+    /// The line the last read completed, as events; `Eof` at the end of the stream.
+    fn take_line(&mut self, read: std::io::Result<usize>) -> Line {
+        if !matches!(read, Ok(n) if n > 0) && self.raw.is_empty() {
+            return Line::Eof;
         }
-        for event in backend.parse_line(&String::from_utf8_lossy(&raw)) {
-            match event {
-                Event::Finished(f) => finished = Some(f),
-                Event::Failed { message } => return Ok(Ended::Failed(message)),
-                Event::Plan(p) => {
-                    on_event(&Event::Plan(p.clone()));
-                    *plan = Some(p);
+        let events = self.backend.parse_line(&String::from_utf8_lossy(&self.raw));
+        self.raw.clear();
+        Line::Events(events)
+    }
+
+    /// The next line, under the idle watchdog.
+    async fn next_line(&mut self) -> Line {
+        match tokio::time::timeout(self.idle, self.reader.read_until(b'\n', &mut self.raw)).await {
+            Ok(read) => self.take_line(read),
+            Err(_) => Line::Idle,
+        }
+    }
+
+    fn deliver(&mut self, event: Event) {
+        if let Event::Plan(p) = &event {
+            *self.plan = Some(p.clone());
+        }
+        (self.on_event)(&event);
+    }
+
+    /// Apply one event. Something to show goes to `held` while a question is pending and
+    /// to `on_event` at once otherwise; what changes the wait comes back as a [`Signal`].
+    fn absorb(&mut self, event: Event, held: Option<&mut Vec<Event>>) -> Option<Signal> {
+        match event {
+            Event::Finished(f) => {
+                self.finished = Some(f);
+                self.queue.clear();
+                // An interactive CLI keeps reading stdin until told there is no more.
+                self.feed.close();
+                Some(Signal::Finished)
+            }
+            Event::Failed { message } => Some(Signal::Failed(message)),
+            Event::PermissionRequest(req) => {
+                if self.finished.is_none() {
+                    self.queue.push_back(req);
                 }
-                shown => on_event(&shown),
+                None
+            }
+            Event::PermissionWithdrawn { id } => {
+                self.queue.retain(|q| q.id != id);
+                Some(Signal::Withdrawn(id))
+            }
+            shown => {
+                match held {
+                    Some(held) => held.push(shown),
+                    None => self.deliver(shown),
+                }
+                None
             }
         }
     }
-    Ok(finished.map_or(Ended::Eof, Ended::Finished))
+
+    /// Decide `req` while reading on. Its answer is written once, when the decision
+    /// completes. A withdrawal of `req`, the result, a failure or the end of the stream
+    /// drops the decision instead and tells the approver; nothing is written then.
+    async fn ask(&mut self, req: PermissionRequest) -> Asked {
+        let approver = self.approver;
+        let mut decision = approver.decide(&req);
+        let mut held: Vec<Event> = Vec::new();
+        let mut ended: Option<Ended> = None;
+        let answer = loop {
+            let line = tokio::select! {
+                d = &mut decision => break Some(d),
+                read = self.reader.read_until(b'\n', &mut self.raw) => self.take_line(read),
+            };
+            let Line::Events(events) = line else {
+                ended = Some(Ended::Eof);
+                break None;
+            };
+            let mut over = false;
+            for event in events {
+                match self.absorb(event, Some(&mut held)) {
+                    Some(Signal::Failed(m)) => {
+                        ended.get_or_insert(Ended::Failed(m));
+                        over = true;
+                    }
+                    Some(Signal::Finished) => over = true,
+                    Some(Signal::Withdrawn(id)) => over |= id == req.id,
+                    None => {}
+                }
+            }
+            if over {
+                break None;
+            }
+        };
+        match answer {
+            Some(d) => {
+                if let Some(line) = self.backend.permission_response(&req, &d) {
+                    self.feed.send(format!("{line}\n"));
+                }
+            }
+            None => {
+                drop(decision);
+                approver.withdrawn(&req);
+            }
+        }
+        for event in held {
+            self.deliver(event);
+        }
+        ended.map_or(Asked::Over, Asked::Ended)
+    }
+
+    /// The result of the stream so far, once it is over.
+    fn conclude(&mut self) -> Ended {
+        self.finished.take().map_or(Ended::Eof, Ended::Finished)
+    }
+
+    async fn run(&mut self) -> Result<Ended, Idle> {
+        loop {
+            let events = match self.next_line().await {
+                Line::Events(events) => events,
+                Line::Eof => break,
+                Line::Idle if self.finished.is_some() => break,
+                Line::Idle => return Err(Idle),
+            };
+            for event in events {
+                if let Some(Signal::Failed(message)) = self.absorb(event, None) {
+                    return Ok(Ended::Failed(message));
+                }
+            }
+            while let Some(req) = self.queue.pop_front() {
+                match self.ask(req).await {
+                    Asked::Over => {}
+                    Asked::Ended(Ended::Failed(m)) => return Ok(Ended::Failed(m)),
+                    Asked::Ended(_) => return Ok(self.conclude()),
+                }
+            }
+        }
+        Ok(self.conclude())
+    }
 }
 
 /// An answer can still be a failure: empty, or the Claude CLI's way of saying the
@@ -559,10 +821,22 @@ pub async fn run_turn(
     idle_timeout: Duration,
     on_event: &mut (dyn FnMut(&Event) + Send),
 ) -> Result<TurnOutcome, TurnError> {
+    run_turn_with(backend, req, idle_timeout, on_event, &NoApprover).await
+}
+
+/// [`run_turn`] with someone to answer the tool approvals of an [`Backend::interactive`]
+/// CLI. For any other backend `approver` is never asked.
+pub async fn run_turn_with(
+    backend: &dyn Backend,
+    req: &TurnRequest,
+    idle_timeout: Duration,
+    on_event: &mut (dyn FnMut(&Event) + Send),
+    approver: &dyn Approver,
+) -> Result<TurnOutcome, TurnError> {
     // A guard, not a call after the await: a cancelled turn drops this future, and the
     // backend's files must go then too.
     let _cleanup = CleanupOnDrop(backend);
-    run_child(backend, req, idle_timeout, on_event).await
+    run_child(backend, req, idle_timeout, on_event, approver).await
 }
 
 /// Runs [`Backend::cleanup`] when the turn ends or its future is dropped.
@@ -612,6 +886,7 @@ async fn run_child(
     req: &TurnRequest,
     idle_timeout: Duration,
     on_event: &mut (dyn FnMut(&Event) + Send),
+    approver: &dyn Approver,
 ) -> Result<TurnOutcome, TurnError> {
     let mut cmd = backend.command(req);
     cmd.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).kill_on_drop(true);
@@ -623,11 +898,24 @@ async fn run_child(
     let mut child = cmd.spawn().map_err(|e| other(format!("failed to run `{program}` (is it installed?): {e}")))?;
     let mut group = GroupKill(if cfg!(unix) { child.id() } else { None });
     let stdout = child.stdout.take().ok_or_else(|| other(format!("`{program}` gave no stdout")))?;
-    feed_stdin(child.stdin.take(), backend.stdin_payload(req));
+    let mut feed = StdinFeed::start(child.stdin.take(), backend.stdin_payload(req), backend.interactive());
     let stderr = collect_stderr(child.stderr.take());
 
     let mut plan = None;
-    let ended = pump(backend, stdout, idle_timeout, on_event, &mut plan).await;
+    let ended = Pump {
+        backend,
+        reader: BufReader::new(stdout),
+        raw: Vec::new(),
+        idle: idle_timeout,
+        on_event,
+        plan: &mut plan,
+        approver,
+        feed: &mut feed,
+        finished: None,
+        queue: VecDeque::new(),
+    }
+    .run()
+    .await;
     let classified = |message: String| TurnError::new(backend.classify_error(&message), message);
     match ended {
         Err(Idle) => {
@@ -1243,5 +1531,344 @@ mod tests {
         for text in must_not_match {
             assert_eq!(kind(text), None, "{text:?}");
         }
+    }
+
+    // ------------------------------------------------------------ host approvals
+
+    /// An interactive "CLI": a shell script that asks questions and reads the answers from
+    /// stdin. Output grammar: `ASK:<tool>:<summary>` (id `q1`), `ASKID:<id>:<tool>:<summary>`,
+    /// `CANCEL:<id>`, `TEXT:<t>`, `TOOL:<t>`, `FIN:<text>`. The answers it receives are
+    /// `<id>:ALLOW` (also for always) and `<id>:DENY:<reason>`.
+    struct Asking(String);
+
+    impl Backend for Asking {
+        fn provider(&self) -> ProviderId {
+            ProviderId::Claude
+        }
+        fn command(&self, req: &TurnRequest) -> Command {
+            let mut c = Command::new("sh");
+            c.arg("-c").arg(&self.0).current_dir(&req.dir);
+            c
+        }
+        fn stdin_payload(&self, req: &TurnRequest) -> Option<String> {
+            Some(format!("{}\n", req.prompt))
+        }
+        fn interactive(&self) -> bool {
+            true
+        }
+        fn parse_line(&self, line: &str) -> Vec<Event> {
+            let line = line.trim_end();
+            let ask = |id: &str, rest: &str| {
+                let (tool, summary) = rest.split_once(':').unwrap_or((rest, ""));
+                vec![Event::PermissionRequest(PermissionRequest {
+                    id: id.into(),
+                    tool: tool.into(),
+                    summary: summary.into(),
+                    input: serde_json::json!({ "command": summary }),
+                    blocked_path: None,
+                })]
+            };
+            match line.split_once(':') {
+                Some(("ASK", rest)) => ask("q1", rest),
+                Some(("ASKID", rest)) => {
+                    let (id, rest) = rest.split_once(':').unwrap_or((rest, ""));
+                    ask(id, rest)
+                }
+                Some(("CANCEL", id)) => vec![Event::PermissionWithdrawn { id: id.into() }],
+                Some(("TEXT", t)) => vec![Event::Text(t.into())],
+                Some(("TOOL", t)) => vec![Event::Tool(t.into())],
+                Some(("FIN", text)) => vec![Event::Finished(Finish { text: text.into(), session_id: None, usage: Usage::default() })],
+                _ => vec![],
+            }
+        }
+        fn permission_response(&self, req: &PermissionRequest, decision: &Decision) -> Option<String> {
+            Some(match decision {
+                Decision::Allow | Decision::AllowAlways => format!("{}:ALLOW", req.id),
+                Decision::Deny { reason } => format!("{}:DENY:{reason}", req.id),
+            })
+        }
+        fn classify_error(&self, _: &str) -> ErrorKind {
+            ErrorKind::Other
+        }
+    }
+
+    const ASK_AND_REPORT: &str =
+        r#"read prompt; echo "ASK:Bash:cargo test --quiet"; read ans; case "$ans" in q1:ALLOW) echo "FIN:ran";; *) echo "FIN:refused ${ans#q1:DENY:}";; esac"#;
+
+    /// An approver that answers after `wait`, and remembers what it was asked, what it was
+    /// told was withdrawn, and (in `log`) what happened in which order.
+    struct Scripted {
+        wait: Duration,
+        decision: Decision,
+        asked: Mutex<Vec<(String, String)>>,
+        withdrawn: Mutex<Vec<String>>,
+        log: Mutex<Vec<String>>,
+    }
+
+    impl Scripted {
+        fn new(wait_ms: u64, decision: Decision) -> Self {
+            Self {
+                wait: Duration::from_millis(wait_ms),
+                decision,
+                asked: Mutex::new(Vec::new()),
+                withdrawn: Mutex::new(Vec::new()),
+                log: Mutex::new(Vec::new()),
+            }
+        }
+
+        fn note(&self, what: String) {
+            self.log.lock().unwrap().push(what);
+        }
+
+        fn withdrawn_ids(&self) -> Vec<String> {
+            self.withdrawn.lock().unwrap().clone()
+        }
+    }
+
+    impl Approver for Scripted {
+        fn decide<'a>(&'a self, req: &'a PermissionRequest) -> Pin<Box<dyn Future<Output = Decision> + Send + 'a>> {
+            Box::pin(async move {
+                self.asked.lock().unwrap().push((req.tool.clone(), req.summary.clone()));
+                self.note(format!("asked {}", req.id));
+                tokio::time::sleep(self.wait).await;
+                self.note(format!("decided {}", req.id));
+                self.decision.clone()
+            })
+        }
+
+        fn withdrawn(&self, req: &PermissionRequest) {
+            self.withdrawn.lock().unwrap().push(req.id.clone());
+            self.note(format!("withdrawn {}", req.id));
+        }
+    }
+
+    async fn run_asking(script: &str, approver: &dyn Approver, idle_ms: u64) -> (Result<TurnOutcome, TurnError>, Vec<Event>) {
+        let mut seen = Vec::new();
+        let mut on_event = |e: &Event| seen.push(e.clone());
+        let r = run_turn_with(&Asking(script.into()), &req(), Duration::from_millis(idle_ms), &mut on_event, approver).await;
+        (r, seen)
+    }
+
+    #[tokio::test]
+    async fn an_allowed_request_lets_the_cli_go_on_and_is_not_shown_as_an_event() {
+        let approver = Scripted::new(0, Decision::Allow);
+        let (r, seen) = run_asking(ASK_AND_REPORT, &approver, 5000).await;
+        assert_eq!(r.unwrap().text, "ran");
+        assert_eq!(*approver.asked.lock().unwrap(), vec![("Bash".to_string(), "cargo test --quiet".to_string())]);
+        assert!(seen.is_empty(), "{seen:?}");
+    }
+
+    #[tokio::test]
+    async fn always_reaches_the_cli_as_an_allow() {
+        let (r, _) = run_asking(ASK_AND_REPORT, &Scripted::new(0, Decision::AllowAlways), 5000).await;
+        assert_eq!(r.unwrap().text, "ran");
+    }
+
+    #[tokio::test]
+    async fn a_denial_carries_its_reason_to_the_cli() {
+        let approver = Scripted::new(0, Decision::Deny { reason: "not today".into() });
+        let (r, _) = run_asking(ASK_AND_REPORT, &approver, 5000).await;
+        assert_eq!(r.unwrap().text, "refused not today");
+    }
+
+    #[tokio::test]
+    async fn the_idle_watchdog_does_not_run_while_the_person_decides() {
+        // The question takes four times the idle timeout to answer; the turn must not be cut off.
+        let approver = Scripted::new(800, Decision::Allow);
+        let (r, _) = run_asking(ASK_AND_REPORT, &approver, 200).await;
+        assert_eq!(r.unwrap().text, "ran");
+        // And it still guards the CLI's own silence afterwards.
+        let (r, _) = run_asking(r#"read p; echo "ASK:Bash:x"; read a; exec sleep 30"#, &Scripted::new(0, Decision::Allow), 300).await;
+        assert_eq!(r.unwrap_err().kind, ErrorKind::Stalled);
+    }
+
+    #[tokio::test]
+    async fn without_an_approver_every_request_is_denied_and_nothing_hangs() {
+        let mut on_event = |_: &Event| {};
+        let started = std::time::Instant::now();
+        let r = run_turn(&Asking(ASK_AND_REPORT.into()), &req(), Duration::from_secs(5), &mut on_event).await;
+        assert_eq!(r.unwrap().text, format!("refused {NO_ONE_TO_ASK}"));
+        assert!(started.elapsed() < Duration::from_secs(3));
+    }
+
+    #[tokio::test]
+    async fn stdin_stays_open_for_answers_and_closes_once_the_turn_has_finished() {
+        let dir = scratch_dir("interactive-close");
+        std::fs::create_dir_all(&dir).unwrap();
+        let marker = dir.join("exited");
+        // After its answer the "CLI" reads until stdin closes, then leaves a marker.
+        let script = format!(
+            r#"read prompt; echo "ASK:Bash:x"; read ans; echo "FIN:ok"; cat > /dev/null; touch {}"#,
+            marker.display()
+        );
+        let started = std::time::Instant::now();
+        let (r, _) = run_asking(&script, &Scripted::new(0, Decision::Allow), 5000).await;
+        assert_eq!(r.unwrap().text, "ok");
+        assert!(started.elapsed() < Duration::from_millis(1500), "stdin was not closed after the result: {:?}", started.elapsed());
+        assert!(marker.exists(), "the CLI should have seen end of input and exited by itself");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn a_turn_dropped_while_a_question_waits_kills_the_cli() {
+        let dir = scratch_dir("interactive-drop");
+        std::fs::create_dir_all(&dir).unwrap();
+        let pid_file = dir.join("cli.pid");
+        let script = format!(r#"echo $$ > {}; read prompt; echo "ASK:Bash:x"; read ans; echo FIN:late"#, pid_file.display());
+        let approver = Scripted::new(60_000, Decision::Allow);
+        let request = req();
+        let mut on_event = |_: &Event| {};
+        let backend = Asking(script);
+        let turn = run_turn_with(&backend, &request, Duration::from_millis(300), &mut on_event, &approver);
+        let waited = async {
+            let pid = read_pid(&pid_file).await;
+            tokio::time::sleep(Duration::from_millis(600)).await;
+            pid
+        };
+        let pid = tokio::select! {
+            _ = turn => panic!("the turn waits for the answer"),
+            pid = waited => pid,
+        };
+        assert!(all_dead(&[pid]).await, "the CLI must not outlive the cancelled turn");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ----------------------------------------------- reading on while a question waits
+
+    /// Run `script` with every event it produces logged next to the approver's own log.
+    async fn run_logged(script: &str, approver: &Scripted, idle_ms: u64) -> Result<TurnOutcome, TurnError> {
+        let mut on_event = |e: &Event| approver.note(format!("event {e:?}"));
+        run_turn_with(&Asking(script.into()), &req(), Duration::from_millis(idle_ms), &mut on_event, approver).await
+    }
+
+    /// The script ends by copying whatever the runner wrote to its stdin into `file`, so a test
+    /// can see exactly which answers reached the CLI. The runner closes stdin after the result.
+    fn recording(dir: &Path, body: &str) -> (String, PathBuf) {
+        std::fs::create_dir_all(dir).unwrap();
+        let file = dir.join("received");
+        (format!("{body}; cat > {}", file.display()), file)
+    }
+
+    fn received(file: &Path) -> String {
+        std::fs::read_to_string(file).unwrap_or_default()
+    }
+
+    #[tokio::test]
+    async fn a_withdrawn_question_is_dropped_unanswered_and_the_ui_is_told() {
+        let dir = scratch_dir("withdraw");
+        // The person never answers (a minute); the CLI withdraws the question, with a progress
+        // line before it, and goes on.
+        let (script, file) = recording(&dir, r#"read p; echo "ASK:Bash:x"; echo "TOOL:Read a"; sleep 0.2; echo "CANCEL:q1"; echo "FIN:done""#);
+        let approver = Scripted::new(60_000, Decision::Allow);
+        let started = std::time::Instant::now();
+        let r = run_logged(&script, &approver, 5000).await;
+        assert_eq!(r.unwrap().text, "done");
+        assert!(started.elapsed() < Duration::from_secs(5), "{:?}", started.elapsed());
+        assert_eq!(approver.withdrawn_ids(), ["q1"]);
+        assert_eq!(received(&file), "", "no answer is written for a withdrawn question");
+        // The event that arrived while the question was pending still reaches the UI, after it.
+        assert_eq!(*approver.log.lock().unwrap(), ["asked q1", "withdrawn q1", r#"event Tool("Read a")"#]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn events_arriving_while_a_question_waits_are_delivered_in_order_after_it() {
+        let approver = Scripted::new(400, Decision::Allow);
+        let script = r#"read p; echo "ASK:Bash:x"; echo "TEXT:one"; echo "TOOL:two"; echo "TEXT:three"; read a; echo "TOOL:four"; echo "FIN:$a""#;
+        let r = run_logged(script, &approver, 5000).await;
+        assert_eq!(r.unwrap().text, "q1:ALLOW");
+        assert_eq!(
+            *approver.log.lock().unwrap(),
+            ["asked q1", "decided q1", r#"event Text("one")"#, r#"event Tool("two")"#, r#"event Text("three")"#, r#"event Tool("four")"#]
+        );
+    }
+
+    #[tokio::test]
+    async fn the_cli_ending_while_a_question_waits_drops_the_question() {
+        let approver = Scripted::new(60_000, Decision::Allow);
+        let started = std::time::Instant::now();
+        let r = run_logged(r#"read p; echo "ASK:Bash:x"; echo "TEXT:last words"; exit 3"#, &approver, 5000).await;
+        let err = r.unwrap_err();
+        assert!(err.message.contains("exited"), "{err}");
+        assert!(started.elapsed() < Duration::from_secs(3), "{:?}", started.elapsed());
+        assert_eq!(approver.withdrawn_ids(), ["q1"]);
+        assert_eq!(*approver.log.lock().unwrap(), ["asked q1", "withdrawn q1", r#"event Text("last words")"#]);
+    }
+
+    #[tokio::test]
+    async fn a_result_while_a_question_waits_drops_the_question_and_keeps_the_answer() {
+        let dir = scratch_dir("finish-pending");
+        let (script, file) = recording(&dir, r#"read p; echo "ASK:Bash:x"; echo "FIN:already done""#);
+        let approver = Scripted::new(60_000, Decision::Allow);
+        let r = run_logged(&script, &approver, 5000).await;
+        assert_eq!(r.unwrap().text, "already done");
+        assert_eq!(approver.withdrawn_ids(), ["q1"]);
+        assert_eq!(received(&file), "");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn the_idle_watchdog_runs_again_once_a_question_was_withdrawn() {
+        let approver = Scripted::new(60_000, Decision::Allow);
+        let r = run_logged(r#"read p; echo "ASK:Bash:x"; sleep 0.1; echo "CANCEL:q1"; exec sleep 30"#, &approver, 400).await;
+        assert_eq!(r.unwrap_err().kind, ErrorKind::Stalled);
+        assert_eq!(approver.withdrawn_ids(), ["q1"]);
+    }
+
+    #[tokio::test]
+    async fn two_questions_one_after_the_other_are_each_answered_once_with_their_own_id() {
+        let dir = scratch_dir("sequential");
+        let (script, file) = recording(
+            &dir,
+            r#"read p; echo "ASKID:a:Bash:one"; read r1; echo "ASKID:b:Bash:two"; read r2; echo "FIN:$r1|$r2""#,
+        );
+        let approver = Scripted::new(30, Decision::Allow);
+        let r = run_logged(&script, &approver, 5000).await;
+        assert_eq!(r.unwrap().text, "a:ALLOW|b:ALLOW");
+        assert_eq!(received(&file), "");
+        assert!(approver.withdrawn_ids().is_empty());
+        assert_eq!(*approver.log.lock().unwrap(), ["asked a", "decided a", "asked b", "decided b"]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn questions_asked_together_are_decided_one_at_a_time_in_order() {
+        let approver = Scripted::new(100, Decision::Deny { reason: "no".into() });
+        let script = r#"read p; echo "ASKID:a:Bash:one"; echo "ASKID:b:Bash:two"; read r1; read r2; echo "FIN:$r1|$r2""#;
+        let r = run_logged(script, &approver, 5000).await;
+        assert_eq!(r.unwrap().text, "a:DENY:no|b:DENY:no");
+        assert_eq!(*approver.log.lock().unwrap(), ["asked a", "decided a", "asked b", "decided b"]);
+    }
+
+    #[tokio::test]
+    async fn a_waiting_question_that_is_withdrawn_is_never_asked() {
+        let approver = Scripted::new(300, Decision::Allow);
+        let script = r#"read p; echo "ASKID:a:Bash:one"; echo "ASKID:b:Bash:two"; echo "CANCEL:b"; read r1; echo "FIN:$r1""#;
+        let r = run_logged(script, &approver, 5000).await;
+        assert_eq!(r.unwrap().text, "a:ALLOW");
+        assert_eq!(*approver.log.lock().unwrap(), ["asked a", "decided a"], "b was withdrawn before its turn");
+        assert!(approver.withdrawn_ids().is_empty(), "it was never shown, so there is nothing to take down");
+    }
+
+    #[tokio::test]
+    async fn a_cancel_for_another_id_changes_nothing() {
+        let dir = scratch_dir("other-id");
+        let (script, file) = recording(&dir, r#"read p; echo "ASK:Bash:x"; echo "CANCEL:zzz"; read a; echo "FIN:$a""#);
+        let approver = Scripted::new(200, Decision::Allow);
+        let r = run_logged(&script, &approver, 5000).await;
+        assert_eq!(r.unwrap().text, "q1:ALLOW", "the question stayed and was answered");
+        assert!(approver.withdrawn_ids().is_empty());
+        assert_eq!(*approver.log.lock().unwrap(), ["asked q1", "decided q1"]);
+        assert_eq!(received(&file), "");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn a_cancel_after_the_answer_is_ignored() {
+        let approver = Scripted::new(0, Decision::Allow);
+        let script = r#"read p; echo "ASK:Bash:x"; read a; echo "CANCEL:q1"; echo "FIN:$a""#;
+        let r = run_logged(script, &approver, 5000).await;
+        assert_eq!(r.unwrap().text, "q1:ALLOW");
+        assert!(approver.withdrawn_ids().is_empty());
     }
 }

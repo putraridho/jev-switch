@@ -64,15 +64,23 @@ impl Term {
     }
 }
 
+/// `stream_answers` is false for `-p`, which also never asks: a one-shot run behaves the
+/// same on a terminal and in a pipe. A session on a terminal asks the person about each
+/// tool call that needs approval, with one key press.
 fn console_for(term: &Term, project: &Path, stream_answers: bool) -> Console {
-    Console::stdio(ConsoleConfig {
+    let console = Console::stdio(ConsoleConfig {
         out_style: term.out_style,
         err_style: term.err_style,
         width: term.width,
         live: term.live(),
         project: project.to_path_buf(),
         stream_answers,
-    })
+    });
+    if term.interactive() && stream_answers {
+        console.with_key_reader(jev_router::console::terminal_keys())
+    } else {
+        console
+    }
 }
 
 #[tokio::main]
@@ -263,6 +271,7 @@ async fn session(args: &Args, dir: &Path, term: &Term, console: Console, state_d
     let home = std::env::var("HOME").ok();
     let mut repl = Repl::new(engine, console.clone(), home.clone(), term.stdout_tty);
     startup(&mut repl, args, term, &console, state_dir.as_deref(), home.as_deref());
+    recheck_slow_providers(&mut repl, &console);
 
     let mut sigint = match SigInt::install() {
         Ok(s) => s,
@@ -280,6 +289,22 @@ async fn session(args: &Args, dir: &Path, term: &Term, console: Console, state_d
         console.err(&format!("  could not save the session: {e}"));
     }
     code
+}
+
+/// A provider whose probe timed out at startup (a lazy wrapper's first run) is asked again in
+/// the background; the banner above did not wait for it. The runtime learns the answer in
+/// [`settle_late_probes`], and the notice is printed through the console, so it never lands in
+/// the middle of a turn's output or of the line being typed.
+fn recheck_slow_providers(repl: &mut Repl, console: &Console) {
+    let notices = console.clone();
+    repl.engine.runtime.retry_slow_probes(move |a| notices.notify(&format!("{} is ready now", a.provider)));
+}
+
+/// Before a prompt is shown or a line is run: apply what the background re-check found and
+/// print the notices held back for the prompt. Never mid-turn, so routing cannot change under one.
+fn settle_late_probes(repl: &mut Repl) {
+    repl.engine.runtime.absorb_late();
+    repl.console.flush_notices();
 }
 
 /// The banner, the offer to resume (or the resume itself), and the one-time hint.
@@ -317,12 +342,14 @@ async fn edit_loop(repl: &mut Repl, term: &Term, console: &Console, state_dir: O
     };
     let mut guard = InterruptGuard::default();
     loop {
+        settle_late_probes(repl);
         let label = views::prompt_label(repl.engine.pin(), repl.engine.enabled());
         let plain = views::plain_prompt(label.as_deref());
         let styled = views::styled_prompt(label.as_deref(), term.out_style);
         let ctx = views::complete_ctx(&repl.engine, log::now_ms());
         match tokio::task::block_in_place(|| lineedit::read(&mut editor, &plain, &styled, ctx)) {
             Input::Line(line) => {
+                settle_late_probes(repl);
                 guard.reset();
                 lineedit::remember(&mut editor, &line, history.as_deref());
                 let mut confirm = EditorConfirm(&mut editor);
@@ -367,6 +394,7 @@ async fn pipe_loop(repl: &mut Repl, sigint: &mut SigInt) -> i32 {
                 return 1;
             }
         };
+        settle_late_probes(repl);
         let mut io = Io { interrupt: sigint, confirm: None };
         match repl.handle(commands::parse(&line), &mut io).await {
             Flow::Continue => {}

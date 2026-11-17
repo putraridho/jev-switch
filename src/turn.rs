@@ -14,24 +14,28 @@
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};
 use tokio::sync::watch;
 
 use crate::anthropic::{MODEL_CHEAP, MODEL_MID, MODEL_STRONG};
-use crate::backend::{self, Backend, ErrorKind, Event, McpAttachment, ProviderId, TurnError, TurnOutcome, TurnRequest, Usage};
+use crate::backend::{
+    self, Approver, Backend, Decision, ErrorKind, Event, McpAttachment, PermissionRequest, ProviderId, TurnError, TurnOutcome,
+    TurnRequest, Usage,
+};
 use crate::catalog::{self, find, ModelSpec};
 use crate::changes::{self, ChangeSummary, Snapshot, UndoError, UndoReport};
 use crate::handoff::{self, ResumeError, SavedSession, Sessions, TurnRecord};
 use crate::log;
 use crate::orchestrate::{self, Outcome, Setup};
+use crate::permissions::{self, Offer, Places, Settled};
 use crate::providers::{self, Runtime};
 use crate::router::{CodeWant, ProviderWant, Router, Sticky};
 use crate::routing::{self, NoRoute, Pin, RouteDecision, RouteInput, RoutingState, Signals};
 use crate::turnlog::turn_row;
-use crate::uifmt::RouteFacts;
+use crate::uifmt::{self, RouteFacts};
 
 /// Most models tried for one user turn before giving up.
 pub const MAX_ATTEMPTS: u32 = 6;
@@ -73,6 +77,114 @@ pub trait Ui: Send {
     /// The user stopped the turn.
     fn cancelled(&mut self, text: &str) {
         self.note(text);
+    }
+
+    /// A tool call waits for the person's answer. `offer` is what [`Decision::AllowAlways`]
+    /// would save, or why "always" is not offered: the engine decided it, the UI only shows it
+    /// (and offers the choice only when it is `Ok`). The question is put on screen by this call; the returned [`Answer`] resolves with what the person said
+    /// (`None` means they interrupted with Ctrl-C, which stops the turn). Dropping the
+    /// answer before it resolves abandons the question (the CLI withdrew it): the UI stops
+    /// listening for a key at once, and [`Ui::permission_withdrawn`] follows. A UI that
+    /// cannot ask keeps this default, so a run with no terminal denies at once and never
+    /// waits for an answer nobody gives.
+    fn ask_permission(&mut self, _req: &PermissionRequest, _offer: &Offer) -> Answer {
+        Box::pin(std::future::ready(Some(Decision::Deny { reason: backend::NO_ONE_TO_ASK.to_string() })))
+    }
+
+    /// How the question for `req` ended, once the engine has saved what "always" saves (or
+    /// failed to): the answer line. Called once per answered question, after the save, so
+    /// the screen only ever says what is true. A UI without an answer line still hears about
+    /// a save that failed.
+    fn permission_settled(&mut self, _req: &PermissionRequest, settled: &Settled) {
+        if let Settled::NotSaved(e) = settled {
+            self.note(&format!("[permissions] {e}; allowed this once, nothing was saved"));
+        }
+    }
+
+    /// The question asked for `req` was dropped unanswered: take it off the screen. Called
+    /// once per such question, never for one that was answered.
+    fn permission_withdrawn(&mut self, _req: &PermissionRequest) {}
+}
+
+/// The person's answer to a question, not yet given. It owns what it needs, so the UI is
+/// free to print while the person thinks.
+pub type Answer = std::pin::Pin<Box<dyn std::future::Future<Output = Option<Decision>> + Send>>;
+
+/// The UI as the event callback and the approver share it; they never run at once.
+type SharedUi<'a> = Mutex<&'a mut (dyn Ui + 'a)>;
+
+fn lock_ui<'g, 'a>(ui: &'g SharedUi<'a>) -> std::sync::MutexGuard<'g, &'a mut (dyn Ui + 'a)> {
+    ui.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// Settle a question's answer: the one place "always" is saved. The offer is what was shown;
+/// "always" saves exactly that (rule and folder in one write) or, when the file cannot be
+/// written, allows once and says so. An "always" with nothing on offer is a plain yes.
+pub fn settle(answer: Option<Decision>, offer: &Offer, project: &Path) -> Settled {
+    match answer {
+        None => Settled::Stopped,
+        Some(Decision::Allow) => Settled::Allowed,
+        Some(Decision::AllowAlways) => match offer {
+            Ok(always) => match permissions::save_always(project, always) {
+                Ok(_) => Settled::Remembered(always.clone()),
+                Err(e) => Settled::NotSaved(e),
+            },
+            Err(_) => Settled::Allowed,
+        },
+        Some(Decision::Deny { reason }) => Settled::Denied(reason),
+    }
+}
+
+/// What the CLI is told for a settled question; `None` when the person stopped the turn.
+pub fn settled_decision(settled: &Settled) -> Option<Decision> {
+    match settled {
+        Settled::Allowed | Settled::NotSaved(_) => Some(Decision::Allow),
+        Settled::Remembered(_) => Some(Decision::AllowAlways),
+        Settled::Denied(reason) => Some(Decision::Deny { reason: reason.clone() }),
+        Settled::Stopped => None,
+    }
+}
+
+/// Answers a running turn's tool approvals through the [`Ui`]: decides what "always" would
+/// save, asks, saves it when the person says "always", tells the UI how it ended, and stops
+/// the turn when they interrupt the question.
+struct EngineApprover<'a> {
+    ui: &'a SharedUi<'a>,
+    cancel: &'a Cancel,
+    /// The project folder, where "always" saves its rule.
+    dir: &'a Path,
+}
+
+impl EngineApprover<'_> {
+    async fn answer(&self, req: &PermissionRequest) -> Decision {
+        let offer = permissions::always_plan(&req.tool, &req.input, req.blocked_path.as_deref(), &Places::from_env(self.dir));
+        // The question goes up under the lock; the wait for the person does not hold it, so
+        // the turn's own events can still be shown, and dropping this future ends the wait.
+        let question = lock_ui(self.ui).ask_permission(req, &offer);
+        let asked = question.await;
+        // A UI that cannot ask: nothing was answered, so there is nothing to settle.
+        if let Some(Decision::Deny { reason }) = &asked {
+            if reason == backend::NO_ONE_TO_ASK {
+                lock_ui(self.ui).event(&Event::Text(uifmt::denied_without_asking(&req.tool)));
+                return Decision::Deny { reason: reason.clone() };
+            }
+        }
+        let settled = settle(asked, &offer, self.dir);
+        lock_ui(self.ui).permission_settled(req, &settled);
+        settled_decision(&settled).unwrap_or_else(|| {
+            self.cancel.cancel();
+            Decision::Deny { reason: "the user interrupted the turn".into() }
+        })
+    }
+}
+
+impl Approver for EngineApprover<'_> {
+    fn decide<'a>(&'a self, req: &'a PermissionRequest) -> std::pin::Pin<Box<dyn std::future::Future<Output = Decision> + Send + 'a>> {
+        Box::pin(self.answer(req))
+    }
+
+    fn withdrawn(&self, req: &PermissionRequest) {
+        lock_ui(self.ui).permission_withdrawn(req);
     }
 }
 
@@ -318,7 +430,7 @@ impl Engine {
             pin: Pin::Auto,
             dir,
             enabled: true,
-            backend_factory: Box::new(providers::backend_for),
+            backend_factory: Box::new(providers::session_backend_for),
             git_status: Box::new(git_status_short),
             now: Box::new(log::now_ms),
             idle_timeout: idle_timeout_from_env(),
@@ -787,7 +899,7 @@ impl Engine {
         let mcp = if self.orchestrate { self.mcp_providers() } else { Vec::new() };
         orchestrate::choose_planner(
             self.orchestrate,
-            signals.map(|s| s.multi_part_p),
+            signals.map(|s| &s.orchestration),
             normal.spec,
             tool_ready,
             &mcp,
@@ -895,10 +1007,12 @@ impl Engine {
         let started = Instant::now();
         let runtime = &mut self.runtime;
         let result = {
+            let shared_ui: SharedUi = Mutex::new(&mut *ui);
+            let approver = EngineApprover { ui: &shared_ui, cancel, dir: &self.dir };
             let mut on_event = |e: &Event| match e {
                 Event::Text(_) => held.push(e.clone()),
                 other => {
-                    ui.event(other);
+                    lock_ui(&shared_ui).event(other);
                     match other {
                         Event::Tool(summary) => tools.push(summary.clone()),
                         Event::Plan(plan) => runtime.note_plan(provider, plan.clone()),
@@ -908,7 +1022,7 @@ impl Engine {
             };
             // Dropping the turn future on a cancel kills the CLI and its children.
             tokio::select! {
-                r = backend::run_turn(&*backend, &req, idle, &mut on_event) => Some(r),
+                r = backend::run_turn_with(&*backend, &req, idle, &mut on_event, &approver) => Some(r),
                 _ = cancel.cancelled() => None,
             }
         };
@@ -1290,7 +1404,7 @@ mod tests {
             edit_p: 0.3,
             continues_p: 0.9,
             correction_p: None,
-            multi_part_p: 0.0,
+            orchestration: crate::router::Orchestration::default(),
             security_keywords: Security::None,
             signals: json!({ "task": task.as_str() }),
         }
@@ -1771,7 +1885,7 @@ mod tests {
 
     /// A multi-part request: Jev's `multi_part` is above the cutoff.
     fn multi(task: TaskType) -> ProviderWant {
-        ProviderWant { multi_part_p: 0.9, continues_p: 0.1, ..want(task) }
+        ProviderWant { orchestration: crate::router::Orchestration::new(0.9, 0.1), continues_p: 0.1, ..want(task) }
     }
 
     fn orchestrating(mut r: Rig) -> Rig {
@@ -2483,5 +2597,281 @@ mod tests {
         for bad in ["", "abc", "0", "-5", "1.5"] {
             assert_eq!(idle_timeout(Some(bad)), Duration::from_secs(900), "{bad:?}");
         }
+    }
+
+    // ------------------------------------------------------------ tool approvals
+
+    /// An interactive "CLI": asks to run `cargo test --quiet` through Bash and reports the answer.
+    struct AskFake(&'static str);
+
+    const ASK_SCRIPT: &str = r#"read p; echo "ASK:Bash:cargo test --quiet"; read ans; case "$ans" in ALLOW) echo "FIN:ran";; *) echo "FIN:refused ${ans#DENY:}";; esac"#;
+
+    impl Backend for AskFake {
+        fn provider(&self) -> ProviderId {
+            Claude
+        }
+        fn command(&self, req: &TurnRequest) -> Command {
+            let mut c = Command::new("sh");
+            c.arg("-c").arg(self.0).current_dir(&req.dir);
+            c
+        }
+        fn stdin_payload(&self, req: &TurnRequest) -> Option<String> {
+            Some(format!("{}\n", req.prompt))
+        }
+        fn interactive(&self) -> bool {
+            true
+        }
+        fn parse_line(&self, line: &str) -> Vec<Event> {
+            match line.trim_end().split_once(':') {
+                Some(("ASK", rest)) => {
+                    let (tool, summary) = rest.split_once(':').unwrap_or((rest, ""));
+                    vec![Event::PermissionRequest(PermissionRequest {
+                        id: "q1".into(),
+                        tool: tool.into(),
+                        summary: summary.into(),
+                        input: json!({ "command": summary }),
+                        blocked_path: None,
+                    })]
+                }
+                Some(("WITHDRAW", id)) => vec![Event::PermissionWithdrawn { id: id.into() }],
+                Some(("FIN", t)) => vec![Event::Finished(backend::Finish { text: t.into(), session_id: None, usage: Usage::default() })],
+                _ => vec![],
+            }
+        }
+        fn permission_response(&self, _: &PermissionRequest, d: &Decision) -> Option<String> {
+            Some(match d {
+                Decision::Allow | Decision::AllowAlways => "ALLOW".to_string(),
+                Decision::Deny { reason } => format!("DENY:{reason}"),
+            })
+        }
+        fn classify_error(&self, m: &str) -> ErrorKind {
+            classify_common(m).unwrap_or(ErrorKind::Other)
+        }
+    }
+
+    /// A UI that answers questions from a list, and records what it was asked and told.
+    #[derive(Default)]
+    struct Asked {
+        answers: std::collections::VecDeque<Option<Decision>>,
+        questions: Vec<(String, String, Option<String>)>,
+        settled: Vec<Settled>,
+        texts: Vec<String>,
+        notes: Vec<String>,
+    }
+
+    impl Ui for Asked {
+        fn route(&mut self, _: &str) {}
+        fn event(&mut self, e: &Event) {
+            if let Event::Text(t) = e {
+                self.texts.push(t.clone());
+            }
+        }
+        fn note(&mut self, line: &str) {
+            self.notes.push(line.into());
+        }
+        fn ask_permission(&mut self, req: &PermissionRequest, offer: &Offer) -> Answer {
+            let rule = offer.as_ref().ok().and_then(|a| a.rule.clone());
+            self.questions.push((req.tool.clone(), req.summary.clone(), rule));
+            let answer = self.answers.pop_front().expect("an answer was planned");
+            Box::pin(std::future::ready(answer))
+        }
+        fn permission_settled(&mut self, req: &PermissionRequest, settled: &Settled) {
+            self.settled.push(settled.clone());
+            if let Settled::NotSaved(e) = settled {
+                self.note(&format!("[permissions] {e}; allowed this once, nothing was saved ({})", req.tool));
+            }
+        }
+    }
+
+    /// A UI that keeps the default `ask_permission`: nobody to ask.
+    #[derive(Default)]
+    struct Mute {
+        texts: Vec<String>,
+    }
+
+    impl Ui for Mute {
+        fn route(&mut self, _: &str) {}
+        fn event(&mut self, e: &Event) {
+            if let Event::Text(t) = e {
+                self.texts.push(t.clone());
+            }
+        }
+        fn note(&mut self, _: &str) {}
+    }
+
+    fn ask_engine(name: &str) -> (Engine, PathBuf) {
+        ask_engine_running(name, Box::new(|_| Box::new(AskFake(ASK_SCRIPT))))
+    }
+
+    fn ask_engine_running(name: &str, backend: BackendFactory) -> (Engine, PathBuf) {
+        let dir = std::env::temp_dir().join(format!("jev-turn-ask-{}-{name}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let router = Router::new(TypeSafe::with_url("k", "http://127.0.0.1:1"), 1.0);
+        let engine = Engine::new(Runtime::for_tests(vec![availability(Claude, State::Ready)]), router, dir.clone())
+            .with_track_changes(false)
+            .with_persistence(None)
+            .with_backend_factory(backend)
+            .with_idle_timeout(Duration::from_secs(5))
+            .with_turn_log(None);
+        (engine, dir)
+    }
+
+    async fn ask_turn(engine: &mut Engine, ui: &mut dyn Ui) -> TurnReport {
+        engine.run_judged("run the tests", Judged::Providers(Some(want(TaskType::Feature))), ui).await
+    }
+
+    #[tokio::test]
+    async fn an_allowed_tool_call_runs_and_the_person_was_asked_once_with_the_rule_on_offer() {
+        let (mut engine, dir) = ask_engine("allow");
+        let mut ui = Asked { answers: [Some(Decision::Allow)].into(), ..Asked::default() };
+        let report = ask_turn(&mut engine, &mut ui).await;
+        assert_eq!((report.status, report.text.as_str()), (TurnStatus::Answered, "ran"));
+        assert_eq!(ui.questions, vec![("Bash".to_string(), "cargo test --quiet".to_string(), Some("Bash(cargo test:*)".to_string()))]);
+        assert!(!permissions::local_settings_path(&dir).exists(), "a plain yes saves nothing");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn always_runs_the_call_and_saves_the_rule_in_the_project() {
+        let (mut engine, dir) = ask_engine("always");
+        let mut ui = Asked { answers: [Some(Decision::AllowAlways)].into(), ..Asked::default() };
+        let report = ask_turn(&mut engine, &mut ui).await;
+        assert_eq!(report.text, "ran");
+        let saved = permissions::load(&permissions::local_settings_path(&dir)).unwrap();
+        assert_eq!(saved.list(permissions::List::Allow), ["Bash(cargo test:*)"]);
+        assert!(ui.notes.is_empty(), "{:?}", ui.notes);
+        let always = permissions::Always { rule: Some("Bash(cargo test:*)".into()), folder: None };
+        assert_eq!(ui.settled, [Settled::Remembered(always)], "the UI hears what was saved, after the save");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn always_that_cannot_be_saved_still_allows_once_and_says_so() {
+        let (mut engine, dir) = ask_engine("always-blocked");
+        // `.claude` is a file, so the settings file cannot be created.
+        std::fs::write(dir.join(".claude"), "x").unwrap();
+        let mut ui = Asked { answers: [Some(Decision::AllowAlways)].into(), ..Asked::default() };
+        let report = ask_turn(&mut engine, &mut ui).await;
+        assert_eq!(report.text, "ran");
+        assert!(ui.notes.iter().any(|n| n.contains("[permissions]") && n.contains("nothing was saved")), "{:?}", ui.notes);
+        assert!(matches!(ui.settled.as_slice(), [Settled::NotSaved(_)]), "never told 'always' when nothing was saved: {:?}", ui.settled);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn a_denied_tool_call_tells_the_model_why_and_the_turn_goes_on() {
+        let (mut engine, dir) = ask_engine("deny");
+        let denial = Decision::Deny { reason: "the user denied this tool call".into() };
+        let mut ui = Asked { answers: [Some(denial)].into(), ..Asked::default() };
+        let report = ask_turn(&mut engine, &mut ui).await;
+        assert_eq!((report.status, report.text.as_str()), (TurnStatus::Answered, "refused the user denied this tool call"));
+        assert!(!permissions::local_settings_path(&dir).exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn ctrl_c_at_the_question_cancels_the_turn_and_kills_the_cli() {
+        let (mut engine, dir) = ask_engine("interrupt");
+        let mut ui = Asked { answers: [None].into(), ..Asked::default() };
+        let cancel = Cancel::new();
+        let report = engine
+            .run_judged_cancellable("run the tests", Judged::Providers(Some(want(TaskType::Feature))), &mut ui, &cancel)
+            .await;
+        assert_eq!(report.status, TurnStatus::Cancelled);
+        assert!(cancel.is_cancelled());
+        assert!(report.text.is_empty());
+        assert_eq!(ui.questions.len(), 1);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn a_ui_that_cannot_ask_denies_at_once_with_a_hint_and_never_hangs() {
+        let (mut engine, dir) = ask_engine("mute");
+        let mut ui = Mute::default();
+        let started = Instant::now();
+        let report = ask_turn(&mut engine, &mut ui).await;
+        assert!(started.elapsed() < Duration::from_secs(4));
+        assert_eq!(report.status, TurnStatus::Answered);
+        assert!(report.text.starts_with("refused no one to ask"), "{}", report.text);
+        assert!(ui.texts.iter().any(|t| t.starts_with('\u{2717}') && t.contains("denied Bash") && t.contains("CODE_ALLOWED_TOOLS")), "{:?}", ui.texts);
+        assert!(!permissions::local_settings_path(&dir).exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn backends_without_a_host_protocol_are_never_asked() {
+        let mut r = rig(&[Claude]);
+        let mut ui = Asked::default();
+        let report = r.engine.run_judged("add a retry", Judged::Providers(Some(want(TaskType::Feature))), &mut ui).await;
+        assert_eq!(report.status, TurnStatus::Answered);
+        assert!(ui.questions.is_empty());
+    }
+
+    /// Records that the wait for the person's answer was dropped.
+    struct DropFlag(Arc<std::sync::atomic::AtomicBool>);
+
+    impl Drop for DropFlag {
+        fn drop(&mut self) {
+            self.0.store(true, Ordering::SeqCst);
+        }
+    }
+
+    /// A UI whose first question waits for a key that never comes (the person is thinking),
+    /// and which answers yes to any later one. It records the wait being dropped and the
+    /// withdrawal it was told about.
+    #[derive(Default)]
+    struct Waiting {
+        asked: usize,
+        dropped: Arc<std::sync::atomic::AtomicBool>,
+        withdrawn: Vec<String>,
+    }
+
+    impl Ui for Waiting {
+        fn route(&mut self, _: &str) {}
+        fn event(&mut self, _: &Event) {}
+        fn note(&mut self, _: &str) {}
+        fn ask_permission(&mut self, _: &PermissionRequest, _: &Offer) -> Answer {
+            self.asked += 1;
+            if self.asked > 1 {
+                return Box::pin(std::future::ready(Some(Decision::Allow)));
+            }
+            let flag = DropFlag(self.dropped.clone());
+            Box::pin(async move {
+                let _waiting = flag;
+                std::future::pending::<Option<Decision>>().await
+            })
+        }
+        fn permission_withdrawn(&mut self, req: &PermissionRequest) {
+            self.withdrawn.push(req.id.clone());
+        }
+    }
+
+    /// The CLI asks, the person has not answered yet, and the CLI withdraws the question.
+    const ASK_THEN_WITHDRAW: &str = r#"read p; echo "ASK:Bash:cargo test --quiet"; sleep 0.3; echo "WITHDRAW:q1"; sleep 0.1; echo "FIN:carried on""#;
+
+    #[tokio::test]
+    async fn a_question_the_cli_withdraws_while_the_person_is_still_deciding_is_dropped_and_the_next_turn_works() {
+        let turns = Arc::new(AtomicU64::new(0));
+        let counted = turns.clone();
+        let (mut engine, dir) = ask_engine_running(
+            "withdrawn",
+            Box::new(move |_| Box::new(AskFake(if counted.fetch_add(1, Ordering::SeqCst) == 0 { ASK_THEN_WITHDRAW } else { ASK_SCRIPT }))),
+        );
+        let mut ui = Waiting::default();
+        let started = Instant::now();
+        let report = ask_turn(&mut engine, &mut ui).await;
+        assert!(started.elapsed() < Duration::from_secs(4), "the turn must not wait for a key");
+        assert_eq!((report.status, report.text.as_str()), (TurnStatus::Answered, "carried on"));
+        assert_eq!(ui.asked, 1);
+        assert!(ui.dropped.load(Ordering::SeqCst), "the wait for a key was abandoned");
+        assert_eq!(ui.withdrawn, vec!["q1".to_string()], "the UI was told which question went away");
+        assert!(!permissions::local_settings_path(&dir).exists());
+
+        let report = ask_turn(&mut engine, &mut ui).await;
+        assert_eq!((report.status, report.text.as_str()), (TurnStatus::Answered, "ran"));
+        assert_eq!(ui.asked, 2);
+        assert_eq!(ui.withdrawn.len(), 1, "an answered question is never reported as withdrawn");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

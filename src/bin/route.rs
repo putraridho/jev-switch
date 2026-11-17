@@ -123,7 +123,7 @@ async fn provider_row(router: &Router, setup: &ProviderSetup, prompt: &str, cont
         "security_p": w.security_p,
         "very_hard_p": w.very_hard_p,
         "continues_p": w.continues_p,
-        "multi_part_p": w.multi_part_p,
+        "multi_part_p": w.orchestration.multi_part_p,
         "model": model,
     });
     Some((row, model))

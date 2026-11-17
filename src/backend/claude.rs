@@ -1,6 +1,16 @@
 //! Claude Code backend: `claude -p --output-format stream-json --verbose`. The same
 //! CLI also serves Anthropic-compatible APIs (DeepSeek) when started with extra env
 //! vars, so one struct covers every provider that speaks Claude Code's stream.
+//!
+//! In a session ([`ClaudeBackend::in_session`], what `jev-code` uses) the CLI runs with
+//! `--input-format stream-json --permission-prompt-tool stdio`: instead of denying a tool
+//! call that needs approval it sends a `control_request` (`can_use_tool`) on stdout and
+//! waits for a `control_response` on stdin, so `jev-code` can ask the person. Recorded
+//! lines are in `tests/fixtures/claude/`. The CLI can withdraw a question it asked
+//! (`{"type":"control_cancel_request","request_id":...}`, from the protocol schema) when the
+//! turn is interrupted or something else settled it; no answer is sent for it then.
+//! Headless uses (the gateway, workers, `ask`) keep plain `-p`, where the CLI itself denies
+//! what is not allowed.
 
 use std::path::PathBuf;
 
@@ -8,9 +18,18 @@ use serde_json::{json, Value};
 use tokio::process::Command;
 
 use super::{
-    classify_common, Backend, ErrorKind, Event, Finish, McpAttachment, PlanUsage, ProviderId, TurnRequest, Usage,
+    classify_common, Backend, Decision, ErrorKind, Event, Finish, McpAttachment, PermissionRequest, PlanUsage, ProviderId,
+    TurnRequest, Usage,
 };
 use crate::anthropic::is_limit_message;
+use crate::permissions;
+
+/// What the model is told about where it runs. A constant, so the text is byte-identical
+/// on every turn and the prompt cache holds.
+pub const SESSION_NOTE: &str = "You are running inside jev-code, a terminal router for coding models, not in the Claude Code terminal UI. \
+When a tool call needs approval, jev-code asks the user in the terminal by itself: just make the call, and if it is denied, say what you need and why. \
+The user manages permission rules with jev-code's /permissions command. \
+Never tell the user to use Claude Code interface features such as Shift+Tab, /config or plugin commands: jev-code does not have them.";
 
 pub struct ClaudeBackend {
     pub bin: String,
@@ -23,6 +42,9 @@ pub struct ClaudeBackend {
     pub mcp_config: Option<PathBuf>,
     /// The attached server's name, to allow its tools without a prompt.
     mcp_name: Option<String>,
+    /// Run as a `jev-code` session: tool approvals are asked to the host and the model is
+    /// told where it runs.
+    interactive: bool,
 }
 
 impl ClaudeBackend {
@@ -42,7 +64,15 @@ impl ClaudeBackend {
             allowed_tools: crate::envfile::lookup("CODE_ALLOWED_TOOLS"),
             mcp_config: None,
             mcp_name: None,
+            interactive: false,
         }
+    }
+
+    /// For a `jev-code` session: the CLI asks the host before a tool that needs approval
+    /// (see the module docs) instead of denying it.
+    pub fn in_session(mut self) -> Self {
+        self.interactive = true;
+        self
     }
 
     /// The `--allowedTools` value: the user's list plus, with an MCP server attached,
@@ -63,15 +93,42 @@ pub fn mcp_config_json(mcp: &McpAttachment) -> Value {
     json!({ "mcpServers": { mcp.name.as_str(): { "command": mcp.command, "args": mcp.args } } })
 }
 
+/// The input field that says most about a tool call: a path, a command, a pattern.
+pub fn telling_field(input: &Value) -> Option<&str> {
+    ["file_path", "command", "pattern", "path", "url", "description"].iter().find_map(|k| input.get(*k).and_then(Value::as_str))
+}
+
 /// One-line summary of a tool call: its name plus the most telling input field.
 pub fn tool_summary(name: &str, input: &Value) -> String {
-    let field = ["file_path", "command", "pattern", "path", "url", "description"]
-        .iter()
-        .find_map(|k| input.get(*k).and_then(Value::as_str));
-    match field {
+    match telling_field(input) {
         Some(f) => format!("{name} {}", f.chars().take(100).collect::<String>()),
         None => name.to_string(),
     }
+}
+
+/// The host's question from a `can_use_tool` control request; other control requests are not ours.
+fn permission_request(ev: &Value) -> Option<PermissionRequest> {
+    let request = &ev["request"];
+    if request["subtype"] != "can_use_tool" {
+        return None;
+    }
+    let tool = request["tool_name"].as_str()?;
+    let input = request["input"].clone();
+    Some(PermissionRequest {
+        id: ev["request_id"].as_str()?.to_string(),
+        tool: tool.to_string(),
+        summary: permissions::describe(tool, &input),
+        blocked_path: request["blocked_path"].as_str().map(String::from),
+        input,
+    })
+}
+
+/// A `control_cancel_request`: the CLI no longer needs the answer to `request_id`. Its shape is
+/// `{"type":"control_cancel_request","request_id":"..."}` (Claude Agent SDK control protocol;
+/// the schema is in the CLI binary). It may name any control request, not only a permission
+/// question; the runner ignores an id that is not waiting.
+fn withdrawn_request(ev: &Value) -> Option<Event> {
+    Some(Event::PermissionWithdrawn { id: ev["request_id"].as_str()?.to_string() })
 }
 
 fn count(v: &Value, key: &str) -> u64 {
@@ -149,6 +206,9 @@ impl Backend for ClaudeBackend {
             cmd.args(["--resume", id]);
         }
         cmd.args(["--permission-mode", &self.permission_mode]);
+        if self.interactive {
+            cmd.args(["--input-format", "stream-json", "--permission-prompt-tool", "stdio", "--append-system-prompt", SESSION_NOTE]);
+        }
         if let Some(config) = &self.mcp_config {
             cmd.arg("--mcp-config").arg(config);
         }
@@ -156,6 +216,27 @@ impl Backend for ClaudeBackend {
             cmd.args(["--allowedTools", &allowed]);
         }
         cmd
+    }
+
+    /// Stream-json input is one JSON message per line, not the bare prompt.
+    fn stdin_payload(&self, req: &TurnRequest) -> Option<String> {
+        if !self.interactive {
+            return Some(req.prompt.clone());
+        }
+        Some(format!("{}\n", json!({ "type": "user", "message": { "role": "user", "content": req.prompt } })))
+    }
+
+    fn interactive(&self) -> bool {
+        self.interactive
+    }
+
+    fn permission_response(&self, req: &PermissionRequest, decision: &Decision) -> Option<String> {
+        let answer = match decision {
+            Decision::Allow | Decision::AllowAlways => json!({ "behavior": "allow", "updatedInput": req.input }),
+            Decision::Deny { reason } => json!({ "behavior": "deny", "message": reason }),
+        };
+        let line = json!({ "type": "control_response", "response": { "subtype": "success", "request_id": req.id, "response": answer } });
+        Some(line.to_string())
     }
 
     /// DeepSeek runs through the same CLI, so it can have the tool attached too.
@@ -177,6 +258,8 @@ impl Backend for ClaudeBackend {
                 ev["tool_name"].as_str().unwrap_or("tool")
             ))],
             Some("result") => vec![result_event(&ev)],
+            Some("control_request") => permission_request(&ev).map(Event::PermissionRequest).into_iter().collect(),
+            Some("control_cancel_request") => withdrawn_request(&ev).into_iter().collect(),
             Some("rate_limit_event") => plan_of(&ev).map(Event::Plan).into_iter().collect(),
             _ => vec![],
         }
@@ -211,6 +294,7 @@ mod tests {
             allowed_tools: None,
             mcp_config: None,
             mcp_name: None,
+            interactive: false,
         }
     }
 
@@ -344,5 +428,137 @@ mod tests {
     fn classifies_common_errors() {
         assert!(matches!(backend().classify_error("You've hit your limit"), ErrorKind::Quota { .. }));
         assert_eq!(backend().classify_error("weird"), ErrorKind::Other);
+    }
+
+    // ------------------------------------------------------------- host approvals
+
+    const ALLOW_TURN: &str = include_str!("../../tests/fixtures/claude/permission_allow.jsonl");
+    const DENY_TURN: &str = include_str!("../../tests/fixtures/claude/permission_deny.jsonl");
+    const ALLOW_LINE: &str = include_str!("../../tests/fixtures/claude/control_response_allow.jsonl");
+    const DENY_LINE: &str = include_str!("../../tests/fixtures/claude/control_response_deny.jsonl");
+    const USER_LINE: &str = include_str!("../../tests/fixtures/claude/user_message.jsonl");
+
+    fn session() -> ClaudeBackend {
+        backend().in_session()
+    }
+
+    fn request_from(turn: &str) -> PermissionRequest {
+        let events: Vec<Event> = turn.lines().flat_map(|l| backend().parse_line(l)).collect();
+        events
+            .into_iter()
+            .find_map(|e| match e {
+                Event::PermissionRequest(r) => Some(r),
+                _ => None,
+            })
+            .expect("the recorded turn holds a control request")
+    }
+
+    fn json_of(line: &str) -> Value {
+        serde_json::from_str(line).unwrap()
+    }
+
+    #[test]
+    fn the_recorded_control_request_becomes_a_permission_request() {
+        let r = request_from(ALLOW_TURN);
+        assert_eq!(r.id, "2f318992-1d40-4a9f-afab-303ef045d9d6");
+        assert_eq!(r.tool, "Bash");
+        assert_eq!(r.summary, "touch /tmp/spike/outside.txt");
+        assert_eq!(r.blocked_path.as_deref(), Some("/tmp/spike/outside.txt"));
+        assert_eq!(r.input["command"], "touch /tmp/spike/outside.txt");
+        // The whole recorded turn: the request, and the denial event that old headless runs got is absent.
+        let events: Vec<Event> = ALLOW_TURN.lines().flat_map(|l| backend().parse_line(l)).collect();
+        assert_eq!(events.iter().filter(|e| matches!(e, Event::PermissionRequest(_))).count(), 1);
+        assert!(matches!(events.last(), Some(Event::Finished(_))), "{events:?}");
+    }
+
+    #[test]
+    fn the_request_summary_and_debug_leave_secrets_out_of_logs() {
+        let line = json!({"type":"control_request","request_id":"r1","request":{"subtype":"can_use_tool","tool_name":"Bash","input":{"command":"curl -H 'Authorization: Bearer SECRET'"}}}).to_string();
+        let Event::PermissionRequest(r) = &backend().parse_line(&line)[0] else { panic!() };
+        assert!(r.summary.contains("SECRET"), "the person sees what they are approving");
+        let debug = format!("{r:?}");
+        assert!(!debug.contains("SECRET") && debug.contains("Bash") && debug.contains("r1"), "{debug}");
+    }
+
+    #[test]
+    fn writes_are_summarised_by_path_and_size_not_contents() {
+        let line = json!({"type":"control_request","request_id":"r2","request":{"subtype":"can_use_tool","tool_name":"Write","input":{"file_path":"/p/.claude/settings.local.json","content":"{\"permissions\": {}}"}}}).to_string();
+        let Event::PermissionRequest(r) = &backend().parse_line(&line)[0] else { panic!() };
+        assert_eq!(r.summary, "/p/.claude/settings.local.json (19 bytes)");
+    }
+
+    #[test]
+    fn other_control_requests_and_malformed_ones_are_not_questions() {
+        assert!(backend().parse_line(r#"{"type":"control_request","request_id":"x","request":{"subtype":"hook_callback"}}"#).is_empty());
+        assert!(backend().parse_line(r#"{"type":"control_request","request":{"subtype":"can_use_tool","tool_name":"Bash"}}"#).is_empty());
+        assert!(backend().parse_line(r#"{"type":"control_cancel_request"}"#).is_empty(), "no id, nothing to withdraw");
+    }
+
+    #[test]
+    fn a_cancel_request_withdraws_its_request_id() {
+        // The shape the SDK control protocol documents; the CLI does not send it in the recorded turns.
+        let line = json!({"type":"control_cancel_request","request_id":"2f318992-1d40-4a9f-afab-303ef045d9d6"}).to_string();
+        assert_eq!(
+            backend().parse_line(&line),
+            vec![Event::PermissionWithdrawn { id: "2f318992-1d40-4a9f-afab-303ef045d9d6".into() }]
+        );
+    }
+
+    #[test]
+    fn allow_answers_with_the_original_input_as_the_recorded_line_does() {
+        let r = request_from(ALLOW_TURN);
+        for decision in [Decision::Allow, Decision::AllowAlways] {
+            let line = session().permission_response(&r, &decision).unwrap();
+            assert!(!line.contains('\n'), "one line");
+            assert_eq!(json_of(&line), json_of(ALLOW_LINE));
+        }
+    }
+
+    #[test]
+    fn deny_answers_with_the_reason_as_the_recorded_line_does() {
+        let r = request_from(DENY_TURN);
+        let line = session().permission_response(&r, &Decision::Deny { reason: "User denied via host".into() }).unwrap();
+        assert_eq!(json_of(&line), json_of(DENY_LINE));
+    }
+
+    #[test]
+    fn a_session_runs_with_stream_json_input_a_host_prompt_tool_and_the_note() {
+        let a = args(&session().command(&req(None)));
+        assert_eq!(
+            a,
+            ["-p", "--model", "sonnet-x", "--output-format", "stream-json", "--verbose", "--permission-mode", "acceptEdits",
+             "--input-format", "stream-json", "--permission-prompt-tool", "stdio", "--append-system-prompt", SESSION_NOTE]
+        );
+        assert!(session().interactive());
+        // Headless use is what it always was.
+        assert!(!backend().interactive());
+        assert!(!args(&backend().command(&req(None))).iter().any(|x| x.contains("input-format") || x.contains("system-prompt")));
+    }
+
+    #[test]
+    fn the_prompt_travels_as_a_stream_json_user_message() {
+        let mut request = req(None);
+        request.prompt = "Use the Bash tool to run exactly: touch /tmp/spike/outside.txt   Then reply with just the word done.".into();
+        let payload = session().stdin_payload(&request).unwrap();
+        assert!(payload.ends_with('\n') && payload.matches('\n').count() == 1);
+        assert_eq!(json_of(&payload), json_of(USER_LINE));
+        // A multi-line prompt stays on one line.
+        request.prompt = "a\nb \"c\"".into();
+        let payload = session().stdin_payload(&request).unwrap();
+        assert_eq!(payload.matches('\n').count(), 1);
+        assert_eq!(json_of(&payload)["message"]["content"], "a\nb \"c\"");
+        // Headless: the bare prompt, as before.
+        assert_eq!(backend().stdin_payload(&request).as_deref(), Some("a\nb \"c\""));
+    }
+
+    #[test]
+    fn the_note_is_short_stable_and_steers_away_from_claude_code_ui() {
+        assert!(SESSION_NOTE.len() < 700, "{}", SESSION_NOTE.len());
+        assert!(SESSION_NOTE.contains("jev-code") && SESSION_NOTE.contains("/permissions") && SESSION_NOTE.contains("Shift+Tab"));
+        assert!(!SESSION_NOTE.contains('\n'), "no stray line breaks from the source layout");
+        let a = args(&session().command(&req(Some("abc"))));
+        let b = args(&session().command(&req(None)));
+        let note = |v: &[String]| v[v.iter().position(|x| x == "--append-system-prompt").unwrap() + 1].clone();
+        assert_eq!(note(&a), note(&b), "byte-identical every turn");
     }
 }

@@ -20,7 +20,7 @@ use crate::backend::ProviderId;
 use crate::catalog::{
     Allowances, ModelSpec, Overrides, Pick, TaskType, Usable, allowed_for, chain_with, find, models, pick,
 };
-use crate::router::{CODE_EDIT_P, CODE_SECURITY_P, MAX_HOLD, ProviderWant, Security, TOP_THRESHOLD};
+use crate::router::{Orchestration, CODE_EDIT_P, CODE_SECURITY_P, MAX_HOLD, ProviderWant, Security, TOP_THRESHOLD};
 
 /// Jev says a new task is a clear provider-switch candidate only from this
 /// `task_confidence`; below it the turn is too vague to justify a cold session.
@@ -104,8 +104,9 @@ pub struct Signals {
     pub continues_p: f64,
     /// Probability the user is correcting the previous answer, when it was asked.
     pub correction_p: Option<f64>,
-    /// Probability the request splits into separate pieces (orchestration's trigger).
-    pub multi_part_p: f64,
+    /// Whether the request splits into separate pieces (orchestration's trigger), and the
+    /// sequence veto.
+    pub orchestration: Orchestration,
     pub security_keywords: Security,
 }
 
@@ -119,7 +120,7 @@ impl From<&ProviderWant> for Signals {
             edit_p: w.edit_p,
             continues_p: w.continues_p,
             correction_p: w.correction_p,
-            multi_part_p: w.multi_part_p,
+            orchestration: w.orchestration,
             security_keywords: w.security_keywords,
         }
     }
@@ -488,7 +489,7 @@ mod tests {
             edit_p: 0.0,
             continues_p: 0.0,
             correction_p: None,
-            multi_part_p: 0.0,
+            orchestration: Orchestration::default(),
             security_keywords: Security::None,
         }
     }
@@ -829,7 +830,7 @@ mod tests {
                         edit_p: rng.unit(),
                         continues_p: rng.unit(),
                         correction_p: if rng.next() % 2 == 0 { Some(rng.unit()) } else { None },
-                        multi_part_p: 0.0,
+                        orchestration: Orchestration::default(),
                         security_keywords: rng.pick(&[Security::None, Security::Weak, Security::Strong]),
                     };
                     let signals = (round % 5 != 0).then_some(&s);

@@ -79,13 +79,74 @@ fn avail(provider: ProviderId, state: State, detail: impl Into<String>) -> Avail
 /// Probe all five providers concurrently, each capped at [`PROBE_CAP`].
 pub async fn probe_all() -> Vec<Availability> {
     let (claude, deepseek, codex, gemini, grok) = tokio::join!(
-        capped(PROBE_CAP, ProviderId::Claude, probe_claude()),
-        capped(PROBE_CAP, ProviderId::DeepSeek, probe_deepseek()),
-        capped(PROBE_CAP, ProviderId::Codex, probe_codex()),
-        capped(PROBE_CAP, ProviderId::Gemini, probe_gemini()),
-        capped(PROBE_CAP, ProviderId::Grok, probe_grok()),
+        capped(PROBE_CAP, ProviderId::Claude, probe_provider(ProviderId::Claude)),
+        capped(PROBE_CAP, ProviderId::DeepSeek, probe_provider(ProviderId::DeepSeek)),
+        capped(PROBE_CAP, ProviderId::Codex, probe_provider(ProviderId::Codex)),
+        capped(PROBE_CAP, ProviderId::Gemini, probe_provider(ProviderId::Gemini)),
+        capped(PROBE_CAP, ProviderId::Grok, probe_provider(ProviderId::Grok)),
     );
     vec![claude, deepseek, codex, gemini, grok]
+}
+
+/// One provider's probe, with no time cap of its own: the caller says how long it may take.
+pub fn probe_provider(provider: ProviderId) -> impl Future<Output = Availability> + Send + 'static {
+    async move {
+        match provider {
+            ProviderId::Claude => probe_claude().await,
+            ProviderId::DeepSeek => probe_deepseek().await,
+            ProviderId::Codex => probe_codex().await,
+            ProviderId::Gemini => probe_gemini().await,
+            ProviderId::Grok => probe_grok().await,
+        }
+    }
+}
+
+// ------------------------------------------------------------- the slow-probe retry
+
+/// A probe that ended [`State::Unknown`] is tried once more, in the background, with this
+/// longer cap. `codex` and `claude` are often lazy wrappers (mise) whose first run can take
+/// longer than [`PROBE_CAP`] while they install or warm up; waiting that long at startup
+/// would stall the banner, and never asking again would leave the provider unused all session.
+pub const RETRY_CAP: Duration = Duration::from_secs(20);
+
+/// The providers whose first probe could not tell, and so deserve the retry.
+pub fn retry_candidates(first: &[Availability]) -> Vec<ProviderId> {
+    first.iter().filter(|a| a.state == State::Unknown).map(|a| a.provider).collect()
+}
+
+/// Probe each of `providers` once more, all at once, each under `cap`, and hand every
+/// answer to `done` as it arrives (so a quick one is not held back by a slow one). It is
+/// the whole policy: one retry, never a loop. `probe` is injected so tests need no CLI.
+pub async fn retry_unknown<P, Fut>(providers: Vec<ProviderId>, cap: Duration, probe: P, mut done: impl FnMut(Availability))
+where
+    P: Fn(ProviderId) -> Fut,
+    Fut: Future<Output = Availability> + Send + 'static,
+{
+    let mut running = tokio::task::JoinSet::new();
+    for provider in providers {
+        running.spawn(capped(cap, provider, probe(provider)));
+    }
+    while let Some(finished) = running.join_next().await {
+        if let Ok(answer) = finished {
+            done(answer);
+        }
+    }
+}
+
+/// Fold a late answer into `current`: it only fills in a provider that is still
+/// [`State::Unknown`] (a `/providers refresh` may have found a definite answer since), and an
+/// answer that is itself Unknown teaches nothing. True when something changed.
+pub fn merge_late(current: &mut [Availability], late: Availability) -> bool {
+    if late.state == State::Unknown {
+        return false;
+    }
+    match current.iter_mut().find(|a| a.provider == late.provider && a.state == State::Unknown) {
+        Some(slot) => {
+            *slot = late;
+            true
+        }
+        None => false,
+    }
 }
 
 /// The (provider, model) pairs a turn may be routed to: for each Ready provider, the
@@ -168,15 +229,6 @@ fn path_dirs() -> Vec<PathBuf> {
     std::env::var_os("PATH").map(|p| std::env::split_paths(&p).collect()).unwrap_or_default()
 }
 
-/// Installed means "found on PATH"; the binary is not run, since some are lazy
-/// wrappers whose first run starts an install.
-pub(crate) fn on_path(name: &str) -> bool {
-    if name.contains('/') {
-        return is_executable_file(Path::new(name));
-    }
-    !find_on_path(name, &path_dirs(), &is_executable_file).is_empty()
-}
-
 fn home() -> Option<PathBuf> {
     std::env::var_os("HOME").map(PathBuf::from)
 }
@@ -200,14 +252,20 @@ struct Captured {
 
 /// Run `program args` with no stdin, and wait for it. `None` when it cannot start.
 /// The child is killed if the probe is cancelled by the time cap.
+/// A status probe's command. Probes run in mise's offline mode: on Omarchy the agent CLIs
+/// are mise launchers that update themselves before they run (at most every 4 hours), and a
+/// probe that triggers that update blows its 5 s cap (the `? codex` at startup) and can make
+/// mise install other tools. Offline, the installed version answers in well under a second
+/// (measured 0.4 s for `codex login status`, 0.6 s for `claude auth status`) and nothing is
+/// fetched. Real turns are NOT run offline: they behave exactly as when the user runs the tool.
+fn probe_command(program: &str, args: &[&str]) -> tokio::process::Command {
+    let mut cmd = tokio::process::Command::new(program);
+    cmd.args(args).env("MISE_OFFLINE", "1").stdin(Stdio::null()).kill_on_drop(true);
+    cmd
+}
+
 async fn run_capture(program: &str, args: &[&str]) -> Option<Captured> {
-    let out = tokio::process::Command::new(program)
-        .args(args)
-        .stdin(Stdio::null())
-        .kill_on_drop(true)
-        .output()
-        .await
-        .ok()?;
+    let out = probe_command(program, args).output().await.ok()?;
     let text = format!("{}\n{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
     Some(Captured { ok: out.status.success(), text })
 }
@@ -256,7 +314,7 @@ fn decide_claude(installed: bool, login: Option<ClaudeLogin>) -> Availability {
 }
 
 async fn probe_claude() -> Availability {
-    let installed = on_path("claude");
+    let installed = installed_for_real("claude");
     let login = match installed {
         true => run_capture("claude", &["auth", "status"]).await.and_then(|c| parse_claude_login(&c.text)),
         false => None,
@@ -280,7 +338,7 @@ fn decide_deepseek(claude_installed: bool, key_present: bool) -> Availability {
 }
 
 async fn probe_deepseek() -> Availability {
-    decide_deepseek(on_path("claude"), envfile::lookup("DEEPSEEK_API_KEY").is_some())
+    decide_deepseek(installed_for_real("claude"), envfile::lookup("DEEPSEEK_API_KEY").is_some())
 }
 
 // ------------------------------------------------------------------------ Codex
@@ -351,7 +409,7 @@ fn decide_codex(installed: bool, login_ok: Option<bool>, plan: Option<&str>, mod
 }
 
 async fn probe_codex() -> Availability {
-    let installed = on_path("codex");
+    let installed = installed_for_real("codex");
     if !installed {
         return decide_codex(false, None, None, None);
     }
@@ -418,8 +476,8 @@ async fn probe_gemini() -> Availability {
     let settings = read_home_file(".gemini/settings.json");
     let (api_key_env, settings_auth) = gemini_login_facts(settings.as_deref(), |n| envfile::lookup(n).is_some());
     decide_gemini(GeminiFacts {
-        gemini_installed: on_path("gemini"),
-        agy_installed: on_path("agy"),
+        gemini_installed: installed_for_real("gemini"),
+        agy_installed: installed_for_real("agy"),
         api_key_env,
         settings_auth,
         oauth_creds: home_path_exists(".gemini/oauth_creds.json"),
@@ -447,9 +505,30 @@ fn decide_grok(f: GrokFacts) -> Availability {
     }
 }
 
-/// A command-wrapper is the lazy launcher that installs the tool on first run.
+/// A lazy mise launcher: a command-wrapper or a shim. Running one for a tool that is not
+/// installed yet STARTS A LONG INSTALL (it happened with `grok` and `agy`), so a probe
+/// must never execute one unless mise already has that tool installed.
 fn is_mise_wrapper(path: &Path) -> bool {
-    path.components().any(|c| c.as_os_str() == "command-wrappers")
+    let parts: Vec<&std::ffi::OsStr> = path.components().map(|c| c.as_os_str()).collect();
+    parts.iter().any(|c| *c == "command-wrappers")
+        || parts.windows(2).any(|w| w[0] == "mise" && w[1] == "shims")
+}
+
+/// The pure decision: `bin` is really installed when some candidate on PATH is a real
+/// binary, or when every candidate is a lazy launcher but mise already has the tool.
+fn really_installed(candidates: &[PathBuf], mise_has_tool: bool) -> bool {
+    candidates.iter().any(|p| !is_mise_wrapper(p)) || (!candidates.is_empty() && mise_has_tool)
+}
+
+/// Whether running `bin` is safe for a probe: a real binary, never a lazy launcher that
+/// would install it. Use this, not [`on_path`], before executing any provider CLI.
+pub(crate) fn installed_for_real(bin: &str) -> bool {
+    if bin.contains('/') {
+        return is_executable_file(Path::new(bin)) && !is_mise_wrapper(Path::new(bin));
+    }
+    let candidates = find_on_path(bin, &path_dirs(), &is_executable_file);
+    let data = mise_data_dir(std::env::var("MISE_DATA_DIR").ok(), std::env::var("XDG_DATA_HOME").ok(), home());
+    really_installed(&candidates, data.is_some_and(|d| mise_installs_binary(&d, bin)))
 }
 
 /// mise's data directory: `$MISE_DATA_DIR`, else `$XDG_DATA_HOME/mise`, else
@@ -461,18 +540,27 @@ fn mise_data_dir(mise_data_dir: Option<String>, xdg_data_home: Option<String>, h
         .or_else(|| home.map(|h| h.join(".local/share/mise")))
 }
 
-/// True when some version directory under `<data>/installs/grok/` has files in it.
-fn mise_has_grok_install(data_dir: &Path) -> bool {
-    std::fs::read_dir(data_dir.join("installs/grok"))
-        .map(|versions| versions.flatten().any(|v| dir_has_entries(&v.path())))
-        .unwrap_or(false)
+/// True when some mise install holds an executable file called `bin`: `installs/<tool>/<version>/<bin>`
+/// or `installs/<tool>/<version>/bin/<bin>`, whatever the tool directory is called (a tool
+/// installed through a backend is `npm-google-gemini-cli`, its binary `gemini`).
+///
+/// Found from the filesystem alone, and a directory is not enough: mise creates an EMPTY
+/// version directory when an install is started, and Omarchy's account wrapper runs `mise
+/// install` (or `mise use -g`) whenever it finds no real binary, so an empty or half-done
+/// install must count as "not installed". Nothing is executed to find out.
+fn mise_installs_binary(data_dir: &Path, bin: &str) -> bool {
+    let subdirs = |dir: &Path| -> Vec<PathBuf> {
+        std::fs::read_dir(dir).map(|entries| entries.flatten().map(|e| e.path()).filter(|p| p.is_dir()).collect()).unwrap_or_default()
+    };
+    subdirs(&data_dir.join("installs"))
+        .iter()
+        .flat_map(|tool| subdirs(tool))
+        .any(|version| [version.join(bin), version.join("bin").join(bin)].iter().any(|exe| is_executable_file(exe)))
 }
 
 async fn probe_grok() -> Availability {
-    let data = mise_data_dir(std::env::var("MISE_DATA_DIR").ok(), std::env::var("XDG_DATA_HOME").ok(), home());
-    let on_path_real = find_on_path("grok", &path_dirs(), &is_executable_file).iter().any(|p| !is_mise_wrapper(p));
     decide_grok(GrokFacts {
-        real_binary: on_path_real || data.is_some_and(|d| mise_has_grok_install(&d)),
+        real_binary: installed_for_real("grok"),
         home_dir: home().is_some_and(|h| grok::session_dir_exists(&h)),
     })
 }
@@ -636,6 +724,89 @@ mod tests {
     }
 
     #[test]
+    fn probes_run_in_mise_offline_mode_so_they_never_update_or_install() {
+        let cmd = probe_command("codex", &["login", "status"]);
+        let env: Vec<_> = cmd.as_std().get_envs().collect();
+        assert!(env.iter().any(|(k, v)| *k == "MISE_OFFLINE" && *v == Some(std::ffi::OsStr::new("1"))), "{env:?}");
+    }
+
+    #[test]
+    fn lazy_launchers_are_never_counted_as_installed() {
+        let wrapper = PathBuf::from("/h/.local/share/mise/command-wrappers/bin/codex");
+        let shim = PathBuf::from("/h/.local/share/mise/shims/agy");
+        let real = PathBuf::from("/usr/bin/codex");
+        assert!(is_mise_wrapper(&shim), "mise shims install on first run too (the agy accident)");
+        assert!(!is_mise_wrapper(Path::new("/opt/shims/tool")), "only mise's shims directory");
+        // Only a lazy launcher and mise has nothing installed: never run it.
+        assert!(!really_installed(&[wrapper.clone()], false));
+        assert!(!really_installed(&[shim.clone()], false));
+        // A lazy launcher for a tool mise already installed is safe to run.
+        assert!(really_installed(&[wrapper.clone()], true));
+        // A real binary anywhere on PATH is installed.
+        assert!(really_installed(&[shim, real], false));
+        // Nothing on PATH is never installed, whatever mise says.
+        assert!(!really_installed(&[], true));
+    }
+
+    /// A mise data directory in a fresh temp folder.
+    fn mise_dir(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("jev-mise-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("installs")).unwrap();
+        dir
+    }
+
+    fn write_file(path: &Path, mode: u32) {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, "#!/bin/sh\n").unwrap();
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).unwrap();
+    }
+
+    #[test]
+    fn an_install_is_found_by_its_binary_whatever_the_tool_directory_is_called() {
+        let data = mise_dir("layouts");
+        // The directory is named like the binary, the binary in the version directory.
+        write_file(&data.join("installs/claude/2.1.3/claude"), 0o755);
+        assert!(mise_installs_binary(&data, "claude"));
+        // Named like the binary, in `bin/`.
+        write_file(&data.join("installs/codex/0.1.0/bin/codex"), 0o755);
+        assert!(mise_installs_binary(&data, "codex"));
+        // A backend-prefixed tool name: `npm:@google/gemini-cli` is `npm-google-gemini-cli`.
+        write_file(&data.join("installs/npm-google-gemini-cli/0.9.0/bin/gemini"), 0o755);
+        assert!(mise_installs_binary(&data, "gemini"));
+        // A binary that differs from the tool (`agy` from `antigravity-cli`).
+        write_file(&data.join("installs/antigravity-cli/1.0.0/bin/agy"), 0o755);
+        assert!(mise_installs_binary(&data, "agy"));
+        // Other binaries are not found just because something is installed.
+        assert!(!mise_installs_binary(&data, "grok"));
+        assert!(!mise_installs_binary(&data.join("missing"), "claude"));
+        let _ = std::fs::remove_dir_all(&data);
+    }
+
+    #[test]
+    fn an_empty_version_directory_or_a_non_executable_file_is_not_an_install() {
+        let data = mise_dir("hollow");
+        // `mise install` started and did not finish (it happened with grok): a version
+        // directory exists, with nothing in it.
+        std::fs::create_dir_all(data.join("installs/grok/1.0.77")).unwrap();
+        assert!(!mise_installs_binary(&data, "grok"));
+        // Files that are not the binary.
+        write_file(&data.join("installs/grok/1.0.77/README"), 0o644);
+        assert!(!mise_installs_binary(&data, "grok"));
+        // The right name but not executable.
+        write_file(&data.join("installs/gemini/0.1.0/bin/gemini"), 0o644);
+        assert!(!mise_installs_binary(&data, "gemini"));
+        // A directory with the binary's name is not a binary either.
+        std::fs::create_dir_all(data.join("installs/agy/1.0.0/bin/agy")).unwrap();
+        assert!(!mise_installs_binary(&data, "agy"));
+        // And once it really is installed, it counts.
+        write_file(&data.join("installs/grok/1.0.77/bin/grok"), 0o755);
+        assert!(mise_installs_binary(&data, "grok"));
+        let _ = std::fs::remove_dir_all(&data);
+    }
+
+    #[test]
     fn mise_wrapper_paths_are_recognised() {
         assert!(is_mise_wrapper(Path::new("/h/.local/share/mise/command-wrappers/bin/grok")));
         assert!(!is_mise_wrapper(Path::new("/h/.local/share/mise/installs/grok/1.0/bin/grok")));
@@ -722,5 +893,61 @@ mod tests {
     async fn fast_probe_passes_through() {
         let a = capped(Duration::from_secs(1), ProviderId::Claude, async { ready(ProviderId::Claude, None) }).await;
         assert_eq!(a.state, State::Ready);
+    }
+
+    // ---- the slow-probe retry
+
+    fn unknown(p: ProviderId) -> Availability {
+        avail(p, State::Unknown, "probe timed out after 5s")
+    }
+
+    #[test]
+    fn only_providers_that_could_not_tell_are_retried() {
+        let first = [ready(ProviderId::Claude, None), unknown(ProviderId::Codex), avail(ProviderId::Gemini, State::NotLoggedIn, "x"), unknown(ProviderId::Grok)];
+        assert_eq!(retry_candidates(&first), [ProviderId::Codex, ProviderId::Grok]);
+        assert!(retry_candidates(&[ready(ProviderId::Claude, None)]).is_empty());
+    }
+
+    #[tokio::test]
+    async fn the_retry_asks_each_provider_once_under_the_cap_and_reports_answers_as_they_come() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+        let calls = Arc::new(AtomicUsize::new(0));
+        let counter = calls.clone();
+        // codex answers after 20 ms; claude never answers; both under a 150 ms cap.
+        let fake = move |p: ProviderId| {
+            counter.fetch_add(1, Ordering::SeqCst);
+            async move {
+                if p == ProviderId::Codex {
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                    ready(p, None)
+                } else {
+                    std::future::pending().await
+                }
+            }
+        };
+        let mut answers = Vec::new();
+        retry_unknown(vec![ProviderId::Claude, ProviderId::Codex], Duration::from_millis(150), fake, |a| answers.push((a.provider, a.state))).await;
+        assert_eq!(answers, [(ProviderId::Codex, State::Ready), (ProviderId::Claude, State::Unknown)], "the quick one is not held back by the slow one");
+        assert_eq!(calls.load(Ordering::SeqCst), 2, "one retry each, never a loop");
+    }
+
+    #[tokio::test]
+    async fn a_retry_with_nothing_to_retry_does_nothing() {
+        let mut seen = 0;
+        retry_unknown(Vec::new(), RETRY_CAP, |p| async move { ready(p, None) }, |_| seen += 1).await;
+        assert_eq!(seen, 0);
+    }
+
+    #[test]
+    fn a_late_answer_fills_in_only_a_provider_that_is_still_unknown() {
+        let mut now = vec![ready(ProviderId::Claude, None), unknown(ProviderId::Codex), avail(ProviderId::Gemini, State::NotLoggedIn, "x")];
+        assert!(merge_late(&mut now, ready(ProviderId::Codex, Some(vec!["m"]))));
+        assert_eq!((now[1].state, now[1].models.clone()), (State::Ready, Some(vec!["m".to_string()])));
+        assert!(!merge_late(&mut now, avail(ProviderId::Codex, State::NotLoggedIn, "x")), "a definite answer is never overwritten");
+        assert!(!merge_late(&mut now, ready(ProviderId::Gemini, None)), "nor is a refresh's result");
+        assert_eq!(now[2].state, State::NotLoggedIn);
+        let mut still = vec![unknown(ProviderId::Codex)];
+        assert!(!merge_late(&mut still, unknown(ProviderId::Codex)), "Unknown teaches nothing");
     }
 }

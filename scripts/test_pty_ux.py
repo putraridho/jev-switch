@@ -13,6 +13,7 @@ Nothing real is touched and no quota is spent:
 Each scenario is independent, has its own timeout, and says what it expected when it fails.
 """
 
+import codecs
 import fcntl
 import json
 import os
@@ -29,6 +30,7 @@ import termios
 import threading
 import time
 import traceback
+import unicodedata
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -79,21 +81,83 @@ def start_jev():
 
 FAKE_CLAUDE = r"""#!/bin/sh
 # Fake `claude`: `auth status` for the availability probe, stream-json for a turn.
+# With `--input-format stream-json` (what jev-code's session uses) it speaks the host
+# control protocol: the prompt is ONE JSON line on stdin, a tool that needs approval is a
+# `control_request` on stdout and the answer is a `control_response` line on stdin, as in
+# tests/fixtures/claude/. Without it the prompt is plain text until EOF, as in `claude -p`.
 if [ "$1" = "auth" ]; then
   echo '{"loggedIn": true, "planTier": "pro"}'
   exit 0
 fi
-prompt=$(cat)
-last=$(printf '%s' "$prompt" | tail -n 1)
+host=0
+for arg in "$@"; do
+  [ "$arg" = "--input-format" ] && host=1
+done
+if [ $host = 1 ]; then
+  # One JSON line: its "\n" escapes stand for the line breaks of the prompt.
+  IFS= read -r prompt
+  last=$(printf '%s' "$prompt" | sed 's/.*\\n//')
+else
+  prompt=$(cat)
+  last=$(printf '%s' "$prompt" | tail -n 1)
+fi
 echo $$ > "$FAKE_PIDS/cli.pid"
+answer="FAKE ANSWER hello"
 emit() { printf '%s\n' "$1"; }
 emit '{"type":"system","subtype":"init","session_id":"sess-1"}'
 case "$last" in
+  *approve*)
+    emit '{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t9","name":"Bash","input":{"command":"cargo test --quiet"}}]}}'
+    # Claude Code reads the project's allow rules itself: a saved rule means no question.
+    if [ $host = 1 ] && grep -q 'cargo test:\*' .claude/settings.local.json 2>/dev/null; then
+      answer="FAKE ALLOWED by rule"
+    elif [ $host = 1 ]; then
+      emit '{"type":"control_request","request_id":"req-1","request":{"subtype":"can_use_tool","tool_name":"Bash","input":{"command":"cargo test --quiet"}}}'
+      IFS= read -r reply
+      printf '%s\n' "$reply" > "$FAKE_PIDS/reply.json"
+      case "$reply" in
+        *'"behavior":"allow"'*) answer="FAKE ALLOWED" ;;
+        *) answer="FAKE DENIED" ;;
+      esac
+    else
+      emit '{"type":"system","subtype":"permission_denied","tool_name":"Bash"}'
+      answer="FAKE DENIED headless"
+    fi
+    ;;
+  *subagent*|*broadread*)
+    # A sub-agent call whose prompt is the part that matters, or a read of a system folder
+    # that must never be remembered for good.
+    case "$last" in
+      *subagent*) req='{"subtype":"can_use_tool","tool_name":"Task","input":{"description":"tidy up","subagent_type":"general-purpose","prompt":"Read the code.\nThen delete the build folder and push to main."}}' ;;
+      *) req='{"subtype":"can_use_tool","tool_name":"Read","input":{"file_path":"/etc/ssh/sshd_config"}}' ;;
+    esac
+    emit "{\"type\":\"control_request\",\"request_id\":\"req-1\",\"request\":$req}"
+    IFS= read -r reply
+    printf '%s\n' "$reply" > "$FAKE_PIDS/reply.json"
+    case "$reply" in
+      *'"behavior":"allow"'*) answer="FAKE ALLOWED" ;;
+      *) answer="FAKE DENIED" ;;
+    esac
+    ;;
+  *withdraw*)
+    # Asks, then takes the question back a second later (a hook settled it, say) and goes on
+    # without waiting for any reply: the person never got to answer.
+    emit '{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t9","name":"Bash","input":{"command":"cargo test --quiet"}}]}}'
+    emit '{"type":"control_request","request_id":"req-1","request":{"subtype":"can_use_tool","tool_name":"Bash","input":{"command":"cargo test --quiet"}}}'
+    sleep 1
+    emit '{"type":"control_cancel_request","request_id":"req-1"}'
+    sleep 2
+    answer="FAKE CARRIED ON"
+    ;;
   *stall*)
     sleep 300 &
     echo $! > "$FAKE_PIDS/child.pid"
     emit '{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t0","name":"Bash","input":{"command":"sleep 300"}}]}}'
     sleep 120
+    ;;
+  *longcmd*)
+    emit '{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"@LONGCMD@"}}]}}'
+    sleep 5
     ;;
   *slow*)
     emit '{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t1","name":"Read","input":{"file_path":"a.txt"}}]}}'
@@ -113,8 +177,26 @@ case "$last" in
     ;;
   *edit*) echo hi > new.txt ;;
 esac
-emit '{"type":"assistant","message":{"content":[{"type":"text","text":"FAKE ANSWER hello"}]}}'
-emit '{"type":"result","subtype":"success","is_error":false,"result":"FAKE ANSWER hello","session_id":"sess-1","usage":{"input_tokens":10,"cache_read_input_tokens":5,"cache_creation_input_tokens":0,"output_tokens":3}}'
+emit "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"$answer\"}]}}"
+emit "{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"result\":\"$answer\",\"session_id\":\"sess-1\",\"usage\":{\"input_tokens\":10,\"cache_read_input_tokens\":5,\"cache_creation_input_tokens\":0,\"output_tokens\":3}}"
+"""
+
+# A 200+ column tool command, with the control characters a real tool call can carry (colour,
+# bell, a lone ESC): the status line must show it on ONE row and without them. The JSON
+# escapes are written out here and decoded by the program.
+LONG_COMMAND = (
+    "ls -R | head -100 && echo --- && ls | wc -l && cat log --oneline --decorate --graph --all | head -50"
+    " && echo \\u001b[31mred\\u0007 \\u001b and then a good deal more text to push the line well past any narrow terminal"
+)
+
+# `codex login status` that takes longer than the 5 s startup probe cap but succeeds inside the retry cap.
+FAKE_SLOW_CODEX = """#!/bin/sh
+if [ "$1" = "login" ]; then
+  sleep 7
+  echo "Logged in using ChatGPT"
+  exit 0
+fi
+exit 0
 """
 
 TOOLS = ["git", "sh", "bash", "sleep", "cat", "tail", "head", "env", "printf", "echo", "mkdir", "rm", "uname", "id", "tr", "sed", "grep", "date"]
@@ -135,7 +217,7 @@ class World:
         self.jev_url = jev_url
         self.claude = os.path.join(self.bin, "claude")
         with open(self.claude, "w") as f:
-            f.write(FAKE_CLAUDE)
+            f.write(FAKE_CLAUDE.replace("@LONGCMD@", LONG_COMMAND))
         os.chmod(self.claude, 0o755)
         for tool in TOOLS:
             found = shutil.which(tool)
@@ -148,6 +230,12 @@ class World:
         self._git("commit", "-qm", "init")
         # The first-run hint is its own scenario; everywhere else it is already "shown".
         self.mark_first_run_done()
+
+    def add_slow_codex(self):
+        path = os.path.join(self.bin, "codex")
+        with open(path, "w") as f:
+            f.write(FAKE_SLOW_CODEX)
+        os.chmod(path, 0o755)
 
     def _git(self, *args):
         subprocess.run(
@@ -272,23 +360,165 @@ def clean(text):
     return "\n".join(lines)
 
 
+class VT:
+    """A tiny terminal emulator: enough to know what is ON SCREEN, which `clean` cannot, because
+    it has no width. Printable characters auto-wrap at the terminal width (xterm style: writing
+    in the last column only arms the wrap, the next printable character performs it), `\\r`,
+    `\\n`, erase-line (`ESC[K`, `ESC[1K`, `ESC[2K`), erase-below (`ESC[J`), cursor moves, and cursor
+    show/hide are applied; SGR and every other sequence are ignored. Rows never scroll away, so a
+    leftover fragment stays visible for the assertions. A resize crops rows, like a terminal that
+    does not reflow."""
+
+    SEQ = re.compile(r"\x1b\[([0-9;?]*)([ -/]*[@-~])")
+
+    def __init__(self, cols):
+        self.cols = cols
+        self.rows = [[]]
+        self.row = 0
+        self.col = 0
+        self.pending_wrap = False
+        self.cursor_visible = True
+        self.decoder = codecs.getincrementaldecoder("utf-8")("replace")
+        self.tail = ""
+
+    # -- input
+    def feed(self, data):
+        text = self.tail + self.decoder.decode(data)
+        self.tail = ""
+        i = 0
+        while i < len(text):
+            c = text[i]
+            if c == "\x1b":
+                m = self.SEQ.match(text, i)
+                if m:
+                    self.csi(m.group(1), m.group(2))
+                    i = m.end()
+                    continue
+                if i + 1 >= len(text) or text[i + 1] == "[":
+                    self.tail = text[i:]  # an escape sequence split across two reads
+                    return
+                i += 2  # ESC 7, ESC 8, ESC =, ...
+                continue
+            i += 1
+            if c == "\r":
+                self.col, self.pending_wrap = 0, False
+            elif c == "\n":
+                self.line_feed()
+            elif c in "\x07\x08\x0e\x0f" or ord(c) < 0x20:
+                if c == "\x08":
+                    self.col = max(0, self.col - 1)
+                    self.pending_wrap = False
+            else:
+                self.put(c)
+
+    def width_of(self, c):
+        if unicodedata.combining(c):
+            return 0
+        return 2 if unicodedata.east_asian_width(c) in "WF" else 1
+
+    def put(self, c):
+        w = self.width_of(c)
+        if w == 0:
+            return
+        if self.pending_wrap or self.col + w > self.cols:
+            self.line_feed()
+            self.col = 0
+        line = self.rows[self.row]
+        while len(line) < self.col:
+            line.append(" ")
+        del line[self.col : self.col + w]
+        line[self.col : self.col] = [c] + [""] * (w - 1)
+        self.col += w
+        if self.col >= self.cols:
+            self.col, self.pending_wrap = self.cols - 1, True
+
+    def line_feed(self):
+        self.pending_wrap = False
+        self.row += 1
+        while len(self.rows) <= self.row:
+            self.rows.append([])
+
+    def csi(self, params, final):
+        nums = [int(p) if p.isdigit() else 0 for p in params.lstrip("?").split(";")] if params else []
+        n = nums[0] if nums and nums[0] else 1
+        line = self.rows[self.row]
+        if params.startswith("?"):
+            if final == "l" and 25 in nums:
+                self.cursor_visible = False
+            elif final == "h" and 25 in nums:
+                self.cursor_visible = True
+        elif final == "K":
+            mode = nums[0] if nums else 0
+            if mode == 0:
+                del line[self.col :]
+            elif mode == 1:
+                line[: self.col + 1] = [" "] * min(self.col + 1, len(line))
+            else:
+                del line[:]
+        elif final == "J":
+            mode = nums[0] if nums else 0
+            if mode == 0:
+                del line[self.col :]
+                del self.rows[self.row + 1 :]
+            elif mode in (2, 3):
+                self.rows, self.row, self.col = [[]], 0, 0
+        elif final == "C":
+            self.col = min(self.cols - 1, self.col + n)
+            self.pending_wrap = False
+        elif final == "D":
+            self.col = max(0, self.col - n)
+            self.pending_wrap = False
+        elif final == "G":
+            self.col = min(self.cols - 1, n - 1)
+            self.pending_wrap = False
+        elif final == "A":
+            self.row = max(0, self.row - n)
+        elif final == "B":
+            self.row += n
+            while len(self.rows) <= self.row:
+                self.rows.append([])
+
+    def resize(self, cols):
+        self.cols = cols
+        for line in self.rows:
+            del line[cols:]
+        self.col = min(self.col, cols - 1)
+        self.pending_wrap = False
+
+    # -- what is on screen
+    def screen(self):
+        return ["".join(line).rstrip() for line in self.rows]
+
+    def status_rows(self):
+        """Rows that carry a status-line frame (a spinner glyph) or what is left of one."""
+        return [r for r in self.screen() if any(g in r for g in SPINNER) or " · Bash" in r]
+
+
 class Pty:
-    def __init__(self, world, args, name, env=None, cwd=None):
+    def __init__(self, world, args, name, env=None, cwd=None, cols=100, rows=30):
         self.name = name
         self.raw = b""
         self.counts = {}  # how many times each needle had been seen when expect() last matched it
         self.exit = None
+        self.vt = VT(cols)
+        self.on_chunk = None  # called with the emulated screen after every read
         env = env if env is not None else world.env()
         pid, fd = pty.fork()
         if pid == 0:
             try:
-                fcntl.ioctl(0, termios.TIOCSWINSZ, struct.pack("HHHH", 30, 100, 0, 0))
+                fcntl.ioctl(0, termios.TIOCSWINSZ, struct.pack("HHHH", rows, cols, 0, 0))
                 os.chdir(cwd or world.repo)
                 os.execve(BIN, [BIN, *args], env)
             finally:
                 os._exit(127)
         self.pid, self.fd = pid, fd
         self.eof = False
+        self.rows = rows
+
+    def resize(self, cols):
+        """Resize the window like a user dragging its edge: the kernel tells the program with SIGWINCH."""
+        fcntl.ioctl(self.fd, termios.TIOCSWINSZ, struct.pack("HHHH", self.rows, cols, 0, 0))
+        self.vt.resize(cols)
 
     # -- reading
     def pump(self, timeout=0.1):
@@ -303,6 +533,9 @@ class Pty:
                 chunk = b""
             if chunk:
                 self.raw += chunk
+                self.vt.feed(chunk)
+                if self.on_chunk:
+                    self.on_chunk(self.vt)
             else:
                 self.eof = True
 
@@ -835,6 +1068,296 @@ def piped_stdin_still_works_line_by_line(w):
         raise Fail(f"end of input should end the session with 0, got {eof.returncode}")
 
 
+# ------------------------------------------------------------ tool approvals
+
+QUESTION = "Allow Bash: cargo test --quiet?"
+
+
+def settings_rules(w):
+    path = os.path.join(w.repo, ".claude", "settings.local.json")
+    if not os.path.exists(path):
+        return None
+    with open(path) as f:
+        return json.load(f).get("permissions", {}).get("allow", [])
+
+
+def host_reply(w):
+    with open(os.path.join(w.pids, "reply.json")) as f:
+        return json.loads(f.read())["response"]
+
+
+@scenario
+def a_tool_that_needs_approval_asks_and_y_lets_it_run_once(w):
+    p = Pty(w, [w.repo], "approve-yes")
+    try:
+        prompt_ready(p)
+        p.send("approve it quick\r")
+        shown = p.expect(QUESTION, 15, "the approval question")
+        question = [l for l in shown.split("\n") if QUESTION in l][-1]
+        for part in ("[y]es", "[n]o", "[a]lways in this project"):
+            if part not in question:
+                raise Fail(f"the question should offer {part!r}: {question!r}")
+        if spinner_in(p.visible().split(QUESTION)[-1]):
+            raise Fail("the status line must stay away while the question waits")
+        p.send("y")
+        p.expect("✓ allowed", 10, "the allowed line")
+        p.expect("FAKE ALLOWED", 10, "the answer after approval")
+        p.expect("› ", 10, "the next prompt")
+        answer = host_reply(w)["response"]
+        if answer.get("behavior") != "allow" or answer.get("updatedInput", {}).get("command") != "cargo test --quiet":
+            raise Fail(f"the host answer should allow and echo the input: {answer}")
+        if host_reply(w)["request_id"] != "req-1":
+            raise Fail("the answer must carry the request id")
+        if settings_rules(w) is not None:
+            raise Fail("a plain yes must not save any rule")
+        quit_with_ctrl_d(p)
+    finally:
+        p.close()
+
+
+def spinner_in(text):
+    return any(c in text for c in SPINNER)
+
+
+@scenario
+def n_denies_with_a_reason_and_the_turn_goes_on(w):
+    p = Pty(w, [w.repo], "approve-no")
+    try:
+        prompt_ready(p)
+        p.send("approve it quick\r")
+        p.expect(QUESTION, 15, "the approval question")
+        p.send("n")
+        p.expect("✗ denied", 10, "the denied line")
+        p.expect("FAKE DENIED", 10, "the answer after the denial")
+        answer = host_reply(w)["response"]
+        if answer.get("behavior") != "deny" or "denied" not in answer.get("message", ""):
+            raise Fail(f"the host answer should deny with a reason: {answer}")
+        p.expect("› ", 10, "the next prompt")
+        quit_with_ctrl_d(p)
+    finally:
+        p.close()
+
+
+@scenario
+def always_saves_a_private_rule_and_the_next_turn_does_not_ask_again(w):
+    p = Pty(w, [w.repo], "approve-always")
+    try:
+        prompt_ready(p)
+        p.send("approve it quick\r")
+        p.expect(QUESTION, 15, "the approval question")
+        p.send("a")
+        p.expect("always in this project: Bash(cargo test:*)", 10, "the saved-rule line")
+        p.expect("FAKE ALLOWED", 10, "the answer after approval")
+        p.expect("› ", 10, "the next prompt")
+        if settings_rules(w) != ["Bash(cargo test:*)"]:
+            raise Fail(f"the rule should be saved in .claude/settings.local.json: {settings_rules(w)}")
+        mode = os.stat(os.path.join(w.repo, ".claude", "settings.local.json")).st_mode & 0o777
+        if mode != 0o600:
+            raise Fail(f"the settings file should be private (0600), is {oct(mode)}")
+        p.send("approve it quick again\r")
+        p.expect("FAKE ALLOWED by rule", 15, "the second turn, answered without a question")
+        if p.visible().count(QUESTION) != 1:
+            raise Fail(f"the second turn must not ask again:\n{p.tail()}")
+        p.expect("› ", 10, "the next prompt")
+        p.send("/permissions\r")
+        p.expect("Bash(cargo test:*)", 10, "the rule in /permissions")
+        quit_with_ctrl_d(p)
+    finally:
+        p.close()
+
+
+@scenario
+def a_sub_agent_question_shows_the_whole_prompt_before_the_key(w):
+    p = Pty(w, [w.repo], "approve-subagent")
+    try:
+        prompt_ready(p)
+        p.send("subagent please\r")
+        shown = p.expect("[y]es", 15, "the sub-agent question")
+        for part in ("Allow Task:", "description=tidy up", "subagent_type=general-purpose", "prompt=Read the code.",
+                     "Then delete the build folder and push to main."):
+            if part not in shown:
+                raise Fail(f"the question should show {part!r}:\n{p.tail()}")
+        p.send("n")
+        p.expect("✗ denied", 10, "the denied line")
+        p.expect("› ", 10, "the next prompt")
+        quit_with_ctrl_d(p)
+    finally:
+        p.close()
+
+
+@scenario
+def a_read_of_a_system_folder_is_never_offered_always(w):
+    p = Pty(w, [w.repo], "approve-broad")
+    try:
+        prompt_ready(p)
+        p.send("broadread please\r")
+        shown = p.expect("[y]es", 15, "the read question")
+        question = shown.split("Allow Read:")[-1]
+        if "[a]lways" in question:
+            raise Fail(f"a read in /etc/ssh must not offer always:\n{p.tail()}")
+        p.expect("too broad or too sensitive to allow for good", 10, "the reason always is missing")
+        p.send("a")
+        time.sleep(0.5)
+        if "✓" in p.visible().split("Allow Read:")[-1]:
+            raise Fail(f"`a` must not answer a question that does not offer it:\n{p.tail()}")
+        p.send("y")
+        p.expect("✓ allowed", 10, "the allowed line")
+        p.expect("FAKE ALLOWED", 10, "the answer")
+        p.expect("› ", 10, "the next prompt")
+        if settings_rules(w) is not None:
+            raise Fail(f"nothing may be saved: {settings_rules(w)}")
+        quit_with_ctrl_d(p)
+    finally:
+        p.close()
+
+
+@scenario
+def ctrl_c_at_the_question_denies_stops_the_turn_and_leaves_no_process_behind(w):
+    p = Pty(w, [w.repo], "approve-ctrl-c")
+    try:
+        prompt_ready(p)
+        p.send("approve it quick\r")
+        p.expect(QUESTION, 15, "the approval question")
+        cli = w.pid_file("cli.pid")
+        p.send("\x03")
+        p.expect("stopped", 10, "the `stopped` summary after Ctrl-C")
+        p.expect("› ", 10, "the prompt after the stopped turn")
+        if not p.still_running():
+            raise Fail(f"Ctrl-C at the question must not exit the program (exit {p.exit}):\n{p.tail()}")
+        wait_dead(cli, "the fake CLI")
+        if settings_rules(w) is not None:
+            raise Fail("Ctrl-C must not save a rule")
+        ask(p, "explain quick")
+        quit_with_ctrl_d(p)
+    finally:
+        p.close()
+
+
+@scenario
+def an_arrow_key_or_enter_at_the_question_does_not_answer_it(w):
+    p = Pty(w, [w.repo], "approve-keys")
+    try:
+        prompt_ready(p)
+        p.send("approve it quick\r")
+        p.expect(QUESTION, 15, "the approval question")
+        # Up arrow is Esc [ A: the `A` must not be read as "always"; Enter and a stray letter say nothing.
+        p.send("\x1b[A")
+        p.send("\rq")
+        p.settle(0.6)
+        if "✓" in p.visible().split(QUESTION)[-1] or "denied" in p.visible().split(QUESTION)[-1]:
+            raise Fail(f"nothing should have answered the question yet:\n{p.tail()}")
+        if settings_rules(w) is not None:
+            raise Fail("an arrow key must not save a rule")
+        p.send("n")
+        p.expect("✗ denied", 10, "the denial once `n` is pressed")
+        p.expect("› ", 10, "the next prompt")
+        quit_with_ctrl_d(p)
+    finally:
+        p.close()
+
+
+def screen_text(vt):
+    """The emulated screen, row by row."""
+    return "\n".join("".join(row).rstrip() for row in vt.rows)
+
+
+def local_flags(p):
+    """The terminal's local mode flags as the program left them (read off the pty master)."""
+    return termios.tcgetattr(p.fd)[3]
+
+
+@scenario
+def a_question_the_cli_withdraws_is_erased_and_the_terminal_and_keyboard_are_left_as_they_were(w):
+    p = Pty(w, [w.repo], "withdrawn")
+    try:
+        prompt_ready(p)
+        p.send("withdraw it please\r")
+        p.expect(QUESTION, 15, "the approval question")
+        if screen_text(p.vt).count(QUESTION) != 1:
+            raise Fail(f"the question should be on screen once:\n{p.tail()}")
+        asking = local_flags(p)
+        if asking & (termios.ICANON | termios.ECHO | termios.ISIG):
+            raise Fail("while the question waits the terminal should be raw (no ICANON, ECHO, ISIG)")
+        # Nobody presses a key: a second later the CLI takes the question back.
+        p.expect("(the tool call was withdrawn)", 10, "the withdrawal line")
+        p.settle(0.3)
+        screen = screen_text(p.vt)
+        if QUESTION in screen or "[y]es" in screen:
+            raise Fail(f"the withdrawn question should be gone from the screen:\n{screen}")
+        if "✓" in screen.split("withdrawn")[-1] or "denied" in screen or "stopped" in screen:
+            raise Fail(f"a withdrawn question is not an answer:\n{screen}")
+        # Raw mode is off again, and echo is as it was before the question (off under the status line).
+        now = local_flags(p)
+        if not (now & termios.ICANON and now & termios.ISIG):
+            raise Fail(f"the terminal was left in raw mode after the withdrawal (lflag {now:#x})")
+        if now & termios.ECHO:
+            raise Fail("echo should be as it was during the turn (off), not switched on early")
+        # A key typed now belongs to the next prompt: no stale reader may take it.
+        p.send("z")
+        p.expect("FAKE CARRIED ON", 15, "the turn going on without the answer")
+        p.expect("› ", 10, "the next prompt")
+        p.settle(0.4)
+        if not p.visible().rstrip("\n").split("\n")[-1].strip().endswith("› z"):
+            raise Fail(f"the key typed after the withdrawal should be waiting at the next prompt:\n{p.tail()}")
+        if os.path.exists(os.path.join(w.pids, "reply.json")):
+            raise Fail("a withdrawn question must never be answered")
+        if settings_rules(w) is not None:
+            raise Fail("a withdrawn question must not save a rule")
+        # The prompt works normally: the keys echo, Ctrl-C is a signal again.
+        p.send("yz")
+        p.settle(0.4)
+        if not p.visible().rstrip("\n").split("\n")[-1].strip().endswith("› zyz"):
+            raise Fail(f"typing at the prompt should echo:\n{p.tail()}")
+        p.send("\x03")
+        p.expect("Ctrl-C again", 10, "the Ctrl-C hint at the prompt")
+        ask(p, "explain quick")
+        quit_with_ctrl_d(p)
+    finally:
+        p.close()
+
+
+@scenario
+def without_a_terminal_a_tool_that_needs_approval_is_denied_with_a_hint_and_nothing_hangs(w):
+    r = run_cli(w, ["-p", "approve it quick", w.repo], timeout=30)
+    if r.returncode != 0 or "FAKE DENIED" not in r.stdout:
+        raise Fail(f"-p should finish with the denial in the answer: {r.returncode} {r.stdout!r} {r.stderr!r}")
+    if "denied Bash" not in r.stderr:
+        raise Fail(f"a denied tool should be reported on stderr:\n{r.stderr}")
+    piped = run_cli(w, [w.repo], stdin="approve it quick\n/quit\n", timeout=30)
+    if piped.returncode != 0 or "FAKE DENIED" not in piped.stdout:
+        raise Fail(f"a piped session should be denied, not hang: {piped.returncode} {piped.stdout!r} {piped.stderr!r}")
+    if "denied Bash" not in piped.stderr or "nobody to ask" not in piped.stderr:
+        raise Fail(f"the hint should say nobody could be asked:\n{piped.stderr}")
+    reply = host_reply(w)["response"]
+    if reply.get("behavior") != "deny" or "no one to ask" not in reply.get("message", ""):
+        raise Fail(f"the model should be told no one could be asked: {reply}")
+
+
+@scenario
+def permissions_command_lists_adds_and_removes_rules(w):
+    p = Pty(w, [w.repo], "permissions")
+    try:
+        prompt_ready(p)
+        p.send("/permissions\r")
+        p.expect("none yet", 10, "the empty list")
+        p.expect("› ", 5, "the prompt")
+        p.send("/permissions allow Bash(ls:*)\r")
+        p.expect("✓ allowed Bash(ls:*)", 10, "the confirmation")
+        p.expect("› ", 5, "the prompt")
+        if settings_rules(w) != ["Bash(ls:*)"]:
+            raise Fail(f"the rule should be in the project file: {settings_rules(w)}")
+        p.send("/permissions remove Bash(ls:*)\r")
+        p.expect("✓ removed Bash(ls:*)", 10, "the removal")
+        p.expect("› ", 5, "the prompt")
+        if settings_rules(w) != []:
+            raise Fail(f"the rule should be gone: {settings_rules(w)}")
+        p.send("/permissions allow nonsense(\r")
+        p.expect("not a permission rule", 10, "the refusal of a bad rule")
+        quit_with_ctrl_d(p)
+    finally:
+        p.close()
+
+
 @scenario
 def doctor_exit_codes(w):
     r = run_cli(w, ["doctor", w.repo])
@@ -914,6 +1437,178 @@ def the_terminal_is_restored_when_the_program_ends(w):
         raw = p.raw.decode("utf-8", "replace")
         if raw.rfind("\x1b[?25l") > raw.rfind("\x1b[?25h"):
             raise Fail("the cursor was left hidden at exit")
+    finally:
+        p.close()
+
+
+def watch_status_rows(p):
+    """From now on, fail the moment the emulated screen shows more than one status-line row:
+    a frame that wrapped, or leftovers a redraw did not erase."""
+
+    def check(vt):
+        rows = vt.status_rows()
+        if len(rows) > 1:
+            shown = "\n".join(f"      | {r}" for r in rows[:6])
+            raise Fail(f"the status line is on {len(rows)} rows at {vt.cols} columns (it must always be one):\n{shown}")
+
+    p.on_chunk = check
+
+
+def status_width(vt):
+    rows = [line for line in vt.rows if any(g in "".join(line) for g in SPINNER)]
+    if len(rows) != 1:
+        raise Fail(f"expected exactly one status row, found {len(rows)}: {vt.status_rows()}")
+    return sum(vt.width_of(c) for c in rows[0] if c)
+
+
+def strip_known_escapes(raw):
+    return re.sub(r"\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b[78]", "", raw)
+
+
+def expect_one_row_status_then_nothing_left(p, label):
+    left = p.vt.status_rows()
+    if left:
+        raise Fail(f"{label}: fragments of the status line are left on screen after the turn:\n" + "\n".join(f"      | {r}" for r in left))
+    tool_rows = [r for r in p.vt.screen() if "⏺ Bash" in r]
+    if len(tool_rows) != 1:
+        raise Fail(f"{label}: the long tool call should print as ONE row, found {len(tool_rows)}: {tool_rows}")
+    if any("[31m" in r or "\x07" in r for r in p.vt.screen()):
+        raise Fail(f"{label}: the control characters of the tool command leaked to the screen")
+
+
+@scenario
+def the_status_line_is_one_row_on_a_narrow_terminal_whatever_columns_says(w):
+    # A 60-column window, COLUMNS unset (shells rarely export it) and a 200-char tool command.
+    p = Pty(w, [w.repo], "narrow", env=w.env(COLUMNS=None), cols=60)
+    try:
+        prompt_ready(p)
+        watch_status_rows(p)
+        p.send("longcmd please\r")
+        p.expect("→ claude", 15, "the route line")
+        p.expect("⏺ Bash", 15, "the tool line")
+        p.settle(2.0)
+        width = status_width(p.vt)
+        if not 20 < width <= 59:
+            raise Fail(f"the status frame should fill a 60-column window up to the last-but-one column, it is {width} columns wide")
+        p.expect("✓ claude", 20, "the end of the turn")
+        p.expect("› ", 10, "the next prompt")
+        expect_one_row_status_then_nothing_left(p, "narrow")
+        # Nothing but known escape sequences was written for the turn: no lone ESC, bell or other control byte.
+        raw = p.raw.decode("utf-8", "replace")
+        turn = strip_known_escapes(raw[raw.find("→ claude") : raw.find("✓ claude")])
+        stray = sorted({c for c in turn if ord(c) < 0x20 and c not in "\r\n"} | ({"\x7f"} if "\x7f" in turn else set()))
+        if stray:
+            raise Fail(f"stray control bytes were written during the turn: {[hex(ord(c)) for c in stray]}")
+        quit_with_ctrl_d(p)
+    finally:
+        p.close()
+
+
+@scenario
+def the_status_line_follows_a_resize_in_the_middle_of_a_turn(w):
+    # COLUMNS lies (200) and the window starts at 100: only the live window size can be right.
+    p = Pty(w, [w.repo], "resize", env=w.env(COLUMNS="200"), cols=100)
+    try:
+        prompt_ready(p)
+        watch_status_rows(p)
+        p.send("longcmd please\r")
+        p.expect("⏺ Bash", 15, "the tool line")
+        p.settle(0.5)
+        if not 60 < status_width(p.vt) <= 99:
+            raise Fail("at 100 columns the long status line should use most of the row")
+        for cols in (50, 30, 120, 41):
+            p.resize(cols)
+            p.settle(0.45)
+            width = status_width(p.vt)
+            if width > cols - 1:
+                raise Fail(f"after resizing to {cols} columns the status frame is {width} columns wide (the last column must stay free)")
+            if cols >= 41 and width < min(cols - 1, 40):
+                raise Fail(f"after resizing to {cols} columns the status line is cut far short ({width} columns)")
+        p.expect("✓ claude", 20, "the end of the turn")
+        p.expect("› ", 10, "the next prompt")
+        left = p.vt.status_rows()
+        if left:
+            raise Fail("fragments of the status line are left after the resized turn:\n" + "\n".join(f"      | {r}" for r in left))
+        quit_with_ctrl_d(p)
+    finally:
+        p.close()
+
+
+def providers_line(p, name):
+    """The row `/providers` prints for one provider (`● codex    -   all models`)."""
+    p.send("/providers\r")
+    deadline = time.time() + 10
+    while True:
+        text = p.visible()
+        shown = text[text.rfind("› /providers") :] if "› /providers" in text else ""
+        rows = re.findall(rf"^\s*[●○✕?]\s+{name}\b.*$", shown, re.M)
+        if rows:
+            return rows[-1]
+        if time.time() > deadline:
+            return ""
+        p.pump(0.1)
+
+
+@scenario
+def a_slow_provider_probe_is_retried_in_the_background_applied_after_the_turn_and_reported_then(w):
+    w.add_slow_codex()  # `codex login status` takes 7 s: past the 5 s startup cap, inside the 20 s retry cap
+    started = time.time()
+    p = Pty(w, [w.repo], "slow-probe-turn")
+    try:
+        p.expect("› ", 20, "the prompt")
+        if time.time() - started > 9:
+            raise Fail("the banner waited for the slow probe: startup must only wait for the 5 s cap")
+        banner = p.visible().split("› ")[0]
+        if "? codex" not in banner:
+            raise Fail(f"a probe that timed out shows as `? codex` in the banner:\n{banner}")
+        watch_status_rows(p)
+        p.send("please stall forever\r")
+        p.expect("⏺ Bash", 15, "the tool line of the stalled turn")
+        # The retry answers ~7 s after the banner, mid-turn. Routing never changes under a
+        # running turn, and the notice only reports what was applied, so it must NOT appear
+        # yet, and the live status line must stay one row.
+        p.settle(10.0)
+        if "ready now" in p.visible():
+            raise Fail(f"the notice was printed before the answer was applied (mid-turn):\n{p.tail()}")
+        if len(p.vt.status_rows()) != 1:
+            raise Fail("the live status line must stay a single row")
+        p.send("\x03")
+        p.expect("stopped", 10, "the `stopped` summary")
+        # As soon as the turn ends the answer is applied and reported, before the next prompt.
+        p.expect("codex is ready now", 10, "the notice right after the turn ends")
+        p.expect("› ", 10, "the prompt")
+        if p.visible().count("codex is ready now") != 1:
+            raise Fail(f"the notice should be printed once:\n{p.tail()}")
+        line = providers_line(p, "codex")
+        if "● codex" not in line:
+            raise Fail(f"/providers should show codex ready (●) after the retry, got {line!r}:\n{p.tail()}")
+        quit_with_ctrl_d(p)
+    finally:
+        p.close()
+
+
+@scenario
+def a_slow_provider_probe_that_finishes_at_the_prompt_is_reported_at_the_next_input(w):
+    w.add_slow_codex()
+    p = Pty(w, [w.repo], "slow-probe-idle")
+    try:
+        prompt_ready(p, 20)
+        if "? codex" not in p.visible().split("› ")[0]:
+            raise Fail(f"the banner should show `? codex`:\n{p.tail()}")
+        # Idle at the prompt, the retry finishes ~7 s after the banner. Nothing may be printed
+        # over the line being typed, so the notice waits for the next input.
+        p.send("typed ")
+        p.settle(9.0)
+        if "ready now" in p.visible():
+            raise Fail(f"the notice landed inside the prompt line:\n{p.tail()}")
+        p.send("\x15\r")  # clear the line, send nothing
+        p.expect("codex is ready now", 10, "the notice at the next input")
+        line = providers_line(p, "codex")
+        if "● codex" not in line:
+            raise Fail(f"/providers should show codex ready (●), got {line!r}:\n{p.tail()}")
+        if p.visible().count("codex is ready now") != 1:
+            raise Fail("the notice should be printed once")
+        quit_with_ctrl_d(p)
     finally:
         p.close()
 
