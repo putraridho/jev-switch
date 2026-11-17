@@ -1,11 +1,13 @@
 # jev-router
 
-A small, reliable LLM router, in Rust. Jev (TypeSafe System One) judges each request;
-code maps the judgment to a model and gates the cheap route on confidence. Chat, the
-Claude Code gateway and `jev-claude` route between Claude models. `jev-code` is a
-coding agent that routes each turn across several providers' coding CLIs (Claude,
-Codex, Gemini, DeepSeek, Grok), using only the ones you can really use right now (see
-[Code mode](#code-mode-jev-code)). The router fixes the two things that make routers bad:
+A Jev-gated LLM router for Claude Code, in Rust. Jev (TypeSafe System One) judges each
+request; code maps the judgment to a model and gates the cheap route on confidence. The
+gateway, started by `jev-claude`, sits in front of Claude Code and routes each turn between
+Claude models, and in orchestrate mode splits a big task across workers. `jev-code` is a
+terminal coding agent that routes each turn across Claude, Codex, Gemini, Grok and DeepSeek,
+using only the providers you can really use right now and failing over when one cannot take
+the turn (see [Code mode](#code-mode-jev-code)). A chat REPL and the `tune` calibration
+sweep complete the set. The router fixes the two things that make routers bad:
 
 1. **Memory across switches.** The model has no memory — the *transcript* does.
    One canonical history (`Transcript`) is sent in full to whichever model a turn
@@ -459,7 +461,7 @@ beat any guess. Re-run `tune` when prompts, models, or request mix change.
 - `src/bin/code.rs` — thin shell for the routed coding agent (arguments, terminal, the loop);
   `src/cli.rs` parses arguments, `src/repl.rs` runs commands and turns (Ctrl-C included),
   `src/console.rs` prints a turn and the live status line, `src/lineedit.rs` is the line editor
-  (history, Tab, hint), `src/views.rs` builds each screen's facts, `src/uifmt.rs` formats every string,
+  (history, Tab, hint), `src/views.rs` builds each screen's facts, `src/uifmt/` formats every string,
   `src/terminal.rs` restores the terminal; `src/turn.rs` runs one turn
   (Jev, choose, hand off, run, fail over), `src/routing.rs` picks the model, `src/catalog.rs`
   lists the models and chains, `src/providers.rs` and `src/availability.rs` know who is
