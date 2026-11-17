@@ -30,7 +30,9 @@ use crate::permissions;
 pub const SESSION_NOTE: &str = "You are running inside jev-code, a terminal router for coding models, not in the Claude Code terminal UI. \
 When a tool call needs approval, jev-code asks the user in the terminal by itself: just make the call, and if it is denied, say what you need and why. \
 The user manages permission rules with jev-code's /permissions command and the permission mode (ask, edit, plan, auto) with /mode or Shift+Tab. \
-Never tell the user to use Claude Code interface features such as /config or plugin commands: jev-code does not have them.";
+Never tell the user to use Claude Code interface features such as /config or plugin commands: jev-code does not have them. \
+Use the Read, Grep, Glob and Edit tools to look at and change files, not sed, python or heredocs, and keep shell commands plain: scripts and heredocs are asked about every time. \
+Ask the user questions in your reply, not with a tool.";
 
 pub struct ClaudeBackend {
     pub bin: String,
@@ -331,7 +333,9 @@ impl Backend for ClaudeBackend {
             cmd.args(["--input-format", "stream-json"]);
         }
         if self.interactive {
-            cmd.args(["--permission-prompt-tool", "stdio", "--append-system-prompt", SESSION_NOTE]);
+            // AskUserQuestion needs Claude Code's own screen: here it would reach the person as
+            // raw JSON to approve, with no way to answer it.
+            cmd.args(["--permission-prompt-tool", "stdio", "--disallowedTools", "AskUserQuestion", "--append-system-prompt", SESSION_NOTE]);
         }
         if let Some(config) = &self.mcp_config {
             cmd.arg("--mcp-config").arg(config);
@@ -734,7 +738,8 @@ mod tests {
         assert_eq!(
             a,
             ["-p", "--model", "sonnet-x", "--output-format", "stream-json", "--verbose", "--permission-mode", "acceptEdits",
-             "--input-format", "stream-json", "--permission-prompt-tool", "stdio", "--append-system-prompt", SESSION_NOTE]
+             "--input-format", "stream-json", "--permission-prompt-tool", "stdio", "--disallowedTools", "AskUserQuestion",
+             "--append-system-prompt", SESSION_NOTE]
         );
         assert!(session().interactive());
         // Headless use is what it always was.
@@ -760,7 +765,7 @@ mod tests {
 
     #[test]
     fn the_note_is_short_stable_and_steers_away_from_claude_code_ui() {
-        assert!(SESSION_NOTE.len() < 700, "{}", SESSION_NOTE.len());
+        assert!(SESSION_NOTE.len() < 900, "{}", SESSION_NOTE.len());
         assert!(SESSION_NOTE.contains("jev-code") && SESSION_NOTE.contains("/permissions") && SESSION_NOTE.contains("Shift+Tab"));
         assert!(!SESSION_NOTE.contains('\n'), "no stray line breaks from the source layout");
         let a = args(&session().command(&req(Some("abc"))));

@@ -397,7 +397,8 @@ auth/session edits) overrides Jev's task label and never goes to DeepSeek or Gro
 without asking; an empty prompt line shows the current one. `ask` asks before every edit and
 command, `edit` (the default) accepts edits and asks about commands, `plan` only reads and
 proposes a plan, and `auto` also allows, without asking, every call that is safe to remember
-with `a` (read-only commands, the project's build and test commands, files inside the project),
+with `a` (read-only commands, `sed -n 10,40p file`, `git branch -a`, `git tag -l`, `git remote -v`,
+the project's build and test commands, chains of those, files inside the project),
 printing `✓ auto-allowed ...` for each. Anything `a` would refuse (`rm`, `curl`, `git push`,
 `npm install`, a path outside your folders) is still asked in `auto`. No mode uses
 `bypassPermissions`. The mode you pick (`Shift-Tab` or `/mode`) is kept in

@@ -539,11 +539,64 @@ fn is_shell_syntax(c: char) -> bool {
         || is_invisible(c)
 }
 
+/// `sed -n 270,312p FILE...`: prints a range of lines and can do nothing else. `sed` as a
+/// whole is refused (`-i` writes files, an `e` or `w` command runs programs or writes them),
+/// so only this shape passes: `-n` first, a script that is one line number or a range of
+/// them followed by `p`, and plain file names (none: it reads the pipe). A flag after the
+/// script (`-i`, `-s`, `-f`) or a script with anything more in it is not this shape.
+fn is_print_only_sed(words: &[&str]) -> bool {
+    let [program, "-n", script, files @ ..] = words else { return false };
+    let number = |s: &str| !s.is_empty() && s.chars().all(|c| c.is_ascii_digit());
+    let lines = script.strip_suffix('p').is_some_and(|range| match range.split_once(',') {
+        Some((from, to)) => number(from) && (number(to) || to == "$"),
+        None => number(range),
+    });
+    let plain_file = |f: &&str| !f.starts_with('-') && f.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '/' | '+' | '-' | '~' | '@'));
+    *program == "sed" && lines && files.iter().all(plain_file)
+}
+
+/// `git branch -a`, `git tag -l`, `git remote -v`, `git stash list`: the listing forms of
+/// commands whose other forms create, delete or rename. Only these exact flags and no names,
+/// so `git branch -D x`, `git branch x`, `git tag v1`, `git remote add` and a bare
+/// `git stash` (which stashes) are not listings. The rule is the exact command.
+fn is_listing_git(words: &[&str]) -> bool {
+    let [program, sub, flags @ ..] = words else { return false };
+    let only = |allowed: &[&str]| flags.iter().all(|f| allowed.contains(f));
+    *program == "git"
+        && match *sub {
+            "branch" => only(&["-a", "-r", "-v", "-vv", "--all", "--remotes", "--verbose", "--show-current", "--list"]),
+            "tag" => only(&["-l", "--list", "-n"]),
+            "remote" => only(&["-v", "--verbose"]),
+            "stash" => flags == ["list"],
+            _ => false,
+        }
+}
+
+/// A command that only prints or lists, whose safe rule can only be the exact command (the
+/// same program with other arguments would write or run something).
+fn is_listing(words: &[&str]) -> bool {
+    is_print_only_sed(words) || is_listing_git(words)
+}
+
 /// `Bash(cargo test:*)` for `cargo test --quiet`: the program as typed and, when the next word
 /// looks like a subcommand (not a flag or a path), that too.
 fn bash_rule(command: &str) -> Result<String, Refusal> {
     if command.chars().any(is_shell_syntax) {
         return Err(Refusal::ShellSyntax);
+    }
+    // A word wholly in quotes is the word (`'1,80p'`); the chain splitter has done this already.
+    let unquoted = |w: &'_ str| match (w.chars().next(), w.chars().last()) {
+        (Some(open @ ('\'' | '"')), Some(close)) if w.len() >= 2 && open == close && !w[1..w.len() - 1].contains(open) => w[1..w.len() - 1].to_string(),
+        _ => w.to_string(),
+    };
+    let all: Vec<String> = command.split([' ', '\t']).filter(|w| !w.is_empty()).map(unquoted).collect();
+    let all: Vec<&str> = all.iter().map(String::as_str).collect();
+    // The rule is the exact command: `sed -n:*` would also allow `sed -n 1e cmd`.
+    if is_listing(&all) {
+        return Ok(format!("Bash({})", all.join(" ")));
+    }
+    if all.first() == Some(&"sed") {
+        return Err(Refusal::RunsOtherCommands);
     }
     let mut words = command.split([' ', '\t']).filter(|w| !w.is_empty());
     let program = words.next().filter(|w| is_plain_program(w)).ok_or(Refusal::NotPlainProgram)?;
@@ -616,8 +669,9 @@ fn without_time_wrapper(words: &[String]) -> &[String] {
 }
 
 /// Split a chain into simple commands of literal words. Accepted between commands: `&&`, `||`,
-/// `|`, `;` and line breaks; in a command: words, '…' and "…" (without `$`, backticks or `\`
-/// inside), and the redirections that write no file (`2>&1`, `>&2`, `>/dev/null`,
+/// `|`, `;` and line breaks; in a command: words, '…' (anything but control characters, a line
+/// break is text there) and "…" (without `$`, backticks or an escape inside; a backslash that
+/// escapes nothing is a backslash), and the redirections that write no file (`2>&1`, `>&2`, `>/dev/null`,
 /// `2>/dev/null`, `&>/dev/null`). Everything else (`$`, backticks, `\`, `<`, heredocs,
 /// subshells, braces, `!`, a `#` comment, a background `&`, a redirection to a file) is refused:
 /// the rules would not describe what runs.
@@ -663,7 +717,7 @@ fn split_chain(command: &str) -> Result<Vec<Vec<Word>>, Refusal> {
                     match at(i) {
                         None => return Err(BAD),
                         Some('\'') => break,
-                        Some(q) if (q.is_control() && q != '\t') || is_invisible(q) => return Err(BAD),
+                        Some(q) if (q.is_control() && !matches!(q, '\t' | '\n')) || is_invisible(q) => return Err(BAD),
                         Some(q) => word.text.push(q),
                     }
                     i += 1;
@@ -677,7 +731,10 @@ fn split_chain(command: &str) -> Result<Vec<Vec<Word>>, Refusal> {
                     match at(i) {
                         None => return Err(BAD),
                         Some('"') => break,
-                        Some(q) if matches!(q, '$' | '`' | '\\') || (q.is_control() && q != '\t') || is_invisible(q) => return Err(BAD),
+                        // In double quotes a backslash is itself unless it escapes one of these
+                        // (`grep "a\|b"` is a backslash and a bar); an escape is not followed.
+                        Some('\\') if at(i + 1).is_some_and(|n| !matches!(n, '$' | '`' | '"' | '\\') && !(n.is_control() || is_invisible(n))) => word.text.push('\\'),
+                        Some(q) if matches!(q, '$' | '`' | '\\') || (q.is_control() && !matches!(q, '\t' | '\n')) || is_invisible(q) => return Err(BAD),
                         Some(q) => word.text.push(q),
                     }
                     i += 1;
@@ -795,8 +852,12 @@ fn bash_rules(command: &str) -> Result<Vec<String>, Refusal> {
                 }
             })
             .collect::<Result<Vec<String>, Refusal>>()?;
-        let rule = bash_rule(&without_time_wrapper(&words).join(" "))?;
-        if !rule.ends_with(":*)") {
+        let command = without_time_wrapper(&words).join(" ");
+        let rule = bash_rule(&command)?;
+        // An exact-text rule (`git log --oneline -1`, a listing) is this command's own, as long
+        // as every word of it is the real word and not a stand-in for one that held spaces.
+        let literal = !words.iter().any(|w| w == "ARG");
+        if !rule.ends_with(":*)") && !(literal || is_listing(&command.split(' ').collect::<Vec<_>>())) {
             return Err(Refusal::ShellSyntax);
         }
         if !rules.contains(&rule) {
@@ -1158,8 +1219,12 @@ pub fn validate_rule(rule: &str) -> Result<String, String> {
         },
         None => (rule, None),
     };
-    let name_ok = tool.chars().next().is_some_and(|c| c.is_ascii_alphabetic())
-        && tool.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '*' | '-' | '.'));
+    // Claude Code skips a rule whose tool name starts in lower case (`all`), except MCP tools.
+    if matches!(rule.to_ascii_lowercase().as_str(), "all" | "any" | "everything" | "*" | "yes") {
+        return Err("not a permission rule: no rule allows everything. To be asked less, press Shift-Tab or use /mode auto; to allow one tool or command, name it, e.g. Bash(cargo test:*), Edit or WebFetch(domain:docs.rs)".to_string());
+    }
+    let first_ok = tool.starts_with("mcp__") || tool.chars().next().is_some_and(|c| c.is_ascii_uppercase());
+    let name_ok = first_ok && tool.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '*' | '-' | '.'));
     if !name_ok {
         return bad("it should start with a tool name such as Bash, Read, Write or WebFetch");
     }
@@ -1982,7 +2047,9 @@ mod tests {
         );
         assert_eq!(rules("cargo build --all-targets 2>&1 | tail -3 && cargo test 2>&1 | tail -5"), v(&["Bash(cargo build:*)", "Bash(tail:*)", "Bash(cargo test:*)"]));
         assert_eq!(rules("git status --short; ls -la"), v(&["Bash(git status:*)", "Bash(ls:*)"]));
-        assert!(rules("git log --oneline -3; ls").is_err(), "git log can write a file (--output): only its exact text is a rule");
+        assert_eq!(rules("git log --oneline -3; ls"), v(&["Bash(git log --oneline -3)", "Bash(ls:*)"]), "git log can write a file (--output): its rule is its exact text");
+        assert!(rules("git log --output=x -3; ls").is_err(), "--output writes a file");
+        assert!(rules("git log --oneline \"a b\"; ls").is_err(), "a stand-in word cannot be an exact rule");
         assert_eq!(rules("cargo test >/dev/null 2>/dev/null && echo ok"), v(&["Bash(cargo test:*)", "Bash(echo ok:*)"]));
         assert_eq!(rules("timeout 900 cargo test"), v(&["Bash(cargo test:*)"]), "a time limit in front is not the program");
         assert_eq!(rules("grep -n 'a|b' src/x.rs | head"), v(&["Bash(grep:*)", "Bash(head:*)"]), "shell characters inside quotes are text");
@@ -2144,6 +2211,67 @@ mod tests {
         }
         for bad in ["", "   ", "Bash(", "Bash()", "Bash( )", "(x)", "9Bash", "Bash(a\nb)", "Ba sh(x)", "Bash(x) y"] {
             assert!(validate_rule(bad).is_err(), "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn a_rule_has_to_be_one_claude_code_will_read() {
+        // The rule `all` was written to a settings file and skipped on every start.
+        for bad in ["all", "All", "any", "*", "everything", "bash", "bash(ls:*)", "read(//tmp/**)"] {
+            assert!(validate_rule(bad).is_err(), "{bad:?}");
+        }
+        assert!(validate_rule("all").unwrap_err().contains("/mode auto"));
+        assert_eq!(validate_rule("mcp__jev__delegate").unwrap(), "mcp__jev__delegate");
+    }
+
+    #[test]
+    fn commands_from_real_sessions_get_rules_or_a_reason() {
+        let ok = [
+            r#"cargo build --all-targets 2>&1 | tail -2; cargo test 2>&1 | grep -E "test result|FAILED|panicked" | head -20"#,
+            r#"timeout 900 cargo build --all-targets 2>&1 | grep -E "^(warning|error)" -A6 | head -60; echo BUILD_DONE"#,
+            r#"grep -n "pub struct RouteFacts" -A20 src/route.rs; sed -n 100,130p src/catalog.rs; grep -n "fn lookup\|pub fn spec\|pub const MODELS" src/catalog.rs"#,
+            "git add -A src && git status --short && git commit -q -m \"Turn changes: other processes' edits\n\nCo-Authored-By: C <x@y.z>\" && git log --oneline -1",
+            r#"git status && git remote -v && ls -la"#,
+            r#"git remote -v && git branch -a && git tag -l"#,
+            r#"grep -rn 'fn main$' src | head -3"#,
+        ];
+        for command in ok {
+            assert!(bash_rules(command).is_ok(), "{command}: {:?}", bash_rules(command));
+        }
+        let asked = [
+            ("git remote update && git status", Refusal::NotListed),
+            ("git push 2>&1 | tail -5", Refusal::NotListed),
+            ("git branch -D old", Refusal::NotListed),
+            ("git branch feature", Refusal::NotListed),
+            ("git tag v1", Refusal::NotListed),
+            ("git remote add o url", Refusal::NotListed),
+            ("git stash", Refusal::NotListed),
+            ("git stash list --oneline; git stash", Refusal::NotListed),
+            ("python3 -I scripts/test.py", Refusal::RunsOtherCommands),
+            ("cat > src/a.rs <<'EOF'\nx\nEOF", Refusal::ShellSyntax),
+            (r#"grep "a$(rm x)" f"#, Refusal::ShellSyntax),
+            (r#"grep "a\"; rm x; echo "b" f"#, Refusal::ShellSyntax),
+            (r#"echo "a\$(id)""#, Refusal::ShellSyntax),
+            ("echo 'a\nb' ; echo c\nrm -rf x", Refusal::TooBroad),
+        ];
+        for (command, why) in asked {
+            assert_eq!(bash_rules(command), Err(why), "{command}");
+        }
+    }
+
+    #[test]
+    fn sed_only_prints_lines_or_it_is_refused() {
+        let plan = |c: &str| bash_rules(c);
+        assert_eq!(plan("sed -n 270,312p src/turn.rs").unwrap(), ["Bash(sed -n 270,312p src/turn.rs)"]);
+        assert_eq!(plan("sed -n '1,80p' src/a.rs").unwrap(), ["Bash(sed -n 1,80p src/a.rs)"]);
+        assert_eq!(plan("sed -n 5,$p src/a.rs").unwrap_err(), Refusal::ShellSyntax, "a `$` is shell syntax");
+        assert_eq!(plan("grep -n x f | sed -n 1,5p").unwrap(), ["Bash(grep:*)", "Bash(sed -n 1,5p)"]);
+        assert_eq!(plan("sed -n 1,5p a.rs; sed -n 9p b.rs").unwrap().len(), 2);
+        for bad in [
+            "sed -i s/a/b/ f", "sed -n 1e id f", "sed -n 1,3p f -i", "sed -n 1,3p -s f", "sed 1,3p f", "sed -n p f", "sed -n 1,3pp f",
+            "sed -n -e 1p f", "sed -n 1,3p *.rs", "sed -n 1p --in-place f", "sed -n 1w out f", "sed -n 1,3p ../x f=",
+        ] {
+            assert!(plan(bad).is_err(), "{bad}");
         }
     }
 

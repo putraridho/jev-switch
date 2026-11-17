@@ -195,10 +195,15 @@ impl Acp {
         let raw = &call["rawInput"];
         // Only known raw command inputs get Bash rules/auto approval. Never infer
         // an executable command from the model-authored title or display content.
-        let (tool, input) = if call["kind"] == "execute" && raw["command"].is_string() {
-            ("Bash".to_string(), raw.clone())
-        } else {
-            (call["name"].as_str().unwrap_or("AntigravityTool").to_string(), call.clone())
+        let (tool, input) = match shell_command(&call) {
+            Some(command) => ("Bash".to_string(), json!({ "command": command })),
+            None => (
+                foreign_tool_name(call["name"].as_str().or(call["title"].as_str()).unwrap_or("AntigravityTool")),
+                // What the model passed to the tool, not the protocol's bookkeeping around it
+                // (`kind`, `status`, `toolCallId`, a copy of the input): that is all the
+                // question needs to show.
+                if raw.as_object().is_some_and(|o| !o.is_empty()) { raw.clone() } else { json!({ "title": call["title"] }) },
+            ),
         };
         let summary = crate::permissions::describe(&tool, &input);
         vec![Event::PermissionRequest(PermissionRequest { id, tool, input, summary, blocked_path: None })]
@@ -225,6 +230,28 @@ impl Acp {
             None => cancelled(&ev["id"]),
         })
     }
+}
+
+/// An Antigravity tool's name as the approval rules see it. A name like Claude Code's own
+/// (`WebFetch`, `Write`) would be judged by that tool's rules, so a capitalized one is
+/// prefixed: only the tools this module maps (a shell command) are ever judged by rules.
+fn foreign_tool_name(name: &str) -> String {
+    if name.chars().next().is_some_and(|c| c.is_ascii_uppercase()) {
+        format!("acp_{name}")
+    } else {
+        name.to_string()
+    }
+}
+
+/// The command of an execute call, from the field its raw input names it by (`command`, or
+/// Antigravity's `CommandLine`). A call that also names a directory to run in is not taken
+/// for a plain command: the rules judge the command as run in the project.
+fn shell_command(call: &Value) -> Option<&str> {
+    let raw = &call["rawInput"];
+    if call["kind"] != "execute" || ["Cwd", "cwd", "workdir"].iter().any(|k| raw[k].as_str().is_some_and(|d| !d.trim().is_empty())) {
+        return None;
+    }
+    raw["command"].as_str().or(raw["CommandLine"].as_str()).filter(|c| !c.trim().is_empty())
 }
 
 fn cancelled(id: &Value) -> String {
@@ -351,6 +378,54 @@ mod tests {
         let events = acp.parse(&ev);
         let [Event::PermissionRequest(req)] = &events[..] else { panic!() };
         assert_ne!(req.tool, "Bash");
+    }
+
+    #[test]
+    fn antigravitys_command_line_is_a_plain_command_shown_without_the_protocols_bookkeeping() {
+        let mut acp = Acp::default();
+        setup(&mut acp, Mode::Auto, None);
+        let mut ev = permission();
+        ev["params"]["toolCall"] = json!({"toolCallId":"x","name":"run_command","kind":"execute","status":"pending","title":"ls -la",
+            "rawInput":{"CommandLine":"git status && ls -la","WaitMsBeforeAsync":5000,"toolSummary":"Check"}});
+        let events = acp.parse(&ev);
+        let [Event::PermissionRequest(req)] = &events[..] else { panic!("{events:?}") };
+        assert_eq!(req.tool, "Bash");
+        assert_eq!(req.input, json!({"command":"git status && ls -la"}));
+        assert_eq!(req.summary, "git status && ls -la");
+        // The same command run in another directory is not judged as one run in the project.
+        ev["params"]["toolCall"]["rawInput"]["Cwd"] = json!("/etc");
+        let events = acp.parse(&ev);
+        let [Event::PermissionRequest(req)] = &events[..] else { panic!("{events:?}") };
+        assert_ne!(req.tool, "Bash");
+    }
+
+    #[test]
+    fn a_tool_named_like_a_claude_tool_is_not_judged_by_that_tools_rules() {
+        let mut acp = Acp::default();
+        setup(&mut acp, Mode::Auto, None);
+        let mut ev = permission();
+        ev["params"]["toolCall"] = json!({"toolCallId":"z","name":"WebFetch","kind":"fetch","rawInput":{"url":"https://docs.rs/x"}});
+        let events = acp.parse(&ev);
+        let [Event::PermissionRequest(req)] = &events[..] else { panic!("{events:?}") };
+        assert_eq!(req.tool, "acp_WebFetch");
+        let places = crate::permissions::Places::from_env(std::path::Path::new("/tmp"));
+        assert!(crate::permissions::always_plan(&req.tool, &req.input, None, &places).is_err());
+    }
+
+    #[test]
+    fn another_tool_shows_what_the_model_passed_and_nothing_else() {
+        let mut acp = Acp::default();
+        setup(&mut acp, Mode::Edit, None);
+        let mut ev = permission();
+        ev["params"]["toolCall"] = json!({"toolCallId":"y","name":"write_to_file","kind":"edit","status":"pending","title":"Write notes",
+            "rawInput":{"TargetFile":"/p/notes.md","CodeContent":"hello"}});
+        let events = acp.parse(&ev);
+        let [Event::PermissionRequest(req)] = &events[..] else { panic!("{events:?}") };
+        assert_eq!(req.tool, "write_to_file");
+        for noise in ["toolCallId", "status=", "kind=", "sessionUpdate", "rawInput"] {
+            assert!(!req.summary.contains(noise), "{noise}: {}", req.summary);
+        }
+        assert!(req.summary.contains("/p/notes.md") && req.summary.contains("hello"), "{}", req.summary);
     }
 
     #[test]
