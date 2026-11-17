@@ -35,11 +35,19 @@ fn is_harness(prompt: &str) -> bool {
         .any(|x| p.starts_with(x))
 }
 
-/// `score  raw multi_part  sequential`, tab separated: the score the trigger sees, Jev's
-/// raw `multi_part` (higher than the score when the sequence veto held the prompt back) and
-/// its `sequential` answer.
+/// `multi_part  sequential  veto`, tab separated: Jev's two answers and whether the sequence
+/// veto holds the prompt back (`vetoed`) however high `multi_part` is.
 fn columns(j: &Orchestration) -> String {
-    format!("{:.3}\t{:.3}\t{:.3}", j.score, j.multi_part_p, j.sequential_p)
+    format!("{:.3}\t{:.3}\t{}", j.multi_part_p, j.sequential_p, if j.vetoed { "vetoed" } else { "-" })
+}
+
+/// What the trigger would see at a cutoff: `multi_part`, or nothing for a vetoed prompt.
+fn trigger_score(j: &Orchestration) -> f64 {
+    if j.vetoed {
+        f64::NEG_INFINITY
+    } else {
+        j.multi_part_p
+    }
 }
 
 #[tokio::main]
@@ -80,7 +88,7 @@ async fn main() -> Result<()> {
             }
         }
     }
-    scored.sort_by(|a, b| b.0.score.total_cmp(&a.0.score));
+    scored.sort_by(|a, b| trigger_score(&b.0).total_cmp(&trigger_score(&a.0)));
     for (j, prompt) in &scored {
         println!("{}\t{}", columns(j), prompt.replace(['\n', '\t'], " "));
     }
@@ -88,11 +96,11 @@ async fn main() -> Result<()> {
     let n = scored.len().max(1);
     eprintln!("\n{} scored, {failed} failed\n\ncutoff  would trigger", scored.len());
     for cut in [0.5, 0.6, 0.7, 0.75, 0.8, 0.85, 0.9, 0.95] {
-        let k = scored.iter().filter(|(j, _)| j.score >= cut).count();
+        let k = scored.iter().filter(|(j, _)| trigger_score(j) >= cut).count();
         eprintln!("  {cut:.2}  {k:>5}  ({:.1}%)", 100.0 * k as f64 / n as f64);
     }
     for (lo, hi) in [(0.9, 1.01), (0.8, 0.9), (0.7, 0.8), (0.6, 0.7), (0.5, 0.6)] {
-        let band: Vec<_> = scored.iter().filter(|(j, _)| j.score >= lo && j.score < hi).collect();
+        let band: Vec<_> = scored.iter().filter(|(j, _)| trigger_score(j) >= lo && trigger_score(j) < hi).collect();
         eprintln!("\n[{lo:.1}, {:.1}) — {} prompts", hi.min(1.0), band.len());
         // Spread the examples across the band rather than taking its top.
         let step = (band.len() / EXAMPLES_PER_BAND).max(1);
@@ -108,8 +116,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_vetoed_prompt_shows_its_raw_multi_part_beside_the_lowered_score() {
-        assert_eq!(columns(&Orchestration::new(0.95, 0.9)), "0.300\t0.950\t0.900");
-        assert_eq!(columns(&Orchestration::new(0.8, 0.1)), "0.800\t0.800\t0.100");
+    fn a_vetoed_prompt_shows_its_raw_multi_part_and_the_veto_and_never_triggers() {
+        assert_eq!(columns(&Orchestration::new(0.95, 0.9)), "0.950\t0.900\tvetoed");
+        assert_eq!(columns(&Orchestration::new(0.8, 0.1)), "0.800\t0.100\t-");
+        assert!(trigger_score(&Orchestration::new(0.95, 0.9)) < 0.0);
+        assert_eq!(trigger_score(&Orchestration::new(0.8, 0.1)), 0.8);
     }
 }

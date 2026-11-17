@@ -37,8 +37,8 @@ NEAR_MISS_BAND = 0.15  # how far under the cutoff still counts as "just under"
 
 
 def is_vetoed(check):
-    """The sequence veto held this prompt back. Rows from before the veto existed have no
-    `vetoed` field and were never vetoed."""
+    """Jev judged this prompt a sequence of dependent steps, so it is never orchestrated.
+    Rows from before the veto existed have no `vetoed` field and were never vetoed."""
     return bool(check.get("vetoed"))
 
 
@@ -51,8 +51,11 @@ def near_misses(checks, cutoff):
 
 
 def vetoes(checks):
-    """Multi-part prompts the sequential veto kept on one thread, highest raw score first."""
-    return sorted((c for c in checks if is_vetoed(c)), key=lambda c: -(c.get("multi_part_p") or 0))
+    """Prompts the sequential veto actually held back: a sequence whose raw `multi_part_p`
+    reached the row's cutoff (a sequence that scored low was never going to trigger).
+    Highest raw score first."""
+    held = [c for c in checks if is_vetoed(c) and (c.get("multi_part_p") or 0) >= (c.get("cutoff") or 0)]
+    return sorted(held, key=lambda c: -(c.get("multi_part_p") or 0))
 
 
 def tokens_cost(u):
@@ -137,8 +140,8 @@ def main():
     if held:
         print(f"  multi-part prompts the sequence veto kept on one thread: {len(held)}")
         for c in held[:5]:
-            print(f"    multi_part={c.get('multi_part_p') or 0:.2f} sequential={c.get('sequential_p') or 0:.2f} "
-                  f"score={c.get('orch_score') or 0:.2f}  {c.get('prompt', '')[:80]!r}")
+            print(f"    multi_part={c.get('multi_part_p') or 0:.2f} sequential={c.get('sequential_p') or 0:.2f}  "
+                  f"{c.get('prompt', '')[:80]!r}")
 
     if workers:
         picked = collections.Counter(w.get("model") or "planner's choice" for w in workers)

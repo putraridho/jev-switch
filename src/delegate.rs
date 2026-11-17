@@ -1963,7 +1963,7 @@ mod tests {
             edit_p: 0.9,
             continues_p: 0.0,
             correction_p: None,
-            multi_part_p: 0.0,
+            orchestration: crate::router::Orchestration::default(),
             security_keywords: Security::None,
             signals: json!({ "task": task.as_str() }),
         }

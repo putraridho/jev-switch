@@ -868,7 +868,7 @@ impl Engine {
         let mcp = if self.orchestrate { self.mcp_providers() } else { Vec::new() };
         orchestrate::choose_planner(
             self.orchestrate,
-            signals.map(|s| s.multi_part_p),
+            signals.map(|s| &s.orchestration),
             normal.spec,
             tool_ready,
             &mcp,
@@ -1373,7 +1373,7 @@ mod tests {
             edit_p: 0.3,
             continues_p: 0.9,
             correction_p: None,
-            multi_part_p: 0.0,
+            orchestration: crate::router::Orchestration::default(),
             security_keywords: Security::None,
             signals: json!({ "task": task.as_str() }),
         }
@@ -1854,7 +1854,7 @@ mod tests {
 
     /// A multi-part request: Jev's `multi_part` is above the cutoff.
     fn multi(task: TaskType) -> ProviderWant {
-        ProviderWant { multi_part_p: 0.9, continues_p: 0.1, ..want(task) }
+        ProviderWant { orchestration: crate::router::Orchestration::new(0.9, 0.1), continues_p: 0.1, ..want(task) }
     }
 
     fn orchestrating(mut r: Rig) -> Rig {

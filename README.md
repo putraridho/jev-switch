@@ -147,11 +147,14 @@ strong model and carried out by Sonnet subagents. Everything else routes as abov
 - **Sequences are not orchestrated.** The same Jev request also asks whether the prompt is
   a sequence of dependent steps ("run the tests, then check the report, then refactor",
   "do 1 -> 2 -> 3"); at `sequential_p` 0.70 or more the check is vetoed, because parallel
-  workers gain nothing there. Measured on 1,651 logged prompts: every parallel task kept its
-  score, and the one clearly sequential trigger dropped from 0.76 to 0.30.
-- **Logs.** `orch.jsonl` (`JEV_ORCH_LOG`): one line per check (`orch_score` (what the cutoff
-  is compared with), the raw `multi_part_p`, `sequential_p`, `vetoed`, `trigger`, `cutoff`,
-  `planner`, `hard_p`, prompt start; rows from before the veto have only `multi_part_p`) and one per worker
+  workers gain nothing there. The veto is its own decision, not a lowered score: the gate
+  refuses a vetoed prompt whatever `ORCH_TRIGGER_P` is, and `multi_part_p` is never rewritten.
+  Measured on 1,651 logged prompts: every parallel task kept its score, and the one clearly
+  sequential trigger (0.76) was held back.
+- **Logs.** `orch.jsonl` (`JEV_ORCH_LOG`): one line per check (the raw `multi_part_p` (what the cutoff
+  is compared with), `sequential_p`, `vetoed` (a sequence, never orchestrated), `trigger`, `cutoff`,
+  `planner`, `hard_p`, prompt start; rows from before the veto have only `multi_part_p`, and
+  rows from the first veto version also an `orch_score` that is no longer written) and one per worker
   (`kind: "worker"`, `model`, `planner`, `prompt_id`, `tool_use_id`, `reason`, `signals`).
   Every `usage.jsonl` row has `orch_planner`, set while the session's turn is orchestrated
   (workers' rows included). `scripts/orch_report.py --exclude PREFIX` skips test sessions. Each turn's `decision.orchestrate`
