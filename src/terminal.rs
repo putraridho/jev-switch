@@ -68,10 +68,54 @@ pub fn restore() {
 }
 
 /// Terminal columns: the window size when the OS says (a real size, not 0), else the
-/// `COLUMNS` variable, else [`DEFAULT_WIDTH`].
+/// `COLUMNS` variable (shells rarely export it, so it is only a fallback), else
+/// [`DEFAULT_WIDTH`].
 pub fn width() -> usize {
     width_from(ioctl_size().map(|(cols, _)| cols), std::env::var("COLUMNS").ok().as_deref())
 }
+
+/// What the console asks of the terminal while it draws, so tests can stand in for it:
+/// how wide it is RIGHT NOW (a window can be resized mid-turn) and whether typed keys are
+/// echoed back (they must not be while the status line owns the row).
+pub trait Screen: Send {
+    /// Live window columns, when the OS says; `None` leaves the caller its own fallback.
+    fn columns(&self) -> Option<usize>;
+    fn set_echo(&self, on: bool);
+}
+
+/// The process's real terminal.
+pub struct StdScreen;
+
+impl Screen for StdScreen {
+    fn columns(&self) -> Option<usize> {
+        ioctl_size().map(|(cols, _)| cols).filter(|c| *c > 0)
+    }
+
+    fn set_echo(&self, on: bool) {
+        set_stdin_echo(on);
+    }
+}
+
+#[cfg(unix)]
+fn set_stdin_echo(on: bool) {
+    // SAFETY: `termios` is plain data; `tcgetattr` fills it and fails (-1) when stdin is not
+    // a terminal, in which case nothing is changed.
+    unsafe {
+        let mut t: libc::termios = std::mem::zeroed();
+        if libc::tcgetattr(libc::STDIN_FILENO, &mut t) != 0 {
+            return;
+        }
+        if on {
+            t.c_lflag |= libc::ECHO;
+        } else {
+            t.c_lflag &= !libc::ECHO;
+        }
+        libc::tcsetattr(libc::STDIN_FILENO, libc::TCSANOW, &t);
+    }
+}
+
+#[cfg(not(unix))]
+fn set_stdin_echo(_on: bool) {}
 
 /// Terminal rows, when the OS knows them; `LINES` is the fallback.
 pub fn rows() -> Option<usize> {
@@ -85,7 +129,8 @@ pub fn width_from(reported: Option<usize>, columns_env: Option<&str>) -> usize {
 
 #[cfg(unix)]
 fn ioctl_size() -> Option<(usize, usize)> {
-    for fd in [libc::STDOUT_FILENO, libc::STDERR_FILENO, libc::STDIN_FILENO] {
+    // stderr first: that is where the status line is drawn.
+    for fd in [libc::STDERR_FILENO, libc::STDOUT_FILENO, libc::STDIN_FILENO] {
         // SAFETY: `winsize` is plain data and `TIOCGWINSZ` only writes into it.
         let mut ws: libc::winsize = unsafe { std::mem::zeroed() };
         if unsafe { libc::ioctl(fd, libc::TIOCGWINSZ, &mut ws) } == 0 && ws.ws_col > 0 {

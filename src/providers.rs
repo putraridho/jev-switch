@@ -183,6 +183,9 @@ pub struct Runtime {
     /// a login problem or an unusable directory is not a limit, and an hour-long cooldown
     /// would only outlast a re-login. See [`BlockReason`] for what clears each.
     pub blocked: HashMap<ProviderId, BlockReason>,
+    /// Answers from the background retry of probes that timed out at startup, until
+    /// [`Runtime::absorb_late`] folds them into `avail`.
+    late: Option<tokio::sync::mpsc::UnboundedReceiver<Availability>>,
 }
 
 /// Why a provider is skipped for the rest of the session.
@@ -233,6 +236,7 @@ impl Runtime {
             unusable_models: HashSet::new(),
             plan: HashMap::new(),
             blocked: HashMap::new(),
+            late: None,
         }
     }
 
@@ -354,6 +358,57 @@ impl Runtime {
         self.blocked.retain(|p, reason| {
             *reason != BlockReason::Auth || !avail.iter().any(|a| a.provider == *p && a.state == State::Ready)
         });
+    }
+
+    /// Re-check once, in the background, the providers whose startup probe could not tell
+    /// (a lazy wrapper's first run can outlast the startup cap), with a longer cap. Startup
+    /// does not wait for it. `on_ready` runs on that task the moment a provider turns out to
+    /// be Ready; the answer itself reaches this runtime through [`Runtime::absorb_late`],
+    /// where the caller holds `&mut self`, so a running turn never sees routing change under it.
+    pub fn retry_slow_probes(&mut self, on_ready: impl Fn(&Availability) + Send + 'static) {
+        self.retry_slow_probes_with(availability::RETRY_CAP, availability::probe_provider, on_ready);
+    }
+
+    fn retry_slow_probes_with<P, Fut>(&mut self, cap: std::time::Duration, probe: P, on_ready: impl Fn(&Availability) + Send + 'static)
+    where
+        P: Fn(ProviderId) -> Fut + Send + 'static,
+        Fut: std::future::Future<Output = Availability> + Send + 'static,
+    {
+        let providers = availability::retry_candidates(&self.avail);
+        if providers.is_empty() {
+            return;
+        }
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        self.late = Some(rx);
+        tokio::spawn(availability::retry_unknown(providers, cap, probe, move |answer| {
+            if answer.state == State::Ready {
+                on_ready(&answer);
+            }
+            let _ = tx.send(answer);
+        }));
+    }
+
+    /// Apply what the background retry has found so far. Returns whether anything changed.
+    /// Call it where no turn is running (before a command or a turn starts).
+    pub fn absorb_late(&mut self) -> bool {
+        use tokio::sync::mpsc::error::TryRecvError;
+        let Some(rx) = self.late.as_mut() else { return false };
+        let mut merged = self.avail.clone();
+        let mut changed = false;
+        let finished = loop {
+            match rx.try_recv() {
+                Ok(answer) => changed |= availability::merge_late(&mut merged, answer),
+                Err(TryRecvError::Empty) => break false,
+                Err(TryRecvError::Disconnected) => break true,
+            }
+        };
+        if finished {
+            self.late = None;
+        }
+        if changed {
+            self.apply_probe(merged);
+        }
+        changed
     }
 
     /// `/new`: the directory-dependent blocks end with the session they were learned in.
@@ -730,5 +785,68 @@ mod tests {
         assert!(allowances_for(None, &[claude("Ultra")]).credits);
         assert!(!allowances_for(None, &[claude("pro")]).credits);
         assert!(allowances_for(Some("1"), &[claude("pro")]).credits, "the env opt-in still works on Pro");
+    }
+
+    // ---- a slow probe is re-checked once, in the background
+
+    fn slow_start() -> Runtime {
+        Runtime::for_tests(vec![availability(Claude, State::Ready), availability(Codex, State::Unknown), availability(Gemini, State::NotLoggedIn)])
+    }
+
+    #[tokio::test]
+    async fn a_provider_that_timed_out_at_startup_becomes_usable_once_its_retry_succeeds() {
+        let mut rt = slow_start();
+        assert!(!rt.usable(NOW).contains(some_model(Codex)), "unknown is not routed to");
+        let (said_tx, mut said_rx) = tokio::sync::mpsc::unbounded_channel();
+        // The fake CLI answers after 30 ms, well inside the retry cap.
+        let probe = |p: ProviderId| async move {
+            tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+            availability(p, State::Ready)
+        };
+        rt.retry_slow_probes_with(std::time::Duration::from_secs(5), probe, move |a| {
+            let _ = said_tx.send(a.provider);
+        });
+        assert!(!rt.absorb_late(), "nothing has arrived yet, and asking must not block");
+        assert_eq!(said_rx.recv().await, Some(Codex), "the ready callback fires from the background task");
+        // The task sends its answer right after the callback; wait for the channel to close.
+        while rt.late.is_some() {
+            rt.absorb_late();
+            tokio::task::yield_now().await;
+        }
+        assert_eq!(rt.avail.iter().find(|a| a.provider == Codex).map(|a| a.state), Some(State::Ready));
+        assert!(rt.usable(NOW).contains(some_model(Codex)));
+        assert_eq!(rt.avail.iter().find(|a| a.provider == Gemini).map(|a| a.state), Some(State::NotLoggedIn));
+        assert!(!rt.absorb_late(), "applied once");
+    }
+
+    #[tokio::test]
+    async fn a_retry_that_ends_unknown_again_changes_nothing_and_is_not_repeated() {
+        let mut rt = slow_start();
+        let probe = |p: ProviderId| async move { availability(p, State::Unknown) };
+        rt.retry_slow_probes_with(std::time::Duration::from_secs(5), probe, |_| panic!("not ready"));
+        while rt.late.is_some() {
+            assert!(!rt.absorb_late());
+            tokio::task::yield_now().await;
+        }
+        assert_eq!(rt.avail[1].state, State::Unknown);
+        assert!(rt.late.is_none(), "one retry only: the receiver is gone");
+    }
+
+    #[tokio::test]
+    async fn nothing_is_retried_when_every_probe_gave_an_answer() {
+        let mut rt = runtime();
+        rt.retry_slow_probes_with(std::time::Duration::from_secs(5), |p| async move { availability(p, State::Ready) }, |_| panic!("no retry"));
+        assert!(rt.late.is_none());
+    }
+
+    #[tokio::test]
+    async fn a_refresh_that_already_found_the_provider_is_not_overwritten_by_the_late_answer() {
+        let mut rt = slow_start();
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        rt.late = Some(rx);
+        rt.apply_probe(vec![availability(Claude, State::Ready), availability(Codex, State::NotLoggedIn)]);
+        tx.send(availability(Codex, State::Ready)).unwrap();
+        assert!(!rt.absorb_late());
+        assert_eq!(rt.avail[1].state, State::NotLoggedIn);
     }
 }
