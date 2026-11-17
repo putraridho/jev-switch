@@ -171,8 +171,10 @@ pub fn write_mcp_config(mcp: &McpAttachment) -> std::io::Result<()> {
 pub const PLANNER_NOTE: &str = "[orchestration] This task splits into separate pieces. You have a `delegate` tool (MCP server \
 `jev`) that runs a piece in a cheaper worker model, in its own git worktree, and returns a summary and diff. Delegate the \
 independent pieces (call it several times in parallel), each with a complete, self-contained brief (a worker sees only the \
-brief and the last commit, not your uncommitted edits or this conversation). Review every returned diff; `merge` only what you \
-verified, `discard` the rest, and do the integration work yourself. You cannot choose the worker's model.";
+brief and the last commit, not your uncommitted edits or this conversation). Review every returned diff: files the result lists \
+as not shown need `show_diff` (page it until you have read them), and `merge` refuses anything you have not seen. `merge` only \
+what you verified (pass `files` to take a subset), `discard` the rest, and do the integration work yourself. You cannot choose \
+the worker's model.";
 
 #[cfg(test)]
 mod tests {
