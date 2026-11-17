@@ -73,13 +73,23 @@ impl Sessions {
     /// the smallest form is over budget it is returned anyway, because losing a
     /// user prompt is worse than a few extra tokens.
     pub fn catch_up(&self, p: ProviderId, git_status: &str, budget_tokens: usize) -> Option<String> {
+        self.catch_up_as(p, None, git_status, budget_tokens)
+    }
+
+    /// Like [`Sessions::catch_up`], but the header also names the receiving model
+    /// (`You are: codex/gpt-6-luna`), so it can tell its own turns from the listed ones.
+    pub fn catch_up_for(&self, p: ProviderId, model: &str, git_status: &str, budget_tokens: usize) -> Option<String> {
+        self.catch_up_as(p, Some(model), git_status, budget_tokens)
+    }
+
+    fn catch_up_as(&self, p: ProviderId, model: Option<&str>, git_status: &str, budget_tokens: usize) -> Option<String> {
         let missed = &self.log[self.log.len() - self.missed_turns(p)..];
         if missed.is_empty() {
             return None;
         }
         let mut text = String::new();
         for level in LEVELS {
-            text = render(missed, git_status, level);
+            text = render(missed, &identity(p, model), git_status, level);
             if estimate_tokens(&text) <= budget_tokens {
                 break;
             }
@@ -182,8 +192,29 @@ const LEVELS: &[Level] = &[
     Level { last_reply: 300, older_reply: 0, older_details: false, prompt_cap: Some(400), git_lines: 10 },
 ];
 
-const HEADER: &str = "The work so far in this conversation was done by other assistants in this same project folder. \
-You did not see it. Re-read any file before editing it, since it may have changed.";
+/// Who the receiving assistant is: `provider/model`, or just the provider when the
+/// model is not known.
+fn identity(p: ProviderId, model: Option<&str>) -> String {
+    match model.map(str::trim).filter(|m| !m.is_empty()) {
+        Some(m) => format!("{p}/{m}"),
+        None => p.to_string(),
+    }
+}
+
+/// The block's header. It must not read as the whole history: the receiving model
+/// lived through its own turns and keeps them in its own memory, so it is told that
+/// only turns that ran elsewhere are listed.
+fn header(you: &str) -> String {
+    format!(
+        "You are: {you}\n\
+         Catch-up: below are ONLY the turns of this conversation that ran on other assistants while you were away \
+         (each turn header names the assistant that ran it, as provider/model). \
+         Anything you did yourself earlier in this conversation is already in your own memory and is NOT repeated here, \
+         so this list is not the whole history. \
+         The project folder is shared, so files may have changed since you last looked: re-read a file before editing it. \
+         The user's current message follows the line \"Now the user says:\"."
+    )
+}
 
 /// `s` cut to `n` chars, with an ellipsis when something was removed.
 fn truncate_chars(s: &str, n: usize) -> String {
@@ -229,9 +260,9 @@ fn render_turn(index: usize, total: usize, rec: &TurnRecord, is_last: bool, leve
 
 /// The whole catch-up block at one level of detail. Pure, so each shrink step is
 /// just another call.
-fn render(missed: &[TurnRecord], git_status: &str, level: &Level) -> String {
+fn render(missed: &[TurnRecord], you: &str, git_status: &str, level: &Level) -> String {
     let total = missed.len();
-    let mut out = format!("{HEADER}\n\n");
+    let mut out = format!("{}\n\n", header(you));
     for (i, rec) in missed.iter().enumerate() {
         out.push_str(&render_turn(i + 1, total, rec, i + 1 == total, level));
         out.push('\n');
@@ -281,6 +312,38 @@ mod tests {
         assert!(text.contains("git status:\n M src/a.rs"));
         assert!(text.contains("ok]"));
         assert!(text.trim_end().ends_with("Now the user says:"));
+    }
+
+    #[test]
+    fn header_says_only_other_assistants_turns_are_listed_and_never_claims_full_history() {
+        let mut s = Sessions::new();
+        s.record(rec(ProviderId::Claude, "rename the word", "renamed", &["Edit src/a.rs"], true));
+        let text = s.catch_up(ProviderId::Codex, "", 1000).unwrap();
+        assert!(text.contains("ONLY the turns"), "{text}");
+        assert!(text.contains("other assistants while you were away"));
+        assert!(text.contains("provider/model"));
+        assert!(text.contains("already in your own memory and is NOT repeated here"));
+        assert!(text.contains("shared") && text.contains("re-read"));
+        assert!(text.contains("\"Now the user says:\""));
+        for old in ["done by other assistants", "other assistants did the work", "The work so far", "You did not see it"] {
+            assert!(!text.contains(old), "old phrase {old:?} is back");
+        }
+    }
+
+    #[test]
+    fn header_names_the_receiving_identity() {
+        let mut s = Sessions::new();
+        s.record(rec(ProviderId::Claude, "p", "r", &[], true));
+        let with = s.catch_up_for(ProviderId::Codex, "gpt-6-luna", "", 1000).unwrap();
+        assert!(with.starts_with("You are: codex/gpt-6-luna\n"), "{with}");
+        // The wrapper has no model, so only the provider is named.
+        let without = s.catch_up(ProviderId::Codex, "", 1000).unwrap();
+        assert!(without.starts_with("You are: codex\n"), "{without}");
+        // Turn headers still name who ran each turn.
+        assert!(with.contains("[turn 1 of 1: claude/m1, ok]"));
+        // The identity survives the tightest budget.
+        let tiny = s.catch_up_for(ProviderId::Codex, "gpt-6-luna", "", 1).unwrap();
+        assert!(tiny.contains("You are: codex/gpt-6-luna"));
     }
 
     #[test]
