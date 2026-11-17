@@ -102,6 +102,7 @@ else
   last=$(printf '%s' "$prompt" | tail -n 1)
 fi
 echo $$ > "$FAKE_PIDS/cli.pid"
+printf '%s\n' "$@" > "$FAKE_PIDS/args.txt"
 answer="FAKE ANSWER hello"
 emit() { printf '%s\n' "$1"; }
 emit '{"type":"system","subtype":"init","session_id":"sess-1"}'
@@ -138,6 +139,15 @@ case "$last" in
       *'"behavior":"allow"'*) answer="FAKE ALLOWED" ;;
       *) answer="FAKE DENIED" ;;
     esac
+    ;;
+  *pagewithdraw*)
+    # A command too long for the screen (it goes through the pager), taken back while the
+    # pager is open; the turn then ends without waiting for any reply.
+    emit '{"type":"control_request","request_id":"req-1","request":{"subtype":"can_use_tool","tool_name":"Bash","input":{"command":"@MULTILINE@"}}}'
+    sleep 1
+    emit '{"type":"control_cancel_request","request_id":"req-1"}'
+    sleep 1
+    answer="FAKE CARRIED ON"
     ;;
   *withdraw*)
     # Asks, then takes the question back a second later (a hook settled it, say) and goes on
@@ -189,6 +199,19 @@ LONG_COMMAND = (
     " && echo \\u001b[31mred\\u0007 \\u001b and then a good deal more text to push the line well past any narrow terminal"
 )
 
+# A 61-line command (JSON escapes, decoded by the program): taller than the 30-row test
+# terminal, so its approval question goes through the pager.
+MULTILINE_COMMAND = "\\n".join(f"echo line-{i}" for i in range(1, 61)) + "\\nrm -rf ~"
+
+# A pager that keeps what it was given, says it is open, ignores Ctrl-C (as `less` does) and
+# stays until the test creates `pager.close`.
+FAKE_PAGER = """#!/bin/sh
+trap '' INT
+cat > "$FAKE_PIDS/paged.txt"
+: > "$FAKE_PIDS/pager.open"
+while [ ! -e "$FAKE_PIDS/pager.close" ]; do sleep 0.05; done
+"""
+
 # `codex login status` that takes longer than the 5 s startup probe cap but succeeds inside the retry cap.
 FAKE_SLOW_CODEX = """#!/bin/sh
 if [ "$1" = "login" ]; then
@@ -217,7 +240,11 @@ class World:
         self.jev_url = jev_url
         self.claude = os.path.join(self.bin, "claude")
         with open(self.claude, "w") as f:
-            f.write(FAKE_CLAUDE.replace("@LONGCMD@", LONG_COMMAND))
+            f.write(FAKE_CLAUDE.replace("@LONGCMD@", LONG_COMMAND).replace("@MULTILINE@", MULTILINE_COMMAND))
+        self.pager = os.path.join(self.bin, "fake-pager")
+        with open(self.pager, "w") as f:
+            f.write(FAKE_PAGER)
+        os.chmod(self.pager, 0o755)
         os.chmod(self.claude, 0o755)
         for tool in TOOLS:
             found = shutil.which(tool)
@@ -1316,21 +1343,92 @@ def a_question_the_cli_withdraws_is_erased_and_the_terminal_and_keyboard_are_lef
         p.close()
 
 
+def cli_args(w):
+    with open(os.path.join(w.pids, "args.txt")) as f:
+        return f.read().split("\n")
+
+
 @scenario
-def without_a_terminal_a_tool_that_needs_approval_is_denied_with_a_hint_and_nothing_hangs(w):
+def without_a_terminal_a_tool_that_needs_approval_is_left_to_claude_and_the_hint_is_not_in_the_answer(w):
+    # `-p` and piped input have nobody to ask: Claude Code runs as plain `claude -p` (allowed
+    # tools and permission mode decide), without the host prompt protocol or the session note.
     r = run_cli(w, ["-p", "approve it quick", w.repo], timeout=30)
-    if r.returncode != 0 or "FAKE DENIED" not in r.stdout:
-        raise Fail(f"-p should finish with the denial in the answer: {r.returncode} {r.stdout!r} {r.stderr!r}")
+    if r.returncode != 0 or r.stdout.strip() != "FAKE DENIED headless":
+        raise Fail(f"-p should print only the answer: {r.returncode} {r.stdout!r} {r.stderr!r}")
     if "denied Bash" not in r.stderr:
         raise Fail(f"a denied tool should be reported on stderr:\n{r.stderr}")
+    args = cli_args(w)
+    if "--permission-prompt-tool" in args or "--input-format" in args or any("jev-code asks the user" in a for a in args):
+        raise Fail(f"-p must not use the host prompt protocol or the session note: {args}")
+    if "--permission-mode" not in args:
+        raise Fail(f"-p keeps the permission mode: {args}")
     piped = run_cli(w, [w.repo], stdin="approve it quick\n/quit\n", timeout=30)
-    if piped.returncode != 0 or "FAKE DENIED" not in piped.stdout:
-        raise Fail(f"a piped session should be denied, not hang: {piped.returncode} {piped.stdout!r} {piped.stderr!r}")
-    if "denied Bash" not in piped.stderr or "nobody to ask" not in piped.stderr:
-        raise Fail(f"the hint should say nobody could be asked:\n{piped.stderr}")
-    reply = host_reply(w)["response"]
-    if reply.get("behavior") != "deny" or "no one to ask" not in reply.get("message", ""):
-        raise Fail(f"the model should be told no one could be asked: {reply}")
+    if piped.returncode != 0 or "FAKE DENIED headless" not in piped.stdout:
+        raise Fail(f"a piped session should be decided by claude, not hang: {piped.returncode} {piped.stdout!r} {piped.stderr!r}")
+    if "denied Bash" in piped.stdout:
+        raise Fail(f"the denial hint must never be in the answer stream:\n{piped.stdout}")
+    if "denied Bash" not in piped.stderr:
+        raise Fail(f"the hint should be on stderr:\n{piped.stderr}")
+    if "--permission-prompt-tool" in cli_args(w):
+        raise Fail(f"a piped session must not use the host prompt protocol: {cli_args(w)}")
+    if os.path.exists(os.path.join(w.pids, "reply.json")):
+        raise Fail("nothing may be asked of the host where nobody can answer")
+
+
+def wait_for_file(p, path, what, timeout=15):
+    deadline = time.time() + timeout
+    while not os.path.exists(path):
+        if time.time() >= deadline:
+            raise Fail(f"{what} did not happen within {timeout}s:\n{p.tail()}")
+        p.pump(0.05)
+
+
+@scenario
+def a_question_withdrawn_while_its_pager_is_open_is_never_shown_and_ctrl_c_there_does_not_stop_the_turn(w):
+    p = Pty(w, [w.repo], "pager-withdrawn", env=w.env(PAGER=w.pager))
+    try:
+        prompt_ready(p)
+        p.send("pagewithdraw please\r")
+        wait_for_file(p, os.path.join(w.pids, "pager.open"), "the pager opening")
+        cli = w.pid_file("cli.pid")
+        # No key reader holds the terminal while the pager has it: line mode and signals are on.
+        paging = local_flags(p)
+        if not (paging & termios.ICANON and paging & termios.ISIG):
+            raise Fail(f"the terminal should be the pager's, not in raw mode (lflag {paging:#x})")
+        # Ctrl-C inside the pager belongs to the pager.
+        p.send("\x03")
+        # The engine keeps reading the CLI while the pager is open: the withdrawal arrives and
+        # the turn runs to its end without waiting for the pager.
+        deadline = time.time() + 10
+        while alive(cli):
+            if time.time() >= deadline:
+                raise Fail(f"the CLI should finish while the pager is open:\n{p.tail()}")
+            p.pump(0.05)
+        p.settle(0.5)
+        shown = p.visible().split("pagewithdraw please")[-1]
+        for held in ("withdrawn", "FAKE CARRIED ON", "stopped", "[y]es", "›"):
+            if held in shown:
+                raise Fail(f"nothing may be printed over the pager ({held!r}):\n{p.tail()}")
+        open(os.path.join(w.pids, "pager.close"), "w").close()
+        p.expect("(the tool call was withdrawn)", 10, "the withdrawal line once the pager closed")
+        p.expect("FAKE CARRIED ON", 10, "the answer, held until the pager closed")
+        p.expect("› ", 10, "the next prompt")
+        shown = p.visible().split("pagewithdraw please")[-1]
+        if "[y]es" in shown or "stopped" in shown:
+            raise Fail(f"a question withdrawn while paged is never shown, and the turn was not stopped:\n{p.tail()}")
+        with open(os.path.join(w.pids, "paged.txt")) as f:
+            paged = f.read()
+        if "line-60" not in paged or "rm -rf ~" not in paged:
+            raise Fail(f"the pager should have had the whole command:\n{paged[-300:]}")
+        if os.path.exists(os.path.join(w.pids, "reply.json")):
+            raise Fail("a withdrawn question must never be answered")
+        # The keyboard works at the prompt, and a Ctrl-C there is a signal again.
+        p.send("\x03")
+        p.expect("Ctrl-C again", 10, "the Ctrl-C hint at the prompt")
+        ask(p, "explain quick")
+        quit_with_ctrl_d(p)
+    finally:
+        p.close()
 
 
 @scenario

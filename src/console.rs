@@ -61,11 +61,41 @@ pub type KeyReader = Arc<dyn Fn(bool) -> KeyWait + Send + Sync>;
 
 /// The real terminal's key reader: [`lineedit::read_answer`] on a thread of its own, which
 /// polls stdin and a cancel flag. Dropping the [`KeyWait`] (the question was withdrawn) sets
-/// the flag and waits for the thread, which takes at most one poll interval: when the drop
-/// returns the terminal is back in the mode it was in before the question and nothing is
-/// reading stdin, so the next key typed is left for whoever reads next.
+/// the flag and returns at once, without blocking the async runtime: the thread notices
+/// within one poll interval and puts the terminal back in the mode it was in before the
+/// question itself (it never leaves raw mode behind). Until then it is "pending":
+/// whoever touches the terminal mode next waits for it first ([`settle_key_readers`]), so
+/// two readers never overlap and a restore cannot land after the next change.
 pub fn terminal_keys() -> KeyReader {
     Arc::new(|always| Box::pin(TerminalKey::start(always)))
+}
+
+/// Readers whose question was withdrawn and that are still restoring the terminal.
+static PENDING_READERS: Mutex<Vec<std::thread::JoinHandle<()>>> = Mutex::new(Vec::new());
+
+/// Wait for every withdrawn key reader to have put the terminal back (at most one poll
+/// interval each). Blocking: called on a reader's own thread, or through
+/// [`settle_key_readers_from_async`].
+fn settle_key_readers() {
+    let pending = std::mem::take(&mut *PENDING_READERS.lock().unwrap_or_else(PoisonError::into_inner));
+    for reader in pending {
+        let _ = reader.join();
+    }
+}
+
+/// [`settle_key_readers`] from code that may run on the async runtime: told to the runtime
+/// as blocking where it can be (a multi-thread runtime), else run directly. Free when
+/// nothing is pending, which is every time no question was withdrawn.
+fn settle_key_readers_from_async() {
+    if PENDING_READERS.lock().unwrap_or_else(PoisonError::into_inner).is_empty() {
+        return;
+    }
+    let multi_thread = tokio::runtime::Handle::try_current().is_ok_and(|h| h.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread);
+    if multi_thread {
+        tokio::task::block_in_place(settle_key_readers);
+    } else {
+        settle_key_readers();
+    }
 }
 
 struct TerminalKey {
@@ -80,6 +110,8 @@ impl TerminalKey {
         let (send, answer) = tokio::sync::oneshot::channel();
         let flag = cancel.clone();
         let reader = std::thread::spawn(move || {
+            // A reader of a withdrawn question may still be restoring the terminal.
+            settle_key_readers();
             if let Some(key) = lineedit::read_answer(always, &flag) {
                 let _ = send.send(key);
             }
@@ -98,12 +130,27 @@ impl Future for TerminalKey {
 }
 
 impl Drop for TerminalKey {
+    /// Never blocks: the thread is told to stop and parked as pending (see [`terminal_keys`]).
     fn drop(&mut self) {
         self.cancel.store(true, Ordering::Release);
         if let Some(reader) = self.reader.take() {
-            let _ = reader.join();
+            if reader.is_finished() {
+                let _ = reader.join();
+            } else {
+                PENDING_READERS.lock().unwrap_or_else(PoisonError::into_inner).push(reader);
+            }
         }
     }
+}
+
+/// Shows a long approval input in full, on the terminal; false when it could not. Runs on a
+/// blocking thread, so it gets the text by value.
+pub type Pager = Arc<dyn Fn(&str) -> bool + Send + Sync>;
+
+/// Output that arrived while the pager owned the screen, printed when it closes.
+enum HeldLine {
+    Out(String),
+    Err(String),
 }
 
 struct Live {
@@ -135,6 +182,9 @@ struct Inner {
     /// Set when no model could take the turn; the caller prints the full message, which
     /// needs facts the console does not have.
     no_route_task: Option<String>,
+    /// The pager owns the screen: everything printed meanwhile waits here (in order) and the
+    /// status line stays away; `None` when no pager is open.
+    held: Option<Vec<HeldLine>>,
 }
 
 /// The terminal output. Cheap to clone; every clone writes through the same lock.
@@ -144,6 +194,10 @@ pub struct Console {
     /// How to ask the person a question. `None` (no terminal to answer on) means every
     /// tool approval is denied at once.
     keys: Option<KeyReader>,
+    /// True while the pager of an approval question is open (see [`Console::is_paging`]).
+    paging: Arc<tokio::sync::watch::Sender<bool>>,
+    /// One pager at a time: two questions that both need one take turns.
+    pager_turn: Arc<tokio::sync::Mutex<()>>,
 }
 
 impl Console {
@@ -160,8 +214,14 @@ impl Console {
             deferred: Vec::new(),
             pending: None,
             no_route_task: None,
+            held: None,
         };
-        Self { inner: Arc::new(Mutex::new(inner)), keys: None }
+        Self {
+            inner: Arc::new(Mutex::new(inner)),
+            keys: None,
+            paging: Arc::new(tokio::sync::watch::Sender::new(false)),
+            pager_turn: Arc::new(tokio::sync::Mutex::new(())),
+        }
     }
 
     /// Let the person answer tool approvals by pressing a key. Without this the console
@@ -175,6 +235,39 @@ impl Console {
     /// question would be denied, so the run should not ask the CLI to send any.
     pub fn can_ask(&self) -> bool {
         self.keys.is_some()
+    }
+
+    /// Whether the pager of an approval question is open. A Ctrl-C then belongs to the pager
+    /// (it quits a search there), not to the turn.
+    pub fn is_paging(&self) -> bool {
+        *self.paging.borrow()
+    }
+
+    /// Resolves once no pager is open (at once when none is). The turn waits for it before it
+    /// gives the terminal back to the prompt.
+    pub async fn pager_closed(&self) {
+        let mut rx = self.paging.subscribe();
+        // The sender lives as long as `self`, so the wait cannot fail.
+        let _ = rx.wait_for(|open| !*open).await;
+    }
+
+    /// The pager is about to own the screen: hold everything printed from now on.
+    pub(crate) fn begin_paging(&self) {
+        self.lock().held.get_or_insert_with(Vec::new);
+        self.paging.send_replace(true);
+    }
+
+    /// The pager closed: print what was held, in order, and let the status line back.
+    pub(crate) fn end_paging(&self) {
+        let mut g = self.lock();
+        for line in g.held.take().unwrap_or_default() {
+            match line {
+                HeldLine::Out(text) => g.emit_out(&text),
+                HeldLine::Err(text) => g.emit_err(&text),
+            }
+        }
+        drop(g);
+        self.paging.send_replace(false);
     }
 
     /// A console on the process's real stdout and stderr.
@@ -332,7 +425,7 @@ impl Inner {
     }
 
     fn draw(&mut self, elapsed: Duration) {
-        if self.asking.is_some() {
+        if self.asking.is_some() || self.held.is_some() {
             return;
         }
         // The status line is redrawn in place (`\r`, erase the row), which only works while it
@@ -370,6 +463,10 @@ impl Inner {
     }
 
     fn emit_err(&mut self, text: &str) {
+        if let Some(held) = self.held.as_mut() {
+            held.push(HeldLine::Err(text.to_string()));
+            return;
+        }
         self.disturb_question();
         self.erase();
         let _ = self.err.write_all(text.as_bytes());
@@ -381,6 +478,10 @@ impl Inner {
     }
 
     fn emit_out(&mut self, text: &str) {
+        if let Some(held) = self.held.as_mut() {
+            held.push(HeldLine::Out(text.to_string()));
+            return;
+        }
         self.disturb_question();
         self.erase();
         // The two streams share one screen: finish what is pending on stderr first.
@@ -410,6 +511,8 @@ impl Inner {
     }
 
     fn end(&mut self) {
+        // A withdrawn question's key reader may still be restoring the terminal mode.
+        settle_key_readers_from_async();
         self.erase();
         self.live = None;
         self.asking = None;
@@ -542,7 +645,7 @@ impl Ui for Console {
 
     /// Stops the status line, prints the question and returns the wait for one key.
     fn ask_permission(&mut self, req: &PermissionRequest, offer: &Offer) -> Answer {
-        self.ask_with_pager(req, offer, &page_on_terminal)
+        self.ask_with_pager(req, offer, Arc::new(page_on_terminal))
     }
 
     /// The answer line, printed only now that the engine has saved (or failed to save) what
@@ -612,10 +715,13 @@ impl Console {
     /// or saved here; the answer line comes from [`Ui::permission_settled`] once the engine
     /// has saved.
     ///
-    /// The pager is the one part that cannot be abandoned: it runs here, before the answer
-    /// exists, so a withdrawal that arrives while it is open is seen when it is closed, and
-    /// the question that was just printed is then taken away at once.
-    fn ask_with_pager(&self, req: &PermissionRequest, offer: &Offer, pager: &dyn Fn(&str) -> bool) -> Answer {
+    /// The pager runs on a blocking thread, awaited as the first part of the answer: the
+    /// engine keeps reading the CLI meanwhile, so a withdrawal or a result is seen at once.
+    /// Everything printed while it is open is held and printed when it closes, and a question
+    /// withdrawn meanwhile is never printed at all (only the withdrawn line is). The pager
+    /// itself cannot be abandoned: it stays until the person closes it, and the turn waits
+    /// for that ([`Console::pager_closed`]) before giving the terminal back.
+    fn ask_with_pager(&self, req: &PermissionRequest, offer: &Offer, pager: Pager) -> Answer {
         let Some(keys) = self.keys.clone() else {
             return Box::pin(std::future::ready(Some(Decision::Deny { reason: backend::NO_ONE_TO_ASK.to_string() })));
         };
@@ -627,39 +733,90 @@ impl Console {
         };
         let project = self.lock().cfg.project.clone();
         let review = permissions::review(&req.tool, &req.input, Some(&project));
+        let question = PendingQuestion { tool: req.tool.clone(), review, offered, note };
 
-        let first = {
+        let full = {
             let mut g = self.lock();
             g.erase();
             g.asking = Some(0);
-            g.question(&req.tool, &review, offered, note.as_deref())
+            question.layout(&g).full
         };
-        let paged = first.full.as_deref().is_some_and(pager);
-        {
-            let mut g = self.lock();
-            // The terminal may have been resized while the pager ran.
-            let prompt = g.question(&req.tool, &review, offered, note.as_deref());
-            let text = match (&prompt.full, paged) {
-                (Some(full), false) => format!("{full}\n{}", prompt.tail),
-                _ => prompt.text,
-            };
-            let text = indented(&text);
-            g.emit_err(&text);
-            // Only now is the question known to be the last thing on screen.
-            g.asking = Some(text.lines().count());
-        }
         let console = self.clone();
+        let Some(full) = full else {
+            // Short: on screen now, before the answer is first polled.
+            console.show_question(&question, false);
+            return Box::pin(async move { console.wait_for_key(keys, offered).await });
+        };
         Box::pin(async move {
-            let key = keys(offered).await;
-            console.lock().asking = None;
-            match key {
-                AnswerKey::Yes => Some(Decision::Allow),
-                AnswerKey::Always if offered => Some(Decision::AllowAlways),
-                AnswerKey::Always => Some(Decision::Allow),
-                AnswerKey::No => Some(Decision::Deny { reason: "the user denied this tool call".to_string() }),
-                AnswerKey::Interrupt => None,
-            }
+            let turn = console.pager_turn.clone().lock_owned().await;
+            console.begin_paging();
+            // The guard goes with the pager, so paging ends when IT does, even if this
+            // answer was dropped (withdrawn) meanwhile.
+            let guard = PagingGuard { console: console.clone(), _turn: turn };
+            let shown = tokio::task::spawn_blocking(move || {
+                let _guard = guard;
+                pager(&full)
+            })
+            .await
+            .unwrap_or(false);
+            console.show_question(&question, shown);
+            console.wait_for_key(keys, offered).await
         })
+    }
+
+    /// Print the question (the whole input in place unless `paged` showed it), and remember
+    /// how many rows it takes while it is the last thing on screen.
+    fn show_question(&self, question: &PendingQuestion, paged: bool) {
+        let mut g = self.lock();
+        // The terminal may have been resized while the pager ran.
+        let prompt = question.layout(&g);
+        let text = match (&prompt.full, paged) {
+            (Some(full), false) => format!("{full}\n{}", prompt.tail),
+            _ => prompt.text,
+        };
+        let text = indented(&text);
+        g.emit_err(&text);
+        g.asking = Some(text.lines().count());
+    }
+
+    /// Wait for the one key that answers.
+    async fn wait_for_key(&self, keys: KeyReader, offered: bool) -> Option<Decision> {
+        let key = keys(offered).await;
+        self.lock().asking = None;
+        match key {
+            AnswerKey::Yes => Some(Decision::Allow),
+            AnswerKey::Always if offered => Some(Decision::AllowAlways),
+            AnswerKey::Always => Some(Decision::Allow),
+            AnswerKey::No => Some(Decision::Deny { reason: "the user denied this tool call".to_string() }),
+            AnswerKey::Interrupt => None,
+        }
+    }
+}
+
+/// An approval question, owned, so it can be laid out again after the pager.
+struct PendingQuestion {
+    tool: String,
+    review: Review,
+    offered: bool,
+    note: Option<String>,
+}
+
+impl PendingQuestion {
+    fn layout(&self, g: &Inner) -> uifmt::Prompt {
+        g.question(&self.tool, &self.review, self.offered, self.note.as_deref())
+    }
+}
+
+/// Ends paging when dropped (the pager returned, panicked, or never got to run), then lets
+/// the next pager have its turn.
+struct PagingGuard {
+    console: Console,
+    _turn: tokio::sync::OwnedMutexGuard<()>,
+}
+
+impl Drop for PagingGuard {
+    fn drop(&mut self) {
+        self.console.end_paging();
     }
 }
 
@@ -1126,7 +1283,7 @@ mod tests {
         settle_like_the_engine(c, req, &offer, answer)
     }
 
-    fn ask_paged(c: &Console, req: &PermissionRequest, pager: &dyn Fn(&str) -> bool) -> Option<Decision> {
+    fn ask_paged(c: &Console, req: &PermissionRequest, pager: Pager) -> Option<Decision> {
         let offer = offer_for(c, req);
         let answer = wait(c.ask_with_pager(req, &offer, pager));
         settle_like_the_engine(&mut c.clone(), req, &offer, answer)
@@ -1139,8 +1296,8 @@ mod tests {
     }
 
     /// A pager that never runs: tests say whether one was available and keep what it was given.
-    fn no_pager() -> impl Fn(&str) -> bool {
-        |_| false
+    fn no_pager() -> Pager {
+        Arc::new(|_| false)
     }
 
     fn tmp_project(name: &str) -> PathBuf {
@@ -1337,7 +1494,7 @@ mod tests {
         let (c, err) = answering(AnswerKey::No);
         let command = format!("echo start {} && rm -rf ~ # end", "a".repeat(1950));
         let r = request("Bash", &command);
-        ask_paged(&c, &r, &no_pager());
+        ask_paged(&c, &r, no_pager());
         let e = err.text();
         assert!(e.contains("rm -rf ~ # end"), "{e}");
         assert_eq!(printed_command(&e), command, "nothing is cut");
@@ -1361,12 +1518,13 @@ mod tests {
     fn a_long_input_goes_through_the_pager_first_and_the_question_says_so() {
         let command: String = (1..=60).map(|i| format!("echo line-{i}\n")).collect::<String>() + "rm -rf ~";
         let (c, err) = answering(AnswerKey::No);
-        let paged = Mutex::new(Vec::new());
-        let pager = |text: &str| {
-            paged.lock().unwrap().push(text.to_string());
+        let paged = Arc::new(Mutex::new(Vec::new()));
+        let seen = paged.clone();
+        let pager: Pager = Arc::new(move |text: &str| {
+            seen.lock().unwrap().push(text.to_string());
             true
-        };
-        ask_paged(&c, &request("Bash", &command), &pager);
+        });
+        ask_paged(&c, &request("Bash", &command), pager);
         let paged = paged.lock().unwrap();
         assert_eq!(paged.len(), 1);
         assert!(paged[0].contains("echo line-1\n") && paged[0].contains("line-60") && paged[0].contains("rm -rf ~"), "the pager has all of it");
@@ -1376,11 +1534,90 @@ mod tests {
         assert!(!e.contains("line-30"), "{e}");
     }
 
+    /// A pager that says when it opened and stays open until the test closes it.
+    fn held_pager() -> (Pager, std::sync::mpsc::Receiver<()>, std::sync::mpsc::Sender<()>) {
+        let (opened_tx, opened) = std::sync::mpsc::channel();
+        let (close, close_rx) = std::sync::mpsc::channel::<()>();
+        let close_rx = Mutex::new(close_rx);
+        let pager: Pager = Arc::new(move |_| {
+            let _ = opened_tx.send(());
+            let _ = close_rx.lock().unwrap().recv();
+            true
+        });
+        (pager, opened, close)
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_pager_never_blocks_the_runtime_and_a_withdrawal_meanwhile_is_shown_when_it_closes() {
+        let (c, _, err) = console(false, Style::off(), true);
+        let (keys, dropped) = never_pressed();
+        let mut c = c.with_key_reader(keys);
+        let command: String = (1..=60).map(|i| format!("echo line-{i}\n")).collect::<String>() + "rm -rf ~";
+        let req = request("Bash", &command);
+        let (pager, opened, close) = held_pager();
+        // `ask_with_pager` returns at once: the pager is part of the answer, not of the call.
+        let answer = tokio::spawn(c.ask_with_pager(&req, &Err(permissions::Refusal::NoRule), pager));
+        tokio::task::spawn_blocking(move || opened.recv_timeout(Duration::from_secs(5))).await.unwrap().expect("the pager opened");
+        assert!(c.is_paging());
+        // The engine keeps working: output and the withdrawal arrive while the pager is open.
+        c.err("[jev] a notice that arrived meanwhile");
+        c.permission_withdrawn(&req);
+        answer.abort();
+        let _ = answer.await;
+        c.tick();
+        assert_eq!(err.text(), "", "nothing is printed over the pager");
+        close.send(()).unwrap();
+        tokio::time::timeout(Duration::from_secs(5), c.pager_closed()).await.expect("the pager closed");
+        assert!(!c.is_paging());
+        let e = err.text();
+        let notice = e.find("a notice that arrived meanwhile").expect(&e);
+        assert!(notice < e.find(WITHDRAWN).expect(&e), "held lines keep their order: {e}");
+        assert!(!e.contains("[y]es") && !e.contains("line-30"), "a question withdrawn while paged is never printed: {e}");
+        assert!(!dropped.load(Ordering::SeqCst), "no key was ever waited for");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn after_the_pager_the_question_waits_for_its_key() {
+        let (c, _, err) = console(false, Style::off(), true);
+        let c = c.with_key_reader(presses(AnswerKey::Yes).0);
+        let command: String = (1..=60).map(|i| format!("echo line-{i}\n")).collect::<String>() + "rm -rf ~";
+        let (pager, opened, close) = held_pager();
+        let answer = tokio::spawn(c.ask_with_pager(&request("Bash", &command), &Err(permissions::Refusal::NoRule), pager));
+        tokio::task::spawn_blocking(move || opened.recv_timeout(Duration::from_secs(5))).await.unwrap().expect("opened");
+        assert!(!err.text().contains("[y]es"), "the choices come after the pager");
+        close.send(()).unwrap();
+        assert_eq!(tokio::time::timeout(Duration::from_secs(5), answer).await.unwrap().unwrap(), Some(Decision::Allow));
+        assert!(err.text().contains("the pager above showed all of it") && err.text().contains("[y]es"), "{}", err.text());
+    }
+
+    #[test]
+    fn dropping_a_terminal_key_wait_does_not_block_on_its_reader() {
+        // A reader that takes a while to notice the cancel (a slow poll): the drop returns at
+        // once and the reader is settled by whoever touches the terminal next.
+        let cancel = Arc::new(AtomicBool::new(false));
+        let flag = cancel.clone();
+        let reader = std::thread::spawn(move || {
+            while !flag.load(Ordering::Acquire) {
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            std::thread::sleep(Duration::from_millis(300));
+        });
+        let (_send, answer) = tokio::sync::oneshot::channel();
+        let wait = TerminalKey { cancel: cancel.clone(), answer, reader: Some(reader) };
+        let started = Instant::now();
+        drop(wait);
+        assert!(started.elapsed() < Duration::from_millis(150), "the drop waited for the reader: {:?}", started.elapsed());
+        assert!(cancel.load(Ordering::Acquire), "the reader is told to stop");
+        settle_key_readers();
+        assert!(started.elapsed() >= Duration::from_millis(300), "settling waits until the terminal is restored");
+        assert!(PENDING_READERS.lock().unwrap().is_empty());
+    }
+
     #[test]
     fn without_a_pager_a_long_input_is_printed_in_full_before_the_choices() {
         let command: String = (1..=60).map(|i| format!("echo line-{i}\n")).collect::<String>() + "rm -rf ~";
         let (c, err) = answering(AnswerKey::No);
-        ask_paged(&c, &request("Bash", &command), &no_pager());
+        ask_paged(&c, &request("Bash", &command), no_pager());
         let e = err.text();
         assert!(e.contains("line-30") && e.contains("\u{2502} rm -rf ~") && !e.contains("pager above"), "{e}");
         assert!(e.find("rm -rf ~").unwrap() < e.find("[y]es").unwrap(), "{e}");

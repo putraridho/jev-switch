@@ -78,6 +78,17 @@ pub enum TurnEnd {
     Aborted,
 }
 
+/// The next Ctrl-C that is meant for the turn. One pressed while an approval's pager is open
+/// went to the pager too (it ends a search there) and does not stop the turn.
+async fn press_outside_pager(interrupt: &mut dyn Interrupt, console: &Console) {
+    loop {
+        interrupt.wait().await;
+        if !console.is_paging() {
+            return;
+        }
+    }
+}
+
 /// Run one turn that Ctrl-C can stop. The status line shows while it runs and is gone when
 /// this returns.
 pub async fn run_turn(engine: &mut Engine, console: &Console, prompt: &str, interrupt: &mut dyn Interrupt) -> TurnEnd {
@@ -92,17 +103,19 @@ pub async fn run_turn(engine: &mut Engine, console: &Console, prompt: &str, inte
         tokio::pin!(turn);
         tokio::select! {
             report = &mut turn => Some(report),
-            _ = interrupt.wait() => {
+            _ = press_outside_pager(interrupt, console) => {
                 cancel.cancel();
                 console.set_activity("stopping...");
                 tokio::select! {
                     report = &mut turn => Some(report),
                     // Dropping `turn` at the end of this block kills what is still running.
-                    _ = interrupt.wait() => None,
+                    _ = press_outside_pager(interrupt, console) => None,
                 }
             }
         }
     };
+    // A pager still open (its question was withdrawn) keeps the terminal until it is closed.
+    console.pager_closed().await;
     console.end_turn();
     match report {
         Some(r) => TurnEnd::Done(Box::new(r), started.elapsed()),
@@ -696,6 +709,24 @@ mod tests {
         let mut none = Presses { pending: vec![] };
         let TurnEnd::Done(next, _) = run_turn(&mut ok.repl.engine, &ok.repl.console, "again", &mut none).await else { panic!() };
         assert_eq!(next.status, TurnStatus::Answered);
+    }
+
+    #[tokio::test]
+    async fn ctrl_c_inside_an_approval_pager_does_not_stop_the_turn() {
+        let console = Console::new(Box::new(Buf::default()), Box::new(Buf::default()), ConsoleConfig {
+            out_style: Style::off(), err_style: Style::off(), width: 80, live: false, project: "/tmp".into(), stream_answers: true,
+        });
+        console.begin_paging();
+        // Two presses: the first while the pager is open, the second after it closed.
+        let mut int = Presses { pending: vec![Duration::from_millis(20), Duration::from_millis(200)] };
+        let started = Instant::now();
+        let closer = console.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            closer.end_paging();
+        });
+        tokio::time::timeout(Duration::from_secs(5), press_outside_pager(&mut int, &console)).await.expect("the second press counts");
+        assert!(started.elapsed() >= Duration::from_millis(200), "the press inside the pager was ignored: {:?}", started.elapsed());
     }
 
     #[tokio::test]
