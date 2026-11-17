@@ -7,8 +7,10 @@
 //! settings file, environment) sit in thin wrappers beside them so the rules can be
 //! tested without a CLI, a network or the user's home directory.
 
+use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
+use std::sync::{Mutex, PoisonError};
 
 use crate::availability::{self, Availability, State};
 use crate::backend::claude::ClaudeBackend;
@@ -17,7 +19,7 @@ use crate::backend::gemini::{auth_looks_configured, Flavor, GeminiBackend, AUTH_
 use crate::backend::grok::GrokBackend;
 use crate::backend::{Backend, ErrorKind, PlanUsage, ProviderId, TurnError};
 use crate::catalog::{self, Allowances, Overrides, Usable};
-use crate::cooldown::{self, Cooldowns};
+use crate::cooldown::{self, Cooldowns, DiskWatch};
 use crate::envfile;
 
 /// Every provider, in the order `/providers` lists them.
@@ -146,6 +148,10 @@ pub struct Runtime {
     pub overrides: Overrides,
     /// Where cooldowns are saved; `None` when there is no state directory.
     pub cooldown_path: Option<PathBuf>,
+    /// The last copy of the cooldown file read, so limits other processes saved
+    /// (`jev-code`, `delegate_mcp`) are seen without a restart. Behind a mutex because
+    /// [`Runtime::usable`] only has `&self`.
+    disk: Mutex<DiskWatch>,
     /// Models a provider refused at run time (e.g. not entitled), so they are not retried.
     pub unusable_models: HashSet<(ProviderId, String)>,
     /// The latest plan utilization each provider reported.
@@ -201,6 +207,7 @@ impl Runtime {
             allow,
             overrides,
             cooldown_path,
+            disk: Mutex::new(DiskWatch::default()),
             unusable_models: HashSet::new(),
             plan: HashMap::new(),
             blocked: HashMap::new(),
@@ -213,23 +220,36 @@ impl Runtime {
         Self::build(avail, Cooldowns::default(), allow, Overrides::default(), None)
     }
 
+    /// This process's cooldowns plus whatever other processes saved to the file. The
+    /// file is only re-read when it changed (one `stat` otherwise); with no file this
+    /// is just the in-memory set.
+    fn current_cooldowns(&self) -> Cow<'_, Cooldowns> {
+        let Some(path) = &self.cooldown_path else { return Cow::Borrowed(&self.cooldowns) };
+        let mut disk = self.disk.lock().unwrap_or_else(PoisonError::into_inner);
+        Cow::Owned(self.cooldowns.union(disk.refresh(path)))
+    }
+
     /// The (provider, model) pairs routing may pick right now.
     pub fn usable(&self, now_ms: u64) -> Usable {
+        let cooldowns = self.current_cooldowns();
         if self.blocked.is_empty() {
-            return usable_from(&self.avail, &self.cooldowns, &self.unusable_models, now_ms);
+            return usable_from(&self.avail, &cooldowns, &self.unusable_models, now_ms);
         }
         let unblocked: Vec<Availability> =
             self.avail.iter().filter(|a| !self.blocked.contains_key(&a.provider)).cloned().collect();
-        usable_from(&unblocked, &self.cooldowns, &self.unusable_models, now_ms)
+        usable_from(&unblocked, &cooldowns, &self.unusable_models, now_ms)
     }
 
-    /// Skip `p` until its limit resets, and remember that across runs. A failed save
-    /// costs only the persistence, so it is reported and otherwise ignored.
+    /// Skip `p` until its limit resets, and remember that across runs and processes:
+    /// the save merges with the file, and the merged result (which includes limits
+    /// other processes saved) becomes this process's set. A failed save costs only the
+    /// persistence, so it is reported and otherwise ignored.
     pub fn cool_down(&mut self, p: ProviderId, resets_at: Option<&str>, now_ms: u64) {
         self.cooldowns.start(p, resets_at, now_ms);
         let Some(path) = &self.cooldown_path else { return };
-        if let Err(e) = self.cooldowns.save(path) {
-            eprintln!("could not save cooldowns to {}: {e}", path.display());
+        match self.cooldowns.save(path, now_ms) {
+            Ok(merged) => self.cooldowns = merged,
+            Err(e) => eprintln!("could not save cooldowns to {}: {e}", path.display()),
         }
     }
 
@@ -341,9 +361,10 @@ impl Runtime {
     }
 
     fn cooldown_lines(&self, now_ms: u64) -> Vec<String> {
+        let cooldowns = self.current_cooldowns();
         ALL_PROVIDERS
             .iter()
-            .filter_map(|p| Some(format!("{p} cooling for {}", format_left(self.cooldowns.active(*p, now_ms)?))))
+            .filter_map(|p| Some(format!("{p} cooling for {}", format_left(cooldowns.active(*p, now_ms)?))))
             .collect()
     }
 
@@ -518,6 +539,75 @@ mod tests {
         let _ = std::fs::remove_file(&path);
         assert_eq!(loaded.active(Codex, NOW), Some(3_600_000));
         assert!(rt.cooldowns.active(Codex, NOW).is_some());
+    }
+
+    fn shared_path(name: &str) -> (PathBuf, PathBuf) {
+        let dir = std::env::temp_dir().join(format!("jev-providers-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("cooldowns.json");
+        (dir, path)
+    }
+
+    #[test]
+    fn two_processes_see_each_others_cooldowns_without_restarting() {
+        let (dir, path) = shared_path("two");
+        let (mut a, mut b) = (runtime(), runtime());
+        a.cooldown_path = Some(path.clone());
+        b.cooldown_path = Some(path.clone());
+        assert!(a.usable(NOW).contains(some_model(Claude)));
+
+        a.cool_down(Codex, None, NOW);
+        b.cool_down(Claude, None, NOW);
+
+        // The file holds both, because B's save merged with A's.
+        let on_disk = Cooldowns::load(&path);
+        assert!(on_disk.active(Codex, NOW).is_some() && on_disk.active(Claude, NOW).is_some());
+        // A never cooled Claude itself, yet stops offering it, and still skips Codex.
+        let usable = a.usable(NOW + 1);
+        assert!(!usable.contains(some_model(Claude)));
+        assert!(!usable.contains(some_model(Codex)));
+        // B's own set picked up A's Codex limit through the merge.
+        assert!(b.cooldowns.active(Codex, NOW).is_some());
+        assert!(!b.usable(NOW + 1).contains(some_model(Codex)));
+        // Once the limits pass, both are back.
+        assert!(a.usable(NOW + 2 * 60 * MINUTE_MS).contains(some_model(Claude)));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn usable_reads_the_cooldown_file_only_when_it_changed() {
+        let (dir, path) = shared_path("mtime");
+        let mut a = runtime();
+        a.cooldown_path = Some(path.clone());
+        let reloads = |rt: &Runtime| rt.disk.lock().unwrap().reloads();
+        a.usable(NOW);
+        a.usable(NOW);
+        assert_eq!(reloads(&a), 0, "no file, nothing to read");
+
+        let mut other = Cooldowns::default();
+        other.start(Claude, None, NOW);
+        other.save(&path, NOW).unwrap();
+        assert!(!a.usable(NOW + 1).contains(some_model(Claude)));
+        assert_eq!(reloads(&a), 1);
+        for _ in 0..5 {
+            a.usable(NOW + 1);
+        }
+        assert_eq!(reloads(&a), 1, "unchanged file: no reload");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_garbage_cooldown_file_is_tolerated_by_usable_and_cool_down() {
+        let (dir, path) = shared_path("garbage");
+        std::fs::write(&path, "{ definitely not json").unwrap();
+        let mut a = runtime();
+        a.cooldown_path = Some(path.clone());
+        assert!(a.usable(NOW).contains(some_model(Claude)));
+        a.cool_down(Claude, None, NOW);
+        assert!(!a.usable(NOW + 1).contains(some_model(Claude)));
+        assert!(Cooldowns::load(&path).active(Claude, NOW).is_some(), "rewritten as valid json");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
