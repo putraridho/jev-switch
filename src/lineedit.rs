@@ -265,9 +265,135 @@ pub fn history_len(editor: &LineEditor) -> usize {
     editor.history().len()
 }
 
+// ------------------------------------------------------------ one key: approvals
+
+/// The answer to a "may this tool run?" question.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AnswerKey {
+    Yes,
+    No,
+    /// Yes, and remember it for this project.
+    Always,
+    /// Ctrl-C: stop the turn.
+    Interrupt,
+}
+
+/// What one byte typed at the question means. `None` keeps waiting: Enter and stray
+/// letters never answer by accident, and `a` only counts when a rule could be saved.
+pub fn answer_for_byte(byte: u8, always_offered: bool) -> Option<AnswerKey> {
+    match byte {
+        b'y' | b'Y' => Some(AnswerKey::Yes),
+        b'n' | b'N' | 0x04 => Some(AnswerKey::No),
+        b'a' | b'A' if always_offered => Some(AnswerKey::Always),
+        0x03 => Some(AnswerKey::Interrupt),
+        _ => None,
+    }
+}
+
+/// Wait for one key at an approval question: no Enter, no echo. Anything typed before the
+/// question appeared is thrown away first, so a stray `y` typed ahead cannot approve a call
+/// the person never saw. Esc alone says no; an arrow key (Esc and more) says nothing. A
+/// stdin that is not a terminal, or is closed, says no at once: it must never hang.
+#[cfg(unix)]
+pub fn read_answer(always_offered: bool) -> AnswerKey {
+    fn read_byte(fd: i32) -> Option<u8> {
+        let mut byte = 0u8;
+        loop {
+            // SAFETY: reads at most one byte into a live local.
+            let n = unsafe { libc::read(fd, std::ptr::addr_of_mut!(byte).cast(), 1) };
+            if n == 1 {
+                return Some(byte);
+            }
+            if n == 0 || std::io::Error::last_os_error().kind() != std::io::ErrorKind::Interrupted {
+                return None;
+            }
+        }
+    }
+    let fd = libc::STDIN_FILENO;
+    // SAFETY: termios is plain data; tcgetattr fills it or fails.
+    let mut saved: libc::termios = unsafe { std::mem::zeroed() };
+    if unsafe { libc::tcgetattr(fd, &mut saved) } != 0 {
+        return AnswerKey::No;
+    }
+    let mut raw = saved;
+    raw.c_lflag &= !(libc::ICANON | libc::ECHO | libc::ISIG);
+    raw.c_cc[libc::VMIN] = 1;
+    raw.c_cc[libc::VTIME] = 0;
+    // SAFETY: both calls only change the terminal's own state.
+    unsafe {
+        libc::tcflush(fd, libc::TCIFLUSH);
+        libc::tcsetattr(fd, libc::TCSANOW, &raw);
+    }
+    let answer = loop {
+        let Some(byte) = read_byte(fd) else { break AnswerKey::No };
+        if byte == 0x1b {
+            // Wait a tenth of a second for the rest of an escape sequence.
+            let mut quick = raw;
+            quick.c_cc[libc::VMIN] = 0;
+            quick.c_cc[libc::VTIME] = 1;
+            // SAFETY: as above.
+            unsafe { libc::tcsetattr(fd, libc::TCSANOW, &quick) };
+            let mut sequence = false;
+            while read_byte(fd).is_some() {
+                sequence = true;
+            }
+            // SAFETY: as above.
+            unsafe { libc::tcsetattr(fd, libc::TCSANOW, &raw) };
+            if sequence {
+                continue;
+            }
+            break AnswerKey::No;
+        }
+        if let Some(answer) = answer_for_byte(byte, always_offered) {
+            break answer;
+        }
+    };
+    // SAFETY: puts back what tcgetattr read.
+    unsafe { libc::tcsetattr(fd, libc::TCSANOW, &saved) };
+    answer
+}
+
+/// Without a terminal API there is no key to wait for: say no.
+#[cfg(not(unix))]
+pub fn read_answer(_always_offered: bool) -> AnswerKey {
+    AnswerKey::No
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn approval_keys_answer_only_when_they_mean_it() {
+        use AnswerKey::*;
+        for (byte, offered, want) in [
+            (b'y', true, Some(Yes)),
+            (b'Y', false, Some(Yes)),
+            (b'n', true, Some(No)),
+            (0x04, true, Some(No)),
+            (b'a', true, Some(Always)),
+            (b'A', true, Some(Always)),
+            (b'a', false, None),
+            (0x03, false, Some(Interrupt)),
+            (b'\r', true, None),
+            (b'\n', true, None),
+            (b' ', true, None),
+            (b'q', true, None),
+            (b'[', true, None),
+        ] {
+            assert_eq!(answer_for_byte(byte, offered), want, "{byte:#x} offered={offered}");
+        }
+    }
+
+    /// With no terminal on stdin (as under `cargo test`) the question answers no and returns.
+    #[cfg(unix)]
+    #[test]
+    fn reading_a_key_without_a_terminal_never_waits() {
+        use std::io::IsTerminal;
+        if !std::io::stdin().is_terminal() {
+            assert_eq!(read_answer(true), AnswerKey::No);
+        }
+    }
 
     #[test]
     fn a_second_ctrl_c_within_two_seconds_exits() {

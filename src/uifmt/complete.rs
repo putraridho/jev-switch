@@ -42,6 +42,7 @@ fn arg_choices(command: &str, ctx: &CompleteCtx) -> Vec<String> {
         "/provider" => vec!["auto", "off"],
         "/orchestrate" => vec!["on", "off"],
         "/providers" => vec!["refresh"],
+        "/permissions" => vec!["allow", "remove", "dir", "list"],
         "/model" => ["auto"]
             .into_iter()
             .chain(ctx.ready_providers.iter().map(String::as_str))
@@ -133,7 +134,7 @@ mod tests {
 
     #[test]
     fn completes_slash_commands() {
-        assert_eq!(replacements("/"), vec!["/diff", "/doctor", "/help", "/model", "/new", "/orchestrate", "/provider", "/providers", "/quit", "/resume", "/status", "/undo"]);
+        assert_eq!(replacements("/"), vec!["/diff", "/doctor", "/help", "/model", "/new", "/orchestrate", "/permissions", "/provider", "/providers", "/quit", "/resume", "/status", "/undo"]);
         assert_eq!(replacements("/mo"), vec!["/model"]);
         assert_eq!(replacements("/prov"), vec!["/provider", "/providers"]);
         assert_eq!(replacements("/MO"), vec!["/model"]);

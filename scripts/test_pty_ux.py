@@ -81,16 +81,49 @@ def start_jev():
 
 FAKE_CLAUDE = r"""#!/bin/sh
 # Fake `claude`: `auth status` for the availability probe, stream-json for a turn.
+# With `--input-format stream-json` (what jev-code's session uses) it speaks the host
+# control protocol: the prompt is ONE JSON line on stdin, a tool that needs approval is a
+# `control_request` on stdout and the answer is a `control_response` line on stdin, as in
+# tests/fixtures/claude/. Without it the prompt is plain text until EOF, as in `claude -p`.
 if [ "$1" = "auth" ]; then
   echo '{"loggedIn": true, "planTier": "pro"}'
   exit 0
 fi
-prompt=$(cat)
-last=$(printf '%s' "$prompt" | tail -n 1)
+host=0
+for arg in "$@"; do
+  [ "$arg" = "--input-format" ] && host=1
+done
+if [ $host = 1 ]; then
+  # One JSON line: its "\n" escapes stand for the line breaks of the prompt.
+  IFS= read -r prompt
+  last=$(printf '%s' "$prompt" | sed 's/.*\\n//')
+else
+  prompt=$(cat)
+  last=$(printf '%s' "$prompt" | tail -n 1)
+fi
 echo $$ > "$FAKE_PIDS/cli.pid"
+answer="FAKE ANSWER hello"
 emit() { printf '%s\n' "$1"; }
 emit '{"type":"system","subtype":"init","session_id":"sess-1"}'
 case "$last" in
+  *approve*)
+    emit '{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t9","name":"Bash","input":{"command":"cargo test --quiet"}}]}}'
+    # Claude Code reads the project's allow rules itself: a saved rule means no question.
+    if [ $host = 1 ] && grep -q 'cargo test:\*' .claude/settings.local.json 2>/dev/null; then
+      answer="FAKE ALLOWED by rule"
+    elif [ $host = 1 ]; then
+      emit '{"type":"control_request","request_id":"req-1","request":{"subtype":"can_use_tool","tool_name":"Bash","input":{"command":"cargo test --quiet"}}}'
+      IFS= read -r reply
+      printf '%s\n' "$reply" > "$FAKE_PIDS/reply.json"
+      case "$reply" in
+        *'"behavior":"allow"'*) answer="FAKE ALLOWED" ;;
+        *) answer="FAKE DENIED" ;;
+      esac
+    else
+      emit '{"type":"system","subtype":"permission_denied","tool_name":"Bash"}'
+      answer="FAKE DENIED headless"
+    fi
+    ;;
   *stall*)
     sleep 300 &
     echo $! > "$FAKE_PIDS/child.pid"
@@ -119,8 +152,8 @@ case "$last" in
     ;;
   *edit*) echo hi > new.txt ;;
 esac
-emit '{"type":"assistant","message":{"content":[{"type":"text","text":"FAKE ANSWER hello"}]}}'
-emit '{"type":"result","subtype":"success","is_error":false,"result":"FAKE ANSWER hello","session_id":"sess-1","usage":{"input_tokens":10,"cache_read_input_tokens":5,"cache_creation_input_tokens":0,"output_tokens":3}}'
+emit "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"$answer\"}]}}"
+emit "{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"result\":\"$answer\",\"session_id\":\"sess-1\",\"usage\":{\"input_tokens\":10,\"cache_read_input_tokens\":5,\"cache_creation_input_tokens\":0,\"output_tokens\":3}}"
 """
 
 # A 200+ column tool command, with the control characters a real tool call can carry (colour,
@@ -1008,6 +1041,191 @@ def piped_stdin_still_works_line_by_line(w):
     eof = run_cli(w, [w.repo], stdin="")
     if eof.returncode != 0:
         raise Fail(f"end of input should end the session with 0, got {eof.returncode}")
+
+
+# ------------------------------------------------------------ tool approvals
+
+QUESTION = "Allow Bash: cargo test --quiet?"
+
+
+def settings_rules(w):
+    path = os.path.join(w.repo, ".claude", "settings.local.json")
+    if not os.path.exists(path):
+        return None
+    with open(path) as f:
+        return json.load(f).get("permissions", {}).get("allow", [])
+
+
+def host_reply(w):
+    with open(os.path.join(w.pids, "reply.json")) as f:
+        return json.loads(f.read())["response"]
+
+
+@scenario
+def a_tool_that_needs_approval_asks_and_y_lets_it_run_once(w):
+    p = Pty(w, [w.repo], "approve-yes")
+    try:
+        prompt_ready(p)
+        p.send("approve it quick\r")
+        shown = p.expect(QUESTION, 15, "the approval question")
+        question = [l for l in shown.split("\n") if QUESTION in l][-1]
+        for part in ("[y]es", "[n]o", "[a]lways in this project"):
+            if part not in question:
+                raise Fail(f"the question should offer {part!r}: {question!r}")
+        if spinner_in(p.visible().split(QUESTION)[-1]):
+            raise Fail("the status line must stay away while the question waits")
+        p.send("y")
+        p.expect("✓ allowed", 10, "the allowed line")
+        p.expect("FAKE ALLOWED", 10, "the answer after approval")
+        p.expect("› ", 10, "the next prompt")
+        answer = host_reply(w)["response"]
+        if answer.get("behavior") != "allow" or answer.get("updatedInput", {}).get("command") != "cargo test --quiet":
+            raise Fail(f"the host answer should allow and echo the input: {answer}")
+        if host_reply(w)["request_id"] != "req-1":
+            raise Fail("the answer must carry the request id")
+        if settings_rules(w) is not None:
+            raise Fail("a plain yes must not save any rule")
+        quit_with_ctrl_d(p)
+    finally:
+        p.close()
+
+
+def spinner_in(text):
+    return any(c in text for c in SPINNER)
+
+
+@scenario
+def n_denies_with_a_reason_and_the_turn_goes_on(w):
+    p = Pty(w, [w.repo], "approve-no")
+    try:
+        prompt_ready(p)
+        p.send("approve it quick\r")
+        p.expect(QUESTION, 15, "the approval question")
+        p.send("n")
+        p.expect("✗ denied", 10, "the denied line")
+        p.expect("FAKE DENIED", 10, "the answer after the denial")
+        answer = host_reply(w)["response"]
+        if answer.get("behavior") != "deny" or "denied" not in answer.get("message", ""):
+            raise Fail(f"the host answer should deny with a reason: {answer}")
+        p.expect("› ", 10, "the next prompt")
+        quit_with_ctrl_d(p)
+    finally:
+        p.close()
+
+
+@scenario
+def always_saves_a_private_rule_and_the_next_turn_does_not_ask_again(w):
+    p = Pty(w, [w.repo], "approve-always")
+    try:
+        prompt_ready(p)
+        p.send("approve it quick\r")
+        p.expect(QUESTION, 15, "the approval question")
+        p.send("a")
+        p.expect("always in this project: Bash(cargo test:*)", 10, "the saved-rule line")
+        p.expect("FAKE ALLOWED", 10, "the answer after approval")
+        p.expect("› ", 10, "the next prompt")
+        if settings_rules(w) != ["Bash(cargo test:*)"]:
+            raise Fail(f"the rule should be saved in .claude/settings.local.json: {settings_rules(w)}")
+        mode = os.stat(os.path.join(w.repo, ".claude", "settings.local.json")).st_mode & 0o777
+        if mode != 0o600:
+            raise Fail(f"the settings file should be private (0600), is {oct(mode)}")
+        p.send("approve it quick again\r")
+        p.expect("FAKE ALLOWED by rule", 15, "the second turn, answered without a question")
+        if p.visible().count(QUESTION) != 1:
+            raise Fail(f"the second turn must not ask again:\n{p.tail()}")
+        p.expect("› ", 10, "the next prompt")
+        p.send("/permissions\r")
+        p.expect("Bash(cargo test:*)", 10, "the rule in /permissions")
+        quit_with_ctrl_d(p)
+    finally:
+        p.close()
+
+
+@scenario
+def ctrl_c_at_the_question_denies_stops_the_turn_and_leaves_no_process_behind(w):
+    p = Pty(w, [w.repo], "approve-ctrl-c")
+    try:
+        prompt_ready(p)
+        p.send("approve it quick\r")
+        p.expect(QUESTION, 15, "the approval question")
+        cli = w.pid_file("cli.pid")
+        p.send("\x03")
+        p.expect("stopped", 10, "the `stopped` summary after Ctrl-C")
+        p.expect("› ", 10, "the prompt after the stopped turn")
+        if not p.still_running():
+            raise Fail(f"Ctrl-C at the question must not exit the program (exit {p.exit}):\n{p.tail()}")
+        wait_dead(cli, "the fake CLI")
+        if settings_rules(w) is not None:
+            raise Fail("Ctrl-C must not save a rule")
+        ask(p, "explain quick")
+        quit_with_ctrl_d(p)
+    finally:
+        p.close()
+
+
+@scenario
+def an_arrow_key_or_enter_at_the_question_does_not_answer_it(w):
+    p = Pty(w, [w.repo], "approve-keys")
+    try:
+        prompt_ready(p)
+        p.send("approve it quick\r")
+        p.expect(QUESTION, 15, "the approval question")
+        # Up arrow is Esc [ A: the `A` must not be read as "always"; Enter and a stray letter say nothing.
+        p.send("\x1b[A")
+        p.send("\rq")
+        p.settle(0.6)
+        if "✓" in p.visible().split(QUESTION)[-1] or "denied" in p.visible().split(QUESTION)[-1]:
+            raise Fail(f"nothing should have answered the question yet:\n{p.tail()}")
+        if settings_rules(w) is not None:
+            raise Fail("an arrow key must not save a rule")
+        p.send("n")
+        p.expect("✗ denied", 10, "the denial once `n` is pressed")
+        p.expect("› ", 10, "the next prompt")
+        quit_with_ctrl_d(p)
+    finally:
+        p.close()
+
+
+@scenario
+def without_a_terminal_a_tool_that_needs_approval_is_denied_with_a_hint_and_nothing_hangs(w):
+    r = run_cli(w, ["-p", "approve it quick", w.repo], timeout=30)
+    if r.returncode != 0 or "FAKE DENIED" not in r.stdout:
+        raise Fail(f"-p should finish with the denial in the answer: {r.returncode} {r.stdout!r} {r.stderr!r}")
+    if "denied Bash" not in r.stderr:
+        raise Fail(f"a denied tool should be reported on stderr:\n{r.stderr}")
+    piped = run_cli(w, [w.repo], stdin="approve it quick\n/quit\n", timeout=30)
+    if piped.returncode != 0 or "FAKE DENIED" not in piped.stdout:
+        raise Fail(f"a piped session should be denied, not hang: {piped.returncode} {piped.stdout!r} {piped.stderr!r}")
+    if "denied Bash" not in piped.stderr or "nobody to ask" not in piped.stderr:
+        raise Fail(f"the hint should say nobody could be asked:\n{piped.stderr}")
+    reply = host_reply(w)["response"]
+    if reply.get("behavior") != "deny" or "no one to ask" not in reply.get("message", ""):
+        raise Fail(f"the model should be told no one could be asked: {reply}")
+
+
+@scenario
+def permissions_command_lists_adds_and_removes_rules(w):
+    p = Pty(w, [w.repo], "permissions")
+    try:
+        prompt_ready(p)
+        p.send("/permissions\r")
+        p.expect("none yet", 10, "the empty list")
+        p.expect("› ", 5, "the prompt")
+        p.send("/permissions allow Bash(ls:*)\r")
+        p.expect("✓ allowed Bash(ls:*)", 10, "the confirmation")
+        p.expect("› ", 5, "the prompt")
+        if settings_rules(w) != ["Bash(ls:*)"]:
+            raise Fail(f"the rule should be in the project file: {settings_rules(w)}")
+        p.send("/permissions remove Bash(ls:*)\r")
+        p.expect("✓ removed Bash(ls:*)", 10, "the removal")
+        p.expect("› ", 5, "the prompt")
+        if settings_rules(w) != []:
+            raise Fail(f"the rule should be gone: {settings_rules(w)}")
+        p.send("/permissions allow nonsense(\r")
+        p.expect("not a permission rule", 10, "the refusal of a bad rule")
+        quit_with_ctrl_d(p)
+    finally:
+        p.close()
 
 
 @scenario

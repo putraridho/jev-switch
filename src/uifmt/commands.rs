@@ -21,7 +21,7 @@ pub(super) struct Cmd {
     pub(super) hint: &'static str,
 }
 
-pub(super) const COMMANDS: [Cmd; 12] = [
+pub(super) const COMMANDS: [Cmd; 13] = [
     Cmd { name: "/model", args: "[target]", group: Group::Model, about: "Pin a model or provider, or `auto` to let the router choose", example: "/model codex:gpt-6.1-sol", hint: "auto|codex|claude:..." },
     Cmd { name: "/provider", args: "auto|off", group: Group::Model, about: "Route across providers (auto), or use Claude only (off)", example: "/provider off", hint: "auto|off" },
     Cmd { name: "/orchestrate", args: "[on|off]", group: Group::Model, about: "Let a planner split a big task across cheaper workers", example: "/orchestrate on", hint: "on|off" },
@@ -29,6 +29,7 @@ pub(super) const COMMANDS: [Cmd; 12] = [
     Cmd { name: "/resume", args: "", group: Group::Session, about: "Pick up a previous session", example: "", hint: "" },
     Cmd { name: "/diff", args: "[file]", group: Group::Session, about: "Show what the agent changed, all files or one", example: "/diff src/main.rs", hint: "[file]" },
     Cmd { name: "/undo", args: "", group: Group::Session, about: "Undo the file changes of the last turn", example: "", hint: "" },
+    Cmd { name: "/permissions", args: "[allow|remove|dir <x>]", group: Group::Session, about: "Show or change which tool calls are allowed without asking", example: "/permissions allow Bash(cargo test:*)", hint: "allow|remove|dir" },
     Cmd { name: "/quit", args: "", group: Group::Session, about: "Exit (also /exit, or Ctrl-D)", example: "", hint: "" },
     Cmd { name: "/help", args: "", group: Group::Info, about: "Show this help", example: "", hint: "" },
     Cmd { name: "/status", args: "", group: Group::Info, about: "Show the project, routing, providers and the last turn", example: "", hint: "" },

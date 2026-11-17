@@ -14,24 +14,28 @@
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};
 use tokio::sync::watch;
 
 use crate::anthropic::{MODEL_CHEAP, MODEL_MID, MODEL_STRONG};
-use crate::backend::{self, Backend, ErrorKind, Event, McpAttachment, ProviderId, TurnError, TurnOutcome, TurnRequest, Usage};
+use crate::backend::{
+    self, Approver, Backend, Decision, ErrorKind, Event, McpAttachment, PermissionRequest, ProviderId, TurnError, TurnOutcome,
+    TurnRequest, Usage,
+};
 use crate::catalog::{self, find, ModelSpec};
 use crate::changes::{self, ChangeSummary, Snapshot, UndoError, UndoReport};
 use crate::handoff::{self, ResumeError, SavedSession, Sessions, TurnRecord};
 use crate::log;
 use crate::orchestrate::{self, Outcome, Setup};
+use crate::permissions;
 use crate::providers::{self, Runtime};
 use crate::router::{CodeWant, ProviderWant, Router, Sticky};
 use crate::routing::{self, NoRoute, Pin, RouteDecision, RouteInput, RoutingState, Signals};
 use crate::turnlog::turn_row;
-use crate::uifmt::RouteFacts;
+use crate::uifmt::{self, RouteFacts};
 
 /// Most models tried for one user turn before giving up.
 pub const MAX_ATTEMPTS: u32 = 6;
@@ -73,6 +77,64 @@ pub trait Ui: Send {
     /// The user stopped the turn.
     fn cancelled(&mut self, text: &str) {
         self.note(text);
+    }
+
+    /// A tool call waits for the person's answer. `always` is the allow rule that
+    /// [`Decision::AllowAlways`] would save, when there is one. `None` means the person
+    /// interrupted (Ctrl-C), which stops the turn. A UI that cannot ask keeps this default,
+    /// so a run with no terminal denies at once and never waits for an answer nobody gives.
+    fn ask_permission(&mut self, _req: &PermissionRequest, _always: Option<&str>) -> Option<Decision> {
+        Some(Decision::Deny { reason: backend::NO_ONE_TO_ASK.to_string() })
+    }
+}
+
+/// The UI as the event callback and the approver share it; they never run at once.
+type SharedUi<'a> = Mutex<&'a mut (dyn Ui + 'a)>;
+
+fn lock_ui<'g, 'a>(ui: &'g SharedUi<'a>) -> std::sync::MutexGuard<'g, &'a mut (dyn Ui + 'a)> {
+    ui.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// Answers a running turn's tool approvals through the [`Ui`]: asks, saves the rule when
+/// the person says "always", and stops the turn when they interrupt the question.
+struct EngineApprover<'a> {
+    ui: &'a SharedUi<'a>,
+    cancel: &'a Cancel,
+    /// The project folder, where "always" saves its rule.
+    dir: &'a Path,
+}
+
+impl EngineApprover<'_> {
+    fn answer(&self, req: &PermissionRequest) -> Decision {
+        let rule = permissions::allow_rule(&req.tool, &req.input, req.blocked_path.as_deref(), self.dir);
+        let asked = lock_ui(self.ui).ask_permission(req, rule.as_deref());
+        match asked {
+            None => {
+                self.cancel.cancel();
+                Decision::Deny { reason: "the user interrupted the turn".into() }
+            }
+            Some(Decision::AllowAlways) => match rule {
+                Some(rule) => match permissions::add_allow_rule(self.dir, &rule) {
+                    Ok(_) => Decision::AllowAlways,
+                    Err(e) => {
+                        lock_ui(self.ui).note(&format!("[permissions] {e}; allowed this once, the rule was not saved"));
+                        Decision::Allow
+                    }
+                },
+                None => Decision::Allow,
+            },
+            Some(Decision::Deny { reason }) if reason == backend::NO_ONE_TO_ASK => {
+                lock_ui(self.ui).event(&Event::Text(uifmt::denied_without_asking(&req.tool)));
+                Decision::Deny { reason }
+            }
+            Some(decision) => decision,
+        }
+    }
+}
+
+impl Approver for EngineApprover<'_> {
+    fn decide<'a>(&'a self, req: &'a PermissionRequest) -> std::pin::Pin<Box<dyn std::future::Future<Output = Decision> + Send + 'a>> {
+        Box::pin(async move { self.answer(req) })
     }
 }
 
@@ -318,7 +380,7 @@ impl Engine {
             pin: Pin::Auto,
             dir,
             enabled: true,
-            backend_factory: Box::new(providers::backend_for),
+            backend_factory: Box::new(providers::session_backend_for),
             git_status: Box::new(git_status_short),
             now: Box::new(log::now_ms),
             idle_timeout: idle_timeout_from_env(),
@@ -895,10 +957,12 @@ impl Engine {
         let started = Instant::now();
         let runtime = &mut self.runtime;
         let result = {
+            let shared_ui: SharedUi = Mutex::new(&mut *ui);
+            let approver = EngineApprover { ui: &shared_ui, cancel, dir: &self.dir };
             let mut on_event = |e: &Event| match e {
                 Event::Text(_) => held.push(e.clone()),
                 other => {
-                    ui.event(other);
+                    lock_ui(&shared_ui).event(other);
                     match other {
                         Event::Tool(summary) => tools.push(summary.clone()),
                         Event::Plan(plan) => runtime.note_plan(provider, plan.clone()),
@@ -908,7 +972,7 @@ impl Engine {
             };
             // Dropping the turn future on a cancel kills the CLI and its children.
             tokio::select! {
-                r = backend::run_turn(&*backend, &req, idle, &mut on_event) => Some(r),
+                r = backend::run_turn_with(&*backend, &req, idle, &mut on_event, &approver) => Some(r),
                 _ = cancel.cancelled() => None,
             }
         };
@@ -2483,5 +2547,197 @@ mod tests {
         for bad in ["", "abc", "0", "-5", "1.5"] {
             assert_eq!(idle_timeout(Some(bad)), Duration::from_secs(900), "{bad:?}");
         }
+    }
+
+    // ------------------------------------------------------------ tool approvals
+
+    /// An interactive "CLI": asks to run `cargo test --quiet` through Bash and reports the answer.
+    struct AskFake(&'static str);
+
+    const ASK_SCRIPT: &str = r#"read p; echo "ASK:Bash:cargo test --quiet"; read ans; case "$ans" in ALLOW) echo "FIN:ran";; *) echo "FIN:refused ${ans#DENY:}";; esac"#;
+
+    impl Backend for AskFake {
+        fn provider(&self) -> ProviderId {
+            Claude
+        }
+        fn command(&self, req: &TurnRequest) -> Command {
+            let mut c = Command::new("sh");
+            c.arg("-c").arg(self.0).current_dir(&req.dir);
+            c
+        }
+        fn stdin_payload(&self, req: &TurnRequest) -> Option<String> {
+            Some(format!("{}\n", req.prompt))
+        }
+        fn interactive(&self) -> bool {
+            true
+        }
+        fn parse_line(&self, line: &str) -> Vec<Event> {
+            match line.trim_end().split_once(':') {
+                Some(("ASK", rest)) => {
+                    let (tool, summary) = rest.split_once(':').unwrap_or((rest, ""));
+                    vec![Event::PermissionRequest(PermissionRequest {
+                        id: "q1".into(),
+                        tool: tool.into(),
+                        summary: summary.into(),
+                        input: json!({ "command": summary }),
+                        blocked_path: None,
+                    })]
+                }
+                Some(("FIN", t)) => vec![Event::Finished(backend::Finish { text: t.into(), session_id: None, usage: Usage::default() })],
+                _ => vec![],
+            }
+        }
+        fn permission_response(&self, _: &PermissionRequest, d: &Decision) -> Option<String> {
+            Some(match d {
+                Decision::Allow | Decision::AllowAlways => "ALLOW".to_string(),
+                Decision::Deny { reason } => format!("DENY:{reason}"),
+            })
+        }
+        fn classify_error(&self, m: &str) -> ErrorKind {
+            classify_common(m).unwrap_or(ErrorKind::Other)
+        }
+    }
+
+    /// A UI that answers questions from a list, and records what it was asked and told.
+    #[derive(Default)]
+    struct Asked {
+        answers: std::collections::VecDeque<Option<Decision>>,
+        questions: Vec<(String, String, Option<String>)>,
+        texts: Vec<String>,
+        notes: Vec<String>,
+    }
+
+    impl Ui for Asked {
+        fn route(&mut self, _: &str) {}
+        fn event(&mut self, e: &Event) {
+            if let Event::Text(t) = e {
+                self.texts.push(t.clone());
+            }
+        }
+        fn note(&mut self, line: &str) {
+            self.notes.push(line.into());
+        }
+        fn ask_permission(&mut self, req: &PermissionRequest, always: Option<&str>) -> Option<Decision> {
+            self.questions.push((req.tool.clone(), req.summary.clone(), always.map(String::from)));
+            self.answers.pop_front().expect("an answer was planned")
+        }
+    }
+
+    /// A UI that keeps the default `ask_permission`: nobody to ask.
+    #[derive(Default)]
+    struct Mute {
+        texts: Vec<String>,
+    }
+
+    impl Ui for Mute {
+        fn route(&mut self, _: &str) {}
+        fn event(&mut self, e: &Event) {
+            if let Event::Text(t) = e {
+                self.texts.push(t.clone());
+            }
+        }
+        fn note(&mut self, _: &str) {}
+    }
+
+    fn ask_engine(name: &str) -> (Engine, PathBuf) {
+        let dir = std::env::temp_dir().join(format!("jev-turn-ask-{}-{name}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let router = Router::new(TypeSafe::with_url("k", "http://127.0.0.1:1"), 1.0);
+        let engine = Engine::new(Runtime::for_tests(vec![availability(Claude, State::Ready)]), router, dir.clone())
+            .with_track_changes(false)
+            .with_persistence(None)
+            .with_backend_factory(Box::new(|_| Box::new(AskFake(ASK_SCRIPT))))
+            .with_idle_timeout(Duration::from_secs(5))
+            .with_turn_log(None);
+        (engine, dir)
+    }
+
+    async fn ask_turn(engine: &mut Engine, ui: &mut dyn Ui) -> TurnReport {
+        engine.run_judged("run the tests", Judged::Providers(Some(want(TaskType::Feature))), ui).await
+    }
+
+    #[tokio::test]
+    async fn an_allowed_tool_call_runs_and_the_person_was_asked_once_with_the_rule_on_offer() {
+        let (mut engine, dir) = ask_engine("allow");
+        let mut ui = Asked { answers: [Some(Decision::Allow)].into(), ..Asked::default() };
+        let report = ask_turn(&mut engine, &mut ui).await;
+        assert_eq!((report.status, report.text.as_str()), (TurnStatus::Answered, "ran"));
+        assert_eq!(ui.questions, vec![("Bash".to_string(), "cargo test --quiet".to_string(), Some("Bash(cargo test:*)".to_string()))]);
+        assert!(!permissions::local_settings_path(&dir).exists(), "a plain yes saves nothing");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn always_runs_the_call_and_saves_the_rule_in_the_project() {
+        let (mut engine, dir) = ask_engine("always");
+        let mut ui = Asked { answers: [Some(Decision::AllowAlways)].into(), ..Asked::default() };
+        let report = ask_turn(&mut engine, &mut ui).await;
+        assert_eq!(report.text, "ran");
+        let saved = permissions::load(&permissions::local_settings_path(&dir)).unwrap();
+        assert_eq!(saved.list(permissions::List::Allow), ["Bash(cargo test:*)"]);
+        assert!(ui.notes.is_empty(), "{:?}", ui.notes);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn always_that_cannot_be_saved_still_allows_once_and_says_so() {
+        let (mut engine, dir) = ask_engine("always-blocked");
+        // `.claude` is a file, so the settings file cannot be created.
+        std::fs::write(dir.join(".claude"), "x").unwrap();
+        let mut ui = Asked { answers: [Some(Decision::AllowAlways)].into(), ..Asked::default() };
+        let report = ask_turn(&mut engine, &mut ui).await;
+        assert_eq!(report.text, "ran");
+        assert!(ui.notes.iter().any(|n| n.contains("[permissions]") && n.contains("not saved")), "{:?}", ui.notes);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn a_denied_tool_call_tells_the_model_why_and_the_turn_goes_on() {
+        let (mut engine, dir) = ask_engine("deny");
+        let denial = Decision::Deny { reason: "the user denied this tool call".into() };
+        let mut ui = Asked { answers: [Some(denial)].into(), ..Asked::default() };
+        let report = ask_turn(&mut engine, &mut ui).await;
+        assert_eq!((report.status, report.text.as_str()), (TurnStatus::Answered, "refused the user denied this tool call"));
+        assert!(!permissions::local_settings_path(&dir).exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn ctrl_c_at_the_question_cancels_the_turn_and_kills_the_cli() {
+        let (mut engine, dir) = ask_engine("interrupt");
+        let mut ui = Asked { answers: [None].into(), ..Asked::default() };
+        let cancel = Cancel::new();
+        let report = engine
+            .run_judged_cancellable("run the tests", Judged::Providers(Some(want(TaskType::Feature))), &mut ui, &cancel)
+            .await;
+        assert_eq!(report.status, TurnStatus::Cancelled);
+        assert!(cancel.is_cancelled());
+        assert!(report.text.is_empty());
+        assert_eq!(ui.questions.len(), 1);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn a_ui_that_cannot_ask_denies_at_once_with_a_hint_and_never_hangs() {
+        let (mut engine, dir) = ask_engine("mute");
+        let mut ui = Mute::default();
+        let started = Instant::now();
+        let report = ask_turn(&mut engine, &mut ui).await;
+        assert!(started.elapsed() < Duration::from_secs(4));
+        assert_eq!(report.status, TurnStatus::Answered);
+        assert!(report.text.starts_with("refused no one to ask"), "{}", report.text);
+        assert!(ui.texts.iter().any(|t| t.starts_with('\u{2717}') && t.contains("denied Bash") && t.contains("CODE_ALLOWED_TOOLS")), "{:?}", ui.texts);
+        assert!(!permissions::local_settings_path(&dir).exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn backends_without_a_host_protocol_are_never_asked() {
+        let mut r = rig(&[Claude]);
+        let mut ui = Asked::default();
+        let report = r.engine.run_judged("add a retry", Judged::Providers(Some(want(TaskType::Feature))), &mut ui).await;
+        assert_eq!(report.status, TurnStatus::Answered);
+        assert!(ui.questions.is_empty());
     }
 }

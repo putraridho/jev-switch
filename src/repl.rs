@@ -16,6 +16,7 @@ use crate::console::Console;
 use crate::doctor;
 use crate::handoff::ResumeError;
 use crate::log;
+use crate::permissions::{self, PermissionsCmd};
 use crate::routing::Pin as ModelPin;
 use crate::terminal;
 use crate::turn::{Cancel, Engine, TurnReport, TurnStatus};
@@ -191,6 +192,7 @@ impl Repl {
                 self.console.out(&format!("{} new session", style.green("✓")));
             }
             Command::Resume => self.resume(),
+            Command::Permissions(cmd) => self.permissions(cmd),
             Command::Diff(path) => self.diff(path.as_deref()),
             Command::Undo => self.undo(io).await,
             Command::Invalid(message) => self.console.out(&format!("{} {message}", style.yellow("⚠"))),
@@ -278,6 +280,34 @@ impl Repl {
     pub async fn doctor_text(&self) -> String {
         let inputs = doctor::gather(&self.engine.runtime, self.engine.dir()).await;
         views::doctor_text(&doctor::diagnose(&inputs), self.out_style(), self.console.width())
+    }
+
+    /// `/permissions`: the rules of this project, and changing them. Claude Code reads the
+    /// file itself, so a change counts from the next tool call.
+    fn permissions(&mut self, cmd: PermissionsCmd) {
+        let style = self.out_style();
+        let dir = self.engine.dir().to_path_buf();
+        let home = self.home.as_deref().map(std::path::Path::new);
+        let saved = |what: &str| format!("{} {what} ({})", style.green("✓"), permissions::LOCAL_SETTINGS);
+        let outcome: Result<Option<String>, String> = match cmd {
+            PermissionsCmd::List => Ok(None),
+            PermissionsCmd::Allow(rule) => permissions::add_allow_rule(&dir, &rule)
+                .map(|added| Some(if added { saved(&format!("allowed {rule}")) } else { format!("  {}", style.dim(&format!("{rule} is already allowed"))) }))
+                .map_err(|e| e.to_string()),
+            PermissionsCmd::Remove(rule) => permissions::remove_allow_rule(&dir, &rule)
+                .map(|removed| Some(if removed { saved(&format!("removed {rule}")) } else { format!("  {}", style.dim(&format!("{rule} is not in the project's rules (see /permissions)"))) }))
+                .map_err(|e| e.to_string()),
+            PermissionsCmd::Dir(arg) => permissions::resolve_dir(&arg, &dir, home).and_then(|path| {
+                permissions::add_directory(&dir, &path)
+                    .map(|added| Some(if added { saved(&format!("added folder {}", path.display())) } else { format!("  {}", style.dim(&format!("{} is already there", path.display()))) }))
+                    .map_err(|e| e.to_string())
+            }),
+        };
+        match outcome {
+            Ok(Some(line)) => self.console.out(&line),
+            Ok(None) => self.page_out(&uifmt::permissions_text(&permissions::listing(&dir, home), style, &dir)),
+            Err(message) => self.console.out(&format!("{} {message}", style.yellow("⚠"))),
+        }
     }
 
     fn resume(&mut self) {
@@ -708,5 +738,48 @@ mod tests {
         std::env::set_var("PAGER", "/nonexistent/pager-for-test");
         assert!(!page("text"));
         std::env::remove_var("PAGER");
+    }
+
+    #[tokio::test]
+    async fn permissions_lists_adds_removes_and_adds_folders() {
+        let mut r = rig("perms", ANSWER);
+        run(&mut r, "/permissions").await;
+        let o = r.out.text();
+        assert!(o.contains("Permissions") && o.contains("none yet"), "{o}");
+        r.out.clear();
+
+        run(&mut r, "/permissions allow Bash(cargo test:*)").await;
+        run(&mut r, "/permissions allow Bash(cargo test:*)").await;
+        let o = r.out.text();
+        assert!(o.contains("✓ allowed Bash(cargo test:*)") && o.contains("already allowed"), "{o}");
+        r.out.clear();
+
+        std::fs::create_dir_all(r.dir.join("data")).unwrap();
+        run(&mut r, "/permissions dir data").await;
+        run(&mut r, "/permissions dir nowhere").await;
+        let o = r.out.text();
+        assert!(o.contains("✓ added folder") && o.contains("data") && o.contains("⚠"), "{o}");
+        r.out.clear();
+
+        run(&mut r, "/permissions").await;
+        let o = r.out.text();
+        assert!(o.contains("Bash(cargo test:*)") && o.contains("additional folders"), "{o}");
+        let file = std::fs::read_to_string(r.dir.join(".claude/settings.local.json")).unwrap();
+        assert!(file.contains("Bash(cargo test:*)") && file.contains("additionalDirectories"), "{file}");
+        r.out.clear();
+
+        run(&mut r, "/permissions remove Bash(cargo test:*)").await;
+        run(&mut r, "/permissions remove Bash(cargo test:*)").await;
+        let o = r.out.text();
+        assert!(o.contains("✓ removed Bash(cargo test:*)") && o.contains("is not in the project's rules"), "{o}");
+        r.out.clear();
+
+        run(&mut r, "/permissions allow nonsense(").await;
+        assert!(r.out.text().contains("not a permission rule"), "{}", r.out.text());
+        std::fs::write(r.dir.join(".claude/settings.local.json"), "{ broken").unwrap();
+        r.out.clear();
+        run(&mut r, "/permissions allow WebSearch").await;
+        assert!(r.out.text().contains("not valid JSON") && r.out.text().contains("left as it is"), "{}", r.out.text());
+        assert_eq!(std::fs::read_to_string(r.dir.join(".claude/settings.local.json")).unwrap(), "{ broken");
     }
 }

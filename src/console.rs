@@ -13,7 +13,8 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
-use crate::backend::Event;
+use crate::backend::{self, Decision, Event, PermissionRequest};
+use crate::lineedit::AnswerKey;
 use crate::terminal::{self, Screen, StdScreen};
 use crate::turn::{Failover, NoRouteInfo, Ui};
 use crate::uifmt::{self, FileChange, RouteFacts, Style, SummaryFacts, Theme};
@@ -47,6 +48,9 @@ struct Pending {
     discarded: bool,
 }
 
+/// Waits for one key at an approval question; `true` says "always" can be answered.
+pub type KeyReader = Arc<dyn Fn(bool) -> AnswerKey + Send + Sync>;
+
 struct Live {
     label: String,
     activity: Option<String>,
@@ -59,6 +63,8 @@ struct Inner {
     err: Box<dyn Write + Send>,
     cfg: ConsoleConfig,
     live: Option<Live>,
+    /// An approval question is on screen: the status line stays away until it is answered.
+    asking: bool,
     cursor_hidden: bool,
     /// The terminal itself, when there is one to ask; `None` in tests and pipes.
     screen: Option<Box<dyn Screen>>,
@@ -77,12 +83,34 @@ struct Inner {
 #[derive(Clone)]
 pub struct Console {
     inner: Arc<Mutex<Inner>>,
+    /// How to ask the person a question. `None` (no terminal to answer on) means every
+    /// tool approval is denied at once.
+    keys: Option<KeyReader>,
 }
 
 impl Console {
     pub fn new(out: Box<dyn Write + Send>, err: Box<dyn Write + Send>, cfg: ConsoleConfig) -> Self {
-        let inner = Inner { out, err, cfg, live: None, cursor_hidden: false, screen: None, echo_off: false, deferred: Vec::new(), pending: None, no_route_task: None };
-        Self { inner: Arc::new(Mutex::new(inner)) }
+        let inner = Inner {
+            out,
+            err,
+            cfg,
+            live: None,
+            asking: false,
+            cursor_hidden: false,
+            screen: None,
+            echo_off: false,
+            deferred: Vec::new(),
+            pending: None,
+            no_route_task: None,
+        };
+        Self { inner: Arc::new(Mutex::new(inner)), keys: None }
+    }
+
+    /// Let the person answer tool approvals by pressing a key. Without this the console
+    /// has no one to ask.
+    pub fn with_key_reader(mut self, keys: KeyReader) -> Self {
+        self.keys = Some(keys);
+        self
     }
 
     /// A console on the process's real stdout and stderr.
@@ -240,6 +268,9 @@ impl Inner {
     }
 
     fn draw(&mut self, elapsed: Duration) {
+        if self.asking {
+            return;
+        }
         // The status line is redrawn in place (`\r`, erase the row), which only works while it
         // is ONE row: so it is cut by display width to one column short of the live width,
         // since a full row wraps on terminals that wrap at the last column.
@@ -303,6 +334,7 @@ impl Inner {
     fn end(&mut self) {
         self.erase();
         self.live = None;
+        self.asking = false;
         if self.cursor_hidden {
             self.cursor_hidden = false;
             terminal::note_cursor_hidden(false);
@@ -429,6 +461,36 @@ impl Ui for Console {
 
     /// The `■ stopped` summary says it; no extra line.
     fn cancelled(&mut self, _text: &str) {}
+
+    /// Stops the status line, prints the question, waits for one key (outside the lock, so
+    /// the rest of the program keeps printing), prints the answer and resumes the line.
+    fn ask_permission(&mut self, req: &PermissionRequest, always: Option<&str>) -> Option<Decision> {
+        let Some(keys) = self.keys.clone() else {
+            return Some(Decision::Deny { reason: backend::NO_ONE_TO_ASK.to_string() });
+        };
+        {
+            let mut g = self.lock();
+            let (style, width, project) = (g.cfg.err_style, g.cfg.width, g.cfg.project.clone());
+            // Two columns go to the indent every console line has.
+            let question = uifmt::permission_prompt(&req.tool, &req.summary, always.is_some(), &project, style, width.saturating_sub(2));
+            g.erase();
+            g.asking = true;
+            g.emit_err(&format!("  {}", question.replace('\n', "\n  ")));
+        }
+        let key = keys(always.is_some());
+        let decision = match key {
+            AnswerKey::Yes => Some(Decision::Allow),
+            AnswerKey::Always => Some(Decision::AllowAlways),
+            AnswerKey::No => Some(Decision::Deny { reason: "the user denied this tool call".to_string() }),
+            AnswerKey::Interrupt => None,
+        };
+        let mut g = self.lock();
+        g.asking = false;
+        let style = g.cfg.err_style;
+        let line = format!("  {}", uifmt::permission_answered(decision.as_ref(), always, style));
+        g.emit_err(&line);
+        decision
+    }
 }
 
 /// `what` without a trailing period, so a detail line reads cleanly.
@@ -801,5 +863,95 @@ mod tests {
         let e = err.text();
         assert_eq!(e.lines().count(), 400);
         assert!(e.lines().all(|l| l.starts_with("line-") && l.ends_with("-end")), "{e}");
+    }
+
+    // ------------------------------------------------------------ tool approvals
+
+    fn request(tool: &str, summary: &str) -> PermissionRequest {
+        PermissionRequest { id: "q".into(), tool: tool.into(), summary: summary.into(), input: serde_json::json!({}), blocked_path: None }
+    }
+
+    /// A key reader that presses `key` and records whether "always" was on offer.
+    fn presses(key: AnswerKey) -> (KeyReader, Arc<Mutex<Vec<bool>>>) {
+        let offered = Arc::new(Mutex::new(Vec::new()));
+        let seen = offered.clone();
+        (Arc::new(move |always| {
+            seen.lock().unwrap().push(always);
+            key
+        }), offered)
+    }
+
+    #[test]
+    fn a_console_without_a_key_reader_denies_at_once_and_prints_nothing() {
+        let (mut c, _, err) = console(false, Style::off(), true);
+        let d = c.ask_permission(&request("Bash", "cargo test"), Some("Bash(cargo test:*)"));
+        assert_eq!(d, Some(Decision::Deny { reason: backend::NO_ONE_TO_ASK.into() }));
+        assert_eq!(err.text(), "");
+    }
+
+    #[test]
+    fn the_question_shows_the_tool_and_the_command_and_each_key_answers_it() {
+        for (key, want, line) in [
+            (AnswerKey::Yes, Some(Decision::Allow), "✓ allowed"),
+            (AnswerKey::Always, Some(Decision::AllowAlways), "✓ allowed, and always in this project: Bash(cargo test:*)"),
+            (AnswerKey::No, Some(Decision::Deny { reason: "the user denied this tool call".into() }), "✗ denied"),
+            (AnswerKey::Interrupt, None, "■ stopped"),
+        ] {
+            let err = Buf::default();
+            let cfg = ConsoleConfig { out_style: Style::off(), err_style: Style::off(), width: 120, live: false, project: PathBuf::from("/proj"), stream_answers: true };
+            let (keys, offered) = presses(key);
+            let mut c = Console::new(Box::new(Buf::default()), Box::new(err.clone()), cfg).with_key_reader(keys);
+            assert_eq!(c.ask_permission(&request("Bash", "cargo test --quiet"), Some("Bash(cargo test:*)")), want);
+            let e = err.text();
+            assert!(e.contains("Allow Bash: cargo test --quiet?  [y]es  [n]o  [a]lways in this project"), "{e}");
+            assert!(e.trim_end().ends_with(line), "{e}");
+            assert_eq!(*offered.lock().unwrap(), vec![true]);
+        }
+    }
+
+    #[test]
+    fn always_is_not_offered_without_a_rule() {
+        let (c, _, err) = console(false, Style::off(), true);
+        let (keys, offered) = presses(AnswerKey::Yes);
+        let mut c = c.with_key_reader(keys);
+        c.ask_permission(&request("Bash", "bash -c 'x'"), None);
+        assert!(err.text().contains("[y]es  [n]o") && !err.text().contains("always"), "{}", err.text());
+        assert_eq!(*offered.lock().unwrap(), vec![false]);
+    }
+
+    #[test]
+    fn the_status_line_is_off_screen_while_asking_and_comes_back_after() {
+        let (c, _, err) = console(true, Style::off(), true);
+        c.begin_turn();
+        let probe = c.clone();
+        let during = Arc::new(Mutex::new(String::new()));
+        let (seen, errs) = (during.clone(), err.clone());
+        // While the reader waits, a tick must draw nothing.
+        let keys: KeyReader = Arc::new(move |_| {
+            errs.clear();
+            probe.tick();
+            *seen.lock().unwrap() = errs.text();
+            AnswerKey::Yes
+        });
+        let mut c = c.with_key_reader(keys);
+        c.ask_permission(&request("Read", "/etc/hosts"), Some("Read(//etc/**)"));
+        assert_eq!(*during.lock().unwrap(), "", "no redraw while the question waits");
+        err.clear();
+        c.tick();
+        assert!(err.text().contains("routing"), "the status line is back: {:?}", err.text());
+        c.end_turn();
+    }
+
+    #[test]
+    fn a_long_command_is_cut_to_the_width_and_terminal_escapes_in_it_are_not_passed_on() {
+        let (c, _, err) = console(false, Style::off(), true);
+        let (keys, _) = presses(AnswerKey::No);
+        let mut c = c.with_key_reader(keys);
+        let nasty = format!("echo \x1b]0;pwned\x07 {}", "x".repeat(300));
+        c.ask_permission(&request("Bash", &nasty), Some("Bash(echo:*)"));
+        let e = err.text();
+        assert!(!e.contains('\x1b') && !e.contains('\x07'), "{e:?}");
+        assert!(e.lines().all(|l| l.chars().count() <= 60), "{e}");
+        assert!(e.contains("[y]es") && e.contains('…'), "{e}");
     }
 }

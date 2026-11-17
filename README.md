@@ -365,10 +365,27 @@ downgrade is held for a few turns (the prompt cache).
 **Hard security rule.** Security work (strong keywords, a high `security_review`, or
 auth/session edits) overrides Jev's task label and never goes to DeepSeek or Grok.
 
-**Permissions.** Edits are auto-accepted on Claude (`CODE_PERMISSION_MODE=acceptEdits`);
-its commands need your Claude Code allowlist or `CODE_ALLOWED_TOOLS="Bash(cargo test) Bash(git status)"`.
-Codex runs in a workspace-write sandbox (`CODEX_SANDBOX`, never full access). Denied
-actions are reported, never silently skipped. Use it inside a git repo.
+**Permissions.** Edits are auto-accepted on Claude (`CODE_PERMISSION_MODE=acceptEdits`).
+Anything else that needs approval (a command, a read outside the project, a write to
+`.claude/settings.local.json`) is asked to you in the terminal on Claude and DeepSeek (both
+run through Claude Code, which `jev-code` starts with `--input-format stream-json
+--permission-prompt-tool stdio`, so it asks its host instead of denying):
+
+    Allow Bash: cargo test --quiet?  [y]es  [n]o  [a]lways in this project
+
+One key answers. `a` also saves a rule in `<project>/.claude/settings.local.json`
+(`Bash(cargo test:*)`, `Read(//abs/dir/**)`, `Write(//abs/file)`), which Claude Code reads
+itself, so it does not ask again. Ctrl-C at the question denies it and stops the turn. The
+idle timeout does not run while a question waits. `/permissions` lists the rules (and your
+user-level `~/.claude/settings.json` ones, read only); `/permissions allow <rule>`,
+`/permissions remove <rule>` and `/permissions dir <path>` (an additional folder, which is
+how reads outside the project are allowed) edit the project file, keeping every other key,
+refusing a file that is not valid JSON, writing it atomically with mode 0600. Where no one
+can be asked (`-p`, piped input) the call is denied at once with a hint; `CODE_ALLOWED_TOOLS="Bash(cargo test) Bash(git status)"`
+still pre-allows. The model is told (a fixed `--append-system-prompt`) that it runs inside
+jev-code, that approvals are asked automatically, and not to suggest Claude Code UI keys.
+Codex, Gemini and Grok have no host approval protocol here: Codex runs in a workspace-write
+sandbox (`CODEX_SANDBOX`, never full access) and decides for itself. Use it inside a git repo.
 
 **Logs.** `JEV_CODE_LOG` (turn log, one row per attempt with the decision reason, Jev's
 signals, attempt number and failover notes). A crash writes a short note to
