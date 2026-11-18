@@ -302,6 +302,10 @@ impl Repl {
             Command::Compact(focus) => return self.compact(focus.as_deref(), io).await,
             Command::Context => self.page_out(&self.context_text()),
             Command::Cost => self.page_out(&self.cost_text()),
+            Command::Guard(cmd) => {
+                let text = self.engine.run_guard_command(cmd);
+                self.page_out(&text);
+            }
             Command::Why => {
                 let pin = self.engine.pin().to_string();
                 self.page_out(&uifmt::why_text(self.console.last_route().as_ref(), &pin, self.engine.enabled(), style));

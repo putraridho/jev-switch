@@ -3,6 +3,7 @@
 //! unit test. The names come from the one command table in [`crate::uifmt`], which also
 //! drives `/help` and Tab completion.
 
+use crate::guard_cmd::GuardCmd;
 use crate::mode::Mode;
 use crate::permissions::{self, PermissionsCmd};
 use crate::routing::Pin;
@@ -66,6 +67,8 @@ pub enum Command {
     Context,
     /// `/cost` (also `/usage`): tokens and time of this session, by model.
     Cost,
+    /// `/budget`, `/privacy`, `/failover`, `/scoreboard`: what fences in and watches the router.
+    Guard(GuardCmd),
     /// `/why`: why the router picked the last turn's model.
     Why,
     /// `/export [file]`: the conversation as Markdown.
@@ -168,6 +171,9 @@ pub fn parse(line: &str) -> Command {
         "/compact" => Command::Compact(rest()),
         "/context" => Command::Context,
         "/cost" | "/usage" => Command::Cost,
+        "/budget" | "/privacy" | "/failover" | "/scoreboard" => {
+            GuardCmd::parse(head, &line[head.len()..]).map_or_else(Command::Invalid, Command::Guard)
+        }
         "/why" => Command::Why,
         "/export" => Command::Export(rest()),
         "/copy" => Command::Copy,
@@ -367,6 +373,9 @@ mod tests {
         assert_eq!(parse("/usage"), Command::Cost);
         assert_eq!(parse("/usage now"), Command::Invalid("usage: /cost".into()));
         assert_eq!(parse("/why"), Command::Why);
+        assert_eq!(parse("/budget usd 5"), Command::Guard(GuardCmd::BudgetSet(crate::budget::Cap::Usd(5.0))));
+        assert_eq!(parse("/privacy audit"), Command::Guard(GuardCmd::Audit));
+        assert!(matches!(parse("/privacy nope"), Command::Invalid(_)));
         assert_eq!(parse("/export"), Command::Export(None));
         assert_eq!(parse("/export notes/session.md"), Command::Export(Some("notes/session.md".into())));
         assert_eq!(parse("/copy"), Command::Copy);

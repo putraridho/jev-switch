@@ -27,6 +27,7 @@ use crate::backend::{
 };
 use crate::catalog::{self, find, ModelSpec};
 use crate::changes::{self, ChangeSummary, Snapshot, TurnActivity, UndoError, UndoReport};
+use crate::guard::{Guards, TurnFacts};
 use crate::handoff::{self, ResumeError, SavedSession, Sessions, TurnRecord};
 use crate::log;
 use crate::mode::Mode;
@@ -225,6 +226,8 @@ pub enum NoRouteInfo<'a> {
     Pin { what: &'a str },
     /// No usable model fits this kind of task.
     Nothing { task: &'a str },
+    /// Your privacy policy, budget cap or routing rules left no model.
+    Refused { why: &'a str },
 }
 
 /// A switch that stops one turn without stopping the program (Ctrl-C in the UI). Cheap
@@ -400,6 +403,8 @@ pub struct Engine {
     pub runtime: Runtime,
     pub sessions: Sessions,
     pub routing: RoutingState,
+    /// Privacy policy, routing rules, budget, failover policy and the session's meters.
+    pub guards: Guards,
     router: Router,
     pin: Pin,
     dir: PathBuf,
@@ -452,6 +457,7 @@ impl Engine {
             runtime,
             sessions: Sessions::new(),
             routing: RoutingState::default(),
+            guards: Guards::default(),
             router,
             pin: Pin::Auto,
             dir,
@@ -489,8 +495,25 @@ impl Engine {
     /// after a restart. `None` (the default of the library) saves nothing; the binary
     /// passes [`log::state_dir`].
     pub fn with_persistence(mut self, state_dir: Option<PathBuf>) -> Self {
+        // The settings that fence in the router live beside the saved sessions.
+        self.guards = Guards::load(state_dir.as_deref(), &self.dir);
         self.persist = state_dir;
         self
+    }
+
+    /// Use these guards instead of the ones read from the settings files.
+    pub fn with_guards(mut self, guards: Guards) -> Self {
+        self.guards = guards;
+        self
+    }
+
+    /// Run `/budget`, `/privacy`, `/failover` or `/health` against this session's guards.
+    pub fn run_guard_command(&mut self, cmd: crate::guard_cmd::GuardCmd) -> String {
+        let plans: Vec<(String, f64)> = crate::providers::ALL_PROVIDERS
+            .into_iter()
+            .filter_map(|p| self.runtime.plan_utilization(p).map(|u| (p.to_string(), u)))
+            .collect();
+        crate::guard_cmd::run(cmd, &mut self.guards, self.persist.as_deref(), &plans)
     }
 
     /// Show assistant text the moment it arrives (see the field).
@@ -817,7 +840,7 @@ impl Engine {
         let signals = judged.signals();
         let jev = judged.log_signals();
         // Legacy mode is the old single-provider path: one attempt, no failover.
-        let max_attempts = if matches!(judged, Judged::Providers(_)) { MAX_ATTEMPTS } else { 1 };
+        let max_attempts = if matches!(judged, Judged::Providers(_)) { self.guards.failover.max_attempts.min(MAX_ATTEMPTS) } else { 1 };
         // Every attempt decides from the state the turn started with, so the hold
         // counter advances once per user turn however many models fail.
         let base = self.routing.clone();
@@ -835,7 +858,7 @@ impl Engine {
                 return self.cancelled_report(prompt, last_failure.as_ref().map(|(a, _)| a), attempts, ui);
             }
             let now = (self.now)();
-            let chosen = match self.choose(&judged, signals.as_ref(), prompt, &base, &excluded, now) {
+            let chosen = match self.choose(&judged, signals.as_ref(), prompt, &base, &excluded, attempts, now) {
                 Ok(c) => c,
                 Err(e) => {
                     let message = self.no_route_message(&e, now, &excluded);
@@ -844,6 +867,7 @@ impl Engine {
                         NoRoute::NothingUsable { task } => {
                             ui.no_route(&NoRouteInfo::Nothing { task: &task.to_string() }, &message)
                         }
+                        NoRoute::Refused { why } => ui.no_route(&NoRouteInfo::Refused { why }, &message),
                     }
                     if let Some((failed, err)) = last_failure {
                         self.record_failed(prompt, &failed, &err);
@@ -860,6 +884,12 @@ impl Engine {
             let attempt = self.run_attempt(chosen, prompt, ui, cancel).await;
             self.turn_activity.add_tools(&attempt.tools);
             self.log_attempt(&attempt, &jev, attempts, &notes);
+            if !attempt.cancelled {
+                match &attempt.result {
+                    Ok(_) => self.guards.scoreboard.record_answer(attempt.chosen.spec.provider, attempt.wall_ms),
+                    Err(e) => self.guards.scoreboard.record_failure(attempt.chosen.spec.provider, &e.kind, attempt.wall_ms),
+                }
+            }
             if attempt.cancelled {
                 return self.cancelled_report(prompt, Some(&attempt), attempts, ui);
             }
@@ -926,12 +956,26 @@ impl Engine {
         prompt: &str,
         base: &RoutingState,
         excluded: &HashSet<(ProviderId, String)>,
+        attempts: u32,
         now: u64,
     ) -> Result<Chosen, NoRoute> {
         if let Judged::Legacy(want) = judged {
             return Ok(self.legacy_choice(want, base));
         }
         let usable = self.runtime.usable(now).without(excluded);
+        let turn = TurnFacts {
+            root: &self.dir,
+            prompt,
+            task: signals.map(|s| s.task),
+            attached: &self.images,
+            pinned: !matches!(self.pin, Pin::Auto),
+            attempts,
+        };
+        let restricted = self.guards.restrict(&usable, &turn).map_err(|why| NoRoute::Refused { why })?;
+        if attempts == 0 {
+            self.guards.audit_blocked(&restricted.blocked, now);
+        }
+        let (usable, rule_notes) = (restricted.usable, restricted.notes);
         let context_tokens = (self.sessions.context_tokens_estimate() as u64).max(self.last_context_tokens);
         let plan = |p: ProviderId| self.runtime.plan_utilization(p);
         let input = RouteInput {
@@ -948,6 +992,7 @@ impl Engine {
         let decision = routing::decide(&mut state, &input)?;
         let outcome = self.plan_orchestration(signals, &decision, &input, base);
         let (spec, reason, mcp) = self.apply_orchestration(outcome, &decision);
+        let reason = if rule_notes.is_empty() { reason } else { format!("{reason}; {}", rule_notes.join("; ")) };
         let facts = RouteFacts {
             provider: spec.provider.to_string(),
             model: spec.id.to_string(),
@@ -1062,7 +1107,9 @@ impl Engine {
 
     async fn run_attempt(&mut self, chosen: Chosen, prompt: &str, ui: &mut dyn Ui, cancel: &Cancel) -> Attempt {
         let provider = chosen.spec.provider;
-        let mut sent = self.prompt_for(provider, chosen.spec.id, prompt);
+        // Secrets are blanked after the catch-up text is added, so earlier turns are scanned too.
+        let sent = self.prompt_for(provider, chosen.spec.id, prompt);
+        let mut sent = self.guards.outgoing(&sent, provider, chosen.spec.id, (self.now)()).prompt;
         let mut backend = (self.backend_factory)(provider);
         if let Some(mcp) = chosen.mcp.as_ref().filter(|_| backend.supports_mcp()) {
             match orchestrate::write_mcp_config(mcp) {
@@ -1170,6 +1217,7 @@ impl Engine {
         }
         self.previous = Some((prompt.to_string(), out.text.clone()));
         self.last_context_tokens = out.usage.context_tokens.unwrap_or(0);
+        self.guards.meter.record(spec.provider, spec.id, &out.usage, &self.guards.prices);
         TurnReport {
             status: TurnStatus::Answered,
             text: out.text,
@@ -1239,6 +1287,7 @@ impl Engine {
     /// Plain words for "no model can take this turn", never a guess at one.
     fn no_route_message(&self, e: &NoRoute, now: u64, excluded: &HashSet<(ProviderId, String)>) -> String {
         match e {
+            NoRoute::Refused { why } => format!("[error] Nothing was sent: {why}."),
             NoRoute::PinUnusable { what } => format!(
                 "[error] {what}. A /model pin is never swapped for another model: use /model auto, or /providers to see what is available."
             ),
@@ -2687,6 +2736,7 @@ mod tests {
             self.log.push(match info {
                 NoRouteInfo::Pin { .. } => "no-route:pin".into(),
                 NoRouteInfo::Nothing { task } => format!("no-route:{task}"),
+                NoRouteInfo::Refused { .. } => "no-route:refused".into(),
             });
         }
         fn cancelled(&mut self, _: &str) {

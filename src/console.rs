@@ -908,6 +908,11 @@ impl Ui for Console {
         let mut g = self.lock();
         match info {
             NoRouteInfo::Nothing { task } => g.no_route_task = Some((*task).to_string()),
+            NoRouteInfo::Refused { why } => {
+                let steps = ["See your rules and the audit trail: `/privacy`".to_string(), "See the spend and the cap: `/budget`".to_string()];
+                let block = uifmt::problem_block("Your own rules left no model for this turn", &[one_sentence(why)], &steps, g.cfg.err_style);
+                g.emit_err(&block);
+            }
             NoRouteInfo::Pin { what } => {
                 let steps = ["Let the router choose again: `/model auto`".to_string(), "See what can run now: `/providers`".to_string()];
                 let block = uifmt::problem_block("Your /model pin can't run right now", &[one_sentence(what)], &steps, g.cfg.err_style);

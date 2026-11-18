@@ -331,6 +331,15 @@ impl Usable {
         self.set.contains(&(spec.provider, spec.id.to_string()))
     }
 
+    /// The models for which `keep(provider, model id)` is true (policy, budget and user rules).
+    pub fn filter(&self, keep: impl Fn(ProviderId, &str) -> bool) -> Self {
+        Self { set: self.set.iter().filter(|(p, id)| keep(*p, id)).cloned().collect() }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.set.is_empty()
+    }
+
     /// Only the models of `keep` (for orchestration: a planner must come from providers
     /// that can have the delegate tool attached).
     pub fn only_providers(&self, keep: &[ProviderId]) -> Self {
