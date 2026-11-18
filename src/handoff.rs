@@ -90,6 +90,12 @@ impl Sessions {
         });
     }
 
+    /// Append a turn nobody has lived through (history brought from elsewhere): every
+    /// provider is owed it, so the first prompt on any of them carries it.
+    pub fn push_unseen(&mut self, rec: TurnRecord) {
+        self.log.push(rec);
+    }
+
     /// Declare `p` caught up with the whole log. Called after [`Sessions::catch_up`]
     /// has been put in front of a prompt.
     pub fn mark_seen(&mut self, p: ProviderId) {
@@ -139,6 +145,11 @@ impl Sessions {
             .map(|r| char_count(&r.prompt) + char_count(&r.reply) + r.tools.iter().map(|t| char_count(t)).sum::<usize>())
             .sum();
         chars / CHARS_PER_TOKEN
+    }
+
+    /// The logged turns, oldest first (read-only: the session library searches them).
+    pub fn log(&self) -> &[TurnRecord] {
+        &self.log
     }
 
     /// Number of logged turns (answered, failed, interrupted, and undo notes).
@@ -515,6 +526,17 @@ impl SavedSession {
         Ok(Self { project, saved_ms, sessions, current })
     }
 
+    /// Read the text of a session file.
+    pub fn parse(text: &str) -> Result<Self, String> {
+        let value: Value = serde_json::from_str(text).map_err(|e| e.to_string())?;
+        Self::from_json(&value)
+    }
+
+    /// The text of a session file, as [`SavedSession::parse`] reads it.
+    pub fn render(&self) -> String {
+        self.to_json().to_string()
+    }
+
     pub fn info(&self) -> SessionInfo {
         SessionInfo {
             turns: self.sessions.turns(),
@@ -553,7 +575,7 @@ fn fnv1a(bytes: &[u8]) -> u64 {
 /// How many saved sessions are kept per project; the oldest go on save.
 pub const SAVED_KEEP: usize = 10;
 
-fn project_hash(project_dir: &Path) -> String {
+pub fn project_hash(project_dir: &Path) -> String {
     format!("{:016x}", fnv1a(project_key(project_dir).as_bytes()))
 }
 
@@ -605,8 +627,7 @@ fn read_session(path: &Path, project_dir: &Path) -> Result<SavedSession, ResumeE
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Err(ResumeError::NotFound),
         Err(e) => return Err(ResumeError::Io(e.to_string())),
     };
-    let value: Value = serde_json::from_str(&text).map_err(|e| ResumeError::Corrupt(e.to_string()))?;
-    let saved = SavedSession::from_json(&value).map_err(ResumeError::Corrupt)?;
+    let saved = SavedSession::parse(&text).map_err(ResumeError::Corrupt)?;
     if saved.project != project_key(project_dir) {
         return Err(ResumeError::NotFound);
     }
@@ -651,9 +672,10 @@ pub fn load_latest(
 /// Every usable saved session of `project_dir` other than `current`, newest first: the
 /// list `/resume` offers. Expired, empty, damaged and other projects' files are left out.
 pub fn list_sessions(state_dir: &Path, project_dir: &Path, now_ms: u64, current: Option<&Path>) -> Vec<SessionEntry> {
+    let marks = crate::sessionmeta::MetaStore::load(state_dir);
     let mut found: Vec<(u64, SessionEntry)> = session_files(state_dir, project_dir)
         .into_iter()
-        .filter(|p| Some(p.as_path()) != current)
+        .filter(|p| Some(p.as_path()) != current && !marks.is_archived(p))
         .filter_map(|path| {
             let saved = read_session(&path, project_dir).ok().filter(|s| !s.expired(now_ms) && s.sessions.turns() > 0)?;
             let title = saved.sessions.title().unwrap_or_else(|| "(no message)".to_string());
@@ -662,6 +684,8 @@ pub fn list_sessions(state_dir: &Path, project_dir: &Path, now_ms: u64, current:
         .collect();
     // Equal times (a coarse clock): the later file name is the newer session.
     found.sort_by(|(a, x), (b, y)| (b, &y.path).cmp(&(a, &x.path)));
+    // Pinned sessions stay on top (the sort is stable, so each group keeps its order).
+    found.sort_by_key(|(_, e)| !marks.is_pinned(&e.path));
     found.into_iter().map(|(_, e)| e).collect()
 }
 
@@ -673,7 +697,9 @@ pub fn load_path(project_dir: &Path, path: &Path) -> Result<SavedSession, Resume
 /// Keep at most [`SAVED_KEEP`] sessions of the project: delete the oldest, never `current`.
 /// A file that cannot be read counts as the oldest. Cheap while under the cap (a listing).
 pub fn prune(state_dir: &Path, project_dir: &Path, current: &Path) {
-    let files = session_files(state_dir, project_dir);
+    let marks = crate::sessionmeta::MetaStore::load(state_dir);
+    // Pinned sessions are never deleted and do not count towards the cap.
+    let files: Vec<PathBuf> = session_files(state_dir, project_dir).into_iter().filter(|p| !marks.is_pinned(p)).collect();
     if files.len() <= SAVED_KEEP {
         return;
     }

@@ -67,10 +67,13 @@ impl Repl {
 
     /// `text` with the waiting notes in front of it.
     pub(super) fn with_carry(&self, text: &str) -> String {
-        if self.carry.is_empty() {
+        // Project memory starts a session: it goes with the first message.
+        let memory = if self.log.is_empty() { self.memory_note() } else { None };
+        let notes: Vec<&str> = memory.iter().chain(self.carry.iter()).map(String::as_str).collect();
+        if notes.is_empty() {
             return text.to_string();
         }
-        format!("{}\n\n---\n\n{text}", self.carry.join("\n\n"))
+        format!("{}\n\n---\n\n{text}", notes.join("\n\n"))
     }
 
     /// The pasted paths of what the person typed (never of carried notes): images go to
@@ -192,7 +195,7 @@ impl Repl {
                 carried: self.carry.len(),
             }
         });
-        uifmt::context_text(facts.as_ref(), self.out_style())
+        format!("{}\n{}", uifmt::context_text(facts.as_ref(), self.out_style()), self.context_breakdown())
     }
 
     /// `/cost`.
@@ -412,7 +415,7 @@ impl Repl {
 }
 
 /// A path the person typed: `~/` from home, relative ones from the project.
-fn resolve(typed: &str, project: &Path, home: Option<&str>) -> PathBuf {
+pub(super) fn resolve(typed: &str, project: &Path, home: Option<&str>) -> PathBuf {
     match (typed.strip_prefix("~/"), home) {
         (Some(rest), Some(h)) => Path::new(h).join(rest),
         _ if Path::new(typed).is_absolute() => PathBuf::from(typed),
