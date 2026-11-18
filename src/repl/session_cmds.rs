@@ -103,6 +103,18 @@ impl Repl {
         self.console.out("");
     }
 
+    /// `#note`: append it to the project's AGENTS.md.
+    pub(super) fn note(&mut self, note: &str) {
+        let style = self.out_style();
+        let path = self.engine.dir().join("AGENTS.md");
+        let line = match crate::gimmicks::shortcuts::append_note(&path, note) {
+            Ok(()) => format!("{} noted in AGENTS.md", style.green("✓")),
+            Err(e) => format!("{} could not write AGENTS.md: {e}", style.yellow("⚠")),
+        };
+        self.console.out(&line);
+        self.console.out("");
+    }
+
     /// `/edit`: write the message in the editor, then send it.
     pub(super) async fn edit(&mut self, io: &mut Io<'_>) -> Flow {
         let style = self.out_style();

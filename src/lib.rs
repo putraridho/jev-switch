@@ -23,6 +23,7 @@ pub mod delegate;
 pub mod doctor;
 pub mod envfile;
 pub mod front;
+pub mod gimmicks;
 pub mod handoff;
 pub mod host;
 pub mod lineedit;

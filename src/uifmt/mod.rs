@@ -27,6 +27,7 @@ mod commands;
 mod complete;
 mod failure;
 mod highlight;
+mod identity;
 mod markdown;
 mod permissions;
 mod provider_view;
@@ -49,6 +50,7 @@ pub use changes::{changes_block, diff_colorize, relativize_paths, tool_line, Fil
 pub use commands::{command_names, command_usage, Cmd, COMMANDS};
 pub use complete::{complete, completion_start, hint, Candidate, CompleteCtx};
 pub use failure::{error_block, failover_note, next_steps_for, no_route_message, problem_block};
+pub use identity::{builtin_identity, ChipFacts, ColorDepth, Health, Identity, NativeEvent, OverrideError, Palette, ProviderTheme, Rgb, ThemeOverrides};
 pub use markdown::answer_text;
 pub use permissions::{auto_allowed, denied_without_asking, remembered_allowed, permission_answered, permission_prompt, permissions_text, Prompt, Question};
 pub use provider_view::{provider_glyphs, providers_table, AvailRow, ProviderStatus};
