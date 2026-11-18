@@ -87,7 +87,7 @@ impl Guards {
             verdict.take_denial(*provider, &theirs);
         }
         let blocked: Vec<(ProviderId, String)> =
-            crate::providers::ALL_PROVIDERS.into_iter().filter(|p| !usable.filter(|q, _| q == *p).is_empty()).filter_map(|p| verdict.denial(p).map(|why| (p, why))).collect();
+            crate::providers::ALL_PROVIDERS.into_iter().filter(|p| usable.has_provider(*p)).filter_map(|p| verdict.denial(p).map(|why| (p, why))).collect();
         let mut current = usable.filter(|p, _| verdict.permits(p));
         if current.is_empty() && !usable.is_empty() {
             return Err(verdict.refusal_line());

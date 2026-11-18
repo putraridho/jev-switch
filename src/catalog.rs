@@ -340,6 +340,11 @@ impl Usable {
         self.set.is_empty()
     }
 
+    /// Whether any model of `provider` is in the set.
+    pub fn has_provider(&self, provider: ProviderId) -> bool {
+        self.set.iter().any(|(p, _)| *p == provider)
+    }
+
     /// Only the models of `keep` (for orchestration: a planner must come from providers
     /// that can have the delegate tool attached).
     pub fn only_providers(&self, keep: &[ProviderId]) -> Self {

@@ -80,7 +80,10 @@ impl Team {
     /// this version does not understand cannot cost the limit (or lock a session out).
     pub fn parse_cap(text: &str) -> Result<Option<Profile>, TeamError> {
         let value: serde_json::Value = serde_json::from_str(text).map_err(|e| TeamError(e.to_string()))?;
-        match value.get("max_profile") {
+        let Some(fields) = value.as_object() else {
+            return Err(TeamError("expected a JSON object".into()));
+        };
+        match fields.get("max_profile") {
             None | Some(serde_json::Value::Null) => Ok(None),
             Some(v) => serde_json::from_value(v.clone()).map(Some).map_err(|e| TeamError(format!("max_profile: {e}"))),
         }
@@ -143,6 +146,9 @@ mod tests {
         assert_eq!(Team::parse_cap(r#"{"routing":[]}"#), Ok(None));
         assert!(Team::parse_cap(r#"{"max_profile":"careful",}"#).is_err(), "broken JSON");
         assert!(Team::parse_cap(r#"{"max_profile":"godmode"}"#).is_err(), "unknown profile");
+        for not_an_object in [r#"[{"max_profile":"careful"}]"#, r#""careful""#, "null"] {
+            assert!(Team::parse_cap(not_an_object).is_err(), "{not_an_object}");
+        }
     }
 
     #[test]

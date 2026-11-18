@@ -192,10 +192,21 @@ fn snippet_for(e: &LibraryEntry, word: &str) -> Option<String> {
         }
     }
     // Lowering a whole string can differ from lowering each char (a word-final Σ becomes ς,
-    // not σ); when the per-char copy misses, look for the first place the word starts.
+    // not σ); when the per-char copy misses, look for the first place the word starts. Only a
+    // short stretch is lowered at each place (the word plus the char after it, which decides
+    // the sigma form), so a long line stays linear.
     let at = match lowered.find(word) {
         Some(found) => origin[found],
-        None => line.char_indices().map(|(i, _)| i).find(|&i| line[i..].to_lowercase().starts_with(word)).unwrap_or(0),
+        None => {
+            let span = word.chars().count() + 1;
+            line.char_indices()
+                .map(|(i, _)| i)
+                .find(|&i| {
+                    let end = line[i..].char_indices().nth(span).map_or(line.len(), |(j, _)| i + j);
+                    line[i..end].to_lowercase().starts_with(word)
+                })
+                .unwrap_or(0)
+        }
     };
     let start = line[..at].char_indices().rev().nth(30).map_or(0, |(i, _)| i);
     let chars: String = line[start..].chars().take(90).collect();

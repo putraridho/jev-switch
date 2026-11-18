@@ -1080,6 +1080,8 @@ impl Engine {
         attempts: u32,
         now: u64,
     ) -> Result<Chosen, NoRoute> {
+        // Cleared first, so no path out of here leaves an earlier attempt's snapshot behind.
+        self.git_snapshot = None;
         if let Judged::Legacy(want) = judged {
             return Ok(self.legacy_choice(want, base));
         }
@@ -1087,12 +1089,9 @@ impl Engine {
         // What each provider that is behind would be caught up with (the same text prompt_for
         // sends, git status included); only worth building when a rule could match it.
         let mut catch_ups = Vec::new();
-        self.git_snapshot = None;
         if self.guards.privacy.rule_count() > 0 {
-            let behind: Vec<ProviderId> = crate::providers::ALL_PROVIDERS
-                .into_iter()
-                .filter(|p| self.sessions.missed_turns(*p) > 0 && !usable.filter(|q, _| q == *p).is_empty())
-                .collect();
+            let behind: Vec<ProviderId> =
+                crate::providers::ALL_PROVIDERS.into_iter().filter(|p| self.sessions.missed_turns(*p) > 0 && usable.has_provider(*p)).collect();
             if !behind.is_empty() {
                 let git = (self.git_status)(&self.dir);
                 catch_ups = behind.into_iter().filter_map(|p| self.sessions.catch_up(p, &git, CATCH_UP_TOKENS).map(|t| (p, t))).collect();

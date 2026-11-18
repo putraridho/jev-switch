@@ -210,6 +210,20 @@ enum Ran {
 /// How much of a hook's stderr is kept.
 const STDERR_LIMIT: usize = 64 * 1024;
 
+/// The gathered stderr as text: cut at a character boundary, and marked when it was cut (the
+/// reader keeps one byte past the limit to tell).
+fn kept_text(bytes: &[u8]) -> String {
+    if bytes.len() <= STDERR_LIMIT {
+        return String::from_utf8_lossy(bytes).into_owned();
+    }
+    let mut text = String::from_utf8_lossy(&bytes[..STDERR_LIMIT]).into_owned();
+    if text.ends_with('\u{FFFD}') {
+        text.pop();
+    }
+    text.push_str("…(cut)");
+    text
+}
+
 fn run_command(command: &str, dir: &Path, input: &str, event: Event, tool: Option<&str>, timeout: Duration) -> Ran {
     let mut cmd = Command::new("sh");
     cmd.arg("-c")
@@ -220,9 +234,8 @@ fn run_command(command: &str, dir: &Path, input: &str, event: Event, tool: Optio
         .stdin(Stdio::piped())
         .stdout(Stdio::null())
         .stderr(Stdio::piped());
-    // Its own process group, so a timeout stops what the hook started, not only `sh`.
-    #[cfg(unix)]
-    std::os::unix::process::CommandExt::process_group(&mut cmd, 0);
+    // Not put in a process group of its own: the hook stays in the terminal's foreground group,
+    // so Ctrl-C reaches it and a tty prompt (ssh, gpg) is not stopped as a background job.
     let mut child = match cmd.spawn() {
         Ok(c) => c,
         Err(e) => return Ran::NotStarted(e.to_string()),
@@ -252,7 +265,7 @@ fn run_command(command: &str, dir: &Path, input: &str, event: Event, tool: Optio
                 };
                 // Kept to a bound: a background process may write to it for the whole session.
                 if let Ok(mut w) = written.lock() {
-                    let room = STDERR_LIMIT.saturating_sub(w.len());
+                    let room = (STDERR_LIMIT + 1).saturating_sub(w.len());
                     w.extend_from_slice(&chunk[..n.min(room)]);
                 }
             }
@@ -266,13 +279,6 @@ fn run_command(command: &str, dir: &Path, input: &str, event: Event, tool: Optio
         match child.try_wait() {
             Ok(Some(status)) => break status,
             Ok(None) if started.elapsed() >= timeout => {
-                #[cfg(unix)]
-                if let Ok(pid) = i32::try_from(child.id()) {
-                    // SAFETY: plain `kill(2)` on a negative pid: the process group made above.
-                    unsafe {
-                        libc::kill(-pid, libc::SIGKILL);
-                    }
-                }
                 let _ = child.kill();
                 let _ = child.wait();
                 return Ran::TimedOut;
@@ -284,7 +290,7 @@ fn run_command(command: &str, dir: &Path, input: &str, event: Event, tool: Optio
     // A hook that left a background process holding stderr open would keep the reader waiting
     // for as long as that process lives: take what was written so far, and go on without the rest.
     let _ = received.recv_timeout(Duration::from_millis(500));
-    let stderr = written.lock().map(|w| String::from_utf8_lossy(&w).into_owned()).unwrap_or_default();
+    let stderr = written.lock().map(|w| kept_text(&w)).unwrap_or_default();
     Ran::Exited { code: status.code().unwrap_or(-1), stderr }
 }
 
@@ -379,6 +385,15 @@ mod tests {
         let out = h.run(Event::PreTool, Some("Bash"), Some("rm -rf /"));
         assert!(out.refused.as_deref().is_some_and(|r| r.contains("no rm please")), "{out:?}");
         assert!(started.elapsed() < Duration::from_secs(3), "waited {:?}", started.elapsed());
+    }
+
+    #[test]
+    fn long_stderr_is_cut_at_a_character_and_marked() {
+        assert_eq!(kept_text(b"short"), "short");
+        let mut bytes = "é".repeat(STDERR_LIMIT).into_bytes();
+        bytes.truncate(STDERR_LIMIT + 1);
+        let kept = kept_text(&bytes);
+        assert!(kept.ends_with("…(cut)") && !kept.contains('\u{FFFD}'), "{}", &kept[kept.len() - 20..]);
     }
 
     #[test]

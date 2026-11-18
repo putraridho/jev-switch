@@ -27,13 +27,24 @@ impl Repl {
                 return self.canned(&prompt, "/pr", None, io).await;
             }
             ExtCmd::Profile(None) => {
-                let cap = self.team_cap();
+                let cap = Team::load_cap(self.engine.dir()).unwrap_or_else(|e| {
+                    self.warn(&format!("{e}; holding to plan mode until the limit can be read"));
+                    Some(Profile::Locked)
+                });
                 self.page_out(&profile::list_text(Profile::of_mode(self.engine.mode()), cap));
             }
             ExtCmd::Profile(Some(wanted)) => {
-                let applied = wanted.capped_by(self.team_cap());
+                // An unreadable limit changes nothing (and saves nothing) until it is fixed.
+                let cap = match Team::load_cap(self.engine.dir()) {
+                    Ok(cap) => cap,
+                    Err(e) => {
+                        self.warn(&format!("{e}; fix it before changing the profile"));
+                        return Flow::Continue;
+                    }
+                };
+                let applied = wanted.capped_by(cap);
                 if applied != wanted {
-                    self.console.out(&format!("{} {} is above this repo's limit ({applied}); using {applied}", style.yellow("⚠"), wanted));
+                    self.warn(&format!("{wanted} is above this repo's limit ({applied}); using {applied}"));
                 }
                 self.engine.set_mode(applied.mode());
                 self.remember_mode();
@@ -83,11 +94,28 @@ impl Repl {
 
     /// The mode, lowered to what the repo's shared file allows (and said so).
     pub(super) fn within_team_limit(&self, mode: Mode) -> Mode {
-        let allowed = Profile::of_mode(mode).capped_by(self.team_cap()).mode();
-        if allowed != mode {
-            self.warn(&format!("{mode} mode is above this repo's limit ({}); using {allowed}", team::FILE));
+        self.held_to_limit(mode).0
+    }
+
+    /// The mode held to the repo's limit, and whether the limit could be read. A limit that
+    /// cannot be read must not lift itself: the mode is held to plan until the file is fixed.
+    fn held_to_limit(&self, mode: Mode) -> (Mode, bool) {
+        match Team::load_cap(self.engine.dir()) {
+            Ok(cap) => {
+                let allowed = Profile::of_mode(mode).capped_by(cap).mode();
+                if allowed != mode {
+                    self.warn(&format!("{mode} mode is above this repo's limit ({}); using {allowed}", team::FILE));
+                }
+                (allowed, true)
+            }
+            Err(e) => {
+                let allowed = Profile::of_mode(mode).capped_by(Some(Profile::Locked)).mode();
+                if allowed != mode {
+                    self.warn(&format!("{e}; holding to plan mode until the limit can be read"));
+                }
+                (allowed, false)
+            }
         }
-        allowed
     }
 
     /// A warning on stderr: in -p mode stdout carries the answer alone.
@@ -95,17 +123,6 @@ impl Repl {
         self.console.err(&format!("  {}", self.console.err_style().yellow(text)));
     }
 
-    /// The repo's profile limit. A limit that cannot be read must not lift itself: it holds to
-    /// the narrowest profile until the file is fixed.
-    fn team_cap(&self) -> Option<Profile> {
-        match Team::load_cap(self.engine.dir()) {
-            Ok(cap) => cap,
-            Err(e) => {
-                self.warn(&format!("{e}; holding to plan mode until the limit can be read"));
-                Some(Profile::Locked)
-            }
-        }
-    }
 
     /// Pin the model a shared rule names for `prompt`, only while nothing is pinned by hand.
     /// True when it pinned (the caller puts the pin back after the turn).
@@ -147,9 +164,12 @@ impl Repl {
     /// A mode picked by a key (not a command): held to the repo's limit, kept as the
     /// preference, and the mode that applies is returned.
     pub fn adopt_mode(&mut self, mode: Mode) -> Mode {
-        let mode = self.within_team_limit(mode);
+        let (mode, readable) = self.held_to_limit(mode);
         self.engine.set_mode(mode);
-        self.remember_mode();
+        // Plan forced by a broken file is not what the person picked: keep the old preference.
+        if readable {
+            self.remember_mode();
+        }
         mode
     }
 
@@ -207,7 +227,7 @@ mod tests {
         std::fs::write(r.dir.join(".jev/team.json"), r#"{"max_profile":"careful"}"#).unwrap();
         run(&mut r, "/profile trusted").await;
         assert_eq!(r.repl.engine.mode(), crate::mode::Mode::Ask);
-        assert!(r.out.text().contains("above this repo's limit"), "{}", r.out.text());
+        assert!(r.err.text().contains("above this repo's limit"), "{}", r.err.text());
         run(&mut r, "/mode auto").await;
         assert_eq!(r.repl.engine.mode(), crate::mode::Mode::Ask);
     }
@@ -217,9 +237,12 @@ mod tests {
         let mut r = rig("badteam", ANSWER);
         std::fs::create_dir_all(r.dir.join(".jev")).unwrap();
         std::fs::write(r.dir.join(".jev/team.json"), r#"{"max_profile":"careful",}"#).unwrap();
+        let before = r.repl.engine.mode();
         run(&mut r, "/profile trusted").await;
-        assert_eq!(r.repl.engine.mode(), crate::mode::Mode::Plan);
+        assert_eq!(r.repl.engine.mode(), before, "nothing changes until the file is fixed");
+        assert!(r.err.text().contains("fix it before changing the profile"), "{}", r.err.text());
         assert_eq!(r.repl.adopt_mode(crate::mode::Mode::Auto), crate::mode::Mode::Plan);
+        assert_eq!(r.err.text().matches("holding to plan mode").count(), 1, "one warning: {}", r.err.text());
         // A routing rule this version cannot read leaves the limit itself in force.
         std::fs::write(r.dir.join(".jev/team.json"), r#"{"routing":[{"contains":"x","pin":"nosuch:m"}],"max_profile":"careful"}"#).unwrap();
         assert_eq!(r.repl.adopt_mode(crate::mode::Mode::Auto), crate::mode::Mode::Ask);
