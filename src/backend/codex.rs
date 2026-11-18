@@ -42,6 +42,8 @@ pub struct CodexBackend {
     state: Mutex<TurnState>,
     /// The orchestration planner's delegate tool, passed as `-c` overrides.
     mcp: Option<McpAttachment>,
+    /// `model_reasoning_effort`, when the person set one.
+    effort: Option<crate::effort::Effort>,
 }
 
 impl CodexBackend {
@@ -56,7 +58,12 @@ impl CodexBackend {
 
     /// Explicit binary and sandbox, for tests and callers that do not read the env.
     pub fn new(bin: impl Into<String>, sandbox: impl Into<String>) -> Self {
-        Self { bin: bin.into(), sandbox: sandbox.into(), state: Mutex::new(TurnState::default()), mcp: None }
+        Self { bin: bin.into(), sandbox: sandbox.into(), state: Mutex::new(TurnState::default()), mcp: None, effort: None }
+    }
+
+    /// `-c model_reasoning_effort="<level>"`, accepted by both `exec` and `exec resume`.
+    fn effort_overrides(&self) -> Vec<String> {
+        self.effort.map(|e| vec!["-c".into(), format!("model_reasoning_effort=\"{}\"", e.name())]).unwrap_or_default()
     }
 
     /// The configured sandbox if it is one of [`SAFE_SANDBOXES`], else the default.
@@ -73,7 +80,7 @@ impl CodexBackend {
     /// New turn: `-C` and `-s` are only accepted by plain `exec`.
     fn fresh_args(&self, cmd: &mut Command, req: &TurnRequest) {
         cmd.args(["exec", "--json", "-C"]).arg(&req.dir).args(["-s", self.sandbox_for(req), "-m", &req.model]);
-        cmd.args(self.mcp_overrides());
+        cmd.args(self.mcp_overrides()).args(self.effort_overrides());
         // `--image=<path>` in one argument, so the flag can never take the next one as a value.
         for image in req.images.iter().filter(|p| takes_image_flag(p)) {
             cmd.arg(format!("--image={}", image.display()));
@@ -124,7 +131,7 @@ impl CodexBackend {
     fn resume_args(&self, cmd: &mut Command, req: &TurnRequest, thread_id: &str) {
         let sandbox = format!("sandbox_mode=\"{}\"", self.sandbox_for(req));
         cmd.args(["exec", "resume", "--json", "-m", &req.model, "-c", &sandbox]);
-        cmd.args(self.mcp_overrides());
+        cmd.args(self.mcp_overrides()).args(self.effort_overrides());
         // No `--image` here: a resumed turn names its images in the prompt (see
         // `stdin_payload`), so the thread id is never taken for an image path.
         cmd.args([thread_id, "-"]);
@@ -248,6 +255,10 @@ impl Backend for CodexBackend {
         self.mcp = Some(mcp.clone());
     }
 
+    fn set_effort(&mut self, effort: crate::effort::Effort) {
+        self.effort = Some(effort);
+    }
+
     fn parse_line(&self, line: &str) -> Vec<Event> {
         let Ok(ev) = serde_json::from_str::<Value>(line) else { return vec![] };
         match ev["type"].as_str() {
@@ -351,6 +362,17 @@ mod tests {
             r.mode = crate::mode::Mode::Plan;
             let a = args(&r);
             assert!(a.windows(2).any(|w| w == ["-s", "read-only"]) || a.contains(&"sandbox_mode=\"read-only\"".to_string()), "{a:?}");
+        }
+    }
+
+    #[test]
+    fn effort_is_passed_as_a_config_override_on_new_and_resumed_turns_and_only_when_set() {
+        let args = |b: &CodexBackend, request: &TurnRequest| -> Vec<String> { b.command(request).as_std().get_args().map(|a| a.to_string_lossy().into_owned()).collect() };
+        let mut set = backend();
+        set.set_effort(crate::effort::Effort::High);
+        for session in [None, Some("thread")] {
+            assert!(args(&set, &req(session)).windows(2).any(|w| w == ["-c", "model_reasoning_effort=\"high\""]));
+            assert!(!args(&backend(), &req(session)).iter().any(|a| a.contains("model_reasoning_effort")));
         }
     }
 

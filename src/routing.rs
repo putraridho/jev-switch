@@ -17,6 +17,7 @@ use std::cmp::Reverse;
 
 use crate::anthropic::{MODEL_CHEAP, MODEL_MID, MODEL_STRONG};
 use crate::backend::ProviderId;
+use crate::cache::{self, WarmCache};
 use crate::catalog::{
     Allowances, ModelSpec, Overrides, Pick, TaskType, Usable, allowed_for, chain_with, find, models, pick,
 };
@@ -133,6 +134,8 @@ pub struct RoutingState {
     pub current: Option<(ProviderId, String)>,
     /// Consecutive turns the current model was kept although the chain wanted a lower tier.
     held: u32,
+    /// What the last answering provider has cached; leaving it costs a rebuild.
+    pub warm: Option<WarmCache>,
 }
 
 impl RoutingState {
@@ -154,6 +157,8 @@ pub struct RouteInput<'a> {
     pub context_tokens: u64,
     /// Fraction of the plan's quota used (0..1); only Claude is steered on it.
     pub plan_utilization: &'a dyn Fn(ProviderId) -> Option<f64>,
+    /// Now, in ms since 1970: how much of the warm cache's window is left.
+    pub now_ms: u64,
 }
 
 /// The model for this turn and why, for the `[route]` line.
@@ -211,6 +216,8 @@ struct Gate {
     /// does not apply.
     confident: bool,
     why: &'static str,
+    /// A rule (security, a likely correction) wants the switch whatever the cache holds.
+    forced: bool,
 }
 
 /// Choose the model for this turn. Updates only the hold counter; call
@@ -397,8 +404,16 @@ fn sticky(
     let Some(gate) = switch_gate(input, task, source) else {
         return stay(cur, "same task, warm session".into(), cur.tier < task.needed_tier());
     };
-    if !gate.confident && own.first().is_some_and(|k| k.tier >= best.spec.tier) {
+    let as_strong_here = own.first().is_some_and(|k| k.tier >= best.spec.tier);
+    if !gate.confident && as_strong_here {
         let why = format!("not confident enough to switch from {} ({})", cur.provider, gate.why);
+        return hold_within(state, task, cur, &own, why);
+    }
+    // A big warm cache is only given up for a better model or a forced reason, not for an
+    // equally strong one elsewhere.
+    if !gate.forced && as_strong_here && cache::worth_keeping(state.warm.as_ref(), cur.provider, input.now_ms) {
+        let tokens = state.warm.map_or(0, |w| w.tokens);
+        let why = format!("keeping {}: its {} token cache is warm and no stronger model is on offer", cur.provider, crate::uifmt::human_count(tokens));
         return hold_within(state, task, cur, &own, why);
     }
     state.held = 0;
@@ -413,15 +428,15 @@ fn sticky(
 fn switch_gate(input: &RouteInput, task: TaskType, source: TaskSource) -> Option<Gate> {
     let s = input.signals?;
     if task == TaskType::Security {
-        return Some(Gate { confident: source == TaskSource::SecurityRule || s.task_confidence >= CONFIDENT_SWITCH, why: "security work" });
+        return Some(Gate { confident: source == TaskSource::SecurityRule || s.task_confidence >= CONFIDENT_SWITCH, why: "security work", forced: true });
     }
     if s.correction_p.is_some_and(|p| p >= CORRECTION_P) {
-        return Some(Gate { confident: true, why: "likely correction, current provider may be the problem" });
+        return Some(Gate { confident: true, why: "likely correction, current provider may be the problem", forced: true });
     }
     let new_task = s.continues_p < CONTINUES_P
         && input.prompt_words > SHORT_FOLLOW_UP_WORDS
         && s.task_confidence >= MIN_BOUNDARY_CONFIDENCE;
-    new_task.then_some(Gate { confident: s.task_confidence >= CONFIDENT_SWITCH, why: "new task, confident" })
+    new_task.then_some(Gate { confident: s.task_confidence >= CONFIDENT_SWITCH, why: "new task, confident", forced: false })
 }
 
 fn stay(spec: &'static ModelSpec, why: String, dropped_tier: bool) -> Choice {
@@ -501,6 +516,7 @@ mod tests {
         pin: Pin,
         context_tokens: u64,
         plan: Option<f64>,
+        now_ms: u64,
     }
 
     impl Fixture {
@@ -512,6 +528,7 @@ mod tests {
                 pin: Pin::Auto,
                 context_tokens: 0,
                 plan: None,
+                now_ms: 0,
             }
         }
 
@@ -529,6 +546,7 @@ mod tests {
                     overrides: &self.overrides,
                     context_tokens: self.context_tokens,
                     plan_utilization: &util,
+                    now_ms: self.now_ms,
                 },
             )
         }
@@ -667,6 +685,30 @@ mod tests {
         let d = f.run(&mut on("claude-haiku-5-5"), Some(&unsure_hard), NEW_TASK_WORDS).unwrap();
         assert_eq!(d.spec.provider, Claude); // Opus is on the chain: provider kept, upgraded
         assert_eq!(d.spec.id, "claude-opus-5-5");
+    }
+
+    #[test]
+    fn a_big_warm_cache_keeps_the_provider_until_it_expires_or_a_rule_forces_the_switch() {
+        let mut f = Fixture::new(&PROVIDERS);
+        let sure = Signals { task_confidence: 0.8, ..sig(TaskType::SimpleEdit) };
+        let warm = |tokens| {
+            let mut s = on("claude-sonnet-5-5");
+            s.warm = Some(WarmCache { provider: Claude, tokens, seen_ms: 0 });
+            s
+        };
+        f.now_ms = 60_000;
+        let d = f.run(&mut warm(80_000), Some(&sure), NEW_TASK_WORDS).unwrap();
+        assert_eq!((d.spec.provider, d.switched_provider), (Claude, false));
+        assert!(d.reason.contains("80K token cache is warm"), "{}", d.reason);
+        // A small cache is cheap to rebuild.
+        assert!(f.run(&mut warm(5_000), Some(&sure), NEW_TASK_WORDS).unwrap().switched_provider);
+        // The window is over: nothing is left to lose.
+        f.now_ms = 400_000;
+        assert!(f.run(&mut warm(80_000), Some(&sure), NEW_TASK_WORDS).unwrap().switched_provider);
+        // A likely correction switches whatever the cache holds.
+        f.now_ms = 60_000;
+        let corr = Signals { correction_p: Some(0.8), ..sure };
+        assert!(f.run(&mut warm(80_000), Some(&corr), 3).unwrap().switched_provider);
     }
 
     #[test]

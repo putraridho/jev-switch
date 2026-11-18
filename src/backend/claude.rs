@@ -34,6 +34,9 @@ Never tell the user to use Claude Code interface features such as /config or plu
 Use the Read, Grep, Glob and Edit tools to look at and change files, not sed, python or heredocs, and keep shell commands plain: scripts and heredocs are asked about every time. \
 Ask the user questions in your reply, not with a tool.";
 
+/// The environment variable that sets Claude Code's thinking budget in tokens.
+const THINKING_ENV: &str = "MAX_THINKING_TOKENS";
+
 pub struct ClaudeBackend {
     pub bin: String,
     pub provider: ProviderId,
@@ -443,6 +446,12 @@ impl Backend for ClaudeBackend {
         self.mcp_name = Some(mcp.name.clone());
     }
 
+    /// Claude Code reads its thinking budget from `MAX_THINKING_TOKENS`.
+    fn set_effort(&mut self, effort: crate::effort::Effort) {
+        self.env.retain(|(k, _)| k != THINKING_ENV);
+        self.env.push((THINKING_ENV.to_string(), effort.thinking_tokens().to_string()));
+    }
+
     fn parse_line(&self, line: &str) -> Vec<Event> {
         let Ok(ev) = serde_json::from_str::<Value>(line) else { return vec![] };
         match ev["type"].as_str() {
@@ -702,6 +711,18 @@ mod tests {
         assert_eq!(a[a.iter().position(|x| x == "--allowedTools").unwrap() + 1], "Bash(cargo *) mcp__jev");
         // Without an attachment the command is the one it always was.
         assert!(!args(&backend().command(&req(None))).iter().any(|x| x.contains("mcp")));
+    }
+
+    #[test]
+    fn effort_sets_the_thinking_budget_in_the_environment_once() {
+        let mut b = backend();
+        b.set_effort(crate::effort::Effort::Low);
+        b.set_effort(crate::effort::Effort::High);
+        let cmd = b.command(&req(None));
+        let budgets: Vec<_> = cmd.as_std().get_envs().filter(|(k, _)| *k == "MAX_THINKING_TOKENS").collect();
+        assert_eq!(budgets.len(), 1);
+        assert_eq!(budgets[0].1.and_then(|v| v.to_str()), Some("31999"));
+        assert!(backend().command(&req(None)).as_std().get_envs().all(|(k, _)| k != "MAX_THINKING_TOKENS"));
     }
 
     #[test]

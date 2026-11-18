@@ -27,6 +27,7 @@ use crate::views;
 use crate::changes::UndoError;
 use crate::sessionlog::{SessionLog, TurnRecord};
 
+mod cache_cmds;
 mod session_cmds;
 
 // ------------------------------------------------------------------- interrupts
@@ -302,6 +303,8 @@ impl Repl {
             Command::Compact(focus) => return self.compact(focus.as_deref(), io).await,
             Command::Context => self.page_out(&self.context_text()),
             Command::Cost => self.page_out(&self.cost_text()),
+            Command::Cache => self.page_out(&self.cache_text()),
+            Command::Effort(setting) => self.effort(setting),
             Command::Why => {
                 let pin = self.engine.pin().to_string();
                 self.page_out(&uifmt::why_text(self.console.last_route().as_ref(), &pin, self.engine.enabled(), style));
@@ -380,6 +383,7 @@ impl Repl {
             route,
             usage: report.usage,
             elapsed_ms: elapsed.as_millis() as u64,
+            ended_ms: self.now(),
         });
     }
 
@@ -1023,6 +1027,25 @@ mod tests {
         let mut int = Presses { pending: vec![] };
         let mut io = Io { interrupt: &mut int, confirm: None };
         r.repl.handle(crate::commands::parse(line), &mut io).await;
+    }
+
+    #[tokio::test]
+    async fn cache_and_effort_commands_read_and_set_the_session() {
+        let mut r = rig("cache-effort", ANSWER);
+        run(&mut r, "/cache").await;
+        assert!(r.out.text().contains("No cache data yet"), "{}", r.out.text());
+        run(&mut r, "/effort").await;
+        assert!(r.out.text().contains("effort: default"), "{}", r.out.text());
+        run(&mut r, "/effort high").await;
+        assert!(r.out.text().contains("effort: high") && r.repl.engine.effort().to_string() == "high", "{}", r.out.text());
+        send(&mut r, "change a").await;
+        r.out.clear();
+        run(&mut r, "/cache").await;
+        let o = r.out.text();
+        assert!(o.contains("Cache by provider") && o.contains("claude") && o.contains("hit  50%") && o.contains("Warm now"), "{o}");
+        r.out.clear();
+        run(&mut r, "/cost").await;
+        assert!(r.out.text().contains("Cache by provider"), "{}", r.out.text());
     }
 
     #[tokio::test]

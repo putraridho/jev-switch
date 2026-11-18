@@ -25,7 +25,9 @@ use crate::backend::{
     self, Approver, Backend, Decision, ErrorKind, Event, McpAttachment, PermissionRequest, ProviderId, TurnError, TurnOutcome,
     TurnRequest, Usage,
 };
+use crate::cache::{self, WarmCache};
 use crate::catalog::{self, find, ModelSpec};
+use crate::effort::EffortSetting;
 use crate::changes::{self, ChangeSummary, Snapshot, TurnActivity, UndoError, UndoReport};
 use crate::handoff::{self, ResumeError, SavedSession, Sessions, TurnRecord};
 use crate::log;
@@ -442,6 +444,8 @@ pub struct Engine {
     session_file: Option<PathBuf>,
     /// What a turn may do without asking (`/mode`, Shift-Tab).
     mode: Mode,
+    /// `/effort`: the reasoning effort passed to CLIs that have the control.
+    effort: EffortSetting,
 }
 
 impl Engine {
@@ -475,6 +479,7 @@ impl Engine {
             persist: None,
             session_file: None,
             mode: Mode::default(),
+            effort: EffortSetting::default(),
         }
     }
 
@@ -580,6 +585,20 @@ impl Engine {
     /// Applies from the next turn on; a turn already running keeps the mode it started in.
     pub fn set_mode(&mut self, mode: Mode) {
         self.mode = mode;
+    }
+
+    pub fn effort(&self) -> EffortSetting {
+        self.effort
+    }
+
+    /// Applies from the next turn on.
+    pub fn set_effort(&mut self, effort: EffortSetting) {
+        self.effort = effort;
+    }
+
+    /// The prefix the last answering provider has cached, for `/cache` and the footer.
+    pub fn warm_cache(&self) -> Option<WarmCache> {
+        self.routing.warm
     }
 
     pub fn orchestrate(&self) -> bool {
@@ -943,6 +962,7 @@ impl Engine {
             overrides: &self.runtime.overrides,
             context_tokens,
             plan_utilization: &plan,
+            now_ms: now,
         };
         let mut state = base.clone();
         let decision = routing::decide(&mut state, &input)?;
@@ -1064,6 +1084,12 @@ impl Engine {
         let provider = chosen.spec.provider;
         let mut sent = self.prompt_for(provider, chosen.spec.id, prompt);
         let mut backend = (self.backend_factory)(provider);
+        if let (Some(warm), Some(est)) = (self.routing.warm, cache::switch_estimate(self.routing.warm.as_ref(), provider, (self.now)())) {
+            ui.note(&cache::switch_note(&est, warm.provider, provider));
+        }
+        if let Some(effort) = self.effort.resolve(chosen.spec.tier) {
+            backend.set_effort(effort);
+        }
         if let Some(mcp) = chosen.mcp.as_ref().filter(|_| backend.supports_mcp()) {
             match orchestrate::write_mcp_config(mcp) {
                 Ok(()) => {
@@ -1165,6 +1191,7 @@ impl Engine {
         });
         self.routing = chosen.state;
         routing::record_turn(&mut self.routing, spec);
+        self.routing.warm = Some(WarmCache::after_turn(spec.provider, &out.usage, (self.now)()));
         if let Some(tier) = chosen.legacy_tier {
             self.sticky.tier = Some(tier);
         }

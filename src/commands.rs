@@ -68,6 +68,10 @@ pub enum Command {
     Cost,
     /// `/why`: why the router picked the last turn's model.
     Why,
+    /// `/cache`: cache hit rate per provider, window countdown, named misses.
+    Cache,
+    /// `/effort [setting]`: show or set the reasoning effort.
+    Effort(Option<crate::effort::EffortSetting>),
     /// `/export [file]`: the conversation as Markdown.
     Export(Option<String>),
     /// `/copy`: the last answer to the clipboard.
@@ -158,7 +162,7 @@ pub fn parse(line: &str) -> Command {
     match head {
         "/quit" | "/exit" => Command::Quit,
         "/new" => Command::New,
-        "/help" | "/status" | "/doctor" | "/undo" | "/clear" | "/context" | "/cost" | "/usage" | "/why" | "/copy" | "/edit"
+        "/help" | "/status" | "/doctor" | "/undo" | "/clear" | "/context" | "/cost" | "/usage" | "/why" | "/copy" | "/edit" | "/cache"
         | "/init" | "/memory" | "/config"
             if arg.is_some() =>
         {
@@ -169,6 +173,12 @@ pub fn parse(line: &str) -> Command {
         "/context" => Command::Context,
         "/cost" | "/usage" => Command::Cost,
         "/why" => Command::Why,
+        "/cache" => Command::Cache,
+        "/effort" => match (arg, extra) {
+            (None, _) => Command::Effort(None),
+            (Some(word), false) => word.parse().map_or_else(Command::Invalid, |s| Command::Effort(Some(s))),
+            _ => invalid("usage: /effort [default|auto|low|medium|high]"),
+        },
         "/export" => Command::Export(rest()),
         "/copy" => Command::Copy,
         "/edit" => Command::Edit,
@@ -367,6 +377,12 @@ mod tests {
         assert_eq!(parse("/usage"), Command::Cost);
         assert_eq!(parse("/usage now"), Command::Invalid("usage: /cost".into()));
         assert_eq!(parse("/why"), Command::Why);
+        assert_eq!(parse("/cache"), Command::Cache);
+        assert_eq!(parse("/cache now"), Command::Invalid("usage: /cache".into()));
+        assert_eq!(parse("/effort"), Command::Effort(None));
+        assert_eq!(parse("/effort High"), Command::Effort(Some(crate::effort::EffortSetting::Fixed(crate::effort::Effort::High))));
+        assert!(matches!(parse("/effort max"), Command::Invalid(m) if m.contains("usage: /effort")));
+        assert!(matches!(parse("/effort low now"), Command::Invalid(_)));
         assert_eq!(parse("/export"), Command::Export(None));
         assert_eq!(parse("/export notes/session.md"), Command::Export(Some("notes/session.md".into())));
         assert_eq!(parse("/copy"), Command::Copy);

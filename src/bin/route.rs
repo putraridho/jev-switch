@@ -116,6 +116,7 @@ async fn provider_row(router: &Router, setup: &ProviderSetup, prompt: &str, cont
         overrides: &setup.overrides,
         context_tokens: 0,
         plan_utilization: &plan,
+        now_ms: 0,
     };
     let model = routing::decide(&mut RoutingState::default(), &input).map(|d| d.spec.id).unwrap_or("none");
     let row = serde_json::json!({
