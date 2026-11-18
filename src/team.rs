@@ -76,6 +76,25 @@ impl Team {
         Ok(Team { routing, max_profile: raw.max_profile })
     }
 
+    /// Only the profile limit of a team file, read apart from the routing rules so that a rule
+    /// this version does not understand cannot cost the limit (or lock a session out).
+    pub fn parse_cap(text: &str) -> Result<Option<Profile>, TeamError> {
+        let value: serde_json::Value = serde_json::from_str(text).map_err(|e| TeamError(e.to_string()))?;
+        match value.get("max_profile") {
+            None | Some(serde_json::Value::Null) => Ok(None),
+            Some(v) => serde_json::from_value(v.clone()).map(Some).map_err(|e| TeamError(format!("max_profile: {e}"))),
+        }
+    }
+
+    /// The project's profile limit; none when the file does not exist or sets none.
+    pub fn load_cap(project: &Path) -> Result<Option<Profile>, TeamError> {
+        match std::fs::read_to_string(path_in(project)) {
+            Ok(text) => Self::parse_cap(&text),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(e) => Err(TeamError(e.to_string())),
+        }
+    }
+
     /// The project's rules; none when the file does not exist.
     pub fn load(project: &Path) -> Result<Self, TeamError> {
         match std::fs::read_to_string(path_in(project)) {
@@ -115,6 +134,16 @@ impl Team {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_limit_survives_a_routing_rule_this_version_cannot_read() {
+        let text = r#"{"routing":[{"contains":"x","pin":"nosuch:model-9"}],"max_profile":"careful"}"#;
+        assert!(Team::parse(text).is_err());
+        assert_eq!(Team::parse_cap(text), Ok(Some(Profile::Careful)));
+        assert_eq!(Team::parse_cap(r#"{"routing":[]}"#), Ok(None));
+        assert!(Team::parse_cap(r#"{"max_profile":"careful",}"#).is_err(), "broken JSON");
+        assert!(Team::parse_cap(r#"{"max_profile":"godmode"}"#).is_err(), "unknown profile");
+    }
 
     #[test]
     fn rules_parse_and_the_first_match_wins_in_any_case() {

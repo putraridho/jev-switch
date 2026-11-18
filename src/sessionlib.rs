@@ -191,7 +191,12 @@ fn snippet_for(e: &LibraryEntry, word: &str) -> Option<String> {
             origin.resize(lowered.len(), i);
         }
     }
-    let at = lowered.find(word).map_or(0, |found| origin[found]);
+    // Lowering a whole string can differ from lowering each char (a word-final Σ becomes ς,
+    // not σ); when the per-char copy misses, look for the first place the word starts.
+    let at = match lowered.find(word) {
+        Some(found) => origin[found],
+        None => line.char_indices().map(|(i, _)| i).find(|&i| line[i..].to_lowercase().starts_with(word)).unwrap_or(0),
+    };
     let start = line[..at].char_indices().rev().nth(30).map_or(0, |(i, _)| i);
     let chars: String = line[start..].chars().take(90).collect();
     Some(if start > 0 { format!("...{chars}") } else { chars })
@@ -478,6 +483,18 @@ mod tests {
         put(&state, &proj, 2, vec![turn(ProviderId::Claude, "ask", &long, &[])]);
         let hits = search(scan_all(&state), &Query::parse("foo").unwrap(), NOW);
         assert!(hits.iter().all(|h| h.snippet.as_deref().unwrap().contains("foo")), "{:?}", hits.iter().map(|h| &h.snippet).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn a_word_ending_in_capital_sigma_is_found_in_the_snippet() {
+        let state = temp("sigma");
+        let proj = state.join("proj");
+        std::fs::create_dir_all(&proj).unwrap();
+        let line = format!("{} ΟΔΟΣ {}", "a".repeat(60), "b".repeat(100));
+        put(&state, &proj, 1, vec![turn(ProviderId::Claude, "ask", &line, &[])]);
+        let hits = search(scan_all(&state), &Query::parse("ΟΔΟΣ").unwrap(), NOW);
+        assert_eq!(hits.len(), 1);
+        assert!(hits[0].snippet.as_deref().unwrap().contains("ΟΔΟΣ"), "{:?}", hits[0].snippet);
     }
 
     #[test]

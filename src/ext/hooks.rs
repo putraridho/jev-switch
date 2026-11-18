@@ -207,18 +207,23 @@ enum Ran {
     NotStarted(String),
 }
 
+/// How much of a hook's stderr is kept.
+const STDERR_LIMIT: usize = 64 * 1024;
+
 fn run_command(command: &str, dir: &Path, input: &str, event: Event, tool: Option<&str>, timeout: Duration) -> Ran {
-    let mut child = match Command::new("sh")
-        .arg("-c")
+    let mut cmd = Command::new("sh");
+    cmd.arg("-c")
         .arg(command)
         .current_dir(dir)
         .env("JEV_HOOK_EVENT", event.as_str())
         .env("JEV_HOOK_TOOL", tool.unwrap_or(""))
         .stdin(Stdio::piped())
         .stdout(Stdio::null())
-        .stderr(Stdio::piped())
-        .spawn()
-    {
+        .stderr(Stdio::piped());
+    // Its own process group, so a timeout stops what the hook started, not only `sh`.
+    #[cfg(unix)]
+    std::os::unix::process::CommandExt::process_group(&mut cmd, 0);
+    let mut child = match cmd.spawn() {
         Ok(c) => c,
         Err(e) => return Ran::NotStarted(e.to_string()),
     };
@@ -238,9 +243,17 @@ fn run_command(command: &str, dir: &Path, input: &str, event: Event, tool: Optio
         let written = written.clone();
         std::thread::spawn(move || {
             let mut chunk = [0u8; 4096];
-            while let Ok(n @ 1..) = std::io::Read::read(&mut s, &mut chunk) {
+            loop {
+                let n = match std::io::Read::read(&mut s, &mut chunk) {
+                    Ok(0) => break,
+                    Ok(n) => n,
+                    Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                    Err(_) => break,
+                };
+                // Kept to a bound: a background process may write to it for the whole session.
                 if let Ok(mut w) = written.lock() {
-                    w.extend_from_slice(&chunk[..n]);
+                    let room = STDERR_LIMIT.saturating_sub(w.len());
+                    w.extend_from_slice(&chunk[..n.min(room)]);
                 }
             }
             let _ = sent.send(());
@@ -253,6 +266,13 @@ fn run_command(command: &str, dir: &Path, input: &str, event: Event, tool: Optio
         match child.try_wait() {
             Ok(Some(status)) => break status,
             Ok(None) if started.elapsed() >= timeout => {
+                #[cfg(unix)]
+                if let Ok(pid) = i32::try_from(child.id()) {
+                    // SAFETY: plain `kill(2)` on a negative pid: the process group made above.
+                    unsafe {
+                        libc::kill(-pid, libc::SIGKILL);
+                    }
+                }
                 let _ = child.kill();
                 let _ = child.wait();
                 return Ran::TimedOut;

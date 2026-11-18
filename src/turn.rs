@@ -459,6 +459,12 @@ pub struct Engine {
     turn_activity: TurnActivity,
     /// Where saved sessions live (the state directory); `None` means nothing is saved.
     persist: Option<PathBuf>,
+    /// Where `/budget`, `/privacy` and `/failover` read and save their settings; the state
+    /// directory even for a one-shot that keeps no session.
+    settings: Option<PathBuf>,
+    /// The `git status` the privacy check saw for this attempt's catch-ups, reused when the
+    /// catch-up is sent so the text checked is the text that leaves.
+    git_snapshot: Option<String>,
     /// The file this session saves to: chosen at its first save, or the one `/resume` took
     /// over. `/new` clears it, so the next save starts another file and the old one stays.
     session_file: Option<PathBuf>,
@@ -502,6 +508,8 @@ impl Engine {
             images: Vec::new(),
             turn_activity: TurnActivity::default(),
             persist: None,
+            settings: None,
+            git_snapshot: None,
             session_file: None,
             mode: Mode::default(),
             effort: EffortSetting::default(),
@@ -530,12 +538,7 @@ impl Engine {
     pub fn with_persistence_and_settings(mut self, persist: Option<PathBuf>, settings: Option<&std::path::Path>) -> Self {
         self.guards = Guards::load(settings, &self.dir);
         self.persist = persist;
-        self
-    }
-
-    /// Use these guards instead of the ones read from the settings files.
-    pub fn with_guards(mut self, guards: Guards) -> Self {
-        self.guards = guards;
+        self.settings = settings.map(Path::to_path_buf);
         self
     }
 
@@ -545,7 +548,7 @@ impl Engine {
             .into_iter()
             .filter_map(|p| self.runtime.plan_utilization(p).map(|u| (p.to_string(), u)))
             .collect();
-        crate::guard_cmd::run(cmd, &mut self.guards, self.persist.as_deref(), &plans)
+        crate::guard_cmd::run(cmd, &mut self.guards, self.settings.as_deref(), &plans)
     }
 
     /// Show assistant text the moment it arrives (see the field).
@@ -768,6 +771,7 @@ impl Engine {
     /// Point a test engine at a state folder after it was built.
     #[cfg(test)]
     pub(crate) fn set_state_dir(&mut self, dir: Option<PathBuf>) {
+        self.settings = dir.clone();
         self.persist = dir;
     }
 
@@ -1083,11 +1087,16 @@ impl Engine {
         // What each provider that is behind would be caught up with (the same text prompt_for
         // sends, git status included); only worth building when a rule could match it.
         let mut catch_ups = Vec::new();
+        self.git_snapshot = None;
         if self.guards.privacy.rule_count() > 0 {
-            let behind: Vec<ProviderId> = crate::providers::ALL_PROVIDERS.into_iter().filter(|p| self.sessions.missed_turns(*p) > 0).collect();
+            let behind: Vec<ProviderId> = crate::providers::ALL_PROVIDERS
+                .into_iter()
+                .filter(|p| self.sessions.missed_turns(*p) > 0 && !usable.filter(|q, _| q == *p).is_empty())
+                .collect();
             if !behind.is_empty() {
                 let git = (self.git_status)(&self.dir);
                 catch_ups = behind.into_iter().filter_map(|p| self.sessions.catch_up(p, &git, CATCH_UP_TOKENS).map(|t| (p, t))).collect();
+                self.git_snapshot = Some(git);
             }
         }
         let turn = TurnFacts {
@@ -1223,11 +1232,13 @@ impl Engine {
     /// provider has only seen the catch-up once an attempt ends successfully
     /// ([`Engine::finish`] records the turn, which marks it caught up). An attempt
     /// that fails first leaves the turns missed, so the next one sends them again.
-    fn prompt_for(&self, provider: ProviderId, model: &str, prompt: &str) -> String {
+    fn prompt_for(&mut self, provider: ProviderId, model: &str, prompt: &str) -> String {
+        // The privacy check's snapshot, when it took one, so what was checked is what is sent.
+        let snapshot = self.git_snapshot.take();
         if self.sessions.missed_turns(provider) == 0 {
             return prompt.to_string();
         }
-        let git = (self.git_status)(&self.dir);
+        let git = snapshot.unwrap_or_else(|| (self.git_status)(&self.dir));
         match self.sessions.catch_up_for(provider, model, &git, CATCH_UP_TOKENS) {
             Some(text) => format!("{text}{prompt}"),
             None => prompt.to_string(),

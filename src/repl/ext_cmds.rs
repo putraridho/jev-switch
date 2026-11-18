@@ -81,10 +81,7 @@ impl Repl {
             // repo's own limit.
             let allowed = self.within_team_limit(asked);
             if Profile::of_mode(allowed) > Profile::of_mode(before) {
-                self.console.out(&format!(
-                    "  {}",
-                    style.yellow(&format!("{} asks for {allowed} mode; staying in {before} mode (use Shift-Tab or /mode to widen it)", inv.label))
-                ));
+                self.warn(&format!("{} asks for {allowed} mode; staying in {before} mode (use Shift-Tab or /mode to widen it)", inv.label));
             } else {
                 self.engine.set_mode(allowed);
             }
