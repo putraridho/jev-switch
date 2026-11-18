@@ -222,19 +222,32 @@ fn run_command(command: &str, dir: &Path, input: &str, event: Event, tool: Optio
         Ok(c) => c,
         Err(e) => return Ran::NotStarted(e.to_string()),
     };
+    // The input is written on its own thread: a hook that never reads it would otherwise block
+    // the write (past a pipe's worth of bytes) before the timeout is ever looked at. A hook that
+    // does not read its input closes the pipe early: not an error.
     if let Some(mut stdin) = child.stdin.take() {
-        // A hook that does not read its input closes the pipe early: not an error.
-        let _ = stdin.write_all(input.as_bytes());
+        let input = input.to_string();
+        std::thread::spawn(move || {
+            let _ = stdin.write_all(input.as_bytes());
+        });
     }
-    let stderr = child.stderr.take();
-    let (sent, received) = std::sync::mpsc::channel();
-    std::thread::spawn(move || {
-        let mut text = String::new();
-        if let Some(mut s) = stderr {
-            let _ = std::io::Read::read_to_string(&mut s, &mut text);
-        }
-        let _ = sent.send(text);
-    });
+    // Stderr is gathered as it arrives, so what was written is kept even if the pipe never closes.
+    let written = std::sync::Arc::new(std::sync::Mutex::new(Vec::<u8>::new()));
+    let (sent, received) = std::sync::mpsc::channel::<()>();
+    if let Some(mut s) = child.stderr.take() {
+        let written = written.clone();
+        std::thread::spawn(move || {
+            let mut chunk = [0u8; 4096];
+            while let Ok(n @ 1..) = std::io::Read::read(&mut s, &mut chunk) {
+                if let Ok(mut w) = written.lock() {
+                    w.extend_from_slice(&chunk[..n]);
+                }
+            }
+            let _ = sent.send(());
+        });
+    } else {
+        drop(sent);
+    }
     let started = Instant::now();
     let status = loop {
         match child.try_wait() {
@@ -249,8 +262,9 @@ fn run_command(command: &str, dir: &Path, input: &str, event: Event, tool: Optio
         }
     };
     // A hook that left a background process holding stderr open would keep the reader waiting
-    // for as long as that process lives: take what was written, and go on without the rest.
-    let stderr = received.recv_timeout(Duration::from_millis(500)).unwrap_or_default();
+    // for as long as that process lives: take what was written so far, and go on without the rest.
+    let _ = received.recv_timeout(Duration::from_millis(500));
+    let stderr = written.lock().map(|w| String::from_utf8_lossy(&w).into_owned()).unwrap_or_default();
     Ran::Exited { code: status.code().unwrap_or(-1), stderr }
 }
 
@@ -335,6 +349,26 @@ mod tests {
         let out = h.run(Event::TurnEnd, None, None);
         assert_eq!(out, Outcome::default());
         assert!(started.elapsed() < Duration::from_secs(3), "waited {:?} for a background process", started.elapsed());
+    }
+
+    #[test]
+    fn a_refusal_keeps_its_reason_when_a_background_process_holds_stderr() {
+        let dir = temp("background-refusal");
+        let h = hooks_with(&dir, r#"{"hooks":[{"event":"pre_tool","run":"echo no rm please >&2; sleep 5 & exit 2"}]}"#);
+        let started = Instant::now();
+        let out = h.run(Event::PreTool, Some("Bash"), Some("rm -rf /"));
+        assert!(out.refused.as_deref().is_some_and(|r| r.contains("no rm please")), "{out:?}");
+        assert!(started.elapsed() < Duration::from_secs(3), "waited {:?}", started.elapsed());
+    }
+
+    #[test]
+    fn a_hook_that_never_reads_a_large_input_still_times_out() {
+        let dir = temp("unread-input");
+        let input = "x".repeat(1 << 20);
+        let started = Instant::now();
+        let ran = run_command("sleep 5", &dir, &input, Event::PostTool, None, Duration::from_millis(300));
+        assert!(matches!(ran, Ran::TimedOut));
+        assert!(started.elapsed() < Duration::from_secs(3), "waited {:?} on the input pipe", started.elapsed());
     }
 
     #[test]

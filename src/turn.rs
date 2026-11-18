@@ -518,10 +518,18 @@ impl Engine {
     /// Save the session after every turn under `state_dir/sessions/` so it can be resumed
     /// after a restart. `None` (the default of the library) saves nothing; the binary
     /// passes [`log::state_dir`].
-    pub fn with_persistence(mut self, state_dir: Option<PathBuf>) -> Self {
+    pub fn with_persistence(self, state_dir: Option<PathBuf>) -> Self {
         // The settings that fence in the router live beside the saved sessions.
-        self.guards = Guards::load(state_dir.as_deref(), &self.dir);
-        self.persist = state_dir;
+        let settings = state_dir.clone();
+        self.with_persistence_and_settings(state_dir, settings.as_deref())
+    }
+
+    /// Save sessions in `persist` (or not at all), but read the router's settings (privacy,
+    /// budget, failover, routing rules) from `settings`: a one-shot keeps no session yet still
+    /// obeys them.
+    pub fn with_persistence_and_settings(mut self, persist: Option<PathBuf>, settings: Option<&std::path::Path>) -> Self {
+        self.guards = Guards::load(settings, &self.dir);
+        self.persist = persist;
         self
     }
 
@@ -1072,21 +1080,20 @@ impl Engine {
             return Ok(self.legacy_choice(want, base));
         }
         let usable = self.runtime.usable(now).without(excluded);
-        // Only worth building when a rule could match it.
-        let history = if self.guards.privacy.rule_count() > 0 {
-            self.sessions
-                .log()
-                .iter()
-                .flat_map(|t| std::iter::once(t.prompt.as_str()).chain(std::iter::once(t.reply.as_str())).chain(t.tools.iter().map(String::as_str)))
-                .collect::<Vec<_>>()
-                .join("\n")
-        } else {
-            String::new()
-        };
+        // What each provider that is behind would be caught up with (the same text prompt_for
+        // sends, git status included); only worth building when a rule could match it.
+        let mut catch_ups = Vec::new();
+        if self.guards.privacy.rule_count() > 0 {
+            let behind: Vec<ProviderId> = crate::providers::ALL_PROVIDERS.into_iter().filter(|p| self.sessions.missed_turns(*p) > 0).collect();
+            if !behind.is_empty() {
+                let git = (self.git_status)(&self.dir);
+                catch_ups = behind.into_iter().filter_map(|p| self.sessions.catch_up(p, &git, CATCH_UP_TOKENS).map(|t| (p, t))).collect();
+            }
+        }
         let turn = TurnFacts {
             root: &self.dir,
             prompt,
-            history: &history,
+            catch_ups: &catch_ups,
             task: signals.map(|s| s.task),
             attached: &self.images,
             pinned: !matches!(self.pin, Pin::Auto),

@@ -84,17 +84,20 @@ impl Repl {
 
     /// The mode, lowered to what the repo's shared file allows (and said so).
     pub(super) fn within_team_limit(&self, mode: Mode) -> Mode {
+        // Warnings go to stderr: in -p mode stdout carries the answer alone.
+        let warn = |text: &str| self.console.err(&format!("  {}", self.console.err_style().yellow(text)));
         let cap = match self.team() {
             Ok(t) => t.max_profile,
-            // A shared file that cannot be read must not quietly lift its own limit.
+            // A shared file that cannot be read must not lift its own limit: hold to the
+            // narrowest profile until it is fixed.
             Err(e) => {
-                self.console.out(&format!("  {}", self.out_style().yellow(&format!("{e}; the repo's limit could not be applied"))));
-                None
+                warn(&format!("{} cannot be read ({e}); holding to plan mode until it is fixed", team::FILE));
+                Some(Profile::Locked)
             }
         };
         let allowed = Profile::of_mode(mode).capped_by(cap).mode();
         if allowed != mode {
-            self.console.out(&format!("  {}", self.out_style().yellow(&format!("{mode} mode is above this repo's limit ({}); using {allowed}", team::FILE))));
+            warn(&format!("{mode} mode is above this repo's limit ({}); using {allowed}", team::FILE));
         }
         allowed
     }

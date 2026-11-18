@@ -295,6 +295,14 @@ impl Verdict {
         self.denials.get(&provider).cloned()
     }
 
+    /// Add `other`'s reason for refusing `provider` (if it has one and this verdict does not):
+    /// for text only that provider will get, such as its catch-up.
+    pub fn take_denial(&mut self, provider: ProviderId, other: &Verdict) {
+        if let Some(why) = other.denials.get(&provider) {
+            self.denials.entry(provider).or_insert_with(|| why.clone());
+        }
+    }
+
     pub fn permits(&self, provider: ProviderId) -> bool {
         self.denial(provider).is_none()
     }

@@ -180,11 +180,18 @@ fn snippet_for(e: &LibraryEntry, word: &str) -> Option<String> {
     let log = e.saved.sessions.log();
     let lines = log.iter().flat_map(|t| t.prompt.lines().chain(t.reply.lines()).chain(t.tools.iter().map(String::as_str)));
     let line = lines.into_iter().find(|l| l.to_lowercase().contains(word))?.trim().to_string();
-    // The offset found in the lowercased copy is not a byte offset of `line` (case folding can
-    // change lengths), so carry it over as a count of characters.
-    let lowered = line.to_lowercase();
-    let before = lowered.find(word).map_or(0, |at| lowered[..at].chars().count());
-    let at = line.char_indices().nth(before).map_or(line.len(), |(i, _)| i);
+    // Lowercasing can turn one character into several (U+0130 becomes `i` and a combining dot),
+    // so neither byte nor character offsets carry over: lower it char by char and remember,
+    // for every lowered byte, where its character starts in `line`.
+    let mut lowered = String::with_capacity(line.len());
+    let mut origin = Vec::with_capacity(line.len());
+    for (i, c) in line.char_indices() {
+        for l in c.to_lowercase() {
+            lowered.push(l);
+            origin.resize(lowered.len(), i);
+        }
+    }
+    let at = lowered.find(word).map_or(0, |found| origin[found]);
     let start = line[..at].char_indices().rev().nth(30).map_or(0, |(i, _)| i);
     let chars: String = line[start..].chars().take(90).collect();
     Some(if start > 0 { format!("...{chars}") } else { chars })
@@ -466,6 +473,11 @@ mod tests {
         let hits = search(scan_all(&state), &Query::parse("foo").unwrap(), NOW);
         assert_eq!(hits.len(), 1);
         assert!(hits[0].snippet.as_deref().unwrap().contains("foo"), "{:?}", hits[0].snippet);
+        // Longer than the lead-in, so a character count off by one per U+0130 would skip past it.
+        let long = format!("{} foo {}", "\u{130}".repeat(40), "z".repeat(200));
+        put(&state, &proj, 2, vec![turn(ProviderId::Claude, "ask", &long, &[])]);
+        let hits = search(scan_all(&state), &Query::parse("foo").unwrap(), NOW);
+        assert!(hits.iter().all(|h| h.snippet.as_deref().unwrap().contains("foo")), "{:?}", hits.iter().map(|h| &h.snippet).collect::<Vec<_>>());
     }
 
     #[test]

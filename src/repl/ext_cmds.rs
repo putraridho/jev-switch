@@ -8,18 +8,8 @@ use crate::ext::hooks::{self, Hooks};
 use crate::ext::library::{Invocation, Library};
 use crate::ext::{market, view, ExtCmd, Places};
 use crate::layers;
+use crate::profile::Profile;
 use crate::turn::TurnStatus;
-
-/// How much a mode lets the agent do on its own; a higher number is wider.
-fn mode_rank(mode: crate::mode::Mode) -> u8 {
-    use crate::mode::Mode;
-    match mode {
-        Mode::Plan => 0,
-        Mode::Ask => 1,
-        Mode::Edit => 2,
-        Mode::Auto => 3,
-    }
-}
 
 impl Repl {
     fn ext_places(&self) -> Places {
@@ -90,7 +80,7 @@ impl Repl {
             // it: a file committed to a repo must not switch a session to Auto, or past the
             // repo's own limit.
             let allowed = self.within_team_limit(asked);
-            if mode_rank(allowed) > mode_rank(before) {
+            if Profile::of_mode(allowed) > Profile::of_mode(before) {
                 self.console.out(&format!(
                     "  {}",
                     style.yellow(&format!("{} asks for {allowed} mode; staying in {before} mode (use Shift-Tab or /mode to widen it)", inv.label))

@@ -317,8 +317,7 @@ async fn print_mode(args: &Args, source: &PromptSource, dir: &Path, term: &Term,
     let persist = if args.resume { state_dir.clone() } else { None };
     // The privacy rules, budget and failover settings apply to a one-shot too: they are read from
     // the state folder even when the session itself is not kept.
-    let guards = jev_router::guard::Guards::load(state_dir.as_deref(), dir);
-    let engine = engine_for(args, runtime, router, dir.to_path_buf(), console.can_ask(), None).with_persistence(persist).with_guards(guards);
+    let engine = engine_for(args, runtime, router, dir.to_path_buf(), console.can_ask(), None).with_persistence_and_settings(persist, state_dir.as_deref());
     let mut repl = Repl::new(engine, console.clone(), std::env::var("HOME").ok(), false);
     repl.enforce_team_limit();
     if args.resume {
