@@ -17,6 +17,8 @@ use crate::front::{ApprovalAsk, FrontMsg};
 use crate::lineedit::{AnswerKey, INTERRUPT_WINDOW};
 use crate::mode::Mode;
 use crate::uifmt::CompleteCtx;
+use crate::workstation::keymap::{Keymap, UserAction};
+use crate::workstation::vim::{self, Outcome, Vim};
 
 /// What the loop must do after a key or a message.
 #[derive(Debug)]
@@ -146,6 +148,10 @@ pub struct App {
     pub providers: Vec<ProviderChip>,
     /// A planner may hand pieces to workers (`/orchestrate`).
     pub orchestrate: bool,
+    /// Vim input mode (`JEV_VIM=1`); `None` when off.
+    pub vim: Option<Vim>,
+    /// The user's own key bindings.
+    pub keymap: Keymap,
 }
 
 /// One subscription on the router row: its name, how much of its plan window is used, or how
@@ -193,6 +199,8 @@ impl App {
             session_name: None,
             providers: Vec::new(),
             orchestrate: false,
+            vim: vim::enabled_from(std::env::var("JEV_VIM").ok().as_deref()).then(Vim::default),
+            keymap: Keymap::default(),
         }
     }
 
@@ -425,7 +433,32 @@ impl App {
 
     fn edit_key(&mut self, k: KeyEvent, now: Instant) -> Vec<Action> {
         let busy = self.working.is_some();
+        if let Some(action) = self.keymap.action(&k) {
+            return match action {
+                UserAction::Clear => vec![Action::ClearScreen],
+                UserAction::CycleMode => {
+                    self.mode = self.mode.next();
+                    vec![Action::Mode(self.mode)]
+                }
+                UserAction::Quit => vec![Action::Quit],
+            };
+        }
+        if let Some(vim) = self.vim.as_mut() {
+            match vim.on_key(&mut self.editor, &k, busy) {
+                Outcome::Pass => {}
+                Outcome::Moved => return Vec::new(),
+                Outcome::Edited => {
+                    self.edited();
+                    return Vec::new();
+                }
+            }
+        }
         match k.code {
+            // `?` on an empty box opens the key cheat sheet.
+            KeyCode::Char('?') if self.editor.is_empty() && !busy && !ctrl(&k) => {
+                self.editor.set("/keys");
+                return self.submit();
+            }
             KeyCode::Enter if k.modifiers.intersects(KeyModifiers::SHIFT | KeyModifiers::ALT) => self.newline(),
             KeyCode::Char('j') if ctrl(&k) => self.newline(),
             KeyCode::Enter => {
@@ -808,6 +841,38 @@ mod tests {
         a.on_front(FrontMsg::Confirm { question: "Revert?".into(), reply });
         a.on_key(key(KeyCode::Char('y')), Instant::now());
         assert_eq!(rx.try_recv().ok(), Some(true));
+    }
+
+    #[test]
+    fn a_question_mark_on_an_empty_box_opens_the_cheat_sheet_but_is_text_elsewhere() {
+        let mut a = app();
+        assert_eq!(submitted(&a.on_key(key(KeyCode::Char('?')), Instant::now())), Some("/keys"));
+        let mut b = app();
+        typed(&mut b, "why?");
+        assert_eq!(b.editor.text(), "why?");
+    }
+
+    #[test]
+    fn vim_mode_moves_and_edits_in_normal_mode_and_sends_on_enter() {
+        let mut a = app();
+        a.vim = Some(Vim::default());
+        typed(&mut a, "hello");
+        a.on_key(key(KeyCode::Esc), Instant::now());
+        typed(&mut a, "0x");
+        assert_eq!(a.editor.text(), "ello");
+        typed(&mut a, "A!");
+        assert_eq!(a.editor.text(), "ello!");
+        a.on_key(key(KeyCode::Esc), Instant::now());
+        assert_eq!(submitted(&a.on_key(key(KeyCode::Enter), Instant::now())), Some("ello!"));
+    }
+
+    #[test]
+    fn a_user_binding_beats_the_default_and_runs_its_action() {
+        let mut a = app();
+        a.keymap = Keymap::parse("ctrl-o = clear\nf2 = quit\n").0;
+        let out = a.on_key(with(KeyCode::Char('o'), KeyModifiers::CONTROL), Instant::now());
+        assert!(matches!(out.as_slice(), [Action::ClearScreen]));
+        assert!(matches!(a.on_key(key(KeyCode::F(2)), Instant::now()).as_slice(), [Action::Quit]));
     }
 
     #[test]

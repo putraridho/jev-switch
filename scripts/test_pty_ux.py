@@ -940,6 +940,70 @@ def help_lists_every_command_and_the_keys(w):
 
 
 @scenario
+def help_search_tips_cheat_sheet_and_whatsnew_teach_the_tool(w):
+    p = Pty(w, [w.repo], "learn")
+    try:
+        prompt_ready(p)
+        p.send("/help diff\r")
+        p.expect("Help matching", 10, "the search heading")
+        wait_prompt(p, 5, "the prompt")
+        if "/diff [file]" not in p.visible() or "/status" in p.visible().split("Help matching")[-1]:
+            raise Fail(f"/help diff should list /diff and only matches:\n{p.tail(1500)}")
+        p.send("/tips\r")
+        p.expect("Shift-Tab cycles the mode", 10, "the tips")
+        wait_prompt(p, 5, "the prompt")
+        p.send("/whatsnew\r")
+        p.expect("New since", 10, "the changelog")
+        wait_prompt(p, 5, "the prompt")
+        p.send("?")
+        p.expect("vim input mode", 10, "the cheat sheet after ? on an empty box")
+        wait_prompt(p, 5, "the prompt")
+        quit_with_ctrl_d(p)
+    finally:
+        p.close()
+
+
+@scenario
+def vim_mode_edits_in_normal_mode_and_sends_on_enter(w):
+    p = Pty(w, [w.repo], "vim", env=w.env(JEV_VIM="1"))
+    try:
+        prompt_ready(p)
+        p.send("xexplain quick")
+        p.settle(0.3)
+        p.send("\x1b")
+        p.settle(0.5)
+        if "NORMAL" not in p.visible():
+            raise Fail(f"Esc should enter vim normal mode:\n{p.screen_tail()}")
+        p.send("0x")
+        p.settle(0.3)
+        p.send("\r")
+        p.expect(ANSWER, 15, "an answer to the message edited in normal mode")
+        wait_prompt(p, 10, "the prompt")
+        quit_with_ctrl_d(p)
+    finally:
+        p.close()
+
+
+@scenario
+def reduced_motion_keeps_the_working_row_still(w):
+    p = Pty(w, [w.repo], "still", env=w.env(JEV_REDUCED_MOTION="1"))
+    try:
+        prompt_ready(p)
+        start = len(p.raw)
+        p.send("slow work please\r")
+        p.expect("✓ claude", 20, "the end of the slow turn")
+        wait_prompt(p, 10, "the next prompt")
+        turn = p.raw[start:].decode("utf-8", "replace")
+        if any(g in turn for g in SPINNER):
+            raise Fail(f"no spinner frame should show with JEV_REDUCED_MOTION:\n{p.tail()}")
+        if "•" not in turn:
+            raise Fail("a still marker should stand in for the spinner")
+        quit_with_ctrl_d(p)
+    finally:
+        p.close()
+
+
+@scenario
 def tab_completes_a_command(w):
     p = Pty(w, [w.repo], "tab")
     try:

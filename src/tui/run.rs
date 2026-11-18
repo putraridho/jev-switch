@@ -173,6 +173,11 @@ pub async fn run(repl: Repl, mut rx: mpsc::UnboundedReceiver<FrontMsg>, opts: Op
     let tracked = lineedit::tracked_files(&project);
     let mut app = App::new(project, History::load(opts.history.as_deref()), repl.engine.mode(), route_label(&repl), tracked);
     refresh(&mut app, &repl);
+    let (keymap, problems) = crate::workstation::keymap::load();
+    app.keymap = keymap;
+    if let Some(problem) = problems.first() {
+        app.notice = Some((problem.clone(), Instant::now()));
+    }
 
     let mut screen = Screen::new(std::io::stdout(), style.enabled);
     let mut events = Some(EventStream::new());

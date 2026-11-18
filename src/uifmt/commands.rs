@@ -23,7 +23,7 @@ pub struct Cmd {
     pub hint: &'static str,
 }
 
-pub const COMMANDS: [Cmd; 29] = [
+pub const COMMANDS: [Cmd; 32] = [
     Cmd { name: "/model", args: "[target]", group: Group::Model, about: "Pin a model or provider, or `auto` to let the router choose", example: "/model codex:gpt-6.1-sol", hint: "auto|codex|claude:..." },
     Cmd { name: "/provider", args: "auto|off", group: Group::Model, about: "Route across providers (auto), or use Claude only (off)", example: "/provider off", hint: "auto|off" },
     Cmd { name: "/orchestrate", args: "[on|off]", group: Group::Model, about: "Let a planner split a big task across cheaper workers", example: "/orchestrate on", hint: "on|off" },
@@ -45,17 +45,20 @@ pub const COMMANDS: [Cmd; 29] = [
     Cmd { name: "/init", args: "", group: Group::Project, about: "Have the agent write AGENTS.md, the instructions every CLI reads", example: "", hint: "" },
     Cmd { name: "/memory", args: "", group: Group::Project, about: "Open the project's instructions (AGENTS.md, CLAUDE.md) in $EDITOR", example: "", hint: "" },
     Cmd { name: "/review", args: "[focus]", group: Group::Project, about: "Review the uncommitted changes for bugs, without editing", example: "/review the parser changes", hint: "[focus]" },
-    Cmd { name: "/help", args: "", group: Group::Info, about: "Show this help", example: "", hint: "" },
+    Cmd { name: "/help", args: "", group: Group::Info, about: "Show this help, or search it: /help <words>", example: "/help diff", hint: "" },
     Cmd { name: "/status", args: "", group: Group::Info, about: "Show the project, routing, providers and the last turn", example: "", hint: "" },
     Cmd { name: "/cost", args: "", group: Group::Info, about: "Show tokens and time used this session, by model (also /usage)", example: "", hint: "" },
     Cmd { name: "/config", args: "", group: Group::Info, about: "Show the effective settings and where to change them", example: "/config", hint: "" },
     Cmd { name: "/providers", args: "[refresh]", group: Group::Info, about: "Show what was detected; `refresh` probes again", example: "/providers refresh", hint: "[refresh]" },
     Cmd { name: "/mcp", args: "[list|login <server>]", group: Group::Info, about: "Show configured MCP servers across ready providers, or log in", example: "/mcp login lunagraph-remote", hint: "[list|login <server>]" },
+    Cmd { name: "/tips", args: "", group: Group::Info, about: "Show short tips for getting more out of jev-code", example: "", hint: "" },
+    Cmd { name: "/keys", args: "", group: Group::Info, about: "Show the key cheat sheet (also ? on an empty box)", example: "", hint: "" },
+    Cmd { name: "/whatsnew", args: "[all]", group: Group::Info, about: "Show what changed in this version, or in every version", example: "/whatsnew all", hint: "[all]" },
     Cmd { name: "/doctor", args: "", group: Group::Info, about: "Check the setup and show how to fix problems", example: "", hint: "" },
     Cmd { name: "/terminal-setup", args: "[install]", group: Group::Info, about: "Make Shift-Enter insert a new line in your terminal", example: "/terminal-setup install", hint: "[install]" },
 ];
 
-pub(super) const KEYS: [(&str, &str); 13] = [
+pub const KEYS: [(&str, &str); 15] = [
     ("Enter", "send; while a turn runs, queue it for after the turn"),
     ("Shift-Enter", "new line inside your message (also Alt-Enter, Ctrl-J, or \\ then Enter)"),
     ("/", "open the command menu: ↑↓ choose, Tab complete, Enter run, Esc close"),
@@ -68,6 +71,8 @@ pub(super) const KEYS: [(&str, &str); 13] = [
     ("Ctrl-L", "clear the screen"),
     ("Shift-Tab", "cycle the mode: ask, edit, plan, auto"),
     ("!command", "run it in the shell; the output goes with your next message"),
+    ("?", "on an empty box: the key cheat sheet (also /keys)"),
+    ("Esc, then h j k l", "vim input mode (start with JEV_VIM=1): normal-mode keys, i/a/o to type again"),
     ("drop a file", "drag a file or image into the terminal to attach it"),
 ];
 

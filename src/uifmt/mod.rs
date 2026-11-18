@@ -46,13 +46,13 @@ mod testutil;
 
 pub use ansi::{clear_line, hide_cursor, restore_cursor, save_cursor, show_cursor, strip_ansi, up_row};
 pub use changes::{changes_block, diff_colorize, relativize_paths, tool_line, FileChange, MAX_CHANGE_ROWS};
-pub use commands::{command_names, command_usage, Cmd, COMMANDS};
+pub use commands::{command_names, command_usage, Cmd, Group, COMMANDS, KEYS};
 pub use complete::{complete, completion_start, hint, Candidate, CompleteCtx};
 pub use failure::{error_block, failover_note, next_steps_for, no_route_message, problem_block};
 pub use markdown::answer_text;
 pub use permissions::{auto_allowed, denied_without_asking, remembered_allowed, permission_answered, permission_prompt, permissions_text, Prompt, Question};
 pub use provider_view::{provider_glyphs, providers_table, AvailRow, ProviderStatus};
-pub use roles::{answer_block, display_tool, edit_preview, narration, route_row, sent_block, thinking_block, tool_name, tool_result_row, tool_row, EDIT_PREVIEW_LINES, THINKING_LINES};
+pub use roles::{answer_block, display_tool, edit_preview, narration, route_row, sent_block, thinking_block, tool_name, tool_output_fold, tool_result_row, tool_row, EDIT_PREVIEW_LINES, FOLD_KEEP, THINKING_LINES};
 pub use route::{route_line, short_reason, RouteFacts};
 pub use screens::{doctor_report, doctor_summary, help_text, status_text, DoctorItem, ReadyProvider, Severity, StatusFacts};
 pub use session::{config_text, context_text, cost_text, mcp_text, terminal_setup_text, why_text, ConfigRow, ContextFacts, CostRow, TerminalSetupFacts, COMPACT_SUGGEST_AT};

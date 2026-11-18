@@ -44,6 +44,8 @@ pub enum Command {
     Invalid(String),
     /// `/help`.
     Help,
+    /// `/help <words>`, `/tips`, `/keys`, `/whatsnew`.
+    Learn(crate::learn::Learn),
     /// `/status`.
     Status,
     /// `/doctor`: the setup check, inside the session.
@@ -155,6 +157,9 @@ pub fn parse(line: &str) -> Command {
     };
     let lower = head.to_ascii_lowercase();
     let head = lower.as_str();
+    if let Some(learn) = crate::learn::Learn::parse(head, rest().as_deref()) {
+        return learn.map_or_else(Command::Invalid, Command::Learn);
+    }
     match head {
         "/quit" | "/exit" => Command::Quit,
         "/new" => Command::New,
@@ -343,7 +348,7 @@ mod tests {
         assert_eq!(parse("/rename"), Command::Rename(None));
         assert_eq!(parse("/resume fix parser"), Command::Resume(Some("fix parser".into())));
         assert_eq!(parse("/HELP"), Command::Help, "commands are not case sensitive");
-        assert_eq!(parse("/help me"), Command::Invalid("usage: /help".into()));
+        assert_eq!(parse("/help me"), Command::Learn(crate::learn::Learn::Search("me".into())));
         assert_eq!(parse("/undo now"), Command::Invalid("usage: /undo".into()));
     }
 

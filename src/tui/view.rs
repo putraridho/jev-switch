@@ -11,7 +11,8 @@ use std::time::Instant;
 use super::app::App;
 use super::menu::MENU_ROWS;
 use crate::mode::Mode;
-use crate::uifmt::{display_width, truncate_to_width, wrap_to_width, Spinner, Style};
+use crate::workstation::panel::{compose, panel_rows, Section, PANEL_WIDTH, SPLIT_MIN_WIDTH};
+use crate::uifmt::{display_width,truncate_to_width, wrap_to_width, Spinner, Style};
 
 /// The most rows of typed text the box shows; longer text scrolls with the cursor.
 pub const INPUT_ROWS: usize = 8;
@@ -158,17 +159,38 @@ pub fn render(app: &App, width: usize, now: Instant, style: Style) -> Frame {
     } else if let Some(a) = &app.approval {
         rows.extend(approval_card(a, w, &th));
     } else {
-        let (box_rows, at) = input_box(app, w, &th);
+        // On a wide terminal the side panel (router, changed files) sits beside the box.
+        let side = if w >= SPLIT_MIN_WIDTH { panel_rows(&panel_sections(app), PANEL_WIDTH, style) } else { Vec::new() };
+        let main_w = if side.is_empty() { w } else { w - PANEL_WIDTH - 3 };
+        let (box_rows, at) = input_box(app, main_w, &th);
         let top = rows.len();
-        rows.extend(box_rows);
+        let mut main = box_rows;
         cursor = Some((top + at.0, at.1));
         if let Some(m) = &app.menu {
-            rows.extend(menu_rows(m, w, &th));
+            main.extend(menu_rows(m, main_w, &th));
         }
+        rows.extend(if side.is_empty() { main } else { compose(&main, &side, w, style) });
         rows.push(router_row(app, w, &th));
         rows.push(footer(app, w, now, &th));
     }
     Frame { rows, cursor }
+}
+
+/// What the side panel lists: each subscription's plan use or cooldown, and the git state.
+fn panel_sections(app: &App) -> Vec<Section> {
+    let router = app
+        .providers
+        .iter()
+        .map(|p| match (&p.cooling, p.used) {
+            (Some(left), _) => format!("{} cooling {left}", p.name),
+            (None, Some(u)) => format!("{} {u}%", p.name),
+            (None, None) => p.name.clone(),
+        })
+        .collect();
+    vec![
+        Section { title: "Router".into(), rows: router },
+        Section { title: "Branch".into(), rows: app.git.iter().cloned().collect() },
+    ]
 }
 
 /// The input box and where the cursor is in its rows.
@@ -280,6 +302,9 @@ fn router_row(app: &App, w: usize, th: &Theme) -> String {
 
 fn footer(app: &App, w: usize, now: Instant, th: &Theme) -> String {
     let mut left = format!("  {} {}", th.mode(app.mode), th.muted("(shift-tab)"));
+    if let Some(label) = app.vim.as_ref().and_then(|v| v.label()) {
+        left.push_str(&th.strong(&format!(" · {label}")));
+    }
     if let Some(git) = &app.git {
         left.push_str(&th.muted(&format!(" · ⎇ {git}")));
     }
@@ -347,7 +372,7 @@ mod tests {
         assert!(s.contains("│ › /"), "{s}");
         assert!(s.contains("  › /model [target]"), "the first command is selected: {s}");
         assert!(s.contains("Pin a model or provider"), "{s}");
-        assert!(s.contains("1/29 · ↑↓ more · tab complete · enter run · esc close"), "{s}");
+        assert!(s.contains("1/32 · ↑↓ more · tab complete · enter run · esc close"), "{s}");
         assert_eq!(s.lines().filter(|l| l.starts_with("    /") || l.starts_with("  › /")).count(), MENU_ROWS);
     }
 
@@ -427,6 +452,20 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn a_wide_terminal_shows_the_side_panel_beside_the_box_and_a_narrow_one_does_not() {
+        let mut a = app();
+        a.git = Some("main ±3".into());
+        a.providers = vec![crate::tui::app::ProviderChip { name: "codex".into(), used: Some(71), cooling: None }];
+        let wide = render(&a, 140, Instant::now(), OFF);
+        let text = wide.rows.join("\n");
+        assert!(wide.rows[0].contains("Router"), "{text}");
+        assert!(text.contains("codex 71%") && text.contains("main ±3"), "{text}");
+        assert!(wide.rows.iter().all(|r| display_width(r) < 140));
+        let narrow = screen(&a, 80);
+        assert!(!narrow.contains("Router"), "{narrow}");
     }
 
     #[test]

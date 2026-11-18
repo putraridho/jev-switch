@@ -774,6 +774,9 @@ impl Inner {
                 if let Some(row) = uifmt::tool_result_row(&tool, *ok, text, style, width) {
                     self.emit_err(&row);
                 }
+                if let Some(folded) = uifmt::tool_output_fold(&tool, *ok, text, style, width) {
+                    self.emit_err(&folded);
+                }
             }
             Event::Hint(t) => {
                 let text = format!("  {}", style.yellow(&uifmt::strip_ansi(t)));

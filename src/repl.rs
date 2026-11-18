@@ -259,6 +259,7 @@ impl Repl {
             Command::Quit => return Flow::Quit,
             Command::Prompt(text) => return self.prompt(&text, io).await,
             Command::Help => self.page_out(&uifmt::help_text(style, self.console.width())),
+            Command::Learn(learn) => self.page_out(&learn.render(style, self.console.width())),
             Command::Status => {
                 let facts = views::status_facts(&self.engine, self.last_summary.as_ref(), self.home.as_deref(), self.now());
                 self.page_out(&uifmt::status_text(&facts, style));

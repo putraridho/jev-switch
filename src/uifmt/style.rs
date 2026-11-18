@@ -34,7 +34,9 @@ impl Style {
     /// piped; `TERM=dumb` turns it off; otherwise it follows whether the stream is a tty.
     pub fn detect(stream_is_tty: bool) -> Self {
         let var = |k: &str| std::env::var(k).ok();
-        Self::resolve(stream_is_tty, var("NO_COLOR").as_deref(), var("TERM").as_deref(), var("CLICOLOR_FORCE").as_deref())
+        // `JEV_THEME=mono` is NO_COLOR by another name.
+        let mono = crate::workstation::access::mono_theme(var("JEV_THEME").as_deref()).then(|| "1".to_string());
+        Self::resolve(stream_is_tty, mono.or_else(|| var("NO_COLOR")).as_deref(), var("TERM").as_deref(), var("CLICOLOR_FORCE").as_deref())
     }
 
     /// The pure half of [`Style::detect`].

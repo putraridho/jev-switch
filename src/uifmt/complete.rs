@@ -140,9 +140,9 @@ mod tests {
         assert_eq!(
             replacements("/"),
             vec![
-                "/clear", "/compact", "/config", "/context", "/copy", "/cost", "/diff", "/doctor", "/edit", "/export", "/help", "/init", "/mcp", "/memory", "/mode",
+                "/clear", "/compact", "/config", "/context", "/copy", "/cost", "/diff", "/doctor", "/edit", "/export", "/help", "/init", "/keys", "/mcp", "/memory", "/mode",
                 "/model", "/new", "/orchestrate", "/permissions", "/provider", "/providers", "/quit", "/rename", "/resume", "/review", "/status", "/terminal-setup",
-                "/undo", "/why"
+                "/tips", "/undo", "/whatsnew", "/why"
             ]
         );
         assert_eq!(replacements("/mcp "), vec!["list", "login"]);
