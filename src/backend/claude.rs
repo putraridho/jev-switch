@@ -98,7 +98,7 @@ pub fn mcp_config_json(mcp: &McpAttachment) -> Value {
 
 /// The input field that says most about a tool call: a path, a command, a pattern.
 pub fn telling_field(input: &Value) -> Option<&str> {
-    ["file_path", "command", "pattern", "path", "url", "description"].iter().find_map(|k| input.get(*k).and_then(Value::as_str))
+    ["file_path", "command", "pattern", "path", "url", "description", "brief", "worker_id"].iter().find_map(|k| input.get(*k).and_then(Value::as_str))
 }
 
 /// One-line summary of a tool call: its name plus the most telling input field.
@@ -159,16 +159,73 @@ fn usage_of(result: &Value) -> Usage {
 fn assistant_events(ev: &Value) -> Vec<Event> {
     let nested = !ev["parent_tool_use_id"].is_null();
     let blocks = ev["message"]["content"].as_array().into_iter().flatten();
-    blocks
-        .filter_map(|b| match b["type"].as_str() {
-            Some("tool_use") => Some(Event::Tool(tool_summary(b["name"].as_str().unwrap_or("?"), &b["input"]))),
+    let mut out = Vec::new();
+    for b in blocks {
+        match b["type"].as_str() {
+            Some("tool_use") => {
+                let name = b["name"].as_str().unwrap_or("?");
+                out.push(Event::Tool(tool_summary(name, &b["input"])));
+                if !nested {
+                    out.extend(edit_event(name, &b["input"]));
+                }
+            }
             Some("text") if !nested => {
                 let t = b["text"].as_str().unwrap_or("").trim();
                 // The limit notice is reported as an error by the runner, not shown as an answer.
-                (!t.is_empty() && !is_limit_message(t)).then(|| Event::Text(t.to_string()))
+                if !t.is_empty() && !is_limit_message(t) {
+                    out.push(Event::Text(t.to_string()));
+                }
             }
-            _ => None,
-        })
+            Some("thinking") if !nested => {
+                let t = b["thinking"].as_str().unwrap_or("").trim();
+                if !t.is_empty() {
+                    out.push(Event::Thinking(t.to_string()));
+                }
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
+fn lines_of(v: &Value) -> Vec<String> {
+    v.as_str().map(|s| s.lines().map(String::from).collect()).unwrap_or_default()
+}
+
+/// What an Edit, MultiEdit or Write call changes, from its input.
+fn edit_event(tool: &str, input: &Value) -> Option<Event> {
+    let path = input["file_path"].as_str()?.to_string();
+    match tool {
+        "Edit" => Some(Event::Edit { path, removed: lines_of(&input["old_string"]), added: lines_of(&input["new_string"]) }),
+        "MultiEdit" => {
+            let edits = input["edits"].as_array()?;
+            let removed = edits.iter().flat_map(|e| lines_of(&e["old_string"])).collect();
+            let added = edits.iter().flat_map(|e| lines_of(&e["new_string"])).collect();
+            Some(Event::Edit { path, removed, added })
+        }
+        "Write" => Some(Event::Edit { path, removed: Vec::new(), added: lines_of(&input["content"]) }),
+        _ => None,
+    }
+}
+
+/// The text of a `tool_result` block: a string, or a list of text parts.
+fn result_text(content: &Value) -> String {
+    match content {
+        Value::String(s) => s.clone(),
+        Value::Array(parts) => parts.iter().filter_map(|p| p["text"].as_str()).collect::<Vec<_>>().join("\n"),
+        _ => String::new(),
+    }
+}
+
+/// Tool results of the main conversation (a sub-agent's are its own business).
+fn user_events(ev: &Value) -> Vec<Event> {
+    if !ev["parent_tool_use_id"].is_null() {
+        return Vec::new();
+    }
+    let blocks = ev["message"]["content"].as_array().into_iter().flatten();
+    blocks
+        .filter(|b| b["type"] == "tool_result")
+        .map(|b| Event::ToolResult { ok: b["is_error"].as_bool() != Some(true), text: result_text(&b["content"]) })
         .collect()
 }
 
@@ -390,6 +447,7 @@ impl Backend for ClaudeBackend {
         let Ok(ev) = serde_json::from_str::<Value>(line) else { return vec![] };
         match ev["type"].as_str() {
             Some("assistant") => assistant_events(&ev),
+            Some("user") => user_events(&ev),
             Some("system") if ev["subtype"] == "permission_denied" => vec![Event::Hint(format!(
                 "\u{2717} denied {} \u{2014} allow it via CODE_ALLOWED_TOOLS or your Claude Code settings",
                 ev["tool_name"].as_str().unwrap_or("tool")
@@ -494,7 +552,9 @@ mod tests {
 
     #[test]
     fn recorded_turn_parses_to_tool_plan_text_finish() {
-        let events = parse_all(&backend());
+        let all = parse_all(&backend());
+        assert!(all.contains(&Event::ToolResult { ok: true, text: "1\thello\n2\t\n3\tworld\n4\t".into() }), "{all:?}");
+        let events: Vec<Event> = all.into_iter().filter(|e| !matches!(e, Event::ToolResult { .. })).collect();
         assert_eq!(events.len(), 4, "{events:?}");
         assert!(matches!(&events[0], Event::Tool(s) if s.starts_with("Read ") && s.ends_with("/spike/a.txt")));
         assert!(matches!(&events[1], Event::Plan(p)
@@ -517,7 +577,8 @@ mod tests {
         ]}});
         assert_eq!(backend().parse_line(&line.to_string()), vec![Event::Tool("Read a".into())]);
         let result = json!({"type":"user","parent_tool_use_id":null,"message":{"content":[{"type":"tool_result","content":"subagent report"}]}});
-        assert!(backend().parse_line(&result.to_string()).is_empty());
+        let events = backend().parse_line(&result.to_string());
+        assert!(!events.iter().any(|e| matches!(e, Event::Text(_))), "a sub-agent's report is a tool result, not the answer: {events:?}");
     }
 
     #[test]
@@ -552,6 +613,30 @@ mod tests {
         assert!(backend().parse_line("").is_empty());
         assert!(backend().parse_line(r#"{"type":"system","subtype":"init"}"#).is_empty());
         assert!(backend().parse_line(r#"{"type":"rate_limit_event","rate_limit_info":{}}"#).is_empty());
+    }
+
+    #[test]
+    fn tool_results_and_edits_of_the_main_conversation_are_reported() {
+        let b = backend();
+        let ok = json!({"type":"user","parent_tool_use_id":null,"message":{"content":[{"type":"tool_result","tool_use_id":"t1","content":"line one\nline two"}]}});
+        assert_eq!(b.parse_line(&ok.to_string()), vec![Event::ToolResult { ok: true, text: "line one\nline two".into() }]);
+        let failed = json!({"type":"user","message":{"content":[{"type":"tool_result","is_error":true,"content":[{"type":"text","text":"no such file"}]}]}});
+        assert_eq!(b.parse_line(&failed.to_string()), vec![Event::ToolResult { ok: false, text: "no such file".into() }]);
+        let nested = json!({"type":"user","parent_tool_use_id":"agent","message":{"content":[{"type":"tool_result","content":"x"}]}});
+        assert!(b.parse_line(&nested.to_string()).is_empty(), "a sub-agent's results stay inside it");
+        let edit = json!({"type":"assistant","message":{"content":[{"type":"tool_use","name":"Edit","input":{"file_path":"src/a.rs","old_string":"let a = 1;","new_string":"let a = 2;\nlet b = 3;"}}]}});
+        assert_eq!(
+            b.parse_line(&edit.to_string()),
+            vec![Event::Tool("Edit src/a.rs".into()), Event::Edit { path: "src/a.rs".into(), removed: vec!["let a = 1;".into()], added: vec!["let a = 2;".into(), "let b = 3;".into()] }]
+        );
+        let write = json!({"type":"assistant","message":{"content":[{"type":"tool_use","name":"Write","input":{"file_path":"n.txt","content":"hi\n"}}]}});
+        assert!(matches!(&b.parse_line(&write.to_string())[1], Event::Edit { removed, added, .. } if removed.is_empty() && added == &vec!["hi".to_string()]));
+    }
+
+    #[test]
+    fn thinking_is_reported_apart_from_the_answer() {
+        let line = json!({"type":"assistant","message":{"content":[{"type":"thinking","thinking":"The empty case returns early."},{"type":"text","text":"Fixed."}]}});
+        assert_eq!(backend().parse_line(&line.to_string()), vec![Event::Thinking("The empty case returns early.".into()), Event::Text("Fixed.".into())]);
     }
 
     #[test]

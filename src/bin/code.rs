@@ -314,6 +314,8 @@ async fn session(args: &Args, dir: &Path, term: &Term, console: Console, state_d
     let runtime = start_runtime(&console).await;
     let saved = state_dir.as_deref().map(Saved::load).unwrap_or_default();
     let engine = engine_for(args, runtime, router, dir.to_path_buf(), console.can_ask(), Some(saved)).with_persistence(state_dir.clone());
+    // The interactive screen shows text as it arrives; plain output keeps it until it is final.
+    let engine = if front_rx.is_some() { engine.with_streaming() } else { engine };
     let home = std::env::var("HOME").ok();
     let mut repl = Repl::new(engine, console.clone(), home.clone(), term.stdout_tty).with_state_dir(state_dir.clone());
     startup(&mut repl, args, term, &console, state_dir.as_deref(), home.as_deref());

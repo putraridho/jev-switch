@@ -408,6 +408,10 @@ pub struct Engine {
     git_status: GitStatus,
     now: Clock,
     idle_timeout: Duration,
+    /// Show assistant text as it arrives instead of holding it until the attempt succeeds
+    /// (the interactive screen: a failed attempt's text is then followed by a note saying it
+    /// was cut off, which the failover line already says).
+    stream_text: bool,
     turn_log: Option<String>,
     /// The last (prompt, reply), for Jev's correction question.
     previous: Option<(String, String)>,
@@ -456,6 +460,7 @@ impl Engine {
             git_status: Box::new(git_status_short),
             now: Box::new(log::now_ms),
             idle_timeout: idle_timeout_from_env(),
+            stream_text: false,
             turn_log: log::path_from_env("JEV_CODE_LOG", "code-turns.jsonl"),
             previous: None,
             last_context_tokens: 0,
@@ -485,6 +490,12 @@ impl Engine {
     /// passes [`log::state_dir`].
     pub fn with_persistence(mut self, state_dir: Option<PathBuf>) -> Self {
         self.persist = state_dir;
+        self
+    }
+
+    /// Show assistant text the moment it arrives (see the field).
+    pub fn with_streaming(mut self) -> Self {
+        self.stream_text = true;
         self
     }
 
@@ -1076,13 +1087,19 @@ impl Engine {
         // never sits on screen as if it were an answer.
         let mut held: Vec<Event> = Vec::new();
         let idle = self.idle_timeout;
+        let stream = self.stream_text;
         let started = Instant::now();
         let runtime = &mut self.runtime;
         let result = {
             let shared_ui: SharedUi = Mutex::new(&mut *ui);
             let approver = EngineApprover { ui: &shared_ui, cancel, dir: &self.dir, mode: self.mode };
             let mut on_event = |e: &Event| match e {
-                Event::Text(_) => held.push(e.clone()),
+                Event::Text(_) => {
+                    if stream {
+                        lock_ui(&shared_ui).event(e);
+                    }
+                    held.push(e.clone());
+                }
                 other => {
                     lock_ui(&shared_ui).event(other);
                     match other {
@@ -1118,8 +1135,10 @@ impl Engine {
             // Some CLIs deliver the answer only in the final event; show it unless it was already among the texts.
             let answer = out.text.trim();
             let missing = !answer.is_empty() && !streamed(answer);
-            for e in &held {
-                ui.event(e);
+            if !stream {
+                for e in &held {
+                    ui.event(e);
+                }
             }
             if missing {
                 ui.event(&Event::Text(answer.to_string()));

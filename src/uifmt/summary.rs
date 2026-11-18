@@ -66,11 +66,26 @@ pub fn turn_summary(f: &SummaryFacts, style: Style) -> String {
     }
 }
 
+/// The line after a turn on the interactive screen, with only what a person looks for:
+/// `✓ codex · 14s · 3 files +12 −4`. The model is on the route row that led the turn; token
+/// counts live in `/cost`; the plan window shows only once it is 80% used or more.
+pub fn turn_summary_brief(f: &SummaryFacts, style: Style) -> String {
+    let plan = f.plan.clone().filter(|(_, used)| *used >= 0.8);
+    turn_summary(&SummaryFacts { in_tokens: 0, cached_tokens: 0, out_tokens: 0, plan, model: String::new(), ..f.clone() }, style)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::uifmt::strip_ansi;
     use crate::uifmt::testutil::*;
+
+    #[test]
+    fn the_brief_summary_keeps_what_a_person_looks_for() {
+        assert_eq!(turn_summary_brief(&facts(), OFF), "✓ codex · 14s");
+        let busy = SummaryFacts { plan: Some(("claude".into(), 0.91)), files_changed: Some((2, 5, 1)), ..facts() };
+        assert_eq!(turn_summary_brief(&busy, OFF), "✓ codex · 14s · claude plan 91% · 2 files +5 −1");
+    }
 
     #[test]
     fn turn_summaries() {

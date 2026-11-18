@@ -175,8 +175,20 @@ case "$last" in
     emit '{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t2","name":"Bash","input":{"command":"cargo test"}}]}}'
     sleep 1.5
     ;;
+  *realistic*)
+    # A turn as a real one looks: narration, reads, a command with output, an edit, an answer.
+    emit '{"type":"assistant","message":{"content":[{"type":"thinking","thinking":"The user reports empty input crashes the parser.\nI should read the parser first, then run its tests.\nIf the empty case returns None, callers may unwrap it.\nCheck the callers too."}]}}'
+    emit '{"type":"assistant","message":{"content":[{"type":"text","text":"Let me look at how the parser handles empty input."},{"type":"tool_use","id":"r1","name":"Read","input":{"file_path":"a.txt"}}]}}'
+    emit '{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"r1","content":"1\thello\n2\tworld\n3\t!"}]}}'
+    emit '{"type":"assistant","message":{"content":[{"type":"tool_use","id":"r2","name":"Bash","input":{"command":"cargo test parser"}}]}}'
+    emit '{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"r2","content":"running 4 tests\ntest empty ... FAILED\n\ntest result: FAILED. 3 passed; 1 failed"}]}}'
+    emit '{"type":"assistant","message":{"content":[{"type":"text","text":"The empty case returns early without a token. Fixing that."},{"type":"tool_use","id":"r3","name":"Edit","input":{"file_path":"a.txt","old_string":"if s.is_empty() { return None; }","new_string":"if s.is_empty() {\n    return Some(Token::Eof);\n}"}}]}}'
+    emit '{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"r3","content":"The file a.txt has been updated."}]}}'
+    answer="Fixed: an empty input now yields **Token::Eof** instead of nothing.\\n\\n- the parser test passes\\n- no other caller relied on None"
+    ;;
   *)
     emit '{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t1","name":"Read","input":{"file_path":"a.txt"}}]}}'
+    emit '{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t1","content":"1\thello"}]}}'
     sleep 0.2
     ;;
 esac
@@ -784,13 +796,15 @@ def a_typed_prompt_runs_a_turn_with_tools_answer_and_summary(w):
         p.expect("✓ claude", 15, "the turn summary")
         summary = wait_prompt(p, 15, "the next prompt")
         line = [l for l in summary.split("\n") if "✓ claude" in l][-1]
-        for part in ("in 15", "(cached 5)", "out 3"):
-            if part not in line:
-                raise Fail(f"summary line should contain {part!r}: {line!r}")
+        if "◆ claude · claude-sonnet-5-5" not in summary:
+            raise Fail(f"the route row should lead the turn with the provider and model:\n{p.screen_tail()}")
+        for part in ("in 15", "out 3"):
+            if part in line:
+                raise Fail(f"token counts belong to /cost, not every turn: {line!r}")
+        if "⎿ read 1 line" not in summary:
+            raise Fail(f"what the tool returned should show under it:\n{p.screen_tail()}")
         if not re.search(r"· \d+(ms|s)\b", line):
             raise Fail(f"summary line should have the elapsed time: {line!r}")
-        if "→ claude" in summary:
-            raise Fail("the router's reasoning stays behind /why, out of the conversation")
         quit_with_ctrl_d(p)
     finally:
         p.close()
@@ -820,7 +834,7 @@ def status_line_shows_during_a_slow_turn_and_is_erased_after(w):
         if turn.rfind("\x1b[?25h") < turn.find("\x1b[?25l"):
             raise Fail("the cursor was hidden for the status line and never shown again")
         # The line carries the model and what is running.
-        if "Bash cargo test" not in turn:
+        if "Bash cargo test" not in strip_known_escapes(turn):
             raise Fail("the tool call should show in the status line / tool lines")
         quit_with_ctrl_d(p)
     finally:
@@ -1594,6 +1608,37 @@ def continue_resumes_the_saved_session(w):
 
 
 @scenario
+def rename_names_the_session_in_the_footer_and_in_resume(w):
+    p = Pty(w, [w.repo], "rename-1")
+    try:
+        prompt_ready(p)
+        p.send("/rename\r")
+        p.expect("This session has no name yet", 10, "/rename alone says how")
+        wait_prompt(p, 5)
+        ask(p, "explain quick")
+        p.send("/rename parser   fix\r")
+        p.expect("this session is now called \u201cparser fix\u201d", 10, "the confirmation")
+        wait_prompt(p, 5)
+        if "\u201cparser fix\u201d" not in footer(p):
+            raise Fail(f"the footer should show the session's name:\n{p.screen_tail()}")
+        quit_with_ctrl_d(p)
+    finally:
+        p.close()
+    q = Pty(w, [w.repo], "rename-2")
+    try:
+        prompt_ready(q)
+        ask(q, "another topic quick")
+        q.send("/resume\r")
+        q.expect("resumed 1 turn", 10, "the named session resumed")
+        wait_prompt(q, 5)
+        if "\u201cparser fix\u201d" not in footer(q):
+            raise Fail(f"a resumed session keeps its name:\n{q.screen_tail()}")
+        quit_with_ctrl_d(q)
+    finally:
+        q.close()
+
+
+@scenario
 def the_permission_mode_carries_over_to_the_next_session(w):
     def start(args, name):
         p = Pty(w, args + [w.repo], name)
@@ -1814,7 +1859,7 @@ def providers_line(p, name):
     deadline = time.time() + 10
     while True:
         text = p.visible()
-        shown = text[text.rfind("› /providers\n") :] if "› /providers\n" in text else ""
+        shown = text[text.rfind("❯ /providers") :] if "❯ /providers" in text else ""
         rows = re.findall(rf"^\s*[●○✕?]\s+{name}\b.*$", shown, re.M)
         if rows:
             return rows[-1]

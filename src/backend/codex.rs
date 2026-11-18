@@ -144,6 +144,15 @@ impl CodexBackend {
                 vec![Event::Text(text.to_string())]
             }
             Some("file_change") => file_change_events(item),
+            Some("reasoning") => {
+                let text = item["text"].as_str().unwrap_or("").trim();
+                if text.is_empty() { vec![] } else { vec![Event::Thinking(text.to_string())] }
+            }
+            Some("command_execution") => {
+                let ok = item["exit_code"].as_i64().is_none_or(|c| c == 0) && item["status"] != "failed";
+                let text = item["aggregated_output"].as_str().unwrap_or("").to_string();
+                vec![Event::ToolResult { ok, text }]
+            }
             _ => vec![],
         }
     }
@@ -347,7 +356,9 @@ mod tests {
 
     #[test]
     fn first_turn_parses_to_tools_text_and_finish() {
-        let events = parse_all(&backend(), TURN1);
+        let all = parse_all(&backend(), TURN1);
+        assert!(all.contains(&Event::ToolResult { ok: true, text: "hello\n".into() }), "a command's output is reported: {all:?}");
+        let events: Vec<Event> = all.into_iter().filter(|e| !matches!(e, Event::ToolResult { .. })).collect();
         assert_eq!(events.len(), 5, "{events:?}");
         assert_eq!(events[0], Event::Text("I\u{2019}ll read `a.txt`, then append `world` on a new line.".into()));
         assert_eq!(events[1], Event::Tool("shell cat a.txt".into()));
@@ -426,7 +437,7 @@ mod tests {
         assert!(b.parse_line("not json").is_empty());
         assert!(b.parse_line("").is_empty());
         assert!(b.parse_line(r#"{"type":"turn.started"}"#).is_empty());
-        assert!(b.parse_line(r#"{"type":"item.completed","item":{"type":"reasoning","text":"x"}}"#).is_empty());
+        assert_eq!(b.parse_line(r#"{"type":"item.completed","item":{"type":"reasoning","text":"x"}}"#), vec![Event::Thinking("x".into())], "reasoning is shown apart, never as the answer");
     }
 
     #[test]

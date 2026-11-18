@@ -11,7 +11,7 @@ use std::time::Instant;
 use super::app::App;
 use super::menu::MENU_ROWS;
 use crate::mode::Mode;
-use crate::uifmt::{display_width, status_line, truncate_to_width, wrap_to_width, Spinner, Style};
+use crate::uifmt::{display_width, truncate_to_width, wrap_to_width, Spinner, Style};
 
 /// The most rows of typed text the box shows; longer text scrolls with the cursor.
 pub const INPUT_ROWS: usize = 8;
@@ -31,6 +31,9 @@ pub struct Frame {
 struct Theme(Style);
 
 impl Theme {
+    fn provider_theme(style: Style) -> crate::uifmt::Theme {
+        crate::uifmt::Theme::new(style)
+    }
     fn accent(&self, s: &str) -> String {
         self.0.cyan(s)
     }
@@ -89,6 +92,35 @@ fn boxed(content: &str, width: usize, th: &Theme) -> String {
     format!("{} {shown}{} {}", th.border("│"), " ".repeat(pad), th.border("│"))
 }
 
+/// What the model is doing, said as an action: `Bash cargo test` → `Running cargo test`.
+pub fn doing(activity: Option<&str>) -> String {
+    let Some(a) = activity.map(str::trim).filter(|a| !a.is_empty()) else { return "Thinking".to_string() };
+    let (tool, rest) = a.split_once(' ').unwrap_or((a, ""));
+    let verb = match tool.to_ascii_lowercase().as_str() {
+        "bash" | "shell" => "Running",
+        "read" => "Reading",
+        "edit" | "multiedit" => "Editing",
+        "write" => "Writing",
+        "grep" | "glob" | "ls" => "Searching",
+        "webfetch" | "websearch" => "Looking up",
+        "task" | "agent" => "Delegating",
+        _ => return a.to_string(),
+    };
+    if rest.is_empty() { verb.to_string() } else { format!("{verb} {rest}") }
+}
+
+/// The working row: `⠹ Running cargo test · 12s · claude · sonnet-5-5`. What is happening
+/// comes first, then how long, then who is doing it. Without colour the spinner is a still
+/// mark (no colour means no animation either).
+pub fn working_line(work: &super::app::Working, elapsed: std::time::Duration, width: usize, style: Style) -> String {
+    let spinner = if style.enabled { Spinner::frame_for(elapsed) } else { "•" };
+    let secs = elapsed.as_secs();
+    let time = if secs >= 60 { format!("{}m{:02}s", secs / 60, secs % 60) } else { format!("{secs}s") };
+    let what = doing(work.activity.as_deref());
+    let who = if work.label == "thinking" { String::new() } else { format!(" · {}", work.label) };
+    truncate_to_width(&format!("{} {} {}", style.cyan(spinner), style.bold(&what), style.dim(&format!("· {time}{who}"))), width)
+}
+
 /// Draw the live area for `width` terminal columns at time `now`.
 pub fn render(app: &App, width: usize, now: Instant, style: Style) -> Frame {
     let th = Theme(style);
@@ -102,11 +134,7 @@ pub fn render(app: &App, width: usize, now: Instant, style: Style) -> Frame {
         let hint = "esc to stop";
         let budget = w.saturating_sub(display_width(hint) + 2);
         let elapsed = now.duration_since(work.started);
-        let mut line = status_line(&work.label, elapsed, work.activity.as_deref(), budget, style);
-        if !style.enabled {
-            // No colour means no animation either: a still mark in place of the spinner.
-            line = line.replacen(Spinner::frame_for(elapsed), "•", 1);
-        }
+        let line = working_line(work, elapsed, budget, style);
         rows.push(spread(&line, &th.muted(hint), w));
     }
     for (i, queued) in app.queue.iter().take(3).enumerate() {
@@ -137,6 +165,7 @@ pub fn render(app: &App, width: usize, now: Instant, style: Style) -> Frame {
         if let Some(m) = &app.menu {
             rows.extend(menu_rows(m, w, &th));
         }
+        rows.push(router_row(app, w, &th));
         rows.push(footer(app, w, now, &th));
     }
     Frame { rows, cursor }
@@ -223,8 +252,45 @@ fn approval_card(a: &super::app::Approval, w: usize, th: &Theme) -> Vec<String> 
     rows
 }
 
+/// The router row: how turns are routed and what each subscription has left:
+/// `  ⇄ auto · claude 32% · codex 71% · gemini cooling 1h20m · orchestrate on`. A plan window
+/// at 80% or more is yellow (the router will move off it soon).
+fn router_row(app: &App, w: usize, th: &Theme) -> String {
+    let style = th.0;
+    let names = Theme::provider_theme(style);
+    let mut parts = vec![format!("{} {}", th.accent("⇄"), app.route)];
+    for p in &app.providers {
+        let name = names.name(&p.name);
+        let chip = match (&p.cooling, p.used) {
+            (Some(left), _) => format!("{name} {}", th.muted(&format!("cooling {left}"))),
+            (None, Some(u)) if u >= 80 => format!("{name} {}", th.warning(&format!("{u}%"))),
+            (None, Some(u)) => format!("{name} {}", th.muted(&format!("{u}%"))),
+            (None, None) => name,
+        };
+        parts.push(chip);
+    }
+    if app.providers.is_empty() {
+        parts.push(th.warning("no provider ready · /doctor"));
+    }
+    if app.orchestrate {
+        parts.push(th.muted("orchestrate on"));
+    }
+    truncate_to_width(&format!("  {}", parts.join(&th.muted(" · "))), w)
+}
+
 fn footer(app: &App, w: usize, now: Instant, th: &Theme) -> String {
-    let left = format!("  {} {} {}", th.mode(app.mode), th.muted("(shift-tab) ·"), th.muted(&app.route));
+    let mut left = format!("  {} {}", th.mode(app.mode), th.muted("(shift-tab)"));
+    if let Some(git) = &app.git {
+        left.push_str(&th.muted(&format!(" · ⎇ {git}")));
+    }
+    if let Some(name) = &app.session_name {
+        left.push_str(&th.muted(&format!(" · \u{201c}{name}\u{201d}")));
+    }
+    // The context window only shows once it starts to matter.
+    if let Some(pct) = app.context.filter(|p| *p >= 50) {
+        let text = format!(" · context {pct}%");
+        left.push_str(&if pct >= 80 { th.warning(&format!("{text} · /compact")) } else { th.muted(&text) });
+    }
     let right = match &app.notice {
         Some((text, at)) if now.duration_since(*at) < super::app::NOTICE_FOR => th.warning(text),
         _ if app.working.is_some() => th.muted("enter queue · esc stop"),
@@ -268,7 +334,8 @@ mod tests {
             &f.rows[..3],
             &[format!("╭{rule}╮"), format!("│ › Ask anything · / for commands · @ for files{}│", " ".repeat(21)), format!("╰{rule}╯")]
         );
-        assert!(f.rows[3].starts_with("  edit mode (shift-tab) · auto") && f.rows[3].ends_with("enter send · shift-enter newline"));
+        assert!(f.rows[3].starts_with("  ⇄ auto"), "the router row: {}", f.rows[3]);
+        assert!(f.rows[4].starts_with("  edit mode (shift-tab)") && f.rows[4].ends_with("enter send · shift-enter newline"), "{}", f.rows[4]);
         assert_eq!(f.cursor, Some((1, 4)));
     }
 
@@ -280,7 +347,7 @@ mod tests {
         assert!(s.contains("│ › /"), "{s}");
         assert!(s.contains("  › /model [target]"), "the first command is selected: {s}");
         assert!(s.contains("Pin a model or provider"), "{s}");
-        assert!(s.contains("1/28 · ↑↓ more · tab complete · enter run · esc close"), "{s}");
+        assert!(s.contains("1/29 · ↑↓ more · tab complete · enter run · esc close"), "{s}");
         assert_eq!(s.lines().filter(|l| l.starts_with("    /") || l.starts_with("  › /")).count(), MENU_ROWS);
     }
 
@@ -304,10 +371,19 @@ mod tests {
         a.queue.push_back("then run clippy".into());
         let s = screen(&a, 80);
         let first = s.lines().next().unwrap_or_default();
-        assert!(first.starts_with("• claude · sonnet-5-5 · 0s · Bash cargo test") && first.ends_with("esc to stop"), "a still mark without colour: {first}");
+        assert!(first.starts_with("• Running cargo test · 0s · claude · sonnet-5-5") && first.ends_with("esc to stop"), "a still mark without colour: {first}");
         assert!(s.contains("↳ then run clippy (queued)"), "{s}");
         assert!(s.contains("Type to queue a message for after this turn"), "{s}");
         assert!(s.contains("enter queue · esc stop"), "{s}");
+    }
+
+    #[test]
+    fn the_working_row_says_what_is_happening_as_an_action() {
+        assert_eq!(doing(None), "Thinking");
+        assert_eq!(doing(Some("Bash cargo test")), "Running cargo test");
+        assert_eq!(doing(Some("Read src/a.rs")), "Reading src/a.rs");
+        assert_eq!(doing(Some("Grep TODO")), "Searching TODO");
+        assert_eq!(doing(Some("stopping...")), "stopping...");
     }
 
     #[test]
@@ -351,6 +427,34 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn the_router_row_shows_each_subscription_and_what_it_has_left() {
+        use crate::tui::app::ProviderChip;
+        let mut a = app();
+        a.providers = vec![
+            ProviderChip { name: "claude".into(), used: Some(32), cooling: None },
+            ProviderChip { name: "codex".into(), used: Some(85), cooling: None },
+            ProviderChip { name: "gemini".into(), used: None, cooling: Some("1h20m".into()) },
+        ];
+        a.orchestrate = true;
+        let s = screen(&a, 120);
+        assert!(s.contains("  ⇄ auto · claude 32% · codex 85% · gemini cooling 1h20m · orchestrate on"), "{s}");
+        a.providers.clear();
+        assert!(screen(&a, 120).contains("⇄ auto · no provider ready · /doctor"));
+    }
+
+    #[test]
+    fn the_footer_shows_the_branch_and_a_filling_context_window() {
+        let mut a = app();
+        a.git = Some("main ±3".into());
+        a.context = Some(30);
+        let s = screen(&a, 120);
+        assert!(s.contains("edit mode (shift-tab) · ⎇ main ±3  "), "{s}");
+        assert!(!s.contains("context"), "30% does not matter yet: {s}");
+        a.context = Some(85);
+        assert!(screen(&a, 120).contains("· context 85% · /compact"));
     }
 
     #[test]

@@ -169,6 +169,15 @@ impl Repl {
         Flow::Continue
     }
 
+    /// How full the last model's context window is, in percent, when known.
+    pub fn context_percent(&self) -> Option<u8> {
+        let last = self.log.turns().iter().rev().find(|t| t.usage.is_some())?;
+        let usage = last.usage.unwrap_or_default();
+        let window = last.route.as_ref().and_then(|(p, m)| catalog::find(*p, m)).map(|s| s.context_tokens)?;
+        let used = usage.context_tokens.unwrap_or(usage.input_tokens);
+        (window > 0).then(|| ((used.saturating_mul(100)) / window).min(100) as u8)
+    }
+
     /// `/context`.
     pub(super) fn context_text(&self) -> String {
         let last = self.log.turns().iter().rev().find(|t| t.usage.is_some());

@@ -319,6 +319,7 @@ impl Repl {
             Command::TerminalSetup { install } => self.terminal_setup(install, io),
             Command::Shell(command) => self.shell(&command),
             Command::Resume(query) => self.resume(query.as_deref()),
+            Command::Rename(name) => self.rename(name.as_deref()),
             Command::Permissions(cmd) => self.permissions(cmd),
             Command::Diff(path) => self.diff(path.as_deref()),
             Command::Undo => self.undo(io).await,
@@ -487,6 +488,27 @@ impl Repl {
     /// `/resume [number | words]`: continue one of this folder's saved sessions. With
     /// several to choose from, a terminal gets the list to pick from; any other output gets
     /// it numbered, and `/resume 2` takes one.
+    /// `/rename [name]`: name the session, or say what it is called.
+    fn rename(&mut self, name: Option<&str>) {
+        let style = self.out_style();
+        let Some(name) = name else {
+            let text = match self.engine.sessions.name() {
+                Some(n) => format!("This session is called \u{201c}{n}\u{201d}. Rename it with /rename <name>."),
+                None => "This session has no name yet. Name it with /rename <name>; /resume then lists it by that name.".to_string(),
+            };
+            return self.console.out(&format!("  {}", style.dim(&text)));
+        };
+        self.engine.sessions.set_name(Some(name));
+        let Some(set) = self.engine.sessions.name().map(String::from) else {
+            return self.console.out(&format!("  {}", style.dim("A name needs at least one word.")));
+        };
+        let saved = self.engine.sessions.turns() > 0;
+        let saving = self.engine.save_now();
+        self.said_if_failed(saving, "the name");
+        let when = if saved { "" } else { " (kept with your first message)" };
+        self.console.out(&format!("{} this session is now called \u{201c}{set}\u{201d}{}", style.green("✓"), style.dim(when)));
+    }
+
     fn resume(&mut self, query: Option<&str>) {
         let style = self.out_style();
         let all = match self.engine.resumable() {

@@ -35,6 +35,8 @@ pub struct Sessions {
     ids: HashMap<ProviderId, String>,
     seen: HashMap<ProviderId, usize>,
     log: Vec<TurnRecord>,
+    /// The name the person gave the session (`/rename`), shown in place of its first message.
+    name: Option<String>,
 }
 
 impl Sessions {
@@ -142,6 +144,21 @@ impl Sessions {
     /// Number of logged turns (answered, failed, interrupted, and undo notes).
     pub fn turns(&self) -> usize {
         self.log.len()
+    }
+
+    /// The name given with `/rename`, if any.
+    pub fn name(&self) -> Option<&str> {
+        self.name.as_deref()
+    }
+
+    /// Name the session (`None` takes the name away). Whitespace is collapsed.
+    pub fn set_name(&mut self, name: Option<&str>) {
+        self.name = name.map(|n| n.split_whitespace().collect::<Vec<_>>().join(" ")).filter(|n| !n.is_empty());
+    }
+
+    /// What the session is called in a list: its name, else what the person first asked.
+    pub fn title(&self) -> Option<String> {
+        self.name.clone().or_else(|| self.first_prompt())
     }
 
     /// What the person first asked, one line: the name of the session in a list.
@@ -378,7 +395,11 @@ impl Sessions {
                 })
             })
             .collect();
-        json!({ "ids": ids, "seen": seen, "log": log })
+        let mut out = json!({ "ids": ids, "seen": seen, "log": log });
+        if let Some(name) = &self.name {
+            out["name"] = json!(name);
+        }
+        out
     }
 
     /// Read what [`Sessions::to_json`] wrote. Tolerant: a field that is missing or the
@@ -387,6 +408,7 @@ impl Sessions {
     pub fn from_json(v: &Value) -> Self {
         let provider = |s: &str| s.parse::<ProviderId>().ok();
         let mut out = Self::default();
+        out.set_name(v.get("name").and_then(Value::as_str));
         if let Some(entries) = v.get("log").and_then(Value::as_array) {
             for e in entries {
                 let text = |k: &str| e.get(k).and_then(Value::as_str);
@@ -634,7 +656,7 @@ pub fn list_sessions(state_dir: &Path, project_dir: &Path, now_ms: u64, current:
         .filter(|p| Some(p.as_path()) != current)
         .filter_map(|path| {
             let saved = read_session(&path, project_dir).ok().filter(|s| !s.expired(now_ms) && s.sessions.turns() > 0)?;
-            let title = saved.sessions.first_prompt().unwrap_or_else(|| "(no message)".to_string());
+            let title = saved.sessions.title().unwrap_or_else(|| "(no message)".to_string());
             Some((saved.saved_ms, SessionEntry { info: saved.info(), title, path }))
         })
         .collect();
@@ -932,6 +954,20 @@ mod tests {
         assert_eq!(back.log[1].reply.chars().count(), SAVED_REPLY_CHARS + 1, "capped, with an ellipsis");
         assert_eq!(back.providers_used(), [ProviderId::Claude, ProviderId::Codex]);
         assert_eq!(back.last_answered(), Some(("one", "r1")));
+    }
+
+    #[test]
+    fn a_name_is_saved_and_read_back_and_titles_the_session() {
+        let mut s = Sessions::new();
+        assert_eq!(s.title(), None);
+        s.set_name(Some("  parser   fix "));
+        assert_eq!(s.name(), Some("parser fix"));
+        let back = Sessions::from_json(&s.to_json());
+        assert_eq!(back.name(), Some("parser fix"));
+        assert_eq!(back.title().as_deref(), Some("parser fix"));
+        s.set_name(Some("   "));
+        assert_eq!(s.name(), None, "a blank name takes the name away");
+        assert!(s.to_json().get("name").is_none());
     }
 
     #[test]

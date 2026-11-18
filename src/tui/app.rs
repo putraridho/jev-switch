@@ -134,6 +134,27 @@ pub struct App {
     pub notice: Option<(String, Instant)>,
     /// The terminal belongs to a command right now.
     pub suspended: bool,
+    /// Messages sent so far: the first one has no rule above it.
+    pub sent: usize,
+    /// The git branch and how many files differ from it: `main ±3`. `None` outside a repo.
+    pub git: Option<String>,
+    /// How full the model's context window was after the last turn, in percent.
+    pub context: Option<u8>,
+    /// The session's name (`/rename`).
+    pub session_name: Option<String>,
+    /// The subscriptions the router can use right now, for the router row.
+    pub providers: Vec<ProviderChip>,
+    /// A planner may hand pieces to workers (`/orchestrate`).
+    pub orchestrate: bool,
+}
+
+/// One subscription on the router row: its name, how much of its plan window is used, or how
+/// long it is cooling down after a limit.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProviderChip {
+    pub name: String,
+    pub used: Option<u8>,
+    pub cooling: Option<String>,
 }
 
 /// How long a footer notice stays.
@@ -166,6 +187,12 @@ impl App {
             last_ctrl_c: None,
             notice: None,
             suspended: false,
+            sent: 0,
+            git: None,
+            context: None,
+            session_name: None,
+            providers: Vec::new(),
+            orchestrate: false,
         }
     }
 

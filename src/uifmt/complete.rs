@@ -141,7 +141,7 @@ mod tests {
             replacements("/"),
             vec![
                 "/clear", "/compact", "/config", "/context", "/copy", "/cost", "/diff", "/doctor", "/edit", "/export", "/help", "/init", "/mcp", "/memory", "/mode",
-                "/model", "/new", "/orchestrate", "/permissions", "/provider", "/providers", "/quit", "/resume", "/review", "/status", "/terminal-setup",
+                "/model", "/new", "/orchestrate", "/permissions", "/provider", "/providers", "/quit", "/rename", "/resume", "/review", "/status", "/terminal-setup",
                 "/undo", "/why"
             ]
         );

@@ -269,13 +269,39 @@ providers that are ready, named in words (`claude, codex ready`; `no provider re
 #### Using it
 
 Type in the box at the bottom and press Enter. The conversation goes into the terminal's own
-scrollback (scroll, search and copy work as usual); only the area under it is redrawn: a
-working row while a model works (`⠹ codex · gpt-6.1-sol · 12s · Bash cargo test   esc to
-stop`), the input box, and a footer with the permission mode and the routing (`edit mode
-(shift-tab) · auto`). What you sent stays as `› your message`; tool calls are listed as they
-happen; the answer follows, then a dim summary (provider, model, time, tokens, plan use, files
-changed). Why the router picked a model is behind `/why`, not in the conversation. When files
-changed, `/diff` shows them and `/undo` puts them back.
+scrollback (scroll, search and copy work as usual); only the area under it is redrawn. Each
+kind of thing in a turn has its own look, so a glance tells them apart:
+
+```
+───────────────────────────────────────────────────────────────
+❯ fix the empty-input crash in the parser          ← what you sent (bold), turns ruled apart
+
+  ◆ codex · gpt-6.1-sol   feature · switched from claude (limit)   ← where the router sent it, and why
+  ✻ The empty case returns None; callers unwrap it…                ← the model's thinking (dim italic)
+
+  Let me run the parser tests.                                     ← narration between steps
+  ⏺ Bash cargo test parser                                         ← a tool call (dim)
+    ⎿ test result: FAILED. 3 passed; 1 failed  (+2 lines)          ← what came back (yellow: it failed)
+  ⏺ Edit src/parser.rs
+    ⎿ +3 −1                                                        ← the edit as a small diff
+      - if s.is_empty() { return None; }
+      + if s.is_empty() { return Some(Token::Eof); }
+  ⇉ Delegate write tests for the empty case                        ← a piece handed to a worker
+    ⎿ worker w1 · gemini gemini-4-argon · done · 1 file
+
+Fixed: an empty input now yields Token::Eof.                       ← the answer (plain, set apart)
+
+  ✓ codex · 14s · 2 files +9 −1                                    ← how it ended
+```
+
+Under the conversation: a working row while a model works (`⠹ Running cargo test · 12s ·
+codex · gpt-6.1-sol   esc to stop`), the input box, the router row (`⇄ auto · claude 32% ·
+codex 71% · gemini cooling 1h20m · orchestrate on`: how turns are routed, how much of each
+subscription's plan window is used, which are cooling down after a limit; 80% or more is
+yellow), and a footer with the permission mode, the git branch and how many files differ
+(`⎇ main ±3`), the session's name, and the context window once it is half full. Token counts
+are in `/cost`, the router's full reasoning in `/why`. When files changed, `/diff` shows them
+and `/undo` puts them back.
 
 Typing `/` opens a menu of every command with what it does; typing narrows it (`/re` →
 `/resume`, `/review`), ↑/↓ choose, Tab completes, Enter runs, Esc closes. After a command, its
@@ -288,6 +314,7 @@ project's files. `JEV_CLASSIC_UI=1` starts the previous line-editor interface in
 | `/provider auto\|off`       | route across providers (default), or Claude only                                                                                                                                                                   |
 | `/orchestrate [on\|off]`    | let a planner split a big task across cheaper workers (below)                                                                                                                                                      |
 | `/new`                      | start a fresh session on every provider; the saved ones stay and can be resumed                                                                                                                                    |
+| `/rename [name]`            | name this session; the footer shows the name and `/resume` lists the session by it                                                                                                                                 |
 | `/resume`                   | pick up the most recent saved session of this folder other than the running one; again, the one before                                                                                                             |
 | `/diff [file]`              | show what the last turn changed, coloured, through `$PAGER` (default `less -R`) when it is long and you are on a terminal                                                                                          |
 | `/undo`                     | revert the last turn's file changes; lists the files and asks `Revert N files? [y/N]` first; refuses without a terminal, and refuses if you edited those files since                                               |

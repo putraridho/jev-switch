@@ -23,13 +23,14 @@ pub struct Cmd {
     pub hint: &'static str,
 }
 
-pub const COMMANDS: [Cmd; 28] = [
+pub const COMMANDS: [Cmd; 29] = [
     Cmd { name: "/model", args: "[target]", group: Group::Model, about: "Pin a model or provider, or `auto` to let the router choose", example: "/model codex:gpt-6.1-sol", hint: "auto|codex|claude:..." },
     Cmd { name: "/provider", args: "auto|off", group: Group::Model, about: "Route across providers (auto), or use Claude only (off)", example: "/provider off", hint: "auto|off" },
     Cmd { name: "/orchestrate", args: "[on|off]", group: Group::Model, about: "Let a planner split a big task across cheaper workers", example: "/orchestrate on", hint: "on|off" },
     Cmd { name: "/why", args: "", group: Group::Model, about: "Explain why the router picked the last turn's model", example: "", hint: "" },
     Cmd { name: "/new", args: "", group: Group::Session, about: "Start a fresh session on every provider", example: "", hint: "" },
     Cmd { name: "/clear", args: "", group: Group::Session, about: "Clear the screen and start a fresh session", example: "", hint: "" },
+    Cmd { name: "/rename", args: "[name]", group: Group::Session, about: "Name this session, so /resume lists it by that name", example: "/rename parser fix", hint: "[name]" },
     Cmd { name: "/resume", args: "[search]", group: Group::Session, about: "Pick a previous session of this folder to continue", example: "/resume parser", hint: "[search]" },
     Cmd { name: "/edit", args: "", group: Group::Session, about: "Write your message in $EDITOR, then send it", example: "", hint: "" },
     Cmd { name: "/diff", args: "[file]", group: Group::Session, about: "Show what the agent changed, all files or one", example: "/diff src/main.rs", hint: "[file]" },

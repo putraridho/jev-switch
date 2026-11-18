@@ -67,6 +67,9 @@ impl Style {
     pub fn dim(&self, s: &str) -> String {
         self.paint("2", s)
     }
+    pub fn italic(&self, s: &str) -> String {
+        self.paint("3", s)
+    }
     pub fn red(&self, s: &str) -> String {
         self.paint("31", s)
     }

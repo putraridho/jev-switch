@@ -200,6 +200,15 @@ struct Inner {
     /// The interactive front end, when one owns the screen: everything goes to it as a
     /// message and nothing is drawn here.
     front: Option<Front>,
+    /// With a front: the latest assistant text, not printed yet. What comes next decides how
+    /// it looks: a tool call makes it narration (the model thinking aloud), the end of the
+    /// turn makes it the answer, a failed attempt drops it.
+    pending_text: Option<String>,
+    /// With a front: the tools called whose results have not come back, oldest first, so a
+    /// result is worded for its tool.
+    tools_waiting: std::collections::VecDeque<String>,
+    /// With a front: nothing of this turn printed yet (the first step needs no blank line).
+    fresh_turn: bool,
 }
 
 /// The terminal output. Cheap to clone; every clone writes through the same lock.
@@ -237,6 +246,9 @@ impl Console {
             type_ahead: false,
             queued: std::collections::VecDeque::new(),
             front: None,
+            pending_text: None,
+            tools_waiting: std::collections::VecDeque::new(),
+            fresh_turn: true,
         };
         Self {
             inner: Arc::new(Mutex::new(inner)),
@@ -533,7 +545,8 @@ impl Console {
     pub fn turn_end(&self, summary: &SummaryFacts, files: &[FileChange]) {
         let mut g = self.lock();
         let (style, width) = (g.cfg.err_style, g.width());
-        let mut lines = vec![format!("  {}", uifmt::turn_summary(summary, style))];
+        let lines_first = if g.front.is_some() { format!("\n  {}", uifmt::turn_summary_brief(summary, style)) } else { format!("  {}", uifmt::turn_summary(summary, style)) };
+        let mut lines = vec![lines_first];
         if !files.is_empty() {
             lines.push(uifmt::changes_block(files, style, width));
             lines.push(format!("  {}", style.dim("/diff to review, /undo to revert")));
@@ -663,6 +676,7 @@ impl Inner {
     }
 
     fn begin(&mut self) {
+        self.fresh_turn = true;
         if let Some(front) = &self.front {
             front.send(FrontMsg::TurnStarted);
             return;
@@ -703,8 +717,74 @@ impl Inner {
             let line = self.failover_line(&p, None);
             self.emit_err(&line);
         }
+        if self.front.is_some() {
+            self.flush_text(false);
+            self.tools_waiting.clear();
+        }
         if let Some(front) = &self.front {
             front.send(FrontMsg::TurnEnded);
+        }
+    }
+
+    /// Print the held assistant text: as narration (a tool call followed it) or as the answer.
+    fn flush_text(&mut self, narration: bool) {
+        let Some(text) = self.pending_text.take() else { return };
+        let (style, width) = (self.cfg.out_style, self.width());
+        let shown = if narration { self.step(uifmt::narration(&text, style, width)) } else { uifmt::answer_block(&uifmt::answer_text(&text, style, width)) };
+        self.fresh_turn = false;
+        self.emit_out(&shown);
+    }
+
+    /// A new step of the turn (the model thinking or saying what it does next) starts after a
+    /// blank line, so a turn reads as steps; the first one follows the message directly.
+    fn step(&self, block: String) -> String {
+        if self.fresh_turn {
+            block
+        } else {
+            format!("\n{block}")
+        }
+    }
+
+    /// An event of the turn, laid out for the interactive screen (see [`crate::uifmt`]'s roles).
+    fn front_event(&mut self, e: &Event) {
+        let (style, width) = (self.cfg.err_style, self.width());
+        match e {
+            Event::Tool(summary) => {
+                self.flush_text(true);
+                let activity = uifmt::relativize_paths(&uifmt::strip_ansi(summary), &self.cfg.project);
+                self.set_activity(&activity);
+                self.tools_waiting.push_back(uifmt::tool_name(summary).to_string());
+                let row = uifmt::tool_row(summary, &self.cfg.project, style, width);
+                self.fresh_turn = false;
+                self.emit_err(&row);
+            }
+            Event::Thinking(t) => {
+                self.flush_text(true);
+                self.set_activity("Thinking");
+                let block = self.step(uifmt::thinking_block(t, style, width));
+                self.fresh_turn = false;
+                self.emit_err(&block);
+            }
+            Event::Edit { removed, added, .. } => {
+                let preview = uifmt::edit_preview(removed, added, style, width);
+                self.emit_err(&preview);
+            }
+            Event::ToolResult { ok, text } => {
+                let tool = self.tools_waiting.pop_front().unwrap_or_default();
+                if let Some(row) = uifmt::tool_result_row(&tool, *ok, text, style, width) {
+                    self.emit_err(&row);
+                }
+            }
+            Event::Hint(t) => {
+                let text = format!("  {}", style.yellow(&uifmt::strip_ansi(t)));
+                self.emit_err(&text);
+            }
+            Event::Text(t) if self.cfg.stream_answers => {
+                // Two texts in a row: the first was part of the answer.
+                self.flush_text(false);
+                self.pending_text = Some(t.clone());
+            }
+            _ => {}
         }
     }
 
@@ -728,10 +808,13 @@ impl Inner {
             self.emit_err(&line);
         }
         let label = if f.model.is_empty() { f.provider.clone() } else { format!("{} · {}", f.provider, f.model) };
-        if let Some(front) = &self.front {
-            // The model shows on the working row and the reason behind `/why`: the
-            // transcript is for the conversation, not the router's bookkeeping.
+        if let Some(front) = self.front.clone() {
+            // The router at work leads the turn: where it went and why, in one row.
             front.send(FrontMsg::Label(label));
+            let row = uifmt::route_row(f, self.cfg.err_style, self.width());
+            let row = if self.fresh_turn { row } else { format!("\n{row}") };
+            self.fresh_turn = true;
+            self.emit_err(&row);
             return;
         }
         if let Some(l) = self.live.as_mut() {
@@ -767,6 +850,10 @@ impl Ui for Console {
 
     fn event(&mut self, e: &Event) {
         let mut g = self.lock();
+        if g.front.is_some() {
+            g.front_event(e);
+            return;
+        }
         match e {
             Event::Tool(summary) => {
                 let (style, width) = (g.cfg.err_style, g.width());
@@ -799,6 +886,9 @@ impl Ui for Console {
 
     fn failover(&mut self, f: &Failover) {
         let mut g = self.lock();
+        // A failed attempt's last words are not an answer.
+        g.pending_text = None;
+        g.tools_waiting.clear();
         if f.will_retry {
             g.pending = Some(Pending {
                 provider: f.provider.to_string(),

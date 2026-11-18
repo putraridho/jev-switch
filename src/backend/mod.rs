@@ -121,6 +121,14 @@ pub struct Finish {
 pub enum Event {
     /// One-line summary of a tool call, like "Bash cargo test".
     Tool(String),
+    /// The model's reasoning before it acts (extended thinking), never part of the answer.
+    Thinking(String),
+    /// What a tool call returned, as the CLI reported it (the text may be long; the screen
+    /// shows a line of it). `ok` is false when the tool failed.
+    ToolResult { ok: bool, text: String },
+    /// The change an edit tool is about to make: the file, the lines it takes out and the
+    /// lines it puts in (a whole new file has nothing taken out).
+    Edit { path: String, removed: Vec<String>, added: Vec<String> },
     /// Assistant text: part of the answer.
     Text(String),
     /// A diagnostic about the turn that is never part of the answer: a tool call that was

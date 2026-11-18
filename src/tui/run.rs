@@ -95,16 +95,46 @@ fn width() -> usize {
     terminal::size().map(|(w, _)| usize::from(w)).unwrap_or_else(|_| crate::terminal::width())
 }
 
+/// The branch and how many files differ from it, `main ±3`; `None` outside a repository.
+fn git_line(dir: &std::path::Path) -> Option<String> {
+    let git = |args: &[&str]| {
+        std::process::Command::new("git").args(args).current_dir(dir).stderr(std::process::Stdio::null()).output().ok().filter(|o| o.status.success()).map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+    };
+    let branch = git(&["rev-parse", "--abbrev-ref", "HEAD"])?.trim().to_string();
+    let changed = git(&["status", "--porcelain"]).map_or(0, |s| s.lines().count());
+    Some(if changed > 0 { format!("{branch} ±{changed}") } else { branch })
+}
+
+/// What the router row shows: each subscription that can take a turn, with how much of its
+/// plan window is used, and those cooling down after a limit.
+fn provider_chips(repl: &Repl) -> Vec<super::app::ProviderChip> {
+    let rt = &repl.engine.runtime;
+    views::avail_rows(rt, log::now_ms())
+        .into_iter()
+        .filter(|r| r.status == crate::uifmt::ProviderStatus::Ready)
+        .map(|r| {
+            let used = r.provider.parse::<crate::backend::ProviderId>().ok().and_then(|p| rt.plan_utilization(p)).map(|u| (u.clamp(0.0, 1.0) * 100.0).round() as u8);
+            super::app::ProviderChip { name: r.provider, used, cooling: r.cooldown }
+        })
+        .collect()
+}
+
+/// Bring the screen's view of the session up to date (between lines).
+fn refresh(app: &mut App, repl: &Repl) {
+    app.route = route_label(repl);
+    app.ctx = views::complete_ctx(&repl.engine, log::now_ms());
+    app.git = git_line(repl.engine.dir());
+    app.context = repl.context_percent();
+    app.session_name = repl.engine.sessions.name().map(String::from);
+    app.providers = provider_chips(repl);
+    app.orchestrate = repl.engine.orchestrate();
+}
+
 /// The footer's routing word: the pin, `claude only`, or `auto`.
 fn route_label(repl: &Repl) -> String {
     views::prompt_label(repl.engine.pin(), repl.engine.enabled()).unwrap_or_else(|| "auto".to_string())
 }
 
-/// What was sent, as it stays in the scrollback: `› text` with continuation lines indented.
-fn sent_line(text: &str, style: Style) -> String {
-    let body = text.replace('\n', "\n  ");
-    format!("{} {}\n", style.cyan(&style.bold("›")), style.bold(&body))
-}
 
 /// The next key or paste, or `None` while the terminal belongs to a command.
 async fn next_event(events: &mut Option<EventStream>) -> Option<std::io::Result<Event>> {
@@ -142,7 +172,7 @@ pub async fn run(repl: Repl, mut rx: mpsc::UnboundedReceiver<FrontMsg>, opts: Op
     let project = repl.engine.dir().to_path_buf();
     let tracked = lineedit::tracked_files(&project);
     let mut app = App::new(project, History::load(opts.history.as_deref()), repl.engine.mode(), route_label(&repl), tracked);
-    app.ctx = views::complete_ctx(&repl.engine, log::now_ms());
+    refresh(&mut app, &repl);
 
     let mut screen = Screen::new(std::io::stdout(), style.enabled);
     let mut events = Some(EventStream::new());
@@ -158,6 +188,8 @@ pub async fn run(repl: Repl, mut rx: mpsc::UnboundedReceiver<FrontMsg>, opts: Op
         if let Some((repl, _)) = idle.as_mut() {
             repl.engine.runtime.absorb_late();
             repl.console.flush_notices();
+            // A provider that just became ready (or came off a cooldown) shows on the router row.
+            app.providers = provider_chips(repl);
             if app.mode != repl.engine.mode() {
                 repl.engine.set_mode(app.mode);
                 repl.remember_mode();
@@ -165,7 +197,7 @@ pub async fn run(repl: Repl, mut rx: mpsc::UnboundedReceiver<FrontMsg>, opts: Op
         }
         if task.is_none() && !app.suspended {
             if let Some(line) = app.queue.pop_front() {
-                if let Some(started) = start(&mut idle, &line, style, &mut screen, &app) {
+                if let Some(started) = start(&mut idle, &line, style, &mut screen, &mut app) {
                     task = Some(started);
                 }
             }
@@ -214,8 +246,7 @@ pub async fn run(repl: Repl, mut rx: mpsc::UnboundedReceiver<FrontMsg>, opts: Op
                         } else {
                             app.mode = repl.engine.mode();
                         }
-                        app.route = route_label(&repl);
-                        app.ctx = views::complete_ctx(&repl.engine, log::now_ms());
+                        refresh(&mut app, &repl);
                         idle = Some((repl, stops));
                         if let Some(c) = flow_code {
                             break c;
@@ -264,9 +295,11 @@ struct Next {
 
 /// Start running `line` on its own task, if the session is idle. The line is printed above
 /// first, as it stays in the scrollback.
-fn start(idle: &mut Option<(Repl, Stops)>, line: &str, style: Style, screen: &mut Screen<std::io::Stdout>, app: &App) -> Option<JoinHandle<Done>> {
+fn start(idle: &mut Option<(Repl, Stops)>, line: &str, style: Style, screen: &mut Screen<std::io::Stdout>, app: &mut App) -> Option<JoinHandle<Done>> {
     let (mut repl, mut stops) = idle.take()?;
-    screen.print_above(&sent_line(line, style), &view::render(app, width(), Instant::now(), style));
+    let first = app.sent == 0;
+    app.sent += 1;
+    screen.print_above(&crate::uifmt::sent_block(line, first, style, width()), &view::render(app, width(), Instant::now(), style));
     let line = line.to_string();
     Some(tokio::spawn(async move {
         let mut confirm = CardConfirm(repl.console.front());
