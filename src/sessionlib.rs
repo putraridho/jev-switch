@@ -181,33 +181,17 @@ fn snippet_for(e: &LibraryEntry, word: &str) -> Option<String> {
     let lines = log.iter().flat_map(|t| t.prompt.lines().chain(t.reply.lines()).chain(t.tools.iter().map(String::as_str)));
     let line = lines.into_iter().find(|l| l.to_lowercase().contains(word))?.trim().to_string();
     // Lowercasing can turn one character into several (U+0130 becomes `i` and a combining dot),
-    // so neither byte nor character offsets carry over: lower it char by char and remember,
-    // for every lowered byte, where its character starts in `line`.
-    let mut lowered = String::with_capacity(line.len());
-    let mut origin = Vec::with_capacity(line.len());
+    // so neither byte nor character offsets carry over. The word is found in the whole-string
+    // lowering (the one the match used: a word-final Σ becomes ς there), and mapped back with a
+    // table built char by char of where each lowered byte's character starts in `line`. The only
+    // mapping that depends on context is σ/ς, both two bytes, so the two lowerings line up.
+    let lowered = line.to_lowercase();
+    let mut origin = Vec::with_capacity(lowered.len());
     for (i, c) in line.char_indices() {
-        for l in c.to_lowercase() {
-            lowered.push(l);
-            origin.resize(lowered.len(), i);
-        }
+        let width: usize = c.to_lowercase().map(char::len_utf8).sum();
+        origin.extend(std::iter::repeat(i).take(width));
     }
-    // Lowering a whole string can differ from lowering each char (a word-final Σ becomes ς,
-    // not σ); when the per-char copy misses, look for the first place the word starts. Only a
-    // short stretch is lowered at each place (the word plus the char after it, which decides
-    // the sigma form), so a long line stays linear.
-    let at = match lowered.find(word) {
-        Some(found) => origin[found],
-        None => {
-            let span = word.chars().count() + 1;
-            line.char_indices()
-                .map(|(i, _)| i)
-                .find(|&i| {
-                    let end = line[i..].char_indices().nth(span).map_or(line.len(), |(j, _)| i + j);
-                    line[i..end].to_lowercase().starts_with(word)
-                })
-                .unwrap_or(0)
-        }
-    };
+    let at = lowered.find(word).and_then(|found| origin.get(found).copied()).unwrap_or(0);
     let start = line[..at].char_indices().rev().nth(30).map_or(0, |(i, _)| i);
     let chars: String = line[start..].chars().take(90).collect();
     Some(if start > 0 { format!("...{chars}") } else { chars })
@@ -506,6 +490,12 @@ mod tests {
         let hits = search(scan_all(&state), &Query::parse("ΟΔΟΣ").unwrap(), NOW);
         assert_eq!(hits.len(), 1);
         assert!(hits[0].snippet.as_deref().unwrap().contains("ΟΔΟΣ"), "{:?}", hits[0].snippet);
+        // Not final before an apostrophe and a letter (σ), so only the later one matches.
+        let line = format!("ΟΔΟΣ'Α {} ΟΔΟΣ end", "a".repeat(100));
+        put(&state, &proj, 2, vec![turn(ProviderId::Claude, "ask", &line, &[])]);
+        let hits = search(scan_all(&state), &Query::parse("ΟΔΟΣ").unwrap(), NOW);
+        let later: Vec<_> = hits.iter().filter_map(|h| h.snippet.as_deref()).filter(|s| s.contains("end")).collect();
+        assert!(later.len() == 1 && later[0].starts_with("..."), "{later:?}");
     }
 
     #[test]

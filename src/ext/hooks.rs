@@ -216,10 +216,14 @@ fn kept_text(bytes: &[u8]) -> String {
     if bytes.len() <= STDERR_LIMIT {
         return String::from_utf8_lossy(bytes).into_owned();
     }
-    let mut text = String::from_utf8_lossy(&bytes[..STDERR_LIMIT]).into_owned();
-    if text.ends_with('\u{FFFD}') {
-        text.pop();
-    }
+    let cut = &bytes[..STDERR_LIMIT];
+    // Drop only a character the cut split (an incomplete sequence at the end), not a bad byte
+    // the hook really wrote there.
+    let end = match std::str::from_utf8(cut) {
+        Err(e) if e.error_len().is_none() => e.valid_up_to(),
+        _ => STDERR_LIMIT,
+    };
+    let mut text = String::from_utf8_lossy(&cut[..end]).into_owned();
     text.push_str("…(cut)");
     text
 }
@@ -234,8 +238,12 @@ fn run_command(command: &str, dir: &Path, input: &str, event: Event, tool: Optio
         .stdin(Stdio::piped())
         .stdout(Stdio::null())
         .stderr(Stdio::piped());
-    // Not put in a process group of its own: the hook stays in the terminal's foreground group,
-    // so Ctrl-C reaches it and a tty prompt (ssh, gpg) is not stopped as a background job.
+    // Its own process group, as the backends' runner does: a timeout stops everything the hook
+    // started, not only `sh`; Ctrl-C at jev's prompt does not kill a guard hook halfway (which
+    // would read as a failure, not a refusal); and a hook cannot read the terminal under jev's
+    // own readers (its stdin is the event; a tty prompt stops it until the timeout).
+    #[cfg(unix)]
+    std::os::unix::process::CommandExt::process_group(&mut cmd, 0);
     let mut child = match cmd.spawn() {
         Ok(c) => c,
         Err(e) => return Ran::NotStarted(e.to_string()),
@@ -279,6 +287,13 @@ fn run_command(command: &str, dir: &Path, input: &str, event: Event, tool: Optio
         match child.try_wait() {
             Ok(Some(status)) => break status,
             Ok(None) if started.elapsed() >= timeout => {
+                #[cfg(unix)]
+                if let Ok(pid) = i32::try_from(child.id()) {
+                    // SAFETY: plain `kill(2)` on a negative pid: the process group made above.
+                    unsafe {
+                        libc::kill(-pid, libc::SIGKILL);
+                    }
+                }
                 let _ = child.kill();
                 let _ = child.wait();
                 return Ran::TimedOut;
@@ -390,10 +405,26 @@ mod tests {
     #[test]
     fn long_stderr_is_cut_at_a_character_and_marked() {
         assert_eq!(kept_text(b"short"), "short");
-        let mut bytes = "é".repeat(STDERR_LIMIT).into_bytes();
+        // One ASCII byte first, so the limit (even) falls inside a two-byte `é`.
+        let mut bytes = format!("x{}", "é".repeat(STDERR_LIMIT)).into_bytes();
         bytes.truncate(STDERR_LIMIT + 1);
         let kept = kept_text(&bytes);
-        assert!(kept.ends_with("…(cut)") && !kept.contains('\u{FFFD}'), "{}", &kept[kept.len() - 20..]);
+        assert!(kept.ends_with("é…(cut)") && !kept.contains('\u{FFFD}'));
+        // A bad byte the hook wrote right at the limit is kept (shown as U+FFFD).
+        let mut bad = vec![b'a'; STDERR_LIMIT + 1];
+        bad[STDERR_LIMIT - 1] = 0xFF;
+        assert!(kept_text(&bad).ends_with("\u{FFFD}…(cut)"));
+    }
+
+    #[test]
+    fn a_timeout_stops_what_the_hook_started() {
+        let dir = temp("tree");
+        let marker = dir.join("survived");
+        let cmd = format!("(sleep 1; touch {}) & sleep 5", marker.display());
+        let ran = run_command(&cmd, &dir, "", Event::TurnEnd, None, Duration::from_millis(200));
+        assert!(matches!(ran, Ran::TimedOut));
+        std::thread::sleep(Duration::from_millis(1500));
+        assert!(!marker.exists(), "a process the hook started outlived its timeout");
     }
 
     #[test]
