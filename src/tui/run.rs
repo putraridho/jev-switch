@@ -69,15 +69,27 @@ impl Confirm for CardConfirm {
 fn keys_on() -> std::io::Result<()> {
     terminal::enable_raw_mode()?;
     let mut out = std::io::stdout();
-    execute!(out, crossterm::event::EnableBracketedPaste, PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES))?;
+    execute!(out, crossterm::event::EnableBracketedPaste)?;
+    // Inside tmux or on a console the request could be printed instead of understood.
+    if term_env().keyboard_protocol() {
+        execute!(out, PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES))?;
+        crate::terminal::note_keyboard_protocol(true);
+    }
     crate::terminal::note_front_keys(true);
     Ok(())
+}
+
+fn term_env() -> crate::termenv::TermEnv {
+    crate::termenv::detect(&|name| std::env::var(name).ok())
 }
 
 /// Put the keyboard back as a command or the shell expects it.
 fn keys_off() {
     let mut out = std::io::stdout();
-    let _ = execute!(out, PopKeyboardEnhancementFlags, crossterm::event::DisableBracketedPaste);
+    if crate::terminal::note_keyboard_protocol(false) {
+        let _ = execute!(out, PopKeyboardEnhancementFlags);
+    }
+    let _ = execute!(out, crossterm::event::DisableBracketedPaste);
     let _ = terminal::disable_raw_mode();
     crate::terminal::note_front_keys(false);
 }
@@ -180,7 +192,7 @@ pub async fn run(repl: Repl, mut rx: mpsc::UnboundedReceiver<FrontMsg>, opts: Op
     let mut idle: Option<(Repl, Stops)> = Some((repl, Stops(stop_rx)));
     let mut task: Option<JoinHandle<Done>> = None;
     let mut mode_picked_during_turn = false;
-    let mut tick = tokio::time::interval(TICK);
+    let mut tick = tokio::time::interval(term_env().tick(TICK));
     let mut last_width = width();
 
     let code = loop {
@@ -210,9 +222,16 @@ pub async fn run(repl: Repl, mut rx: mpsc::UnboundedReceiver<FrontMsg>, opts: Op
             ev = next_event(&mut events) => match ev {
                 Some(Ok(Event::Key(k))) => app.on_key(k, Instant::now()),
                 Some(Ok(Event::Paste(text))) => {
-                    app.on_paste(&text);
+                    let pasted = crate::termenv::sanitize_paste(&text);
+                    app.on_paste(&pasted.text);
+                    if pasted.truncated {
+                        app.notice = Some(("the paste was too long: only the first 256 KiB was kept".to_string(), Instant::now()));
+                    }
                     Vec::new()
                 }
+                // A resize to 0 columns (a window being dragged shut, some multiplexers
+                // while detaching) says nothing about the real width.
+                Some(Ok(Event::Resize(w, _))) if w == 0 => Vec::new(),
                 Some(Ok(Event::Resize(w, _))) => {
                     let w = usize::from(w);
                     if w < last_width {

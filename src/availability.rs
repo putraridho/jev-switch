@@ -16,6 +16,7 @@ use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::Duration;
 
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::backend::{gemini, grok, ProviderId};
@@ -23,10 +24,11 @@ use crate::envfile;
 
 /// Each probe gets this long; a slower one is reported as [`State::Unknown`] rather
 /// than holding up startup.
-const PROBE_CAP: Duration = Duration::from_secs(5);
+pub const PROBE_CAP: Duration = Duration::from_secs(5);
 
 /// Can the user use this provider?
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum State {
     Ready,
     NotInstalled,
@@ -146,6 +148,22 @@ pub fn merge_late(current: &mut [Availability], late: Availability) -> bool {
             true
         }
         None => false,
+    }
+}
+
+/// Fold a fresh answer into `current` (which came from the cache): it replaces the provider's
+/// entry when it says something different. An Unknown answer teaches nothing and is dropped.
+/// True when something changed.
+pub fn merge_refresh(current: &mut [Availability], fresh: Availability) -> bool {
+    if fresh.state == State::Unknown {
+        return false;
+    }
+    match current.iter_mut().find(|a| a.provider == fresh.provider) {
+        Some(slot) if *slot != fresh => {
+            *slot = fresh;
+            true
+        }
+        _ => false,
     }
 }
 
@@ -937,6 +955,16 @@ mod tests {
         let mut seen = 0;
         retry_unknown(Vec::new(), RETRY_CAP, |p| async move { ready(p, None) }, |_| seen += 1).await;
         assert_eq!(seen, 0);
+    }
+
+    #[test]
+    fn a_fresh_answer_replaces_a_cached_one_only_when_it_differs_and_is_definite() {
+        let mut cached = vec![ready(ProviderId::Claude, None), avail(ProviderId::Codex, State::NotLoggedIn, "x")];
+        assert!(!merge_refresh(&mut cached, ready(ProviderId::Claude, None)), "same answer");
+        assert!(!merge_refresh(&mut cached, avail(ProviderId::Claude, State::Unknown, "slow")), "unknown teaches nothing");
+        assert!(merge_refresh(&mut cached, avail(ProviderId::Claude, State::NotLoggedIn, "logged out")));
+        assert!(merge_refresh(&mut cached, ready(ProviderId::Codex, None)));
+        assert_eq!((cached[0].state, cached[1].state), (State::NotLoggedIn, State::Ready));
     }
 
     #[test]

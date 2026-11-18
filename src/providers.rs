@@ -22,6 +22,8 @@ use crate::backend::{Backend, ErrorKind, PlanUsage, ProviderId, TurnError};
 use crate::catalog::{self, Allowances, Overrides, Usable};
 use crate::cooldown::{self, Cooldowns, DiskWatch};
 use crate::envfile;
+use crate::perf::ProbeSource;
+use crate::probecache;
 
 /// Every provider, in the order `/providers` lists them.
 pub const ALL_PROVIDERS: [ProviderId; 5] =
@@ -219,8 +221,27 @@ pub struct Runtime {
 /// Answers from the background retry, and what to tell the user about the ones applied.
 struct LateProbes {
     answers: tokio::sync::mpsc::UnboundedReceiver<Availability>,
+    /// What an answer may change: only a provider still Unknown (the slow-probe retry), or
+    /// any provider whose answer differs from the cached one the start used.
+    merge: LateMerge,
     /// Called from `absorb_late`, only for a provider that really became Ready.
     on_ready: Box<dyn Fn(&Availability) + Send + Sync>,
+}
+
+/// How a background answer is folded into the availability.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LateMerge {
+    /// [`availability::merge_late`].
+    FillUnknown,
+    /// [`availability::merge_refresh`].
+    Refresh,
+}
+
+/// The cache a start may read, and keep up to date.
+#[derive(Debug, Clone)]
+pub struct ProbeCache {
+    pub path: PathBuf,
+    pub fingerprint: u64,
 }
 
 impl fmt::Debug for LateProbes {
@@ -257,6 +278,46 @@ impl Runtime {
         let cooldowns = cooldown_path.as_deref().map(Cooldowns::load).unwrap_or_default();
         let allow = allowances_for(crate::envfile::lookup("JEV_ALLOW_CREDITS").as_deref(), &avail);
         Self::build(avail, cooldowns, allow, Overrides::from_env(), cooldown_path)
+    }
+
+    /// Like [`Runtime::start`], but a recent probe answer saved by an earlier run is used at
+    /// once and the provider CLIs are asked again in the background; [`Runtime::absorb_late`]
+    /// then corrects whatever changed. Without a usable cache the probe runs now, as in
+    /// `start`, and its answer is saved for the next run. Says where the answer came from.
+    pub async fn start_cached(cache: Option<ProbeCache>) -> (Self, ProbeSource) {
+        let now = crate::log::now_ms();
+        let hit = cache.as_ref().and_then(|c| probecache::load(&c.path, now, c.fingerprint));
+        let Some(cached) = hit else {
+            let runtime = Self::start().await;
+            if let Some(c) = &cache {
+                probecache::save(&c.path, crate::log::now_ms(), c.fingerprint, &runtime.avail);
+            }
+            return (runtime, ProbeSource::Live);
+        };
+        let cooldown_path = cooldown::default_path();
+        let cooldowns = cooldown_path.as_deref().map(Cooldowns::load).unwrap_or_default();
+        let allow = allowances_for(crate::envfile::lookup("JEV_ALLOW_CREDITS").as_deref(), &cached);
+        let mut runtime = Self::build(cached.clone(), cooldowns, allow, Overrides::from_env(), cooldown_path);
+        runtime.refresh_in_background(cached, cache);
+        (runtime, ProbeSource::Cache)
+    }
+
+    /// Ask every provider again, off the prompt's path. Each answer reaches
+    /// [`Runtime::absorb_late`] as it arrives; the cache is rewritten when all are in.
+    fn refresh_in_background(&mut self, cached: Vec<Availability>, cache: Option<ProbeCache>) {
+        let (tx, answers) = tokio::sync::mpsc::unbounded_channel();
+        self.late = Some(LateProbes { answers, merge: LateMerge::Refresh, on_ready: Box::new(|_| {}) });
+        tokio::spawn(async move {
+            let mut latest = cached;
+            availability::retry_unknown(ALL_PROVIDERS.to_vec(), availability::PROBE_CAP, availability::probe_provider, |answer| {
+                availability::merge_refresh(&mut latest, answer.clone());
+                let _ = tx.send(answer);
+            })
+            .await;
+            if let Some(c) = cache {
+                probecache::save(&c.path, crate::log::now_ms(), c.fingerprint, &latest);
+            }
+        });
     }
 
     /// The one place a `Runtime` is assembled, so `start` and the tests share it.
@@ -418,10 +479,14 @@ impl Runtime {
     {
         let providers = availability::retry_candidates(&self.avail);
         if providers.is_empty() {
+            // A background refresh may be running; the caller still wants to hear what it finds.
+            if let Some(late) = self.late.as_mut() {
+                late.on_ready = Box::new(on_ready);
+            }
             return;
         }
         let (tx, answers) = tokio::sync::mpsc::unbounded_channel();
-        self.late = Some(LateProbes { answers, on_ready: Box::new(on_ready) });
+        self.late = Some(LateProbes { answers, merge: LateMerge::FillUnknown, on_ready: Box::new(on_ready) });
         tokio::spawn(availability::retry_unknown(providers, cap, probe, move |answer| {
             let _ = tx.send(answer);
         }));
@@ -434,29 +499,37 @@ impl Runtime {
     pub fn absorb_late(&mut self) -> bool {
         use tokio::sync::mpsc::error::TryRecvError;
         let Some(late) = self.late.as_mut() else { return false };
+        let merge = late.merge;
         let mut merged = self.avail.clone();
-        let mut applied = Vec::new();
+        let mut applied = false;
+        let mut now_ready = Vec::new();
         let finished = loop {
             match late.answers.try_recv() {
                 Ok(answer) => {
-                    if availability::merge_late(&mut merged, answer.clone()) {
-                        applied.push(answer);
+                    let was_ready = merged.iter().any(|a| a.provider == answer.provider && a.state == State::Ready);
+                    let changed = match merge {
+                        LateMerge::FillUnknown => availability::merge_late(&mut merged, answer.clone()),
+                        LateMerge::Refresh => availability::merge_refresh(&mut merged, answer.clone()),
+                    };
+                    applied |= changed;
+                    if changed && answer.state == State::Ready && !was_ready {
+                        now_ready.push(answer);
                     }
                 }
                 Err(TryRecvError::Empty) => break false,
                 Err(TryRecvError::Disconnected) => break true,
             }
         };
-        if !applied.is_empty() {
+        if applied {
             self.apply_probe(merged);
         }
         if let Some(late) = &self.late {
-            applied.iter().filter(|a| a.state == State::Ready).for_each(|a| (late.on_ready)(a));
+            now_ready.iter().for_each(|a| (late.on_ready)(a));
         }
         if finished {
             self.late = None;
         }
-        !applied.is_empty()
+        applied
     }
 
     /// `/new`: the directory-dependent blocks end with the session they were learned in.
@@ -883,6 +956,40 @@ mod tests {
         assert!(rt.usable(NOW).contains(some_model(Codex)));
         assert_eq!(rt.avail.iter().find(|a| a.provider == Gemini).map(|a| a.state), Some(State::NotLoggedIn));
         assert!(!rt.absorb_late(), "applied once");
+    }
+
+    #[tokio::test]
+    async fn a_background_refresh_corrects_a_cached_answer_and_announces_only_what_became_ready() {
+        let mut rt = Runtime::for_tests(vec![availability(Claude, State::Ready), availability(Codex, State::NotLoggedIn), availability(Gemini, State::Ready)]);
+        let said = std::sync::Arc::new(Mutex::new(Vec::new()));
+        let said_in = said.clone();
+        let (tx, answers) = tokio::sync::mpsc::unbounded_channel();
+        rt.late = Some(LateProbes { answers, merge: LateMerge::Refresh, on_ready: Box::new(move |a| said_in.lock().unwrap().push(a.provider)) });
+        let _ = tx.send(availability(Claude, State::Ready)); // same as cached: nothing to do
+        let _ = tx.send(availability(Codex, State::Ready)); // logged in since the cache was written
+        let _ = tx.send(availability(Gemini, State::NotLoggedIn)); // logged out since
+        let _ = tx.send(availability(ProviderId::Grok, State::Unknown)); // could not tell: ignored
+        assert!(rt.absorb_late());
+        assert_eq!(*said.lock().unwrap(), vec![Codex], "only a provider that became ready is announced");
+        let state = |rt: &Runtime, p| rt.avail.iter().find(|a| a.provider == p).map(|a| a.state);
+        assert_eq!((state(&rt, Codex), state(&rt, Gemini)), (Some(State::Ready), Some(State::NotLoggedIn)));
+        drop(tx);
+        assert!(!rt.absorb_late());
+        assert!(rt.late.is_none(), "the refresh ends with its channel");
+    }
+
+    #[tokio::test]
+    async fn the_slow_probe_hook_attaches_to_a_running_refresh_instead_of_replacing_it() {
+        let mut rt = Runtime::for_tests(vec![availability(Claude, State::Ready)]);
+        let said = std::sync::Arc::new(Mutex::new(Vec::new()));
+        let said_in = said.clone();
+        let (tx, answers) = tokio::sync::mpsc::unbounded_channel();
+        rt.late = Some(LateProbes { answers, merge: LateMerge::Refresh, on_ready: Box::new(|_| {}) });
+        rt.retry_slow_probes_with(std::time::Duration::from_secs(5), |p| async move { availability(p, State::Ready) }, move |a| said_in.lock().unwrap().push(a.provider));
+        let _ = tx.send(availability(Codex, State::Ready));
+        rt.avail.push(availability(Codex, State::NotLoggedIn));
+        rt.absorb_late();
+        assert_eq!(*said.lock().unwrap(), vec![Codex]);
     }
 
     #[tokio::test]
