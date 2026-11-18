@@ -52,6 +52,8 @@ pub enum Command {
     Diff(Option<String>),
     /// `/undo`: put back what the last turn changed.
     Undo,
+    /// `/rewind [turn]`: put the files back to before that turn (none: list the turns).
+    Rewind(Option<usize>),
     /// `/resume`: pick up the saved session of this folder.
     Resume(Option<String>),
     /// `/rename [name]`: name this session; with no name, say what it is called.
@@ -185,6 +187,11 @@ pub fn parse(line: &str) -> Command {
         "/status" => Command::Status,
         "/doctor" => Command::Doctor,
         "/undo" => Command::Undo,
+        "/rewind" => match (arg, extra) {
+            (None, _) => Command::Rewind(None),
+            (Some(n), false) => n.parse::<usize>().ok().filter(|n| *n > 0).map_or_else(|| invalid("usage: /rewind [turn number]"), |n| Command::Rewind(Some(n))),
+            (Some(_), true) => invalid("usage: /rewind [turn number]"),
+        },
         "/resume" => Command::Resume(rest()),
         "/rename" => Command::Rename(rest()),
         "/diff" => {
@@ -338,6 +345,11 @@ mod tests {
         assert_eq!(parse("/status"), Command::Status);
         assert_eq!(parse("/doctor"), Command::Doctor);
         assert_eq!(parse("/undo"), Command::Undo);
+        assert_eq!(parse("/rewind"), Command::Rewind(None));
+        assert_eq!(parse("/rewind 2"), Command::Rewind(Some(2)));
+        assert!(matches!(parse("/rewind 0"), Command::Invalid(_)));
+        assert!(matches!(parse("/rewind x"), Command::Invalid(_)));
+        assert!(matches!(parse("/rewind 1 2"), Command::Invalid(_)));
         assert_eq!(parse("/resume"), Command::Resume(None));
         assert_eq!(parse("/rename parser fix"), Command::Rename(Some("parser fix".into())));
         assert_eq!(parse("/rename"), Command::Rename(None));

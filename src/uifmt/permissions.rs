@@ -4,6 +4,7 @@
 use std::path::Path;
 
 use super::changes::relativize_paths;
+use super::diffview::paint_edit_lines;
 use crate::permissions::Settled;
 use super::style::Style;
 use super::text::one_line;
@@ -15,6 +16,11 @@ const MAX_INLINE_ROWS: usize = 20;
 
 /// Rows of a long input kept in the question next to the pager's.
 const PEEK_ROWS: usize = 6;
+
+/// Tools whose input lines are `- old` / `+ new` pairs, drawn as a diff.
+fn is_edit(tool: &str) -> bool {
+    matches!(tool, "Edit" | "MultiEdit" | "NotebookEdit")
+}
 
 /// What to ask. `lines` is everything the answer approves, already safe to print and with
 /// paths already shortened where that is safe (see `permissions::review`); it is printed as
@@ -97,10 +103,24 @@ pub fn permission_prompt(q: &Question) -> Prompt {
     }
 
     let text_width = width.saturating_sub(2).max(1);
+    // An edit shows what it changes as a diff: red and green, changed words reversed.
+    let painted = if is_edit(q.tool) { paint_edit_lines(lines, style) } else { vec![None; lines.len()] };
     let rows: Vec<String> = lines
         .iter()
-        .flat_map(|l| {
-            wrap_hard(l, text_width).into_iter().enumerate().map(|(i, r)| format!("{}{r}", style.dim(if i == 0 { "\u{2502} " } else { "\u{2506} " })))
+        .zip(&painted)
+        .flat_map(|(l, paint)| {
+            let rows = wrap_hard(l, text_width);
+            // A line that fits keeps its word-level marks; a wrapped one is tinted row by row.
+            let whole = paint.as_ref().filter(|_| rows.len() == 1);
+            rows.into_iter().enumerate().map(move |(i, r)| {
+                let bar = style.dim(if i == 0 { "\u{2502} " } else { "\u{2506} " });
+                match (whole, l.chars().next()) {
+                    (Some(p), _) => format!("{bar}{p}"),
+                    (None, Some('-')) if paint.is_some() => format!("{bar}{}", style.red(&r)),
+                    (None, Some('+')) if paint.is_some() => format!("{bar}{}", style.green(&r)),
+                    _ => format!("{bar}{r}"),
+                }
+            })
         })
         .collect();
     let mut top = vec![style.bold(&format!("Allow {tool}:"))];

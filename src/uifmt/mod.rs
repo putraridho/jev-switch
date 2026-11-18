@@ -25,6 +25,7 @@ mod ansi;
 mod changes;
 mod commands;
 mod complete;
+mod diffview;
 mod failure;
 mod highlight;
 mod markdown;
@@ -48,6 +49,7 @@ pub use ansi::{clear_line, hide_cursor, restore_cursor, save_cursor, show_cursor
 pub use changes::{changes_block, diff_colorize, relativize_paths, tool_line, FileChange, MAX_CHANGE_ROWS};
 pub use commands::{command_names, command_usage, Cmd, COMMANDS};
 pub use complete::{complete, completion_start, hint, Candidate, CompleteCtx};
+pub use diffview::{render_diff, render_hunk, word_diff, DiffOpts, Fold, Layout, Piece, FOLD_AFTER, SPLIT_MIN_WIDTH};
 pub use failure::{error_block, failover_note, next_steps_for, no_route_message, problem_block};
 pub use markdown::answer_text;
 pub use permissions::{auto_allowed, denied_without_asking, remembered_allowed, permission_answered, permission_prompt, permissions_text, Prompt, Question};

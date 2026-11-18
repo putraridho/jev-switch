@@ -64,6 +64,9 @@ impl Style {
     pub fn bold(&self, s: &str) -> String {
         self.paint("1", s)
     }
+    pub fn reverse(&self, s: &str) -> String {
+        self.paint("7", s)
+    }
     pub fn dim(&self, s: &str) -> String {
         self.paint("2", s)
     }

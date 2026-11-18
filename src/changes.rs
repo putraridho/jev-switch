@@ -444,6 +444,11 @@ fn toplevel(dir: &Path) -> Option<PathBuf> {
     repo_paths(dir).map(|(root, _)| root)
 }
 
+/// The repository root of `dir`, for callers that apply patches against it.
+pub fn repo_root(dir: &Path) -> Option<PathBuf> {
+    toplevel(dir)
+}
+
 fn stamp_of(root: &Path, rel: &str) -> Option<Stamp> {
     let meta = std::fs::symlink_metadata(root.join(rel)).ok()?;
     let mtime_ns = match meta.modified().ok()?.duration_since(UNIX_EPOCH) {

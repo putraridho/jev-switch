@@ -23,7 +23,7 @@ pub struct Cmd {
     pub hint: &'static str,
 }
 
-pub const COMMANDS: [Cmd; 29] = [
+pub const COMMANDS: [Cmd; 30] = [
     Cmd { name: "/model", args: "[target]", group: Group::Model, about: "Pin a model or provider, or `auto` to let the router choose", example: "/model codex:gpt-6.1-sol", hint: "auto|codex|claude:..." },
     Cmd { name: "/provider", args: "auto|off", group: Group::Model, about: "Route across providers (auto), or use Claude only (off)", example: "/provider off", hint: "auto|off" },
     Cmd { name: "/orchestrate", args: "[on|off]", group: Group::Model, about: "Let a planner split a big task across cheaper workers", example: "/orchestrate on", hint: "on|off" },
@@ -33,8 +33,9 @@ pub const COMMANDS: [Cmd; 29] = [
     Cmd { name: "/rename", args: "[name]", group: Group::Session, about: "Name this session, so /resume lists it by that name", example: "/rename parser fix", hint: "[name]" },
     Cmd { name: "/resume", args: "[search]", group: Group::Session, about: "Pick a previous session of this folder to continue", example: "/resume parser", hint: "[search]" },
     Cmd { name: "/edit", args: "", group: Group::Session, about: "Write your message in $EDITOR, then send it", example: "", hint: "" },
-    Cmd { name: "/diff", args: "[file]", group: Group::Session, about: "Show what the agent changed, all files or one", example: "/diff src/main.rs", hint: "[file]" },
+    Cmd { name: "/diff", args: "[--all|--turn N|--review|--split|--export F] [file]", group: Group::Session, about: "Show what the agent changed (last turn, one turn, or all), review it hunk by hunk, or export a patch", example: "/diff --all", hint: "[--all|--turn N|--review] [file]" },
     Cmd { name: "/undo", args: "", group: Group::Session, about: "Undo the file changes of the last turn", example: "", hint: "" },
+    Cmd { name: "/rewind", args: "[turn]", group: Group::Session, about: "Put the files back to before an earlier turn (no number: list the turns)", example: "/rewind 2", hint: "[turn]" },
     Cmd { name: "/mode", args: "[ask|edit|plan|auto]", group: Group::Session, about: "Set how much the agent may do without asking (Shift-Tab cycles it)", example: "/mode auto", hint: "ask|edit|plan|auto" },
     Cmd { name: "/permissions", args: "[allow|remove|dir <x>]", group: Group::Session, about: "Show or change which tool calls are allowed without asking", example: "/permissions allow Bash(cargo test:*)", hint: "allow|remove|dir" },
     Cmd { name: "/quit", args: "", group: Group::Session, about: "Exit (also /exit, or Ctrl-D)", example: "", hint: "" },
@@ -99,7 +100,7 @@ mod tests {
     fn the_command_table_gives_names_and_usage_to_parsing() {
         let names = command_names();
         assert!(names.contains(&"/model") && names.contains(&"/help") && names.contains(&"/undo"));
-        assert_eq!(command_usage("/diff").as_deref(), Some("/diff [file]"));
+        assert_eq!(command_usage("/diff").as_deref(), Some("/diff [--all|--turn N|--review|--split|--export F] [file]"));
         assert_eq!(command_usage("/new").as_deref(), Some("/new"));
         assert_eq!(command_usage("/nope"), None);
     }

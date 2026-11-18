@@ -429,6 +429,9 @@ pub struct Engine {
     track_changes: bool,
     /// What the last turn that started a model changed; consumed by an undo.
     last_changes: Option<ChangeSummary>,
+    /// Every turn of this session that changed files, oldest first: the checkpoints that
+    /// `/diff --turn`, `/diff --all` and `/rewind` work on.
+    change_history: Vec<ChangeSummary>,
     /// Images for the next turn (dropped or pasted paths, see [`crate::attach`]); sent with
     /// every attempt of that turn, then dropped.
     images: Vec<PathBuf>,
@@ -470,6 +473,7 @@ impl Engine {
             orch_setup: None,
             track_changes: true,
             last_changes: None,
+            change_history: Vec::new(),
             images: Vec::new(),
             turn_activity: TurnActivity::default(),
             persist: None,
@@ -604,6 +608,7 @@ impl Engine {
         self.previous = None;
         self.last_context_tokens = 0;
         self.last_changes = None;
+        self.change_history.clear();
         self.runtime.forget_unusable_here();
         // The saved file stays (it can be resumed); the next save starts a new one.
         self.session_file = None;
@@ -614,6 +619,48 @@ impl Engine {
     /// What the last turn changed, if it changed anything in a git working tree.
     pub fn last_changes(&self) -> Option<&ChangeSummary> {
         self.last_changes.as_ref()
+    }
+
+    /// The turns that changed files, oldest first.
+    pub fn change_history(&self) -> &[ChangeSummary] {
+        &self.change_history
+    }
+
+    /// Put the working tree back to how it was before checkpoint `number` (1-based, as
+    /// `/diff --turn` counts), undoing the newer checkpoints first. Stops at the first
+    /// one that cannot be undone and reports how far it got.
+    pub fn rewind_to(&mut self, number: usize) -> Result<Vec<UndoReport>, (Vec<UndoReport>, UndoError)> {
+        if number == 0 || number > self.change_history.len() {
+            return Err((Vec::new(), UndoError::NothingToUndo));
+        }
+        let mut done = Vec::new();
+        while self.change_history.len() >= number {
+            // The newest checkpoint is the one `undo_last` works on.
+            self.last_changes = self.change_history.last().cloned();
+            match self.undo_last() {
+                Ok(r) => done.push(r),
+                Err(e) => return Err((done, e)),
+            }
+        }
+        self.last_changes = self.change_history.last().cloned();
+        Ok(done)
+    }
+
+    /// The user changed the working tree on purpose (a hunk reverted in `/diff --review`):
+    /// record the tree as it is now as where the newest checkpoint ended, so `/undo` and
+    /// `/rewind` keep working instead of reading the change as someone else's edit.
+    /// Returns false when there is no checkpoint or the tree cannot be read.
+    pub fn adopt_working_tree(&mut self) -> bool {
+        let Some(now) = changes::snapshot(&self.dir) else { return false };
+        let Some(newest) = self.change_history.last_mut() else { return false };
+        newest.after = now.tree.clone();
+        // Untracked files the turn added: follow their new look, drop the ones now gone.
+        newest.added_stamps = newest.added_stamps.keys().filter_map(|k| now.untracked.get(k).map(|s| (k.clone(), *s))).collect();
+        if self.last_changes.is_some() {
+            self.last_changes = Some(newest.clone());
+        }
+        self.save_quietly();
+        true
     }
 
     /// The text diff of the last turn, whole or for one repository-relative path; plain
@@ -631,6 +678,7 @@ impl Engine {
         let summary = self.last_changes.clone().ok_or(UndoError::NothingToUndo)?;
         let report = changes::undo(&self.dir, &summary)?;
         self.last_changes = None;
+        self.change_history.pop();
         self.sessions.record_undo();
         self.save_quietly();
         Ok(report)
@@ -707,6 +755,7 @@ impl Engine {
         self.routing.current = saved.current;
         self.last_context_tokens = 0;
         self.last_changes = None;
+        self.change_history.clear();
         info
     }
 
@@ -783,6 +832,7 @@ impl Engine {
             // against it; a Ctrl-C while summarising a finished turn still returns at once.
             report.changes = self.changes_since(before, self.turn_activity.clone(), cancel, report.status != TurnStatus::Cancelled).await;
             self.last_changes = report.changes.clone();
+            self.change_history.extend(report.changes.clone());
             self.save_quietly();
         }
         report
