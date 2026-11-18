@@ -28,7 +28,9 @@ use jev_router::log;
 use jev_router::mode;
 use jev_router::orchestrate::{self, Setup};
 use jev_router::prefs::Saved;
-use jev_router::providers::{self, Runtime};
+use jev_router::perf::{Phase, ProbeSource, Timeline};
+use jev_router::probecache;
+use jev_router::providers::{self, ProbeCache, Runtime};
 use jev_router::repl::{Confirm, Flow, Interrupt, Io, Repl, SigInt};
 use jev_router::router::{Router, CODE_STRONG_THRESHOLD};
 use jev_router::terminal::{self, TerminalGuard};
@@ -130,6 +132,7 @@ async fn run() -> i32 {
     let _terminal = TerminalGuard::install();
     let state_dir = log::state_dir();
     terminal::install_panic_hook(state_dir.as_ref().map(|d| d.join("panic.log")));
+    terminal::restore_on_termination();
 
     let dir = match project_dir(&args) {
         Ok(d) => d,
@@ -141,6 +144,7 @@ async fn run() -> i32 {
     // A person at a terminal gets the interactive screen; everything else prints plainly.
     let (front, front_rx) = match args.action {
         Action::Doctor | Action::Print(_) => (None, None),
+        _ if args.profile => (None, None),
         _ if term.interactive() && std::env::var_os("JEV_CLASSIC_UI").is_none() => {
             let (front, rx) = Front::channel();
             (Some(front), Some(rx))
@@ -182,17 +186,38 @@ fn jev_client(style: Style) -> Result<TypeSafe, String> {
     })
 }
 
-/// Probe the providers, with a one-line notice on a terminal (the probe can take seconds).
-async fn start_runtime(console: &Console) -> Runtime {
-    let live = console.err_style().enabled && std::io::stderr().is_terminal();
+/// Whether the provider probe may reuse the last run's answer.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ProbeMode {
+    /// Sessions and one-shot turns: a fresh cached answer is used at once and checked in the
+    /// background, so the prompt never waits for the provider CLIs.
+    Cached,
+    /// `doctor` reports what is true now.
+    Live,
+}
+
+/// The probe cache of this machine, unless the user turned it off.
+fn probe_cache() -> Option<ProbeCache> {
+    if probecache::disabled(envfile::lookup("JEV_PROBE_CACHE").as_deref()) {
+        return None;
+    }
+    Some(ProbeCache { path: probecache::default_path()?, fingerprint: probecache::fingerprint(&|name| envfile::lookup(name)) })
+}
+
+/// Probe the providers, with a one-line notice on a terminal when it has to ask the CLIs
+/// (that can take seconds); a cached answer needs no notice.
+async fn start_runtime(console: &Console, mode: ProbeMode) -> (Runtime, ProbeSource) {
+    let cache = (mode == ProbeMode::Cached).then(probe_cache).flatten();
+    let warm = cache.as_ref().is_some_and(|c| probecache::load(&c.path, log::now_ms(), c.fingerprint).is_some());
+    let live = !warm && console.err_style().enabled && std::io::stderr().is_terminal();
     if live {
         eprint!("{}", console.err_style().dim("checking providers..."));
     }
-    let runtime = Runtime::start().await;
+    let started = Runtime::start_cached(cache).await;
     if live {
         eprint!("{}", uifmt::clear_line());
     }
-    runtime
+    started
 }
 
 /// Settings come from the environment or `~/.jev-router.env`, like every other setting.
@@ -227,7 +252,7 @@ fn engine_for(args: &Args, runtime: Runtime, router: Router, dir: PathBuf, can_a
 
 /// `jev-code doctor`: the report on stdout; exit 1 when something is a Problem.
 async fn doctor(dir: &Path, console: &Console) -> i32 {
-    let runtime = start_runtime(console).await;
+    let (runtime, _) = start_runtime(console, ProbeMode::Live).await;
     let inputs = jev_router::doctor::gather(&runtime, dir).await;
     let report = jev_router::doctor::diagnose(&inputs);
     console.out(&views::doctor_text(&report, console.out_style(), console.width()));
@@ -260,7 +285,7 @@ async fn print_mode(args: &Args, source: &PromptSource, dir: &Path, term: &Term,
             return 1;
         }
     };
-    let runtime = start_runtime(&console).await;
+    let (runtime, _) = start_runtime(&console, ProbeMode::Cached).await;
     // A one-shot starts a fresh conversation and leaves the saved session alone, unless -c asks to continue it.
     let persist = if args.resume { state_dir } else { None };
     let engine = engine_for(args, runtime, router, dir.to_path_buf(), console.can_ask(), None).with_persistence(persist);
@@ -304,21 +329,31 @@ impl Confirm for EditorConfirm<'_> {
 }
 
 async fn session(args: &Args, dir: &Path, term: &Term, console: Console, state_dir: Option<PathBuf>, front_rx: Option<FrontRx>) -> i32 {
-    let router = match jev_client(term.err_style) {
+    let mut timeline = Timeline::start(args.trace);
+    let router = match timeline.time(Phase::JevClient, || jev_client(term.err_style)) {
         Ok(ts) => router_for(ts),
         Err(message) => {
             eprintln!("{message}");
             return 1;
         }
     };
-    let runtime = start_runtime(&console).await;
-    let saved = state_dir.as_deref().map(Saved::load).unwrap_or_default();
-    let engine = engine_for(args, runtime, router, dir.to_path_buf(), console.can_ask(), Some(saved)).with_persistence(state_dir.clone());
-    // The interactive screen shows text as it arrives; plain output keeps it until it is final.
-    let engine = if front_rx.is_some() { engine.with_streaming() } else { engine };
+    let began = timeline.now();
+    let (runtime, probes) = start_runtime(&console, ProbeMode::Cached).await;
+    timeline.set_probe_source(probes);
+    timeline.record(Phase::ProviderProbe, began);
+    let saved = timeline.time(Phase::SavedState, || state_dir.as_deref().map(Saved::load).unwrap_or_default());
     let home = std::env::var("HOME").ok();
-    let mut repl = Repl::new(engine, console.clone(), home.clone(), term.stdout_tty).with_state_dir(state_dir.clone());
-    startup(&mut repl, args, term, &console, state_dir.as_deref(), home.as_deref());
+    let mut repl = timeline.time(Phase::Engine, || {
+        let engine = engine_for(args, runtime, router, dir.to_path_buf(), console.can_ask(), Some(saved)).with_persistence(state_dir.clone());
+        // The interactive screen shows text as it arrives; plain output keeps it until it is final.
+        let engine = if front_rx.is_some() { engine.with_streaming() } else { engine };
+        Repl::new(engine, console.clone(), home.clone(), term.stdout_tty).with_state_dir(state_dir.clone())
+    });
+    timeline.time(Phase::Banner, || startup(&mut repl, args, term, &console, state_dir.as_deref(), home.as_deref()));
+    if args.profile {
+        console.out(&timeline.report());
+        return 0;
+    }
     recheck_slow_providers(&mut repl, &console);
 
     let mut sigint = match SigInt::install() {

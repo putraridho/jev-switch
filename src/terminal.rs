@@ -29,6 +29,53 @@ pub fn note_front_keys(on: bool) {
     FRONT_KEYS.store(on, Ordering::SeqCst);
 }
 
+/// Set while the keyboard protocol is pushed (it is not asked for inside tmux, on a console
+/// or on a dumb terminal, see [`crate::termenv`]), so [`restore`] only pops what was pushed.
+static KEYBOARD_PROTOCOL: AtomicBool = AtomicBool::new(false);
+
+/// Record that the keyboard protocol was pushed (`true`) or popped (`false`); returns whether
+/// it was pushed before this call.
+pub fn note_keyboard_protocol(on: bool) -> bool {
+    KEYBOARD_PROTOCOL.swap(on, Ordering::SeqCst)
+}
+
+/// What puts the keyboard and the cursor back: pop the keyboard protocol (when it was pushed),
+/// stop bracketed paste, show the cursor.
+fn front_restore_bytes(keyboard_protocol: bool) -> &'static [u8] {
+    if keyboard_protocol {
+        b"\x1b[<u\x1b[?2004l\x1b[?25h"
+    } else {
+        b"\x1b[?2004l\x1b[?25h"
+    }
+}
+
+/// The exit status a shell reports for a program ended by `signal`.
+pub fn exit_code_for_signal(signal: i32) -> i32 {
+    128 + signal
+}
+
+/// Put the terminal back and end the process when it is told to stop from outside: SIGTERM
+/// (`kill`, a closing tmux pane's cleanup), SIGHUP (the terminal window or ssh connection
+/// went away). Without this the default action ends the process at once and leaves raw mode,
+/// bracketed paste and a hidden cursor behind in the user's shell. Ctrl-C is not handled
+/// here: it belongs to the turn. Call once, inside the runtime.
+#[cfg(unix)]
+pub fn restore_on_termination() {
+    use tokio::signal::unix::{signal, SignalKind};
+    for (kind, number) in [(SignalKind::terminate(), libc::SIGTERM), (SignalKind::hangup(), libc::SIGHUP)] {
+        let Ok(mut stream) = signal(kind) else { continue };
+        tokio::spawn(async move {
+            if stream.recv().await.is_some() {
+                restore();
+                std::process::exit(exit_code_for_signal(number));
+            }
+        });
+    }
+}
+
+#[cfg(not(unix))]
+pub fn restore_on_termination() {}
+
 #[cfg(unix)]
 static SAVED_TERMIOS: std::sync::OnceLock<libc::termios> = std::sync::OnceLock::new();
 
@@ -63,9 +110,8 @@ impl Drop for TerminalGuard {
 pub fn restore() {
     use std::io::Write;
     if FRONT_KEYS.swap(false, Ordering::SeqCst) {
-        // Pop the keyboard protocol, stop bracketed paste, show the cursor.
         let mut out = std::io::stdout();
-        let _ = out.write_all(b"\x1b[<u\x1b[?2004l\x1b[?25h");
+        let _ = out.write_all(front_restore_bytes(KEYBOARD_PROTOCOL.swap(false, Ordering::SeqCst)));
         let _ = out.flush();
     }
     if CURSOR_HIDDEN.swap(false, Ordering::SeqCst) {
@@ -240,6 +286,22 @@ mod tests {
         assert_eq!(log, "panic at src/x.rs:9: index out of bounds");
         let (none, _) = panic_texts("x", "y", None);
         assert!(none.contains("No log file"), "{none}");
+    }
+
+    #[test]
+    fn the_keyboard_protocol_is_only_popped_when_it_was_pushed() {
+        assert!(front_restore_bytes(true).starts_with(b"\x1b[<u"));
+        assert!(!front_restore_bytes(false).windows(4).any(|w| w == b"\x1b[<u"));
+        for pushed in [true, false] {
+            let bytes = String::from_utf8_lossy(front_restore_bytes(pushed)).into_owned();
+            assert!(bytes.contains("\x1b[?2004l") && bytes.ends_with("\x1b[?25h"), "paste off and cursor back in both cases: {bytes:?}");
+        }
+    }
+
+    #[test]
+    fn a_signal_ends_the_program_with_the_shells_status() {
+        assert_eq!(exit_code_for_signal(15), 143);
+        assert_eq!(exit_code_for_signal(1), 129);
     }
 
     #[test]
