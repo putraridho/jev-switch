@@ -728,6 +728,17 @@ impl Engine {
 
     // ------------------------------------------------------------------ saved sessions
 
+    /// Point a test engine at a state folder after it was built.
+    #[cfg(test)]
+    pub(crate) fn set_state_dir(&mut self, dir: Option<PathBuf>) {
+        self.persist = dir;
+    }
+
+    /// The folder sessions are saved under; `None` when persistence is off.
+    pub fn state_dir(&self) -> Option<&Path> {
+        self.persist.as_deref()
+    }
+
     /// The file this session saves to; `None` until its first save, when persistence is
     /// off, and after `/new`.
     pub fn session_path(&self) -> Option<&Path> {

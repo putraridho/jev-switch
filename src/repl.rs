@@ -29,6 +29,8 @@ use crate::sessionlog::{SessionLog, TurnRecord};
 
 mod diff_cmds;
 mod cache_cmds;
+mod library_cmds;
+mod project_cmds;
 mod session_cmds;
 
 // ------------------------------------------------------------------- interrupts
@@ -200,11 +202,13 @@ pub struct Repl {
     carry: Vec<String>,
     /// Where scratch files go (`/edit`); the temp folder when `None`.
     state_dir: Option<std::path::PathBuf>,
+    /// The last `/sessions` listing, which its numbers refer to.
+    library: library_cmds::LibraryState,
 }
 
 impl Repl {
     pub fn new(engine: Engine, console: Console, home: Option<String>, paging: bool) -> Self {
-        Self { engine, console, home, paging, last_summary: None, log: SessionLog::default(), carry: Vec::new(), state_dir: None }
+        Self { engine, console, home, paging, last_summary: None, log: SessionLog::default(), carry: Vec::new(), state_dir: None, library: Default::default() }
     }
 
     /// Keep the mode the person just chose for the next session. Only their choices come
@@ -344,6 +348,8 @@ impl Repl {
                 let text = self.workflows_text();
                 self.page_out(&text);
             }
+            Command::Sessions(cmd) => self.sessions(cmd),
+            Command::Project(cmd) => return self.project(cmd, io).await,
             Command::Permissions(cmd) => self.permissions(cmd),
             Command::Diff(args) => self.diff(args.as_deref(), io),
             Command::Rewind(turn) => self.rewind(turn, io),
@@ -370,6 +376,9 @@ impl Repl {
 
     /// A message from the person: sent with the notes waiting for it, attachments said.
     async fn prompt(&mut self, text: &str, io: &mut Io<'_>) -> Flow {
+        if let Some(flow) = self.auto_compact_first(io).await {
+            return flow;
+        }
         let typed = self.take_attachments(text);
         let sent = self.with_carry(&typed);
         self.run_recorded(&sent, text, io).await
@@ -739,6 +748,8 @@ mod tests {
     use crate::typesafe::TypeSafe;
     use std::sync::{Arc, Mutex};
     use tokio::process::Command as TokioCommand;
+
+    mod project_tests;
 
     /// A model CLI that is a shell script printing canned lines: `TOOL:x`, `TEXT:x`, `FIN:x`.
     struct Fake {

@@ -23,21 +23,24 @@ pub struct Cmd {
     pub hint: &'static str,
 }
 
-pub const COMMANDS: [Cmd; 42] = [
-pub const COMMANDS: [Cmd; 42] = [
-pub const COMMANDS: [Cmd; 42] = [
-pub const COMMANDS: [Cmd; 42] = [
+pub const COMMANDS: [Cmd; 44] = [
+pub const COMMANDS: [Cmd; 44] = [
+pub const COMMANDS: [Cmd; 44] = [
+pub const COMMANDS: [Cmd; 44] = [
+pub const COMMANDS: [Cmd; 44] = [
     Cmd { name: "/model", args: "[target]", group: Group::Model, about: "Pin a model or provider, or `auto` to let the router choose", example: "/model codex:gpt-6.1-sol", hint: "auto|codex|claude:..." },
     Cmd { name: "/provider", args: "auto|off", group: Group::Model, about: "Route across providers (auto), or use Claude only (off)", example: "/provider off", hint: "auto|off" },
     Cmd { name: "/orchestrate", args: "[on|off]", group: Group::Model, about: "Let a planner split a big task across cheaper workers", example: "/orchestrate on", hint: "on|off" },
     Cmd { name: "/workflows", args: "", group: Group::Model, about: "Show orchestration: running workers, ones waiting for review, recent delegations (also /workers)", example: "", hint: "" },
-pub const COMMANDS: [Cmd; 42] = [
+pub const COMMANDS: [Cmd; 44] = [
     Cmd { name: "/effort", args: "[default|auto|low|medium|high]", group: Group::Model, about: "Set how hard the model thinks (a thinking budget or reasoning effort)", example: "/effort high", hint: "default|auto|low|medium|high" },
     Cmd { name: "/why", args: "", group: Group::Model, about: "Explain why the router picked the last turn's model", example: "", hint: "" },
     Cmd { name: "/new", args: "", group: Group::Session, about: "Start a fresh session on every provider", example: "", hint: "" },
     Cmd { name: "/clear", args: "", group: Group::Session, about: "Clear the screen and start a fresh session", example: "", hint: "" },
     Cmd { name: "/rename", args: "[name]", group: Group::Session, about: "Name this session, so /resume lists it by that name", example: "/rename parser fix", hint: "[name]" },
     Cmd { name: "/resume", args: "[search]", group: Group::Session, about: "Pick a previous session of this folder to continue", example: "/resume parser", hint: "[search]" },
+    Cmd { name: "/sessions", args: "[search|pin|tag|export|import]", group: Group::Session, about: "Search, tag, pin, archive, export and import saved sessions of every project", example: "/sessions parser provider:codex since:7d", hint: "[search]" },
+    Cmd { name: "/project", args: "[map|check|note]", group: Group::Session, about: "Project kind, repo map, test/lint with a fix loop, notes every session starts with", example: "/project check test fix", hint: "map|check|note|notes|forget" },
     Cmd { name: "/edit", args: "", group: Group::Session, about: "Write your message in $EDITOR, then send it", example: "", hint: "" },
     Cmd { name: "/diff", args: "[--all|--turn N|--review|--split|--export F] [file]", group: Group::Session, about: "Show what the agent changed (last turn, one turn, or all), review it hunk by hunk, or export a patch", example: "/diff --all", hint: "[--all|--turn N|--review] [file]" },
     Cmd { name: "/undo", args: "", group: Group::Session, about: "Undo the file changes of the last turn", example: "", hint: "" },

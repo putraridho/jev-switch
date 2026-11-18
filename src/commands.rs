@@ -59,6 +59,10 @@ pub enum Command {
     Rewind(Option<usize>),
     /// `/resume`: pick up the saved session of this folder.
     Resume(Option<String>),
+    /// `/sessions ...`: the library of saved sessions.
+    Sessions(crate::libcmd::SessionsCmd),
+    /// `/project ...`: kind, repo map, checks and notes of this project.
+    Project(crate::projcmd::ProjectCmd),
     /// `/rename [name]`: name this session; with no name, say what it is called.
     Rename(Option<String>),
     /// `/workflows` (also `/workers`): what orchestration is doing in this project.
@@ -229,6 +233,8 @@ pub fn parse(line: &str) -> Command {
         "/resume" => Command::Resume(rest()),
         "/rename" => Command::Rename(rest()),
         "/workflows" | "/workers" => Command::Workflows,
+        "/sessions" => crate::libcmd::parse(&line[head.len()..]).map_or_else(|e| Command::Invalid(format!("{e}")), Command::Sessions),
+        "/project" => crate::projcmd::parse(&line[head.len()..]).map_or_else(Command::Invalid, Command::Project),
         "/diff" => {
             // The rest of the line is one path, so a name with spaces works.
             let path = line[head.len()..].trim();

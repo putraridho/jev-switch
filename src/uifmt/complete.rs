@@ -148,6 +148,7 @@ mod tests {
                 "/model", "/new", "/orchestrate", "/permissions", "/provider", "/providers", "/quit", "/rename", "/resume", "/review", "/status", "/terminal-setup",
                 "/agents", "/clear", "/compact", "/config", "/context", "/copy", "/cost", "/diff", "/doctor", "/edit", "/export", "/help", "/init", "/mcp", "/memory",
                 "/mode", "/model", "/new", "/orchestrate", "/orchestration", "/permissions", "/provider", "/providers", "/quit", "/rename", "/resume", "/review", "/status", "/terminal-setup",
+                "/model", "/new", "/orchestrate", "/permissions", "/project", "/provider", "/providers", "/quit", "/rename", "/resume", "/review", "/sessions", "/status", "/terminal-setup",
                 "/undo", "/why"
                 "/clear", "/compact", "/config", "/context", "/copy", "/cost", "/diff", "/doctor", "/edit", "/export", "/help", "/init", "/keys", "/mcp", "/memory", "/mode",
                 "/tips", "/undo", "/whatsnew", "/why"
