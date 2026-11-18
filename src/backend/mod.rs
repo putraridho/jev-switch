@@ -320,6 +320,10 @@ pub trait Backend: Send + Sync {
     /// Add `mcp` to this backend's commands. Only called when [`Backend::supports_mcp`].
     fn attach_mcp(&mut self, _mcp: &McpAttachment) {}
 
+    /// Set the reasoning effort of this backend's turns. A CLI with no such control
+    /// ignores it (see [`crate::effort::supported`]).
+    fn set_effort(&mut self, _effort: crate::effort::Effort) {}
+
     /// Classify an error message from the CLI (a `Failed` text or a stderr tail).
     /// Implementations call [`classify_common`] first and may add their own rules.
     fn classify_error(&self, message: &str) -> ErrorKind;

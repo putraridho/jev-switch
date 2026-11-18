@@ -18,6 +18,8 @@ pub struct TurnRecord {
     pub route: Option<(crate::backend::ProviderId, String)>,
     pub usage: Option<Usage>,
     pub elapsed_ms: u64,
+    /// When the turn ended, in ms since 1970 (the cache window counts from it).
+    pub ended_ms: u64,
 }
 
 /// Tokens and time of one model over the session.
@@ -149,6 +151,7 @@ mod tests {
             route: None,
             usage: Some(Usage { input_tokens: tokens.0, cached_input_tokens: tokens.1, output_tokens: tokens.2, context_tokens: None }),
             elapsed_ms: 1000,
+            ended_ms: 0,
         }
     }
 

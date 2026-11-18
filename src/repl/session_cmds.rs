@@ -209,7 +209,12 @@ impl Repl {
         let rows: Vec<CostRow> = rows.iter().map(to_row).collect();
         let facts = crate::views::status_facts(&self.engine, self.last_summary.as_ref(), self.home.as_deref(), self.now());
         let plans: Vec<(String, f64)> = facts.ready.iter().filter_map(|r| r.plan_used.map(|u| (r.provider.clone(), u))).collect();
-        uifmt::cost_text(&rows, &to_row(&total), &plans, self.out_style())
+        let mut text = uifmt::cost_text(&rows, &to_row(&total), &plans, self.out_style());
+        let cache = crate::cache::cost_lines(&self.log);
+        if !cache.is_empty() {
+            text.push_str(&format!("\n\n{}\n  {}", self.out_style().bold("Cache by provider"), cache.join("\n  ")));
+        }
+        text
     }
 
     /// `/export [file]`: the conversation as Markdown, in the project unless a path says

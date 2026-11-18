@@ -42,6 +42,7 @@ fn arg_choices(command: &str, ctx: &CompleteCtx) -> Vec<String> {
         "/provider" => vec!["auto", "off"],
         "/orchestrate" => vec!["on", "off"],
         "/mode" => vec!["ask", "edit", "plan", "auto"],
+        "/effort" => vec!["default", "auto", "low", "medium", "high"],
         "/providers" => vec!["refresh"],
         "/mcp" => vec!["list", "login"],
         "/terminal-setup" => vec!["install"],
@@ -143,6 +144,9 @@ mod tests {
                 "/clear", "/compact", "/config", "/context", "/copy", "/cost", "/diff", "/doctor", "/edit", "/export", "/help", "/init", "/mcp", "/memory", "/mode",
                 "/model", "/new", "/orchestrate", "/permissions", "/provider", "/providers", "/quit", "/rename", "/resume", "/review", "/rewind", "/status", "/terminal-setup",
                 "/undo", "/why", "/workflows"
+                "/cache", "/clear", "/compact", "/config", "/context", "/copy", "/cost", "/diff", "/doctor", "/edit", "/effort", "/export", "/help", "/init", "/mcp", "/memory", "/mode",
+                "/model", "/new", "/orchestrate", "/permissions", "/provider", "/providers", "/quit", "/rename", "/resume", "/review", "/status", "/terminal-setup",
+                "/undo", "/why"
             ]
         );
         assert_eq!(replacements("/mcp "), vec!["list", "login"]);
@@ -224,7 +228,7 @@ mod tests {
             ("/model", Some(" auto|codex|claude:...")),
             ("/prov", Some("ider")),
             ("/provider", Some(" auto|off")),
-            ("/", Some("clear")),
+            ("/", Some("cache")),
             ("/new", None),
             ("/new ", None),
             ("/model co", None),

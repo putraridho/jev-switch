@@ -348,6 +348,7 @@ mod tests {
         assert!(s.contains("  › /model [target]"), "the first command is selected: {s}");
         assert!(s.contains("Pin a model or provider"), "{s}");
         assert!(s.contains("1/30 · ↑↓ more · tab complete · enter run · esc close"), "{s}");
+        assert!(s.contains("1/31 · ↑↓ more · tab complete · enter run · esc close"), "{s}");
         assert_eq!(s.lines().filter(|l| l.starts_with("    /") || l.starts_with("  › /")).count(), MENU_ROWS);
     }
 
