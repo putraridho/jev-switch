@@ -23,16 +23,17 @@ pub struct Cmd {
     pub hint: &'static str,
 }
 
-pub const COMMANDS: [Cmd; 44] = [
-pub const COMMANDS: [Cmd; 44] = [
-pub const COMMANDS: [Cmd; 44] = [
-pub const COMMANDS: [Cmd; 44] = [
-pub const COMMANDS: [Cmd; 44] = [
+pub const COMMANDS: [Cmd; 49] = [
+pub const COMMANDS: [Cmd; 49] = [
+pub const COMMANDS: [Cmd; 49] = [
+pub const COMMANDS: [Cmd; 49] = [
+pub const COMMANDS: [Cmd; 49] = [
+pub const COMMANDS: [Cmd; 49] = [
     Cmd { name: "/model", args: "[target]", group: Group::Model, about: "Pin a model or provider, or `auto` to let the router choose", example: "/model codex:gpt-6.1-sol", hint: "auto|codex|claude:..." },
     Cmd { name: "/provider", args: "auto|off", group: Group::Model, about: "Route across providers (auto), or use Claude only (off)", example: "/provider off", hint: "auto|off" },
     Cmd { name: "/orchestrate", args: "[on|off]", group: Group::Model, about: "Let a planner split a big task across cheaper workers", example: "/orchestrate on", hint: "on|off" },
     Cmd { name: "/workflows", args: "", group: Group::Model, about: "Show orchestration: running workers, ones waiting for review, recent delegations (also /workers)", example: "", hint: "" },
-pub const COMMANDS: [Cmd; 44] = [
+pub const COMMANDS: [Cmd; 49] = [
     Cmd { name: "/effort", args: "[default|auto|low|medium|high]", group: Group::Model, about: "Set how hard the model thinks (a thinking budget or reasoning effort)", example: "/effort high", hint: "default|auto|low|medium|high" },
     Cmd { name: "/why", args: "", group: Group::Model, about: "Explain why the router picked the last turn's model", example: "", hint: "" },
     Cmd { name: "/new", args: "", group: Group::Session, about: "Start a fresh session on every provider", example: "", hint: "" },
@@ -56,6 +57,11 @@ pub const COMMANDS: [Cmd; 44] = [
     Cmd { name: "/memory", args: "", group: Group::Project, about: "Open the project's instructions (AGENTS.md, CLAUDE.md) in $EDITOR", example: "", hint: "" },
     Cmd { name: "/review", args: "[focus]", group: Group::Project, about: "Review the uncommitted changes for bugs, without editing", example: "/review the parser changes", hint: "[focus]" },
     Cmd { name: "/help", args: "", group: Group::Info, about: "Show this help, or search it: /help <words>", example: "/help diff", hint: "" },
+    Cmd { name: "/recipe", args: "[name args]", group: Group::Project, about: "List recipes, or run one: a saved sequence of steps, one turn each", example: "/recipe fix-tests the parser", hint: "[name] [args]" },
+    Cmd { name: "/extensions", args: "", group: Group::Project, about: "List custom commands, skills, recipes and installed extensions", example: "", hint: "" },
+    Cmd { name: "/hooks", args: "[trust]", group: Group::Project, about: "Show the hooks that run on tool calls; `trust` lets this project's hooks run", example: "/hooks trust", hint: "[trust]" },
+    Cmd { name: "/settings", args: "", group: Group::Info, about: "Show settings from config files and profiles, and where each came from", example: "", hint: "" },
+    Cmd { name: "/help", args: "", group: Group::Info, about: "Show this help", example: "", hint: "" },
     Cmd { name: "/status", args: "", group: Group::Info, about: "Show the project, routing, providers and the last turn", example: "", hint: "" },
     Cmd { name: "/cost", args: "", group: Group::Info, about: "Show tokens and time used this session, by model (also /usage)", example: "", hint: "" },
     Cmd { name: "/cache", args: "", group: Group::Info, about: "Show cache hit rate per provider, when it expires, and why a turn missed", example: "", hint: "" },

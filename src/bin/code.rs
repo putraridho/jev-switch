@@ -126,6 +126,7 @@ async fn run() -> i32 {
             println!("jev-code {}", env!("CARGO_PKG_VERSION"));
             return 0;
         }
+        Action::Ext(action) => return ext_command(&action, args.no_color),
         _ => {}
     }
     let term = Term::detect(args.no_color);
@@ -141,10 +142,11 @@ async fn run() -> i32 {
             return 2;
         }
     };
+    apply_layered_settings(&args, &dir);
     // A person at a terminal gets the interactive screen; everything else prints plainly.
     let (front, front_rx) = match args.action {
         Action::Doctor | Action::Print(_) => (None, None),
-        _ if args.profile => (None, None),
+        _ if args.startup_profile => (None, None),
         _ if term.interactive() && std::env::var_os("JEV_CLASSIC_UI").is_none() => {
             let (front, rx) = Front::channel();
             (Some(front), Some(rx))
@@ -157,6 +159,29 @@ async fn run() -> i32 {
         Action::Print(source) => print_mode(&args, source, &dir, &term, console, state_dir).await,
         _ => session(&args, &dir, &term, console, state_dir, front_rx).await,
     }
+}
+
+/// Settings from the config files and the chosen profile reach the process environment
+/// before anything reads one (`/settings` shows them). Problems are shown there, not here.
+fn apply_layered_settings(args: &Args, dir: &Path) {
+    if let Some(profile) = &args.profile {
+        std::env::set_var("JEV_PROFILE", profile);
+    }
+    let profile = std::env::var("JEV_PROFILE").ok().filter(|p| !p.is_empty());
+    let places = jev_router::ext::Places::from_env(dir);
+    jev_router::layers::Layered::load(&places, profile.as_deref()).apply_to_process();
+}
+
+/// `jev-code ext ...`: no providers and no terminal setup, only the config folder.
+fn ext_command(action: &jev_router::ext::cli::ExtAction, no_color: bool) -> i32 {
+    let style = if no_color { Style::off() } else { Style::detect(std::io::stdout().is_terminal()) };
+    let Some(user) = jev_router::ext::config_dir(|n| std::env::var(n).ok()) else {
+        eprintln!("jev-code: no config folder for extensions (HOME is not set; or set JEV_CODE_CONFIG_DIR)");
+        return 1;
+    };
+    let outcome = jev_router::ext::cli::run(action, &user, style);
+    println!("{}", outcome.text);
+    outcome.code
 }
 
 /// The project directory, or the message that says why it cannot be used.
@@ -231,12 +256,14 @@ fn engine_for(args: &Args, runtime: Runtime, router: Router, dir: PathBuf, can_a
     let mode = mode::start(args.mode, saved.mode, envfile::lookup("CODE_PERMISSION_MODE").as_deref());
     let routing = saved.routing.unwrap_or_else(|| commands::routing_enabled(envfile::lookup("JEV_PROVIDERS").as_deref()));
     let orchestrate = orchestrate::start(saved.orchestrate, envfile::lookup("JEV_ORCHESTRATE").as_deref(), session.is_some());
+    let hooks = std::sync::Arc::new(jev_router::ext::hooks::Hooks::load(&jev_router::ext::Places::from_env(&dir)));
     let engine = Engine::new(runtime, router, dir)
         .with_backend_factory(Box::new(providers::run_backends(can_ask)))
         .with_enabled(routing)
         .with_mode(mode)
         .with_orchestrate(orchestrate)
         .with_orch_setup(Setup::detect())
+        .with_hooks(hooks)
         .with_downgrade_after(envfile::lookup_f64("DOWNGRADE_AFTER", 2.0) as u32);
     match &args.pin {
         Some(pin) => {
@@ -300,7 +327,10 @@ async fn print_mode(args: &Args, source: &PromptSource, dir: &Path, term: &Term,
             return 1;
         }
     };
-    repl.one_shot(&prompt, &mut sigint).await
+    match &args.repeat {
+        Some(repeat) => repl.repeat_shot(&prompt, args.format, repeat, &mut sigint, &mut jev_router::repl::sleeper()).await,
+        None => repl.one_shot_as(&prompt, args.format, &mut sigint).await,
+    }
 }
 
 fn router_for(ts: TypeSafe) -> Router {
@@ -350,7 +380,7 @@ async fn session(args: &Args, dir: &Path, term: &Term, console: Console, state_d
         Repl::new(engine, console.clone(), home.clone(), term.stdout_tty).with_state_dir(state_dir.clone())
     });
     timeline.time(Phase::Banner, || startup(&mut repl, args, term, &console, state_dir.as_deref(), home.as_deref()));
-    if args.profile {
+    if args.startup_profile {
         console.out(&timeline.report());
         return 0;
     }

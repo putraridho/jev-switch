@@ -4,6 +4,7 @@
 //! drives `/help` and Tab completion.
 
 use crate::guard_cmd::GuardCmd;
+use crate::ext::{self, ExtCmd};
 use crate::mode::Mode;
 use crate::permissions::{self, PermissionsCmd};
 use crate::routing::Pin;
@@ -111,7 +112,10 @@ pub enum Command {
     Note(String),
     /// A slash word that is no command, with the closest real one when there is one. Never
     /// sent to the model: a typo must not cost a turn.
-    Unknown { typed: String, suggestion: Option<&'static str> },
+    /// `args` is the rest of the line: a custom command or recipe of that name may take it.
+    Unknown { typed: String, args: String, suggestion: Option<&'static str> },
+    /// `/extensions`, `/recipe`, `/hooks`.
+    Ext(ExtCmd),
 }
 
 /// Whether provider routing starts on: `JEV_PROVIDERS=off` (also `0`, `false`, `no`)
@@ -281,8 +285,11 @@ pub fn parse(line: &str) -> Command {
             _ => invalid("usage: /mcp [list | login <server>]"),
         },
         // A typo'd command must not cost a model turn; a path like `/etc/hosts` is still a prompt.
+        "/extensions" | "/recipe" | "/hooks" | "/settings" => {
+            ext::parse_command(head, rest().as_deref()).map_or(Command::Empty, |r| r.map_or_else(Command::Invalid, Command::Ext))
+        }
         h if h.starts_with('/') && !h[1..].contains('/') => {
-            Command::Unknown { typed: head.to_string(), suggestion: closest_command(head) }
+            Command::Unknown { typed: head.to_string(), args: rest().unwrap_or_default(), suggestion: closest_command(head) }
         }
         _ => Command::Prompt(line.to_string()),
     }
@@ -376,8 +383,8 @@ mod tests {
 
     #[test]
     fn unknown_slash_command_is_reported_not_sent() {
-        assert_eq!(parse("/provders"), Command::Unknown { typed: "/provders".into(), suggestion: Some("/providers") });
-        assert_eq!(parse("/xyzzy"), Command::Unknown { typed: "/xyzzy".into(), suggestion: None });
+        assert_eq!(parse("/provders"), Command::Unknown { typed: "/provders".into(), args: String::new(), suggestion: Some("/providers") });
+        assert_eq!(parse("/xyzzy"), Command::Unknown { typed: "/xyzzy".into(), args: String::new(), suggestion: None });
     }
 
     #[test]

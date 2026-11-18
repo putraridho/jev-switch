@@ -378,6 +378,7 @@ mod tests {
         assert!(s.contains("1/33 · ↑↓ more · tab complete · enter run · esc close"), "{s}");
         assert!(s.contains(&format!("1/{} · ↑↓ more", crate::uifmt::COMMANDS.len())), "{s}");
         assert!(s.contains(" · ↑↓ more · tab complete · enter run · esc close"), "{s}");
+        assert!(s.contains(&format!("1/{} · ↑↓ more · tab complete · enter run · esc close", crate::uifmt::COMMANDS.len())), "{s}");
         assert_eq!(s.lines().filter(|l| l.starts_with("    /") || l.starts_with("  › /")).count(), MENU_ROWS);
     }
 

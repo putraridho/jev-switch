@@ -157,6 +157,9 @@ mod tests {
                 "/scoreboard", "/status", "/terminal-setup", "/undo", "/why"
             ]
         );
+        let mut every: Vec<&str> = COMMANDS.iter().map(|c| c.name).collect();
+        every.sort_unstable();
+        assert_eq!(replacements("/"), every);
         assert_eq!(replacements("/mcp "), vec!["list", "login"]);
         assert_eq!(replacements("/terminal-setup "), vec!["install"]);
         assert_eq!(replacements("/mo"), vec!["/mode", "/model"]);

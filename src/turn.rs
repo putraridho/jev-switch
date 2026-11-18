@@ -30,6 +30,7 @@ use crate::catalog::{self, find, ModelSpec};
 use crate::effort::EffortSetting;
 use crate::changes::{self, ChangeSummary, Snapshot, TurnActivity, UndoError, UndoReport};
 use crate::guard::{Guards, TurnFacts};
+use crate::ext::hooks::{self, Hooks};
 use crate::handoff::{self, ResumeError, SavedSession, Sessions, TurnRecord};
 use crate::log;
 use crate::mode::Mode;
@@ -159,10 +160,21 @@ struct EngineApprover<'a> {
     dir: &'a Path,
     /// The turn's mode: [`Mode::Auto`] allows tool requests without asking.
     mode: Mode,
+    /// `pre_tool` hooks may refuse a call before anyone is asked.
+    hooks: &'a Arc<Hooks>,
 }
 
 impl EngineApprover<'_> {
     async fn answer(&self, req: &PermissionRequest) -> Decision {
+        if let Some(outcome) = hooks::refusal_for(self.hooks, &req.tool, &req.summary).await {
+            for warning in &outcome.warnings {
+                lock_ui(self.ui).event(&Event::Hint(warning.clone()));
+            }
+            if let Some(reason) = outcome.refused {
+                lock_ui(self.ui).event(&Event::Hint(format!("a hook refused {}: {reason}", req.tool)));
+                return Decision::Deny { reason };
+            }
+        }
         let places = Places::from_env(self.dir);
         // Every rule this call needs was saved before ("always"): not asked again, in any mode
         // that asks at all. Plan mode never reaches here for writes (Claude Code refuses them).
@@ -454,6 +466,8 @@ pub struct Engine {
     mode: Mode,
     /// `/effort`: the reasoning effort passed to CLIs that have the control.
     effort: EffortSetting,
+    /// Shell commands run on tool calls and turn events ([`crate::ext::hooks`]).
+    hooks: Arc<Hooks>,
 }
 
 impl Engine {
@@ -467,6 +481,7 @@ impl Engine {
             guards: Guards::default(),
             router,
             pin: Pin::Auto,
+            hooks: Arc::new(Hooks::none(&dir)),
             dir,
             enabled: true,
             backend_factory: Box::new(providers::session_backend_for),
@@ -587,6 +602,20 @@ impl Engine {
 
     pub fn dir(&self) -> &Path {
         &self.dir
+    }
+
+    /// Hooks for tool calls and turn events.
+    pub fn with_hooks(mut self, hooks: Arc<Hooks>) -> Self {
+        self.hooks = hooks;
+        self
+    }
+
+    pub fn set_hooks(&mut self, hooks: Arc<Hooks>) {
+        self.hooks = hooks;
+    }
+
+    pub fn hooks(&self) -> &Arc<Hooks> {
+        &self.hooks
     }
 
     pub fn pin(&self) -> &Pin {
@@ -1226,7 +1255,8 @@ impl Engine {
         let runtime = &mut self.runtime;
         let result = {
             let shared_ui: SharedUi = Mutex::new(&mut *ui);
-            let approver = EngineApprover { ui: &shared_ui, cancel, dir: &self.dir, mode: self.mode };
+            let approver = EngineApprover { ui: &shared_ui, cancel, dir: &self.dir, mode: self.mode, hooks: &self.hooks };
+            let hooks = &self.hooks;
             let mut on_event = |e: &Event| match e {
                 Event::Text(_) => {
                     if stream {
@@ -1237,7 +1267,11 @@ impl Engine {
                 other => {
                     lock_ui(&shared_ui).event(other);
                     match other {
-                        Event::Tool(summary) => tools.push(summary.clone()),
+                        Event::Tool(summary) => {
+                            tools.push(summary.clone());
+                            let name = summary.split_whitespace().next();
+                            hooks::fire(hooks, hooks::Event::PostTool, name, Some(summary));
+                        }
                         Event::Plan(plan) => runtime.note_plan(provider, plan.clone()),
                         _ => {}
                     }

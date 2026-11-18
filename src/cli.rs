@@ -4,8 +4,11 @@
 
 use std::path::PathBuf;
 
+use crate::ext::cli::ExtAction;
+use crate::headless::OutputFormat;
 use crate::mode::Mode;
 use crate::routing::Pin;
+use crate::schedule::{Repeat, Schedule, ScheduleError};
 
 /// Where a one-shot prompt (`-p`) comes from.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -25,6 +28,8 @@ pub enum Action {
     Print(PromptSource),
     /// `doctor`: check the setup.
     Doctor,
+    /// `ext ...`: install, update, remove, list and pack extensions.
+    Ext(ExtAction),
     Help,
     Version,
 }
@@ -42,10 +47,16 @@ pub struct Args {
     pub pin: Option<Pin>,
     /// `--mode <mode>`: the permission mode to start in (as `/mode`).
     pub mode: Option<Mode>,
-    /// `--profile`: time the start-up phases, print the report and exit.
-    pub profile: bool,
+    /// `--startup-profile`: time the start-up phases, print the report and exit.
+    pub startup_profile: bool,
     /// `--trace`: print each start-up phase to stderr as it ends, then run normally.
     pub trace: bool,
+    /// `--output-format`: how `-p` prints its result.
+    pub format: OutputFormat,
+    /// `--profile <name>`: a settings bundle from the config folder ([`crate::layers`]).
+    pub profile: Option<String>,
+    /// `--every <schedule> [--times <n>]` with `-p`: run the prompt again on a schedule.
+    pub repeat: Option<Repeat>,
 }
 
 /// A command line that cannot be run; the text is one line, ready to print.
@@ -61,7 +72,7 @@ impl std::fmt::Display for UsageError {
 impl std::error::Error for UsageError {}
 
 /// The short usage printed under a usage error.
-pub const USAGE: &str = "usage: jev-code [options] [dir]\n       jev-code doctor [dir]\ntry `jev-code --help`";
+pub const USAGE: &str = "usage: jev-code [options] [dir]\n       jev-code doctor [dir]\n       jev-code ext list|install|update|remove|pack\ntry `jev-code --help`";
 
 fn err<T>(message: impl Into<String>) -> Result<T, UsageError> {
     Err(UsageError(message.into()))
@@ -74,11 +85,22 @@ where
     S: Into<String>,
 {
     let mut it = args.into_iter().map(Into::into);
-    let mut out = Args { action: Action::Session, dir: None, resume: false, no_color: false, pin: None, mode: None, profile: false, trace: false };
+    let mut out = Args {
+        action: Action::Session, dir: None, resume: false, no_color: false, pin: None, mode: None, startup_profile: false, trace: false,
+        format: OutputFormat::Text, profile: None, repeat: None,
+    };
     let mut doctor = false;
     let mut print: Option<PromptSource> = None;
     let mut only_positionals = false;
+    let mut first = true;
+    let mut every: Option<Schedule> = None;
+    let mut times: Option<u32> = None;
     while let Some(arg) = it.next() {
+        if std::mem::take(&mut first) && arg == "ext" {
+            let rest: Vec<String> = it.collect();
+            out.action = Action::Ext(crate::ext::cli::parse(&rest).map_err(UsageError)?);
+            return Ok(out);
+        }
         if only_positionals || !arg.starts_with('-') || arg == "-" {
             if arg == "doctor" && !doctor && out.dir.is_none() && print.is_none() {
                 doctor = true;
@@ -101,7 +123,7 @@ where
             }
             "-c" | "--continue" => out.resume = true,
             "--no-color" => out.no_color = true,
-            "--profile" => out.profile = true,
+            "--startup-profile" => out.startup_profile = true,
             "--trace" => out.trace = true,
             "-p" | "--print" => {
                 let Some(value) = it.next() else { return err(format!("{arg} needs a prompt (or `-` to read it from stdin)")) };
@@ -113,6 +135,24 @@ where
                 out.pin = Some(Pin::parse(&value).map_err(UsageError)?);
             }
             long if long.starts_with("--model=") => out.pin = Some(Pin::parse(&long["--model=".len()..]).map_err(UsageError)?),
+            "--every" => {
+                let Some(value) = it.next() else { return err("--every needs a schedule: 10m, 2h or a cron expression") };
+                every = Some(value.parse().map_err(|e: ScheduleError| UsageError(e.0))?);
+            }
+            "--times" => {
+                let Some(value) = it.next() else { return err("--times needs a number of runs") };
+                times = Some(value.parse().ok().filter(|n| *n > 0).ok_or_else(|| UsageError(format!("--times needs a number above zero, not `{value}`")))?);
+            }
+            "--profile" => {
+                let Some(value) = it.next() else { return err("--profile needs a profile name") };
+                out.profile = Some(value);
+            }
+            long if long.starts_with("--profile=") => out.profile = Some(long["--profile=".len()..].to_string()),
+            "--output-format" => {
+                let Some(value) = it.next() else { return err("--output-format needs text or json") };
+                out.format = value.parse().map_err(UsageError)?;
+            }
+            long if long.starts_with("--output-format=") => out.format = long["--output-format=".len()..].parse().map_err(UsageError)?,
             "--mode" => {
                 let Some(value) = it.next() else { return err("--mode needs a mode: ask, edit, plan or auto") };
                 out.mode = Some(value.parse().map_err(|e: crate::mode::UnknownMode| UsageError(e.to_string()))?);
@@ -123,6 +163,12 @@ where
             other => return err(format!("unknown option {other}")),
         }
     }
+    out.repeat = match (every, times, &print) {
+        (Some(schedule), times, Some(_)) => Some(Repeat { schedule, times }),
+        (Some(_), _, None) => return err("--every repeats a -p prompt: add -p \"...\""),
+        (None, Some(_), _) => return err("--times goes with --every"),
+        (None, None, _) => None,
+    };
     out.action = match (doctor, print) {
         (true, Some(_)) => return err("`doctor` and -p cannot be combined"),
         (true, None) => Action::Doctor,
@@ -146,6 +192,7 @@ pub const HELP: &str = "jev-code: a coding agent that routes each turn across th
 USAGE:
   jev-code [options] [project-dir]   start in project-dir (default: the current directory)
   jev-code doctor [project-dir]      check the setup and say how to fix what is missing
+  jev-code ext <list|install|update|remove|pack>   manage extensions (checksummed folders)
 
 OPTIONS:
   -p, --print <prompt>   run one turn, print only the answer on stdout (progress goes to
@@ -155,8 +202,14 @@ OPTIONS:
   -m, --model <target>   start pinned to a model or provider, as /model (codex, opus,
                          claude:claude-sonnet-5-5, auto)
       --mode <mode>      start in a permission mode, as /mode: ask, edit, plan or auto
+      --output-format <f>  with -p: `text` (default) or `json`: one object with the status,
+                         answer, model, usage and changed files
+      --every <schedule> with -p: run the prompt again on a schedule: 10m, 2h, or a cron
+                         expression in quotes (UTC); stop with Ctrl-C or --times <n>
+      --profile <name>   settings bundle: profiles/<name>.env in the config folder
+                         (~/.config/jev-code); config.env and .jev/config.env also apply
       --no-color         no colours or styling (also: NO_COLOR=1)
-      --profile          time each start-up phase, print the report and exit
+      --startup-profile  time each start-up phase, print the report and exit
       --trace            print each start-up phase to stderr as it ends, then start
   -h, --help             this text
   -v, -V, --version      version
@@ -211,7 +264,13 @@ mod tests {
 
     #[test]
     fn no_arguments_is_a_session_in_the_current_directory() {
-        assert_eq!(ok(&[]), Args { action: Action::Session, dir: None, resume: false, no_color: false, pin: None, mode: None, profile: false, trace: false });
+        assert_eq!(
+            ok(&[]),
+            Args {
+                action: Action::Session, dir: None, resume: false, no_color: false, pin: None, mode: None, startup_profile: false, trace: false,
+                format: OutputFormat::Text, profile: None, repeat: None,
+            }
+        );
     }
 
     #[test]
@@ -293,11 +352,11 @@ mod tests {
     }
 
     #[test]
-    fn profile_and_trace_are_flags_for_the_session() {
-        let a = ok(&["--profile", "proj"]);
-        assert!(a.profile && !a.trace && a.action == Action::Session);
+    fn startup_profile_and_trace_are_flags_for_the_session() {
+        let a = ok(&["--startup-profile", "proj"]);
+        assert!(a.startup_profile && !a.trace && a.action == Action::Session);
         assert!(ok(&["--trace"]).trace);
-        assert!(!ok(&[]).profile);
+        assert!(!ok(&[]).startup_profile);
     }
 
     #[test]
@@ -312,8 +371,45 @@ mod tests {
 
     #[test]
     fn help_mentions_every_option_the_parser_accepts() {
-        for flag in ["-p, --print", "-c, --continue", "-m, --model", "--mode", "--no-color", "--profile", "--trace", "-h, --help", "-v, -V, --version", "doctor"] {
+        for flag in [
+            "-p, --print", "-c, --continue", "-m, --model", "--mode", "--no-color", "--startup-profile", "--trace", "-h, --help", "-v, -V, --version", "doctor",
+            "--output-format", "jev-code ext", "--profile", "--every",
+        ] {
             assert!(HELP.contains(flag), "{flag}");
         }
+    }
+
+    #[test]
+    fn output_format_selects_json_for_print() {
+        assert_eq!(ok(&["-p", "x", "--output-format", "json"]).format, OutputFormat::Json);
+        assert_eq!(ok(&["--output-format=text"]).format, OutputFormat::Text);
+        assert!(bad(&["--output-format", "xml"]).contains("unknown output format"));
+        assert!(bad(&["--output-format"]).contains("needs text or json"));
+    }
+
+    #[test]
+    fn every_repeats_a_print_prompt() {
+        let r = ok(&["-p", "check", "--every", "10m", "--times", "3"]).repeat.unwrap();
+        assert_eq!((r.schedule, r.times), ("10m".parse().unwrap(), Some(3)));
+        assert!(ok(&["-p", "x", "--every", "*/5 * * * *"]).repeat.is_some());
+        assert!(bad(&["--every", "10m"]).contains("repeats a -p prompt"));
+        assert!(bad(&["-p", "x", "--times", "2"]).contains("goes with --every"));
+        assert!(bad(&["-p", "x", "--every", "soon"]).contains("not a schedule"));
+        assert!(bad(&["-p", "x", "--every", "1m", "--times", "0"]).contains("above zero"));
+    }
+
+    #[test]
+    fn profile_takes_a_name() {
+        assert_eq!(ok(&["--profile", "ci"]).profile.as_deref(), Some("ci"));
+        assert_eq!(ok(&["--profile=work", "-p", "x"]).profile.as_deref(), Some("work"));
+        assert!(bad(&["--profile"]).contains("needs a profile name"));
+    }
+
+    #[test]
+    fn ext_is_a_subcommand_only_in_first_place() {
+        assert_eq!(ok(&["ext", "list"]).action, Action::Ext(ExtAction::List));
+        assert_eq!(ok(&["ext", "remove", "kit"]).action, Action::Ext(ExtAction::Remove("kit".into())));
+        assert!(bad(&["ext"]).contains("jev-code ext list"));
+        assert_eq!(ok(&["--no-color", "ext"]).dir, Some(PathBuf::from("ext")));
     }
 }
