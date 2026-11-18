@@ -1049,6 +1049,71 @@ def diff_and_undo_review_what_a_turn_changed(w):
 
 
 @scenario
+def diff_all_and_the_checkpoint_list_name_the_changed_file(w):
+    p = Pty(w, [w.repo], "diffall")
+    try:
+        prompt_ready(p)
+        p.send("edit a file quick\r")
+        p.expect("/diff to review, /undo to revert", 15, "the review hint")
+        wait_prompt(p, 5, "the prompt")
+        p.send("/diff --all\r")
+        p.expect("+hi", 10, "the net diff of the session")
+        wait_prompt(p, 5, "the prompt")
+        p.send("/rewind\r")
+        p.expect("/rewind <number>", 10, "the numbered turns and how to rewind")
+        quit_with_ctrl_d(p)
+    finally:
+        p.close()
+
+
+@scenario
+def diff_review_asks_per_hunk_and_a_revert_still_leaves_undo_working(w):
+    p = Pty(w, [w.repo], "review")
+    try:
+        prompt_ready(p)
+        p.send("edit a file quick\r")
+        p.expect("/diff to review, /undo to revert", 15, "the review hint")
+        wait_prompt(p, 5, "the prompt")
+        p.send("/diff --review\r")
+        p.expect("Revert this hunk?", 10, "the per-hunk question")
+        p.settle(0.3)
+        p.send("n")
+        p.expect("1 kept, 0 reverted", 10, "the review summary")
+        wait_prompt(p, 5, "the prompt")
+        if not os.path.exists(os.path.join(w.repo, "new.txt")):
+            raise Fail("declining the hunk must leave the file")
+        p.send("/undo\r")
+        p.expect("Revert 1 file?", 10, "the confirmation card")
+        p.settle(0.3)
+        p.send("y")
+        p.expect("reverted", 10, "the confirmation of the undo")
+        quit_with_ctrl_d(p)
+    finally:
+        p.close()
+
+
+@scenario
+def rewind_asks_before_putting_files_back(w):
+    p = Pty(w, [w.repo], "rewind")
+    try:
+        prompt_ready(p)
+        p.send("edit a file quick\r")
+        p.expect("/diff to review, /undo to revert", 15, "the review hint")
+        wait_prompt(p, 5, "the prompt")
+        p.send("/rewind 1\r")
+        p.expect("Would undo 1 turn", 10, "what a rewind would do")
+        p.expect("Rewind to before turn 1?", 10, "the question")
+        p.settle(0.3)
+        p.send("y")
+        p.expect("rewound", 10, "the confirmation of the rewind")
+        if os.path.exists(os.path.join(w.repo, "new.txt")):
+            raise Fail("/rewind 1 should have removed the file the turn created")
+        quit_with_ctrl_d(p)
+    finally:
+        p.close()
+
+
+@scenario
 def a_failed_turn_shows_an_error_block_with_next_steps_and_the_session_goes_on(w):
     p = Pty(w, [w.repo], "failed")
     try:

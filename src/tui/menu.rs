@@ -169,7 +169,7 @@ mod tests {
     #[test]
     fn typing_narrows_prefix_first_then_substring_then_letters_in_order() {
         let m = menu("/re").expect("a menu");
-        assert_eq!(&labels(&m)[..3], &["/rename", "/resume", "/review"]);
+        assert_eq!(&labels(&m)[..3], &["/rename", "/resume", "/rewind"]);
         let m = menu("/dif").expect("a menu");
         assert_eq!(labels(&m), vec!["/diff"]);
         let m = menu("/prv").expect("letters in order");

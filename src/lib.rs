@@ -20,6 +20,8 @@ pub mod commands;
 pub mod console;
 pub mod cooldown;
 pub mod delegate;
+pub mod diffcmd;
+pub mod diffparse;
 pub mod doctor;
 pub mod envfile;
 pub mod front;

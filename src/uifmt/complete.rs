@@ -141,7 +141,7 @@ mod tests {
             replacements("/"),
             vec![
                 "/clear", "/compact", "/config", "/context", "/copy", "/cost", "/diff", "/doctor", "/edit", "/export", "/help", "/init", "/mcp", "/memory", "/mode",
-                "/model", "/new", "/orchestrate", "/permissions", "/provider", "/providers", "/quit", "/rename", "/resume", "/review", "/status", "/terminal-setup",
+                "/model", "/new", "/orchestrate", "/permissions", "/provider", "/providers", "/quit", "/rename", "/resume", "/review", "/rewind", "/status", "/terminal-setup",
                 "/undo", "/why", "/workflows"
             ]
         );
@@ -218,7 +218,7 @@ mod tests {
             ("/provider ", Some("auto|off")),
             ("/orchestrate ", Some("on|off")),
             ("/providers ", Some("[refresh]")),
-            ("/diff ", Some("[file]")),
+            ("/diff ", Some("[--all|--turn N|--review] [file]")),
             ("/mode ", Some("ask|edit|plan|auto")),
             ("/mod", Some("e")),
             ("/model", Some(" auto|codex|claude:...")),
