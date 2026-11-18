@@ -32,6 +32,7 @@ mod cache_cmds;
 mod library_cmds;
 mod project_cmds;
 mod ext_cmds;
+mod team_cmds;
 mod headless;
 pub use headless::sleeper;
 mod session_cmds;
@@ -299,9 +300,9 @@ impl Repl {
                 self.console.out(&format!("  orchestrate: {}", on_off(on)));
             }
             Command::ShowOrchestrate => self.console.out(&format!("  orchestrate: {}", on_off(self.engine.orchestrate()))),
+            Command::Trust(cmd) => return self.trust(cmd, io).await,
             Command::SetMode(mode) => {
-                self.engine.set_mode(mode);
-                self.remember_mode();
+                let mode = self.adopt_mode(mode);
                 self.console.out(&format!("  mode: {}", views::mode_line(mode)));
             }
             Command::ShowMode => self.console.out(&format!("  mode: {}", views::mode_line(self.engine.mode()))),
@@ -388,14 +389,28 @@ impl Repl {
         }
         let typed = self.take_attachments(text);
         let sent = self.with_carry(&typed);
-        self.run_recorded(&sent, text, io).await
+        let before = self.engine.pin().clone();
+        let routed = self.apply_team_route(&typed);
+        let flow = self.run_recorded(&sent, text, io).await;
+        if routed {
+            self.engine.set_pin(before);
+        }
+        flow
     }
 
     /// Run `sent` as a turn and keep it in the session's log under `label`. The waiting
     /// notes are dropped once a model was started (they went with it).
     async fn run_recorded(&mut self, sent: &str, label: &str, io: &mut Io<'_>) -> Flow {
-        match run_turn(&mut self.engine, &self.console, sent, io.interrupt).await {
-            TurnEnd::Aborted => Flow::Aborted,
+        // The marker names what the person asked, not the notes that went along with it.
+        self.mark_turn_started(label);
+        let started = Instant::now();
+        let end = run_turn(&mut self.engine, &self.console, sent, io.interrupt).await;
+        self.mark_turn_ended();
+        match end {
+            TurnEnd::Aborted => {
+                self.audit_aborted(label, started.elapsed());
+                Flow::Aborted
+            }
             TurnEnd::Done(report, elapsed) => {
                 // The notes (a `/compact` summary, `!command` output) are kept until a model
                 // has answered with them: a failed or stopped turn must not lose them.
@@ -413,7 +428,7 @@ impl Repl {
     fn record(&mut self, prompt: &str, report: &TurnReport, elapsed: Duration) {
         let route = report.provider.zip(report.model.clone());
         let model = route.as_ref().map(|(p, m)| format!("{p} · {m}")).unwrap_or_default();
-        self.log.push(TurnRecord {
+        let record = TurnRecord {
             prompt: prompt.to_string(),
             answer: report.text.clone(),
             status: report.status,
@@ -422,7 +437,9 @@ impl Repl {
             usage: report.usage,
             elapsed_ms: elapsed.as_millis() as u64,
             ended_ms: self.now(),
-        });
+        };
+        self.audit_turn(&record);
+        self.log.push(record);
     }
 
     /// `/new`, `/clear`, `/resume`: nothing of the old conversation stays in this session.
@@ -820,11 +837,11 @@ mod tests {
         }
     }
 
-    struct Rig {
-        repl: Repl,
-        out: Buf,
-        err: Buf,
-        dir: std::path::PathBuf,
+    pub(super) struct Rig {
+        pub(super) repl: Repl,
+        pub(super) out: Buf,
+        pub(super) err: Buf,
+        pub(super) dir: std::path::PathBuf,
     }
 
     fn git(dir: &std::path::Path, args: &[&str]) {
@@ -839,7 +856,7 @@ mod tests {
         assert!(ok, "git {args:?}");
     }
 
-    fn rig(name: &str, script: &str) -> Rig {
+    pub(super) fn rig(name: &str, script: &str) -> Rig {
         let dir = std::env::temp_dir().join(format!("jev-repl-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
@@ -858,13 +875,13 @@ mod tests {
         Rig { repl: Repl::new(engine, console, None, false), out, err, dir }
     }
 
-    async fn run(r: &mut Rig, line: &str) -> Flow {
+    pub(super) async fn run(r: &mut Rig, line: &str) -> Flow {
         let mut int = Presses { pending: vec![] };
         let mut io = Io { interrupt: &mut int, confirm: None };
         r.repl.handle(crate::commands::parse(line), &mut io).await
     }
 
-    const ANSWER: &str = "printf 'TOOL:Edit a.txt\\nTEXT:working\\nFIN:the answer\\n'; echo two >> a.txt";
+    pub(super) const ANSWER: &str = "printf 'TOOL:Edit a.txt\\nTEXT:working\\nFIN:the answer\\n'; echo two >> a.txt";
 
     #[tokio::test]
     async fn help_status_and_unknown_commands_print_to_stdout() {

@@ -595,7 +595,23 @@ mode: one attempt, no availability check, no failover, two tiers and no Haiku:
 whether the **cheap** model actually handled each request well. 20–30 real examples
 beat any guess. Re-run `tune` when prompts, models, or request mix change.
 
+#### Trust, git, team and insight
+
+- `/profile locked|careful|standard|trusted` sets how much the agent may do unasked.
+- `/commit [hint]` and `/pr [base]` have the agent commit or prepare a pull request in your
+  repository's own style (never pushing or amending; `gh` only when signed in).
+- `.jev/team.json` (commit it) gives a repo shared routing rules and a `max_profile`; `/team`
+  shows it. See `docs/migrating-0.2.md`.
+- `/audit`, `/history`, `/bench` and `/replay` read the audit log and saved sessions;
+  `/export file.html` or `.md` shares a session. Secrets are masked in all of them, and a turn
+  that was cut short by a crash is reported at the next start.
+- More: `CHANGELOG.md`, `docs/shortcuts.md`, `docs/platforms.md`, `docs/bridge.md`.
+
 ## Files
+
+- `src/profile.rs`, `src/team.rs`, `src/redact.rs`, `src/audit.rs`, `src/inflight.rs`,
+  `src/gitflow.rs`, `src/bench.rs`, `src/replay.rs`, `src/export.rs`, `src/extcmds.rs`,
+  `src/bridge.rs` — the trust, git, team and insight features; `src/repl/ext_cmds.rs` runs them.
 
 - `src/anthropic.rs` — Claude client via Claude Code (`claude -p`); sends the full history each call.
 - `src/typesafe.rs` — Jev client (`choice`, `noul`).

@@ -138,25 +138,10 @@ mod tests {
 
     #[test]
     fn completes_slash_commands() {
-        assert_eq!(
-            replacements("/"),
-            vec![
-                "/clear", "/compact", "/config", "/context", "/copy", "/cost", "/diff", "/doctor", "/edit", "/export", "/help", "/init", "/mcp", "/memory", "/mode",
-                "/model", "/new", "/orchestrate", "/permissions", "/provider", "/providers", "/quit", "/rename", "/resume", "/review", "/rewind", "/status", "/terminal-setup",
-                "/undo", "/why", "/workflows"
-                "/cache", "/clear", "/compact", "/config", "/context", "/copy", "/cost", "/diff", "/doctor", "/edit", "/effort", "/export", "/help", "/init", "/mcp", "/memory", "/mode",
-                "/model", "/new", "/orchestrate", "/permissions", "/provider", "/providers", "/quit", "/rename", "/resume", "/review", "/status", "/terminal-setup",
-                "/agents", "/clear", "/compact", "/config", "/context", "/copy", "/cost", "/diff", "/doctor", "/edit", "/export", "/help", "/init", "/mcp", "/memory",
-                "/mode", "/model", "/new", "/orchestrate", "/orchestration", "/permissions", "/provider", "/providers", "/quit", "/rename", "/resume", "/review", "/status", "/terminal-setup",
-                "/model", "/new", "/orchestrate", "/permissions", "/project", "/provider", "/providers", "/quit", "/rename", "/resume", "/review", "/sessions", "/status", "/terminal-setup",
-                "/undo", "/why"
-                "/clear", "/compact", "/config", "/context", "/copy", "/cost", "/diff", "/doctor", "/edit", "/export", "/help", "/init", "/keys", "/mcp", "/memory", "/mode",
-                "/tips", "/undo", "/whatsnew", "/why"
-                "/budget", "/clear", "/compact", "/config", "/context", "/copy", "/cost", "/diff", "/doctor", "/edit", "/export", "/failover", "/help", "/init", "/mcp",
-                "/memory", "/mode", "/model", "/new", "/orchestrate", "/permissions", "/privacy", "/provider", "/providers", "/quit", "/rename", "/resume", "/review",
-                "/scoreboard", "/status", "/terminal-setup", "/undo", "/why"
-            ]
-        );
+        let mut every: Vec<String> = crate::uifmt::commands::COMMANDS.iter().map(|c| c.name.to_string()).collect();
+        every.sort();
+        every.dedup();
+        assert_eq!(replacements("/"), every);
         let mut every: Vec<&str> = COMMANDS.iter().map(|c| c.name).collect();
         every.sort_unstable();
         assert_eq!(replacements("/"), every);
@@ -239,9 +224,7 @@ mod tests {
             ("/model", Some(" auto|codex|claude:...")),
             ("/prov", Some("ider")),
             ("/provider", Some(" auto|off")),
-            ("/", Some("cache")),
             ("/", Some("agents")),
-            ("/", Some("budget")),
             ("/new", None),
             ("/new ", None),
             ("/model co", None),

@@ -245,10 +245,13 @@ impl Repl {
             Some(p) => resolve(p, self.engine.dir(), self.home.as_deref()),
             None => self.engine.dir().join(format!("jev-session-{stamp}.md")),
         };
-        let text = self.log.to_markdown(&self.engine.dir().display().to_string(), &when);
+        let text = crate::export::render(&self.log, crate::export::Format::of_path(&target), &self.engine.dir().display().to_string(), &when);
         let written = std::fs::OpenOptions::new().write(true).create_new(true).open(&target).and_then(|mut f| std::io::Write::write_all(&mut f, text.as_bytes()));
         match written {
-            Ok(()) => self.console.out(&format!("{} saved {} turns to {}", style.green("✓"), self.log.turns().len(), target.display())),
+            Ok(()) => {
+                self.audit_event(crate::audit::Event::Export { path: target.display().to_string() });
+                self.console.out(&format!("{} saved {} turns to {} (secrets masked)", style.green("✓"), self.log.turns().len(), target.display()));
+            }
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
                 self.console.out(&format!("{} {} exists already; give another name: /export <file>", style.yellow("⚠"), target.display()));
             }

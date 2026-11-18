@@ -42,6 +42,8 @@ pub enum Command {
     Providers { refresh: bool },
     /// `/mcp [list | login <server>]`.
     Mcp(McpCmd),
+    /// `/commit`, `/pr`, `/profile`, `/team`, `/audit`, `/history`, `/bench`, `/replay`.
+    Trust(crate::extcmds::ExtCmd),
     /// A command that was recognised but whose argument was not; the text says what is accepted.
     Invalid(String),
     /// `/help`.
@@ -187,6 +189,9 @@ pub fn parse(line: &str) -> Command {
     let head = lower.as_str();
     if let Some(learn) = crate::learn::Learn::parse(head, rest().as_deref()) {
         return learn.map_or_else(Command::Invalid, Command::Learn);
+    }
+    if let Some(ext) = crate::extcmds::parse(head, &line[head.len()..]) {
+        return Command::Trust(ext);
     }
     match head {
         "/quit" | "/exit" => Command::Quit,

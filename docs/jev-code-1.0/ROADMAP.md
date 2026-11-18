@@ -25,7 +25,7 @@ Pillars 30 and 31 share one agents panel and one savings meter; build them toget
 
 | Milestone | Version | Content | Exit check |
 | --------- | ------- | ------- | ---------- |
-| M0 Baseline | 0.2.x | Speed measurement (`--profile`), perf budget test, this roadmap | numbers recorded here |
+| M0 Baseline | 0.2.x | Speed measurement (`--startup-profile`), perf budget test, this roadmap | numbers recorded here |
 | M1 Stabilize | 0.3 | Clean code-review round, live Antigravity turn, 0.2.0 session migration notes | review finds nothing |
 | M2 Diff and cache | 0.4 | Pillar 16 (preview before apply, line numbers, word diff, `/review`, checkpoints, `/rewind`), pillar 18 (`/cache`, switch-cost estimate, cache-aware routing) | PTY scenarios per feature |
 | M3 Visual identity | 0.5 | Pillar 19 provider themes and attribution; pillar 1 first half (themes, narrow layouts, no-colour) | golden snapshots per provider and colour depth |

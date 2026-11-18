@@ -119,7 +119,7 @@ mod tests {
     use crate::turn::TurnStatus;
 
     fn turn(prompt: &str, answer: &str) -> TurnRecord {
-        TurnRecord { prompt: prompt.into(), answer: answer.into(), status: TurnStatus::Answered, model: String::new(), route: None, usage: None, elapsed_ms: 0 }
+        TurnRecord { prompt: prompt.into(), answer: answer.into(), status: TurnStatus::Answered, model: String::new(), route: None, usage: None, elapsed_ms: 0, ended_ms: 0 }
     }
 
     #[test]

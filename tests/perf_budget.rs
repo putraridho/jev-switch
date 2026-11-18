@@ -11,7 +11,7 @@ fn profile(root: &Path, extra_env: &[(&str, &str)]) -> Output {
         assert!(std::fs::create_dir_all(d).is_ok());
     }
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_code"));
-    cmd.arg("--profile")
+    cmd.arg("--startup-profile")
         .arg("--no-color")
         .arg(&project)
         .env_clear()

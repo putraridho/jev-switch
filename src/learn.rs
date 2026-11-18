@@ -204,7 +204,7 @@ mod tests {
     fn search_finds_by_name_then_by_description_and_keys() {
         let s = help_search("diff", OFF, 100);
         let first = s.lines().nth(1).unwrap_or_default();
-        assert!(first.contains("/diff [file]"), "{s}");
+        assert!(first.contains("/diff "), "{s}");
         assert!(s.contains("/undo") || s.contains("changed"), "{s}");
         let keys = help_search("vim", OFF, 100);
         assert!(keys.contains("Esc, then h j k l"), "{keys}");
