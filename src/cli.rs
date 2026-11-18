@@ -38,6 +38,8 @@ pub struct Args {
     pub resume: bool,
     /// `--no-color`.
     pub no_color: bool,
+    /// `--profile`: print where start-up time went to stderr.
+    pub profile: bool,
     /// `--model <target>`: the pin to start with (as `/model`).
     pub pin: Option<Pin>,
     /// `--mode <mode>`: the permission mode to start in (as `/mode`).
@@ -70,7 +72,7 @@ where
     S: Into<String>,
 {
     let mut it = args.into_iter().map(Into::into);
-    let mut out = Args { action: Action::Session, dir: None, resume: false, no_color: false, pin: None, mode: None };
+    let mut out = Args { action: Action::Session, dir: None, resume: false, no_color: false, profile: false, pin: None, mode: None };
     let mut doctor = false;
     let mut print: Option<PromptSource> = None;
     let mut only_positionals = false;
@@ -97,6 +99,7 @@ where
             }
             "-c" | "--continue" => out.resume = true,
             "--no-color" => out.no_color = true,
+            "--profile" => out.profile = true,
             "-p" | "--print" => {
                 let Some(value) = it.next() else { return err(format!("{arg} needs a prompt (or `-` to read it from stdin)")) };
                 print = Some(prompt_source(value)?);
@@ -150,6 +153,7 @@ OPTIONS:
                          claude:claude-sonnet-5-5, auto)
       --mode <mode>      start in a permission mode, as /mode: ask, edit, plan or auto
       --no-color         no colours or styling (also: NO_COLOR=1)
+      --profile          print a start-up timing report to stderr
   -h, --help             this text
   -v, -V, --version      version
 
@@ -203,13 +207,20 @@ mod tests {
 
     #[test]
     fn no_arguments_is_a_session_in_the_current_directory() {
-        assert_eq!(ok(&[]), Args { action: Action::Session, dir: None, resume: false, no_color: false, pin: None, mode: None });
+        assert_eq!(ok(&[]), Args { action: Action::Session, dir: None, resume: false, no_color: false, profile: false, pin: None, mode: None });
     }
 
     #[test]
     fn a_directory_is_the_one_positional_argument() {
         assert_eq!(ok(&["/tmp/proj"]).dir, Some(PathBuf::from("/tmp/proj")));
         assert!(bad(&["a", "b"]).contains("unexpected argument `b`"));
+    }
+
+    #[test]
+    fn profile_flag_turns_on_the_startup_report() {
+        assert!(!ok(&[]).profile);
+        assert!(ok(&["--profile"]).profile);
+        assert!(ok(&["proj", "--profile"]).profile);
     }
 
     #[test]

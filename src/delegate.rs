@@ -625,6 +625,82 @@ impl Worker {
     }
 }
 
+// --------------------------------------------------------------- what /workflows reads
+
+/// The project folder as rows and records name it: canonical when it can be.
+fn handoff_key(dir: &Path) -> String {
+    std::fs::canonicalize(dir).unwrap_or_else(|_| dir.to_path_buf()).to_string_lossy().into_owned()
+}
+
+/// A worker that is still open (running, or done and waiting for the planner to merge or
+/// discard it), as `/workflows` lists it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OpenWorker {
+    pub worker_id: String,
+    pub provider: String,
+    pub model: String,
+    pub created_ms: u64,
+    pub running: bool,
+    /// Files the planner has seen in full, and files already merged.
+    pub shown: usize,
+    pub merged: usize,
+}
+
+/// The open workers of the project `repo`, from the registry in `<state_dir>/workers`,
+/// oldest first. Read only: nothing is adopted, changed or removed.
+pub fn open_workers(state_dir: &Path, repo: &Path) -> Vec<OpenWorker> {
+    let key = handoff_key(repo);
+    let mut out: Vec<OpenWorker> = Store { dir: state_dir.join("workers") }
+        .load()
+        .into_iter()
+        .filter(|s| handoff_key(&s.repo) == key)
+        .map(|s| OpenWorker { worker_id: s.worker_id, provider: s.provider, model: s.model, created_ms: s.created_ms, running: s.running, shown: s.shown.len(), merged: s.merged.len() })
+        .collect();
+    out.sort_by_key(|w| w.created_ms);
+    out
+}
+
+/// One worker attempt from the orchestration log.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct Delegation {
+    pub ts_ms: u64,
+    pub provider: String,
+    pub model: String,
+    pub ok: bool,
+    #[serde(default)]
+    pub error_kind: Option<String>,
+    pub wall_ms: u64,
+    #[serde(default)]
+    pub kind: Option<String>,
+    #[serde(default)]
+    pub worker_id: Option<String>,
+    #[serde(default)]
+    pub task: Option<String>,
+    #[serde(default)]
+    pub attempt: Option<u32>,
+    #[serde(default)]
+    pub files_changed: Vec<String>,
+    #[serde(default)]
+    pub tool_calls: Vec<String>,
+    #[serde(default)]
+    pub repo: Option<String>,
+}
+
+/// The project's delegations from the log at `log`, newest last, at most `limit`. Rows
+/// written before the log named the project are left out, as is anything unreadable.
+pub fn recent_delegations(log: &Path, repo: &Path, limit: usize) -> Vec<Delegation> {
+    let key = handoff_key(repo);
+    let Ok(text) = std::fs::read_to_string(log) else { return Vec::new() };
+    let mut rows: Vec<Delegation> = text
+        .lines()
+        .filter_map(|l| serde_json::from_str::<Delegation>(l).ok())
+        .filter(|d| d.kind.as_deref() == Some("delegate") && d.repo.as_deref() == Some(key.as_str()))
+        .collect();
+    let skip = rows.len().saturating_sub(limit);
+    rows.drain(..skip);
+    rows
+}
+
 // --------------------------------------------------------------- who owns a record
 
 /// A server process: its pid plus a start-time token that survives pid reuse (a new
@@ -1343,6 +1419,7 @@ impl Delegator {
             o.insert("read_only".into(), json!(a.read_only));
             o.insert("files_changed".into(), json!(a.files));
             o.insert("tool_calls".into(), json!(a.tools));
+            o.insert("repo".into(), json!(handoff_key(&self.worktrees.repo())));
         }
         log::append(path, &row);
     }
@@ -2854,4 +2931,34 @@ mod tests {
         wt.remove(&root.join("wgone")).unwrap();
         kept("end");
     }
+
+    #[test]
+    fn workflows_read_this_projects_open_workers_and_logged_delegations_only() {
+        let state = temp_dir("workflows-state");
+        let repo = temp_dir("workflows-repo");
+        let other = temp_dir("workflows-other");
+        let workers = state.join("workers");
+        let _ = std::fs::create_dir_all(&workers);
+        let record = |id: &str, repo: &Path, running: bool, created: u64| {
+            json!({"worker_id": id, "path": repo.join(id), "repo": repo, "provider": "codex", "model": "gpt-6", "created_ms": created, "running": running, "shown": ["a.rs"]}).to_string()
+        };
+        let _ = std::fs::write(workers.join("w2.json"), record("w2", &repo, false, 20));
+        let _ = std::fs::write(workers.join("w1.json"), record("w1", &repo, true, 10));
+        let _ = std::fs::write(workers.join("x1.json"), record("x1", &other, true, 5));
+        let open = open_workers(&state, &repo);
+        assert_eq!(open.iter().map(|w| w.worker_id.as_str()).collect::<Vec<_>>(), vec!["w1", "w2"], "this project's, oldest first");
+        assert!(open[0].running && !open[1].running && open[1].shown == 1);
+
+        let key = handoff_key(&repo);
+        let row = |id: &str, repo: &str, kind: &str| json!({"ts_ms": 1, "provider": "claude", "model": "m", "ok": true, "wall_ms": 5, "kind": kind, "worker_id": id, "task": "feature", "files_changed": ["a.rs"], "tool_calls": ["Read a.rs", "Edit a.rs"], "repo": repo}).to_string();
+        let log = state.join("orchestration.jsonl");
+        let lines = [row("w0", &key, "delegate"), "not json".into(), row("x0", "/elsewhere", "delegate"), row("t0", &key, "turn"), row("w1", &key, "delegate")];
+        let _ = std::fs::write(&log, lines.join("\n"));
+        let recent = recent_delegations(&log, &repo, 10);
+        assert_eq!(recent.iter().map(|d| d.worker_id.as_deref().unwrap_or("")).collect::<Vec<_>>(), vec!["w0", "w1"]);
+        assert_eq!((recent[1].files_changed.len(), recent[1].tool_calls.len()), (1, 2));
+        assert_eq!(recent_delegations(&log, &repo, 1).len(), 1, "the limit keeps the newest");
+        assert!(recent_delegations(&state.join("missing.jsonl"), &repo, 10).is_empty());
+    }
+
 }

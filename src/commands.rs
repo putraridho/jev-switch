@@ -56,6 +56,8 @@ pub enum Command {
     Resume(Option<String>),
     /// `/rename [name]`: name this session; with no name, say what it is called.
     Rename(Option<String>),
+    /// `/workflows` (also `/workers`): what orchestration is doing in this project.
+    Workflows,
     /// `/permissions [allow <rule> | remove <rule> | dir <path>]`.
     Permissions(PermissionsCmd),
     /// `/clear`: clear the screen and start a fresh session.
@@ -187,6 +189,7 @@ pub fn parse(line: &str) -> Command {
         "/undo" => Command::Undo,
         "/resume" => Command::Resume(rest()),
         "/rename" => Command::Rename(rest()),
+        "/workflows" | "/workers" => Command::Workflows,
         "/diff" => {
             // The rest of the line is one path, so a name with spaces works.
             let path = line[head.len()..].trim();
@@ -341,6 +344,8 @@ mod tests {
         assert_eq!(parse("/resume"), Command::Resume(None));
         assert_eq!(parse("/rename parser fix"), Command::Rename(Some("parser fix".into())));
         assert_eq!(parse("/rename"), Command::Rename(None));
+        assert_eq!(parse("/workflows"), Command::Workflows);
+        assert_eq!(parse("/workers"), Command::Workflows);
         assert_eq!(parse("/resume fix parser"), Command::Resume(Some("fix parser".into())));
         assert_eq!(parse("/HELP"), Command::Help, "commands are not case sensitive");
         assert_eq!(parse("/help me"), Command::Invalid("usage: /help".into()));

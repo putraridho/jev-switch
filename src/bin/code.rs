@@ -107,7 +107,39 @@ async fn main() {
     std::process::exit(code);
 }
 
+/// Phase timings for `--profile`: each mark is the time since the previous one.
+struct Profile {
+    enabled: bool,
+    last: std::time::Instant,
+    start: std::time::Instant,
+    marks: Vec<(&'static str, std::time::Duration)>,
+}
+
+impl Profile {
+    fn new() -> Self {
+        let now = std::time::Instant::now();
+        Profile { enabled: false, last: now, start: now, marks: Vec::new() }
+    }
+
+    fn mark(&mut self, phase: &'static str) {
+        let now = std::time::Instant::now();
+        self.marks.push((phase, now - self.last));
+        self.last = now;
+    }
+
+    /// The report, one phase per line then the total, for stderr.
+    fn report(&self) -> String {
+        let mut out = String::from("jev-code start-up profile\n");
+        for (phase, took) in &self.marks {
+            out.push_str(&format!("  {phase:<14} {:>8.2} ms\n", took.as_secs_f64() * 1000.0));
+        }
+        out.push_str(&format!("  {:<14} {:>8.2} ms\n", "total", self.start.elapsed().as_secs_f64() * 1000.0));
+        out
+    }
+}
+
 async fn run() -> i32 {
+    let mut profile = Profile::new();
     let args = match cli::parse(std::env::args().skip(1)) {
         Ok(a) => a,
         Err(e) => {
@@ -115,6 +147,8 @@ async fn run() -> i32 {
             return 2;
         }
     };
+    profile.enabled = args.profile;
+    profile.mark("parse args");
     match args.action {
         Action::Help => {
             println!("{}", cli::HELP);
@@ -130,6 +164,7 @@ async fn run() -> i32 {
     let _terminal = TerminalGuard::install();
     let state_dir = log::state_dir();
     terminal::install_panic_hook(state_dir.as_ref().map(|d| d.join("panic.log")));
+    profile.mark("terminal");
 
     let dir = match project_dir(&args) {
         Ok(d) => d,
@@ -147,12 +182,19 @@ async fn run() -> i32 {
         }
         _ => (None, None),
     };
+    profile.mark("project dir");
     let console = console_for(&term, &dir, !matches!(args.action, Action::Print(_)), front);
-    match &args.action {
+    profile.mark("console");
+    let code = match &args.action {
         Action::Doctor => doctor(&dir, &console).await,
         Action::Print(source) => print_mode(&args, source, &dir, &term, console, state_dir).await,
         _ => session(&args, &dir, &term, console, state_dir, front_rx).await,
+    };
+    profile.mark("session");
+    if profile.enabled {
+        eprint!("{}", profile.report());
     }
+    code
 }
 
 /// The project directory, or the message that says why it cannot be used.

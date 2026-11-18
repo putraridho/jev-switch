@@ -39,6 +39,7 @@ mod style;
 mod summary;
 mod text;
 mod width;
+mod workflows;
 mod wrap;
 
 #[cfg(test)]
@@ -62,6 +63,7 @@ pub use summary::{turn_summary, turn_summary_brief, SummaryFacts};
 pub use text::{human_count, human_duration};
 pub use width::{char_width, display_width, terminal_width, truncate_to_width, width_from_env, DEFAULT_WIDTH, MIN_WIDTH};
 pub use wrap::wrap_to_width;
+pub use workflows::{workflows_text, DelegationRow, OpenWorkerRow, WorkflowFacts};
 
 #[cfg(test)]
 mod tests {

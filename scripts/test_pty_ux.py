@@ -1639,6 +1639,29 @@ def rename_names_the_session_in_the_footer_and_in_resume(w):
 
 
 @scenario
+def workflows_shows_orchestration_and_is_in_the_menu(w):
+    p = Pty(w, [w.repo], "workflows")
+    try:
+        prompt_ready(p)
+        p.send("/work")
+        p.expect("/workflows", 5, "/workflows in the command menu")
+        p.send("\x15")
+        p.settle(0.2)
+        p.send("/workflows\r")
+        p.expect("Recent delegations", 10, "the workflows screen")
+        shown = p.printed()
+        for part in ("Orchestration on", "Open workers", "none: nothing is running or waiting for review", "none in this project yet"):
+            if part not in shown:
+                raise Fail(f"/workflows should show {part!r}:\n{p.screen_tail()}")
+        wait_prompt(p, 5)
+        p.send("/workers\r")
+        p.expect("Open workers", 10, "/workers is the same screen")
+        quit_with_ctrl_d(p)
+    finally:
+        p.close()
+
+
+@scenario
 def the_permission_mode_carries_over_to_the_next_session(w):
     def start(args, name):
         p = Pty(w, args + [w.repo], name)

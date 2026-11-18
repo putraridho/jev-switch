@@ -320,6 +320,10 @@ impl Repl {
             Command::Shell(command) => self.shell(&command),
             Command::Resume(query) => self.resume(query.as_deref()),
             Command::Rename(name) => self.rename(name.as_deref()),
+            Command::Workflows => {
+                let text = self.workflows_text();
+                self.page_out(&text);
+            }
             Command::Permissions(cmd) => self.permissions(cmd),
             Command::Diff(path) => self.diff(path.as_deref()),
             Command::Undo => self.undo(io).await,
@@ -488,6 +492,45 @@ impl Repl {
     /// `/resume [number | words]`: continue one of this folder's saved sessions. With
     /// several to choose from, a terminal gets the list to pick from; any other output gets
     /// it numbered, and `/resume 2` takes one.
+    /// `/workflows`: orchestration in this project, from the worker registry and the log.
+    fn workflows_text(&self) -> String {
+        let now = self.now();
+        let dir = self.engine.dir().to_path_buf();
+        let open = self
+            .state_dir
+            .as_deref()
+            .map(|s| crate::delegate::open_workers(s, &dir))
+            .unwrap_or_default()
+            .into_iter()
+            .map(|w| uifmt::OpenWorkerRow { id: w.worker_id, provider: w.provider, model: w.model, age_ms: now.saturating_sub(w.created_ms), running: w.running, shown: w.shown, merged: w.merged })
+            .collect();
+        let log = log::path_from_env("JEV_DELEGATE_LOG", "orchestration.jsonl");
+        let rows = log.map(|p| crate::delegate::recent_delegations(std::path::Path::new(&p), &dir, 200)).unwrap_or_default();
+        let day_ago = now.saturating_sub(24 * 60 * 60 * 1000);
+        let today: Vec<_> = rows.iter().filter(|d| d.ts_ms >= day_ago).collect();
+        let day = (today.len(), today.iter().filter(|d| d.ok).count(), today.iter().map(|d| d.wall_ms).sum());
+        let skip = rows.len().saturating_sub(10);
+        let recent = rows
+            .into_iter()
+            .skip(skip)
+            .map(|d| uifmt::DelegationRow {
+                ago: views::human_ago(now.saturating_sub(d.ts_ms)),
+                id: d.worker_id.unwrap_or_else(|| "-".into()),
+                task: d.task.unwrap_or_else(|| "-".into()),
+                provider: d.provider,
+                model: d.model,
+                ok: d.ok,
+                error_kind: d.error_kind,
+                wall_ms: d.wall_ms,
+                files: d.files_changed.len(),
+                tools: d.tool_calls.len(),
+                attempt: d.attempt.unwrap_or(1),
+            })
+            .collect();
+        let facts = uifmt::WorkflowFacts { orchestrate: self.engine.orchestrate(), open, recent, day };
+        uifmt::workflows_text(&facts, self.out_style(), self.console.width())
+    }
+
     /// `/rename [name]`: name the session, or say what it is called.
     fn rename(&mut self, name: Option<&str>) {
         let style = self.out_style();
