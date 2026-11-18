@@ -173,7 +173,7 @@ pub fn display_path(dir: &Path, home: Option<&str>) -> String {
     }
 }
 
-/// The session header, one line: `jev-code 0.1.1 · claude, codex ready · ~/proj`. Providers
+/// The session header, one line: `jev-code 0.2.0 · claude, codex ready · ~/proj`. Providers
 /// are named in words (no symbol to learn); the full table lives behind `/providers`, and
 /// with nothing ready the line says where to look.
 pub fn banner(dir: &Path, home: Option<&str>, routing_on: bool, rows: &[AvailRow], style: Style, width: usize) -> String {
