@@ -150,8 +150,14 @@ fn tokens(text: &str) -> Vec<Finding> {
         let to = from + text[from..to].trim_end_matches('.').len();
         let token = &text[from..to];
         let after_bearer = prev.is_some_and(|(a, b)| text[a..b].eq_ignore_ascii_case("bearer"));
-        if let Some(kind) = token_kind(token) {
-            out.push(Finding { kind, range: from..to });
+        // `=` is a token character (base64 padding), so `NAME=sk-...` is one word: look
+        // behind the first `=` as well.
+        let kind_at = token_kind(token).map(|k| (k, from)).or_else(|| {
+            let eq = token.find('=')?;
+            token_kind(&token[eq + 1..]).map(|k| (k, from + eq + 1))
+        });
+        if let Some((kind, begin)) = kind_at {
+            out.push(Finding { kind, range: begin..to });
         } else if after_bearer && token.len() >= 16 {
             out.push(Finding { kind: SecretKind::BearerToken, range: from..to });
         }
@@ -257,6 +263,15 @@ mod tests {
 
     fn kinds(text: &str) -> Vec<SecretKind> {
         scan(text).into_iter().map(|f| f.kind).collect()
+    }
+
+    #[test]
+    fn a_token_after_an_equals_sign_is_blanked_whatever_the_variable_is_called() {
+        for text in ["OPENAI_KEY=sk-proj-abcdefghijklmnopqrstuvwxyz0123", "GH_PAT=ghp_abcdefghijklmnopqrstuvwxyz0123456789"] {
+            let r = redact(text);
+            assert!(!r.text.contains("sk-proj") && !r.text.contains("ghp_"), "{}", r.text);
+            assert!(r.text.starts_with(text.split('=').next().unwrap()), "the name stays: {}", r.text);
+        }
     }
 
     #[test]

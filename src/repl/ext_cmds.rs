@@ -10,6 +10,17 @@ use crate::ext::{market, view, ExtCmd, Places};
 use crate::layers;
 use crate::turn::TurnStatus;
 
+/// How much a mode lets the agent do on its own; a higher number is wider.
+fn mode_rank(mode: crate::mode::Mode) -> u8 {
+    use crate::mode::Mode;
+    match mode {
+        Mode::Plan => 0,
+        Mode::Ask => 1,
+        Mode::Edit => 2,
+        Mode::Auto => 3,
+    }
+}
+
 impl Repl {
     fn ext_places(&self) -> Places {
         Places::from_env(self.engine.dir())
@@ -74,8 +85,19 @@ impl Repl {
     async fn run_invocation(&mut self, inv: Invocation, io: &mut Io<'_>) -> Flow {
         let style = self.out_style();
         let before = self.engine.mode();
-        if let Some(mode) = inv.mode {
-            self.engine.set_mode(mode);
+        if let Some(asked) = inv.mode {
+            // A command, skill or recipe may narrow the mode (plan for a review) but never widen
+            // it: a file committed to a repo must not switch a session to Auto, or past the
+            // repo's own limit.
+            let allowed = self.within_team_limit(asked);
+            if mode_rank(allowed) > mode_rank(before) {
+                self.console.out(&format!(
+                    "  {}",
+                    style.yellow(&format!("{} asks for {allowed} mode; staying in {before} mode (use Shift-Tab or /mode to widen it)", inv.label))
+                ));
+            } else {
+                self.engine.set_mode(allowed);
+            }
         }
         let total = inv.prompts.len();
         let mut flow = Flow::Continue;

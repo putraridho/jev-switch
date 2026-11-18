@@ -1072,9 +1072,21 @@ impl Engine {
             return Ok(self.legacy_choice(want, base));
         }
         let usable = self.runtime.usable(now).without(excluded);
+        // Only worth building when a rule could match it.
+        let history = if self.guards.privacy.rule_count() > 0 {
+            self.sessions
+                .log()
+                .iter()
+                .flat_map(|t| std::iter::once(t.prompt.as_str()).chain(std::iter::once(t.reply.as_str())).chain(t.tools.iter().map(String::as_str)))
+                .collect::<Vec<_>>()
+                .join("\n")
+        } else {
+            String::new()
+        };
         let turn = TurnFacts {
             root: &self.dir,
             prompt,
+            history: &history,
             task: signals.map(|s| s.task),
             attached: &self.images,
             pinned: !matches!(self.pin, Pin::Auto),

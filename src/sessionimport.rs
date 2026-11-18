@@ -102,8 +102,10 @@ fn codex_rollouts(root: &Path) -> Vec<PathBuf> {
 }
 
 fn codex_cwd(path: &Path) -> Option<String> {
-    let first = std::fs::read_to_string(path).ok()?.lines().next()?.to_string();
-    serde_json::from_str::<CodexLine>(&first).ok()?.payload?.cwd
+    // Only the first line is wanted: do not read a multi-megabyte rollout to get it.
+    let mut first = String::new();
+    std::io::BufRead::read_line(&mut std::io::BufReader::new(std::fs::File::open(path).ok()?), &mut first).ok()?;
+    serde_json::from_str::<CodexLine>(first.trim_end()).ok()?.payload?.cwd
 }
 
 /// What a history file holds, as jev turns.

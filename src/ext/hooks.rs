@@ -227,12 +227,13 @@ fn run_command(command: &str, dir: &Path, input: &str, event: Event, tool: Optio
         let _ = stdin.write_all(input.as_bytes());
     }
     let stderr = child.stderr.take();
-    let reader = std::thread::spawn(move || {
+    let (sent, received) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
         let mut text = String::new();
         if let Some(mut s) = stderr {
             let _ = std::io::Read::read_to_string(&mut s, &mut text);
         }
-        text
+        let _ = sent.send(text);
     });
     let started = Instant::now();
     let status = loop {
@@ -247,7 +248,10 @@ fn run_command(command: &str, dir: &Path, input: &str, event: Event, tool: Optio
             Err(e) => return Ran::NotStarted(e.to_string()),
         }
     };
-    Ran::Exited { code: status.code().unwrap_or(-1), stderr: reader.join().unwrap_or_default() }
+    // A hook that left a background process holding stderr open would keep the reader waiting
+    // for as long as that process lives: take what was written, and go on without the rest.
+    let stderr = received.recv_timeout(Duration::from_millis(500)).unwrap_or_default();
+    Ran::Exited { code: status.code().unwrap_or(-1), stderr }
 }
 
 /// Run `pre_tool` hooks off the async runtime's threads; the refusal text when one refused.
@@ -321,6 +325,16 @@ mod tests {
         // Status 2 only refuses before a tool call.
         let post = h.run(Event::PostTool, Some("Bash"), None);
         assert_eq!((post.refused, post.warnings.len()), (None, 1));
+    }
+
+    #[test]
+    fn a_hook_that_leaves_a_background_process_does_not_hold_the_turn() {
+        let dir = temp("background");
+        let h = hooks_with(&dir, r#"{"hooks":[{"event":"turn_end","run":"sleep 5 &"}]}"#);
+        let started = Instant::now();
+        let out = h.run(Event::TurnEnd, None, None);
+        assert_eq!(out, Outcome::default());
+        assert!(started.elapsed() < Duration::from_secs(3), "waited {:?} for a background process", started.elapsed());
     }
 
     #[test]

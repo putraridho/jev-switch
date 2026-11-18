@@ -180,7 +180,11 @@ fn snippet_for(e: &LibraryEntry, word: &str) -> Option<String> {
     let log = e.saved.sessions.log();
     let lines = log.iter().flat_map(|t| t.prompt.lines().chain(t.reply.lines()).chain(t.tools.iter().map(String::as_str)));
     let line = lines.into_iter().find(|l| l.to_lowercase().contains(word))?.trim().to_string();
-    let at = line.to_lowercase().find(word).unwrap_or(0);
+    // The offset found in the lowercased copy is not a byte offset of `line` (case folding can
+    // change lengths), so carry it over as a count of characters.
+    let lowered = line.to_lowercase();
+    let before = lowered.find(word).map_or(0, |at| lowered[..at].chars().count());
+    let at = line.char_indices().nth(before).map_or(line.len(), |(i, _)| i);
     let start = line[..at].char_indices().rev().nth(30).map_or(0, |(i, _)| i);
     let chars: String = line[start..].chars().take(90).collect();
     Some(if start > 0 { format!("...{chars}") } else { chars })
@@ -450,6 +454,18 @@ mod tests {
         assert_eq!(titles(&hits), ["parser bug", "write docs"]);
         assert!(hits[1].snippet.as_deref().unwrap().contains("Docs written about the parser"), "{:?}", hits[1].snippet);
         assert!(search(scan_all(&state), &Query::parse("parser lexer").unwrap(), NOW).is_empty());
+    }
+
+    #[test]
+    fn a_line_whose_lowercase_is_longer_does_not_break_the_snippet() {
+        // U+0130 lowercases to three bytes, so an offset found in the copy is not one of the line.
+        let state = temp("fold");
+        let proj = state.join("proj");
+        std::fs::create_dir_all(&proj).unwrap();
+        put(&state, &proj, 1, vec![turn(ProviderId::Claude, "ask", "\u{130}\u{130}\u{130} foo is here", &[])]);
+        let hits = search(scan_all(&state), &Query::parse("foo").unwrap(), NOW);
+        assert_eq!(hits.len(), 1);
+        assert!(hits[0].snippet.as_deref().unwrap().contains("foo"), "{:?}", hits[0].snippet);
     }
 
     #[test]

@@ -18,6 +18,9 @@ use crate::scoreboard::Scoreboard;
 pub struct TurnFacts<'a> {
     pub root: &'a Path,
     pub prompt: &'a str,
+    /// The conversation so far: a provider that is behind is caught up with it, so what the
+    /// privacy rules cover in it must hold the turn back as much as the new prompt does.
+    pub history: &'a str,
     /// Jev's task type, when it judged the turn.
     pub task: Option<TaskType>,
     /// Attached images, which leave the machine with the prompt.
@@ -78,7 +81,11 @@ impl Guards {
     /// user's routing rules. `Err` is a plain sentence when a step that started with models
     /// left none.
     pub fn restrict(&self, usable: &Usable, turn: &TurnFacts) -> Result<Restricted, String> {
-        let verdict = self.privacy.check(turn.root, turn.prompt, turn.attached);
+        let verdict = if turn.history.is_empty() {
+            self.privacy.check(turn.root, turn.prompt, turn.attached)
+        } else {
+            self.privacy.check(turn.root, &format!("{}\n{}", turn.prompt, turn.history), turn.attached)
+        };
         let blocked: Vec<(ProviderId, String)> =
             crate::providers::ALL_PROVIDERS.into_iter().filter(|p| !usable.filter(|q, _| q == *p).is_empty()).filter_map(|p| verdict.denial(p).map(|why| (p, why))).collect();
         let mut current = usable.filter(|p, _| verdict.permits(p));
@@ -131,7 +138,7 @@ mod tests {
     use crate::privacy::Source;
 
     fn facts<'a>(prompt: &'a str, attempts: u32) -> TurnFacts<'a> {
-        TurnFacts { root: Path::new("/w"), prompt, task: None, attached: &[], pinned: false, attempts }
+        TurnFacts { root: Path::new("/w"), prompt, history: "", task: None, attached: &[], pinned: false, attempts }
     }
 
     fn all() -> Usable {
@@ -201,6 +208,17 @@ mod tests {
         assert_eq!(r.notes, vec!["rule: only codex"]);
         let pinned = TurnFacts { pinned: true, ..facts("hello", 0) };
         assert!(has(&g.restrict(&all(), &pinned).unwrap().usable, ProviderId::Claude));
+    }
+
+    #[test]
+    fn a_path_named_in_an_earlier_turn_still_holds_a_provider_back() {
+        let g = guards("block secrets/** from codex");
+        // The new prompt names nothing, but the conversation a provider would be caught up with does.
+        let later = TurnFacts { history: "look at secrets/prod.yml\nit sets the key", ..facts("continue", 0) };
+        let r = g.restrict(&all(), &later).unwrap();
+        assert!(!has(&r.usable, ProviderId::Codex) && has(&r.usable, ProviderId::Claude));
+        // Without that history nothing is held back.
+        assert!(has(&g.restrict(&all(), &facts("continue", 0)).unwrap().usable, ProviderId::Codex));
     }
 
     #[test]

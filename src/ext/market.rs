@@ -253,7 +253,7 @@ fn listing_of(user: &Path, record: &Record) -> Listing {
         Err(_) => State::Changed(vec![MANIFEST.to_string()]),
         Ok(manifest) => {
             let bad: Vec<String> =
-                manifest.files.iter().filter(|(rel, sum)| hash_file(&dir.join(rel)).map_or(true, |now| now != **sum)).map(|(rel, _)| rel.clone()).collect();
+                manifest.files.iter().filter(|(rel, sum)| hash_file(&dir.join(rel)).map_or(true, |now| !now.eq_ignore_ascii_case(sum))).map(|(rel, _)| rel.clone()).collect();
             if bad.is_empty() {
                 State::Verified
             } else {

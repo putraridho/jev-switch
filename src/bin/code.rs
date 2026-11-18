@@ -314,9 +314,13 @@ async fn print_mode(args: &Args, source: &PromptSource, dir: &Path, term: &Term,
     };
     let (runtime, _) = start_runtime(&console, ProbeMode::Cached).await;
     // A one-shot starts a fresh conversation and leaves the saved session alone, unless -c asks to continue it.
-    let persist = if args.resume { state_dir } else { None };
-    let engine = engine_for(args, runtime, router, dir.to_path_buf(), console.can_ask(), None).with_persistence(persist);
+    let persist = if args.resume { state_dir.clone() } else { None };
+    // The privacy rules, budget and failover settings apply to a one-shot too: they are read from
+    // the state folder even when the session itself is not kept.
+    let guards = jev_router::guard::Guards::load(state_dir.as_deref(), dir);
+    let engine = engine_for(args, runtime, router, dir.to_path_buf(), console.can_ask(), None).with_persistence(persist).with_guards(guards);
     let mut repl = Repl::new(engine, console.clone(), std::env::var("HOME").ok(), false);
+    repl.enforce_team_limit();
     if args.resume {
         resume_quietly(&mut repl, &console);
     }
@@ -379,6 +383,7 @@ async fn session(args: &Args, dir: &Path, term: &Term, console: Console, state_d
         let engine = if front_rx.is_some() { engine.with_streaming() } else { engine };
         Repl::new(engine, console.clone(), home.clone(), term.stdout_tty).with_state_dir(state_dir.clone())
     });
+    repl.enforce_team_limit();
     timeline.time(Phase::Banner, || startup(&mut repl, args, term, &console, state_dir.as_deref(), home.as_deref()));
     if args.startup_profile {
         console.out(&timeline.report());

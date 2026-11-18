@@ -84,7 +84,14 @@ impl Repl {
 
     /// The mode, lowered to what the repo's shared file allows (and said so).
     pub(super) fn within_team_limit(&self, mode: Mode) -> Mode {
-        let cap = self.team().ok().and_then(|t| t.max_profile);
+        let cap = match self.team() {
+            Ok(t) => t.max_profile,
+            // A shared file that cannot be read must not quietly lift its own limit.
+            Err(e) => {
+                self.console.out(&format!("  {}", self.out_style().yellow(&format!("{e}; the repo's limit could not be applied"))));
+                None
+            }
+        };
         let allowed = Profile::of_mode(mode).capped_by(cap).mode();
         if allowed != mode {
             self.console.out(&format!("  {}", self.out_style().yellow(&format!("{mode} mode is above this repo's limit ({}); using {allowed}", team::FILE))));
@@ -117,6 +124,16 @@ impl Repl {
         let mut all = self.audit_path().map(|p| audit::read(&p)).unwrap_or_default();
         all.retain(|e| e.project == project);
         all
+    }
+
+    /// Hold the mode a session starts in (`--mode`, the saved preference, `CODE_PERMISSION_MODE`)
+    /// to the repo's limit, the same way a mode chosen later is.
+    pub fn enforce_team_limit(&mut self) {
+        let mode = self.engine.mode();
+        let allowed = self.within_team_limit(mode);
+        if allowed != mode {
+            self.engine.set_mode(allowed);
+        }
     }
 
     /// A mode picked by a key (not a command): held to the repo's limit, kept as the
