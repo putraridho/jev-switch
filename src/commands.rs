@@ -90,6 +90,10 @@ pub enum Command {
     Review(Option<String>),
     /// `/config`: the effective settings.
     Config,
+    /// `/agents`: the workers a planner handed pieces to.
+    Agents,
+    /// `/orchestration`: whether orchestration is on, and the turn as a flow diagram.
+    Orchestration,
     /// `/terminal-setup [install]`: Shift-Enter for a new line.
     TerminalSetup { install: bool },
     /// `!command`: run it in the shell; its output goes with the next message.
@@ -172,7 +176,7 @@ pub fn parse(line: &str) -> Command {
         "/quit" | "/exit" => Command::Quit,
         "/new" => Command::New,
         "/help" | "/status" | "/doctor" | "/undo" | "/clear" | "/context" | "/cost" | "/usage" | "/why" | "/copy" | "/edit" | "/cache"
-        | "/init" | "/memory" | "/config"
+        | "/init" | "/memory" | "/config" | "/agents" | "/orchestration"
             if arg.is_some() =>
         {
             usage_error(if head == "/usage" { "/cost" } else { head })
@@ -195,6 +199,8 @@ pub fn parse(line: &str) -> Command {
         "/memory" => Command::Memory,
         "/review" => Command::Review(rest()),
         "/config" => Command::Config,
+        "/agents" => Command::Agents,
+        "/orchestration" => Command::Orchestration,
         "/terminal-setup" => match (arg, extra) {
             (None, _) => Command::TerminalSetup { install: false },
             (Some("install"), false) => Command::TerminalSetup { install: true },
@@ -414,6 +420,9 @@ mod tests {
         assert_eq!(parse("/review"), Command::Review(None));
         assert_eq!(parse("/review only the parser"), Command::Review(Some("only the parser".into())));
         assert_eq!(parse("/config"), Command::Config);
+        assert_eq!(parse("/agents"), Command::Agents);
+        assert_eq!(parse("/orchestration"), Command::Orchestration);
+        assert!(matches!(parse("/agents now"), Command::Invalid(_)));
         assert_eq!(parse("/terminal-setup"), Command::TerminalSetup { install: false });
         assert_eq!(parse("/terminal-setup install"), Command::TerminalSetup { install: true });
         assert!(matches!(parse("/terminal-setup now"), Command::Invalid(_)));

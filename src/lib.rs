@@ -8,6 +8,7 @@
 //!    the `tune` binary sweeps it over a labeled set and reports the savings/miss
 //!    curve so you read the number off your own data.
 
+pub mod agentview;
 pub mod anthropic;
 pub mod attach;
 pub mod availability;
