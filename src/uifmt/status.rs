@@ -9,6 +9,9 @@ use super::width::{display_width, truncate_to_width};
 /// Braille spinner frames.
 pub const SPINNER_FRAMES: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
+/// The one frame shown in place of the spinner when motion is reduced (`JEV_REDUCED_MOTION`).
+pub const STILL_FRAME: &str = "•";
+
 /// How long each spinner frame shows.
 pub const SPINNER_FRAME_MS: u128 = 100;
 
@@ -32,6 +35,9 @@ impl Spinner {
     /// The frame for a moment in time, so a status line is a pure function of the
     /// elapsed time and needs no spinner state.
     pub fn frame_for(elapsed: Duration) -> &'static str {
+        if crate::workstation::access::reduced_motion() {
+            return STILL_FRAME;
+        }
         SPINNER_FRAMES[(elapsed.as_millis() / SPINNER_FRAME_MS) as usize % SPINNER_FRAMES.len()]
     }
 }

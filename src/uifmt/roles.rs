@@ -157,6 +157,29 @@ pub fn tool_result_row(tool: &str, ok: bool, text: &str, style: Style, width: us
     Some(truncate_to_width(&format!("    {} {said}", style.dim("⎿")), clamp_width(width)))
 }
 
+/// How many lines of a failing command's output show before the fold.
+pub const FOLD_KEEP: usize = 4;
+
+/// The output of a failed tool, or a command whose output reports a failure, folded to its
+/// first [`FOLD_KEEP`] lines under the `⎿` row with a note counting the rest. `None` for
+/// output that went well or is one line (the `⎿` row already says it).
+pub fn tool_output_fold(tool: &str, ok: bool, text: &str, style: Style, width: usize) -> Option<String> {
+    let lines: Vec<String> = text.lines().filter(|l| !l.trim().is_empty()).map(|l| l.trim_end().to_string()).collect();
+    let tool_lc = tool.to_ascii_lowercase();
+    let refs: Vec<&str> = lines.iter().map(String::as_str).collect();
+    let shell = matches!(tool_lc.as_str(), "bash" | "shell");
+    if lines.len() < 2 || is_delegate(&tool_lc) || !(!ok || (shell && reports_failure(&refs))) {
+        return None;
+    }
+    let width = clamp_width(width);
+    let folded = crate::workstation::collapse::fold(&lines, FOLD_KEEP, "output cut");
+    let rows: Vec<String> = folded
+        .iter()
+        .map(|l| truncate_to_width(&format!("      {}", style.dim(l)), width))
+        .collect();
+    Some(rows.join("\n"))
+}
+
 /// Whether a command's output says something failed: a test run with failures, a compiler
 /// error, a panic.
 fn reports_failure(lines: &[&str]) -> bool {
@@ -287,6 +310,18 @@ mod tests {
         let row = tool_result_row("mcp__jev__delegate", true, failed, ON, 80).unwrap_or_default();
         assert!(row.contains("\x1b[31mFAILED"), "{row:?}");
         assert_eq!(display_tool("mcp__jev__show_diff"), "Show diff");
+    }
+
+    #[test]
+    fn failing_output_is_folded_under_the_result_row_and_quiet_output_is_not() {
+        let long = (0..9).map(|i| format!("error line {i}")).collect::<Vec<_>>().join("\n");
+        let out = tool_output_fold("Bash", false, &long, OFF, 80).unwrap_or_default();
+        let rows: Vec<&str> = out.lines().collect();
+        assert_eq!(rows.len(), FOLD_KEEP + 1, "{out}");
+        assert_eq!(rows[0], "      error line 0");
+        assert_eq!(rows[FOLD_KEEP], "      … +5 lines (output cut)");
+        assert!(tool_output_fold("Bash", true, "a\nb\nc", OFF, 80).is_none());
+        assert!(tool_output_fold("Bash", false, "one line", OFF, 80).is_none());
     }
 
     #[test]

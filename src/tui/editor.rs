@@ -104,6 +104,21 @@ impl Editor {
         }
     }
 
+    /// Left, but never onto the previous line (vim `h`).
+    pub fn left_in_line(&mut self) {
+        if self.cursor > self.line_start() {
+            self.left();
+        }
+    }
+
+    /// Right, but never past the line's last character (vim `l`).
+    pub fn right_in_line(&mut self) {
+        let end = self.line_end();
+        if self.next_boundary().is_some_and(|j| j < end) {
+            self.right();
+        }
+    }
+
     fn line_start(&self) -> usize {
         self.text[..self.cursor].rfind('\n').map_or(0, |i| i + 1)
     }
@@ -177,6 +192,23 @@ impl Editor {
         let start = self.line_start();
         self.text.replace_range(start..self.cursor, "");
         self.cursor = start;
+    }
+
+    /// Delete the whole line the cursor is on, with its line break (vim `dd`); the cursor goes
+    /// to the start of the line that takes its place.
+    pub fn delete_line(&mut self) {
+        let start = self.line_start();
+        let end = self.line_end();
+        if end < self.text.len() {
+            self.text.replace_range(start..=end, "");
+            self.cursor = start;
+        } else if start > 0 {
+            self.text.replace_range(start - 1..end, "");
+            self.cursor = self.line_start();
+        } else {
+            self.text.clear();
+            self.cursor = 0;
+        }
     }
 
     /// The line the cursor is on and its column in characters.

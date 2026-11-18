@@ -6,6 +6,7 @@ use std::path::Path;
 
 use crate::lineedit::path_candidates;
 use crate::uifmt::{self, CompleteCtx, COMMANDS};
+use crate::workstation::fuzzy;
 
 /// The most rows the menu shows at once; the selection scrolls through the rest.
 pub const MENU_ROWS: usize = 8;
@@ -120,10 +121,17 @@ pub fn build(before: &str, ctx: &CompleteCtx, project: &Path, tracked: &[String]
     let from = uifmt::completion_start(before);
     let word = &before[from..];
     if let Some(path) = word.strip_prefix('@') {
-        let items: Vec<Item> = path_candidates(path, project, tracked)
+        let mut items: Vec<Item> = path_candidates(path, project, tracked)
             .into_iter()
             .map(|p| Item { label: p.display, detail: String::new(), replacement: p.replacement, then: Then::Stay })
             .collect();
+        // Nothing starts with what was typed: look for its letters scattered through the paths.
+        if items.is_empty() && !path.is_empty() {
+            items = fuzzy::rank(path, tracked, MENU_ROWS * 2)
+                .into_iter()
+                .map(|p| Item { label: p.clone(), detail: String::new(), replacement: format!("@{}", p.replace(' ', "\\ ")), then: Then::Stay })
+                .collect();
+        }
         return (!items.is_empty()).then(|| Menu { items, selected: 0, from, title: "files".into(), navigated: false });
     }
     if !before.starts_with('/') {
@@ -208,6 +216,14 @@ mod tests {
         assert_eq!(m.from, 8);
         assert_eq!(labels(&m), vec!["@src/tui/menu.rs"]);
         assert!(menu("just words").is_none());
+    }
+
+    #[test]
+    fn scattered_letters_find_a_file_when_no_name_starts_with_them() {
+        let m = menu("see @tm").expect("fuzzy files");
+        assert_eq!(labels(&m), vec!["@src/tui/menu.rs"]);
+        assert_eq!(m.items[0].replacement, "@src/tui/menu.rs");
+        assert!(menu("see @qqq").is_none());
     }
 
     #[test]

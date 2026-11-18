@@ -31,6 +31,7 @@ pub mod front;
 pub mod gimmicks;
 pub mod handoff;
 pub mod host;
+pub mod learn;
 pub mod lineedit;
 pub mod log;
 pub mod mode;
@@ -59,4 +60,5 @@ pub mod typesafe;
 pub mod uifmt;
 pub mod usage;
 pub mod views;
+pub mod workstation;
 
