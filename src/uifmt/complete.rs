@@ -140,9 +140,9 @@ mod tests {
         assert_eq!(
             replacements("/"),
             vec![
-                "/clear", "/compact", "/config", "/context", "/copy", "/cost", "/diff", "/doctor", "/edit", "/export", "/help", "/init", "/mcp", "/memory", "/mode",
-                "/model", "/new", "/orchestrate", "/permissions", "/provider", "/providers", "/quit", "/rename", "/resume", "/review", "/status", "/terminal-setup",
-                "/undo", "/why"
+                "/audit", "/bench", "/clear", "/commit", "/compact", "/config", "/context", "/copy", "/cost", "/diff", "/doctor", "/edit", "/export", "/help",
+                "/history", "/init", "/mcp", "/memory", "/mode", "/model", "/new", "/orchestrate", "/permissions", "/pr", "/profile", "/provider", "/providers",
+                "/quit", "/rename", "/replay", "/resume", "/review", "/status", "/team", "/terminal-setup", "/undo", "/why"
             ]
         );
         assert_eq!(replacements("/mcp "), vec!["list", "login"]);
@@ -224,7 +224,7 @@ mod tests {
             ("/model", Some(" auto|codex|claude:...")),
             ("/prov", Some("ider")),
             ("/provider", Some(" auto|off")),
-            ("/", Some("clear")),
+            ("/", Some("audit")),
             ("/new", None),
             ("/new ", None),
             ("/model co", None),

@@ -191,8 +191,7 @@ pub async fn run(repl: Repl, mut rx: mpsc::UnboundedReceiver<FrontMsg>, opts: Op
             // A provider that just became ready (or came off a cooldown) shows on the router row.
             app.providers = provider_chips(repl);
             if app.mode != repl.engine.mode() {
-                repl.engine.set_mode(app.mode);
-                repl.remember_mode();
+                app.mode = repl.adopt_mode(app.mode);
             }
         }
         if task.is_none() && !app.suspended {

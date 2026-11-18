@@ -146,6 +146,11 @@ impl Sessions {
         self.log.len()
     }
 
+    /// Every logged turn, oldest first (for `/replay`).
+    pub fn records(&self) -> &[TurnRecord] {
+        &self.log
+    }
+
     /// The name given with `/rename`, if any.
     pub fn name(&self) -> Option<&str> {
         self.name.as_deref()

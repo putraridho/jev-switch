@@ -46,8 +46,13 @@ fn rotate_if_big(path: &str) {
 /// Append one record as a line. Each line goes out in a single write so records
 /// from concurrent requests don't interleave. Never fails the caller.
 pub fn append(path: &str, record: &Value) {
+    append_line(path, &record.to_string());
+}
+
+/// [`append`] for a line that is already text (a typed record serialised by its owner).
+pub fn append_line(path: &str, text: &str) {
     rotate_if_big(path);
-    let mut line = record.to_string();
+    let mut line = text.to_string();
     line.push('\n');
     let mut opts = std::fs::OpenOptions::new();
     opts.create(true).append(true);

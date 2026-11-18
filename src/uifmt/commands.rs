@@ -23,7 +23,7 @@ pub struct Cmd {
     pub hint: &'static str,
 }
 
-pub const COMMANDS: [Cmd; 29] = [
+pub const COMMANDS: [Cmd; 37] = [
     Cmd { name: "/model", args: "[target]", group: Group::Model, about: "Pin a model or provider, or `auto` to let the router choose", example: "/model codex:gpt-6.1-sol", hint: "auto|codex|claude:..." },
     Cmd { name: "/provider", args: "auto|off", group: Group::Model, about: "Route across providers (auto), or use Claude only (off)", example: "/provider off", hint: "auto|off" },
     Cmd { name: "/orchestrate", args: "[on|off]", group: Group::Model, about: "Let a planner split a big task across cheaper workers", example: "/orchestrate on", hint: "on|off" },
@@ -45,6 +45,14 @@ pub const COMMANDS: [Cmd; 29] = [
     Cmd { name: "/init", args: "", group: Group::Project, about: "Have the agent write AGENTS.md, the instructions every CLI reads", example: "", hint: "" },
     Cmd { name: "/memory", args: "", group: Group::Project, about: "Open the project's instructions (AGENTS.md, CLAUDE.md) in $EDITOR", example: "", hint: "" },
     Cmd { name: "/review", args: "[focus]", group: Group::Project, about: "Review the uncommitted changes for bugs, without editing", example: "/review the parser changes", hint: "[focus]" },
+    Cmd { name: "/commit", args: "[hint]", group: Group::Project, about: "Have the agent commit the changes, in this repo's message style", example: "/commit the parser fix", hint: "[what changed]" },
+    Cmd { name: "/pr", args: "[base]", group: Group::Project, about: "Have the agent prepare (and with gh, open) a pull request", example: "/pr develop", hint: "[base branch]" },
+    Cmd { name: "/team", args: "", group: Group::Project, about: "Show the repo's shared rules from .jev/team.json", example: "", hint: "" },
+    Cmd { name: "/profile", args: "[name]", group: Group::Session, about: "Set a permission profile: locked, careful, standard or trusted", example: "/profile careful", hint: "locked|careful|standard|trusted" },
+    Cmd { name: "/audit", args: "[n]", group: Group::Info, about: "Show the audit log: what was run, with which model, when", example: "/audit 10", hint: "[n]" },
+    Cmd { name: "/history", args: "", group: Group::Info, about: "Show turns and tokens per day", example: "", hint: "" },
+    Cmd { name: "/bench", args: "", group: Group::Info, about: "Rank the models by how your own turns went", example: "", hint: "" },
+    Cmd { name: "/replay", args: "[n]", group: Group::Info, about: "Read a saved session back, turn by turn (n as in /resume)", example: "/replay 2", hint: "[n]" },
     Cmd { name: "/help", args: "", group: Group::Info, about: "Show this help", example: "", hint: "" },
     Cmd { name: "/status", args: "", group: Group::Info, about: "Show the project, routing, providers and the last turn", example: "", hint: "" },
     Cmd { name: "/cost", args: "", group: Group::Info, about: "Show tokens and time used this session, by model (also /usage)", example: "", hint: "" },

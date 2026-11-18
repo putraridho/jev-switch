@@ -365,6 +365,9 @@ fn startup(repl: &mut Repl, args: &Args, term: &Term, console: &Console, state_d
     let (style, width, now) = (term.out_style, term.width, log::now_ms());
     let rows = views::avail_rows(&repl.engine.runtime, now);
     console.out(&views::banner(repl.engine.dir(), home, repl.engine.enabled(), &rows, style, width));
+    if let Some(notice) = state_dir.and_then(|d| jev_router::inflight::recovery_notice(d, repl.engine.dir())) {
+        console.out(&style.yellow(&notice));
+    }
     if args.resume {
         match repl.engine.resume() {
             Ok(info) => console.out(&views::resumed_line(&info, now, style)),
@@ -414,9 +417,9 @@ async fn edit_loop(repl: &mut Repl, term: &Term, console: &Console, state_dir: O
         let input = tokio::task::block_in_place(|| lineedit::read(&mut editor, &plain, &styled, ctx, &draft));
         // A mode picked with Shift-Tab holds even when the line was thrown away.
         if shared_mode.get() != repl.engine.mode() {
-            repl.engine.set_mode(shared_mode.get());
-            repl.remember_mode();
-            console.out(&format!("  mode: {}", views::mode_line(shared_mode.get())));
+            let applied = repl.adopt_mode(shared_mode.get());
+            shared_mode.set(applied);
+            console.out(&format!("  mode: {}", views::mode_line(applied)));
         }
         match input {
             Input::Line(line) => {

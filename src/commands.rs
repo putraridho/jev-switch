@@ -40,6 +40,8 @@ pub enum Command {
     Providers { refresh: bool },
     /// `/mcp [list | login <server>]`.
     Mcp(McpCmd),
+    /// `/commit`, `/pr`, `/profile`, `/team`, `/audit`, `/history`, `/bench`, `/replay`.
+    Ext(crate::extcmds::ExtCmd),
     /// A command that was recognised but whose argument was not; the text says what is accepted.
     Invalid(String),
     /// `/help`.
@@ -155,6 +157,9 @@ pub fn parse(line: &str) -> Command {
     };
     let lower = head.to_ascii_lowercase();
     let head = lower.as_str();
+    if let Some(ext) = crate::extcmds::parse(head, &line[head.len()..]) {
+        return Command::Ext(ext);
+    }
     match head {
         "/quit" | "/exit" => Command::Quit,
         "/new" => Command::New,
