@@ -23,7 +23,7 @@ pub struct Cmd {
     pub hint: &'static str,
 }
 
-pub const COMMANDS: [Cmd; 29] = [
+pub const COMMANDS: [Cmd; 31] = [
     Cmd { name: "/model", args: "[target]", group: Group::Model, about: "Pin a model or provider, or `auto` to let the router choose", example: "/model codex:gpt-6.1-sol", hint: "auto|codex|claude:..." },
     Cmd { name: "/provider", args: "auto|off", group: Group::Model, about: "Route across providers (auto), or use Claude only (off)", example: "/provider off", hint: "auto|off" },
     Cmd { name: "/orchestrate", args: "[on|off]", group: Group::Model, about: "Let a planner split a big task across cheaper workers", example: "/orchestrate on", hint: "on|off" },
@@ -48,6 +48,8 @@ pub const COMMANDS: [Cmd; 29] = [
     Cmd { name: "/help", args: "", group: Group::Info, about: "Show this help", example: "", hint: "" },
     Cmd { name: "/status", args: "", group: Group::Info, about: "Show the project, routing, providers and the last turn", example: "", hint: "" },
     Cmd { name: "/cost", args: "", group: Group::Info, about: "Show tokens and time used this session, by model (also /usage)", example: "", hint: "" },
+    Cmd { name: "/agents", args: "", group: Group::Info, about: "Show the workers a planner handed pieces to, and their state", example: "", hint: "" },
+    Cmd { name: "/orchestration", args: "", group: Group::Info, about: "Show whether orchestration is on and draw the turn as a flow", example: "", hint: "" },
     Cmd { name: "/config", args: "", group: Group::Info, about: "Show the effective settings and where to change them", example: "/config", hint: "" },
     Cmd { name: "/providers", args: "[refresh]", group: Group::Info, about: "Show what was detected; `refresh` probes again", example: "/providers refresh", hint: "[refresh]" },
     Cmd { name: "/mcp", args: "[list|login <server>]", group: Group::Info, about: "Show configured MCP servers across ready providers, or log in", example: "/mcp login lunagraph-remote", hint: "[list|login <server>]" },

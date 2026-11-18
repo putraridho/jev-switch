@@ -241,6 +241,11 @@ impl Repl {
         log::now_ms()
     }
 
+    /// The worker records on disk (none without a state directory).
+    fn stored_workers(&self) -> Vec<crate::delegate::StoredWorker> {
+        log::state_dir().map(|d| crate::delegate::stored_workers(&d)).unwrap_or_default()
+    }
+
     fn out_style(&self) -> Style {
         self.console.out_style()
     }
@@ -316,6 +321,11 @@ impl Repl {
                 return self.canned(&prompt, "/review", Some(crate::mode::Mode::Plan), io).await;
             }
             Command::Config => self.page_out(&self.config_text()),
+            Command::Agents => self.page_out(&crate::agentview::stored::agents_text(&self.stored_workers(), self.now(), self.console.width(), style)),
+            Command::Orchestration => {
+                let text = crate::agentview::stored::orchestration_text(self.engine.orchestrate(), &self.stored_workers(), self.now(), self.console.width(), style);
+                self.page_out(&text);
+            }
             Command::TerminalSetup { install } => self.terminal_setup(install, io),
             Command::Shell(command) => self.shell(&command),
             Command::Resume(query) => self.resume(query.as_deref()),

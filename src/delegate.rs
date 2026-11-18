@@ -793,6 +793,29 @@ pub fn has_leftovers(state: &Path) -> bool {
     any(state.join("workers")) || any(state.join("worktrees"))
 }
 
+/// A worker record as `/agents` shows it: plain facts, read from `<state>/workers`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoredWorker {
+    pub id: String,
+    pub provider: String,
+    pub model: String,
+    /// Still working (its server has not seen it finish).
+    pub running: bool,
+    pub created_ms: u64,
+    /// Files the planner has already merged back.
+    pub merged: Vec<String>,
+}
+
+/// The workers recorded under `state`, by id: the unmerged ones a planner can still
+/// merge or discard.
+pub fn stored_workers(state: &Path) -> Vec<StoredWorker> {
+    Store { dir: state.join("workers") }
+        .load()
+        .into_iter()
+        .map(|s| StoredWorker { id: s.worker_id, provider: s.provider, model: s.model, running: s.running, created_ms: s.created_ms, merged: s.merged.into_iter().collect() })
+        .collect()
+}
+
 /// A worker whose record is older than this is abandoned: its checkout is removed.
 const STALE_AFTER_MS: u64 = 24 * 60 * 60 * 1000;
 /// A directory under the worktrees root that no record names is removed once it is this

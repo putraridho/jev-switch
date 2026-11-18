@@ -940,6 +940,29 @@ def help_lists_every_command_and_the_keys(w):
 
 
 @scenario
+def agents_and_orchestration_views_show_recorded_workers(w):
+    workers = os.path.join(w.state, "jev-router", "workers")
+    os.makedirs(workers, exist_ok=True)
+    record = {"worker_id": "w1", "path": w.repo, "repo": w.repo, "provider": "codex", "model": "gpt-x", "created_ms": 1000, "running": True}
+    with open(os.path.join(workers, "w1.json"), "w") as f:
+        json.dump(record, f)
+    p = Pty(w, [w.repo], "agents")
+    try:
+        prompt_ready(p)
+        p.send("/agents\r")
+        p.expect("codex gpt-x", 10, "the recorded worker in /agents")
+        if "running" not in p.visible():
+            raise Fail(f"/agents should name the worker's state in words:\n{p.tail(1500)}")
+        wait_prompt(p, 5, "the prompt")
+        p.send("/orchestration\r")
+        p.expect("merge → review → report", 10, "the flow diagram in /orchestration")
+        wait_prompt(p, 5, "the prompt")
+        quit_with_ctrl_d(p)
+    finally:
+        p.close()
+
+
+@scenario
 def tab_completes_a_command(w):
     p = Pty(w, [w.repo], "tab")
     try:

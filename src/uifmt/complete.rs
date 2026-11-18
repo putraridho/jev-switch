@@ -140,8 +140,8 @@ mod tests {
         assert_eq!(
             replacements("/"),
             vec![
-                "/clear", "/compact", "/config", "/context", "/copy", "/cost", "/diff", "/doctor", "/edit", "/export", "/help", "/init", "/mcp", "/memory", "/mode",
-                "/model", "/new", "/orchestrate", "/permissions", "/provider", "/providers", "/quit", "/rename", "/resume", "/review", "/status", "/terminal-setup",
+                "/agents", "/clear", "/compact", "/config", "/context", "/copy", "/cost", "/diff", "/doctor", "/edit", "/export", "/help", "/init", "/mcp", "/memory",
+                "/mode", "/model", "/new", "/orchestrate", "/orchestration", "/permissions", "/provider", "/providers", "/quit", "/rename", "/resume", "/review", "/status", "/terminal-setup",
                 "/undo", "/why"
             ]
         );
@@ -224,7 +224,7 @@ mod tests {
             ("/model", Some(" auto|codex|claude:...")),
             ("/prov", Some("ider")),
             ("/provider", Some(" auto|off")),
-            ("/", Some("clear")),
+            ("/", Some("agents")),
             ("/new", None),
             ("/new ", None),
             ("/model co", None),
