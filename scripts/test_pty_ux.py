@@ -970,7 +970,7 @@ def help_search_tips_cheat_sheet_and_whatsnew_teach_the_tool(w):
         p.send("/help diff\r")
         p.expect("Help matching", 10, "the search heading")
         wait_prompt(p, 5, "the prompt")
-        if "/diff [file]" not in p.visible() or "/status" in p.visible().split("Help matching")[-1]:
+        if "/diff [" not in p.visible() or "/status" in p.visible().split("Help matching")[-1]:
             raise Fail(f"/help diff should list /diff and only matches:\n{p.tail(1500)}")
         p.send("/tips\r")
         p.expect("Shift-Tab cycles the mode", 10, "the tips")
@@ -1123,7 +1123,7 @@ def diff_and_undo_review_what_a_turn_changed(w):
         p.expect("/diff to review, /undo to revert", 5, "the review hint")
         wait_prompt(p, 5, "the prompt")
         p.send("/diff\r")
-        p.expect("+hi", 10, "the diff")
+        p.expect("+ hi", 10, "the diff")
         wait_prompt(p, 5, "the prompt")
         p.send("/undo\r")
         p.expect("Revert 1 file?", 10, "the confirmation card")
@@ -1146,7 +1146,7 @@ def diff_all_and_the_checkpoint_list_name_the_changed_file(w):
         p.expect("/diff to review, /undo to revert", 15, "the review hint")
         wait_prompt(p, 5, "the prompt")
         p.send("/diff --all\r")
-        p.expect("+hi", 10, "the net diff of the session")
+        p.expect("+ hi", 10, "the net diff of the session")
         wait_prompt(p, 5, "the prompt")
         p.send("/rewind\r")
         p.expect("/rewind <number>", 10, "the numbered turns and how to rewind")
@@ -1293,8 +1293,8 @@ def print_mode_exit_codes(w):
 
 
 @scenario
-def the_answer_has_a_gutter_naming_who_wrote_it_and_it_can_be_turned_off(w):
-    p = Pty(w, [w.repo], "gutter")
+def the_answer_has_a_gutter_naming_who_wrote_it_when_asked_for_and_not_by_default(w):
+    p = Pty(w, [w.repo], "gutter", env=w.env(JEV_CODE_GUTTER="1"))
     try:
         prompt_ready(p)
         p.send("explain the code quick\r")
@@ -1304,14 +1304,14 @@ def the_answer_has_a_gutter_naming_who_wrote_it_and_it_can_be_turned_off(w):
         quit_with_ctrl_d(p)
     finally:
         p.close()
-    off = Pty(w, [w.repo], "gutter-off", env=w.env(JEV_CODE_GUTTER="0"))
+    off = Pty(w, [w.repo], "gutter-off")
     try:
         prompt_ready(off)
         off.send("explain the code quick\r")
         off.expect(ANSWER, 15, "the answer")
         wait_prompt(off, 15, "the next prompt")
         if "▌" in off.visible():
-            raise Fail("JEV_CODE_GUTTER=0 should leave the answer without a gutter")
+            raise Fail("the answer should have no gutter unless JEV_CODE_GUTTER=1")
         quit_with_ctrl_d(off)
     finally:
         off.close()

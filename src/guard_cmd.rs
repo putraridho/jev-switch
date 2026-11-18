@@ -67,14 +67,11 @@ pub fn run(cmd: GuardCmd, guards: &mut Guards, state_dir: Option<&Path>, plans: 
             saved(state_dir, |d| guards.budget.save(d), "No cap on paid use.")
         }
         GuardCmd::PrivacyShow => privacy_text(guards),
-        GuardCmd::LocalOnly(on) => {
-            guards.privacy.set_local_only(on);
-            if on {
-                "  Local-only mode is on for this session: no prompt goes to a cloud provider.".into()
-            } else {
-                "  Local-only mode is off.".into()
-            }
-        }
+        GuardCmd::LocalOnly(on) => match guards.privacy.set_local_only(on) {
+            Err(why) => format!("  {why}"),
+            Ok(()) if on => "  Local-only mode is on for this session: no prompt goes to a cloud provider.".into(),
+            Ok(()) => "  Local-only mode is off.".into(),
+        },
         GuardCmd::Audit => match &guards.audit {
             None => "  No audit log: this session does not keep state.".into(),
             Some(log) => {

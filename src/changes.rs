@@ -1573,25 +1573,26 @@ mod tests {
     }
 
     /// Write `text` and give the file a fixed mtime, so two writes never look alike by luck.
-    fn write_at(s: &Scratch, rel: &str, text: &str, secs: u64) {
+    /// Write `rel` with its mtime `secs` after `base`. Each test takes its own `base` when it
+    /// starts, just before its snapshots: deterministic stamps that still count as "made
+    /// during the turn" (a base shared by the whole test process drifts past the 2 s slack
+    /// once the suite has been running a while).
+    fn write_at(s: &Scratch, base: std::time::SystemTime, rel: &str, text: &str, secs: u64) {
         s.write(rel, text);
         let f = std::fs::OpenOptions::new().write(true).open(s.path().join(rel)).unwrap();
-        // A fixed base taken once per test process, just before any snapshot a test
-        // takes: deterministic stamps that still count as "made during the turn".
-        static BASE: std::sync::OnceLock<std::time::SystemTime> = std::sync::OnceLock::new();
-        let base = *BASE.get_or_init(std::time::SystemTime::now);
         f.set_modified(base + std::time::Duration::from_secs(secs)).unwrap();
     }
 
     #[test]
     fn a_changed_untracked_file_is_reported_and_undo_refuses_to_touch_anything() {
         let s = repo();
-        write_at(&s, "notes.txt", "mine\n", 0);
-        write_at(&s, "same.txt", "stays\n", 0);
-        write_at(&s, "gone.txt", "bye\n", 0);
+        let t0 = std::time::SystemTime::now();
+        write_at(&s, t0, "notes.txt", "mine\n", 0);
+        write_at(&s, t0, "same.txt", "stays\n", 0);
+        write_at(&s, t0, "gone.txt", "bye\n", 0);
         let before = snapshot(s.path()).unwrap();
         // Same size, different mtime still counts; so does a delete.
-        write_at(&s, "notes.txt", "MINE\n", 5);
+        write_at(&s, t0, "notes.txt", "MINE\n", 5);
         std::fs::remove_file(s.path().join("gone.txt")).unwrap();
         s.write("a.txt", "one\nTWO\nthree\n");
         let after = snapshot(s.path()).unwrap();
@@ -1613,18 +1614,19 @@ mod tests {
     #[test]
     fn an_untracked_file_the_turn_added_is_deleted_by_undo_only_while_it_is_as_the_turn_left_it() {
         let s = repo();
+        let t0 = std::time::SystemTime::now();
         let before = snapshot(s.path()).unwrap();
-        write_at(&s, "new.txt", "made by the turn\n", 0);
+        write_at(&s, t0, "new.txt", "made by the turn\n", 0);
         let after = snapshot(s.path()).unwrap();
         let sum = summarize(s.path(), &before, &after).unwrap();
         assert_eq!(sum.files.len(), 1);
         assert_eq!((sum.files[0].status, sum.files[0].added), (ChangeStatus::Added, 1));
         assert!(sum.added_stamps.contains_key("new.txt"));
 
-        write_at(&s, "new.txt", "made by the turn\n", 9); // touched by someone since
+        write_at(&s, t0, "new.txt", "made by the turn\n", 9); // touched by someone since
         assert_eq!(undo(s.path(), &sum), Err(UndoError::ChangedSince(vec!["new.txt".into()])));
         assert!(s.exists("new.txt"));
-        write_at(&s, "new.txt", "made by the turn\n", 0);
+        write_at(&s, t0, "new.txt", "made by the turn\n", 0);
         assert_eq!(undo(s.path(), &sum).unwrap().removed, ["new.txt"]);
         assert!(!s.exists("new.txt"));
     }
@@ -1644,7 +1646,8 @@ mod tests {
     #[test]
     fn a_pre_existing_untracked_file_the_turn_only_staged_is_not_an_addition_to_delete() {
         let s = repo();
-        write_at(&s, "notes.txt", "mine\n", 0);
+        let t0 = std::time::SystemTime::now();
+        write_at(&s, t0, "notes.txt", "mine\n", 0);
         let before = snapshot(s.path()).unwrap();
         run_git(s.path(), &["add", "notes.txt"]);
         s.write("a.txt", "one\nTWO\nthree\n");
