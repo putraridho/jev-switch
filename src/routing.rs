@@ -175,6 +175,8 @@ pub struct RouteDecision {
 /// Why no model can be chosen; the caller tells the user instead of guessing.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NoRoute {
+    /// The privacy policy, the budget cap or a routing rule of the user's left no model.
+    Refused { why: String },
     /// No usable, allowed model exists for this kind of task (Security with only
     /// DeepSeek or Grok available lands here, by design).
     NothingUsable { task: TaskType },
@@ -186,7 +188,7 @@ impl std::fmt::Display for NoRoute {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::NothingUsable { task } => write!(f, "no usable model for {task} work"),
-            Self::PinUnusable { what } => f.write_str(what),
+            Self::PinUnusable { what } | Self::Refused { why: what } => f.write_str(what),
         }
     }
 }

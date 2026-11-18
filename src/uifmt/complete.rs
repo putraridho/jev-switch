@@ -151,6 +151,9 @@ mod tests {
                 "/undo", "/why"
                 "/clear", "/compact", "/config", "/context", "/copy", "/cost", "/diff", "/doctor", "/edit", "/export", "/help", "/init", "/keys", "/mcp", "/memory", "/mode",
                 "/tips", "/undo", "/whatsnew", "/why"
+                "/budget", "/clear", "/compact", "/config", "/context", "/copy", "/cost", "/diff", "/doctor", "/edit", "/export", "/failover", "/help", "/init", "/mcp",
+                "/memory", "/mode", "/model", "/new", "/orchestrate", "/permissions", "/privacy", "/provider", "/providers", "/quit", "/rename", "/resume", "/review",
+                "/scoreboard", "/status", "/terminal-setup", "/undo", "/why"
             ]
         );
         assert_eq!(replacements("/mcp "), vec!["list", "login"]);
@@ -234,6 +237,7 @@ mod tests {
             ("/provider", Some(" auto|off")),
             ("/", Some("cache")),
             ("/", Some("agents")),
+            ("/", Some("budget")),
             ("/new", None),
             ("/new ", None),
             ("/model co", None),

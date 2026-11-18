@@ -23,14 +23,15 @@ pub struct Cmd {
     pub hint: &'static str,
 }
 
-pub const COMMANDS: [Cmd; 38] = [
-pub const COMMANDS: [Cmd; 38] = [
-pub const COMMANDS: [Cmd; 38] = [
+pub const COMMANDS: [Cmd; 42] = [
+pub const COMMANDS: [Cmd; 42] = [
+pub const COMMANDS: [Cmd; 42] = [
+pub const COMMANDS: [Cmd; 42] = [
     Cmd { name: "/model", args: "[target]", group: Group::Model, about: "Pin a model or provider, or `auto` to let the router choose", example: "/model codex:gpt-6.1-sol", hint: "auto|codex|claude:..." },
     Cmd { name: "/provider", args: "auto|off", group: Group::Model, about: "Route across providers (auto), or use Claude only (off)", example: "/provider off", hint: "auto|off" },
     Cmd { name: "/orchestrate", args: "[on|off]", group: Group::Model, about: "Let a planner split a big task across cheaper workers", example: "/orchestrate on", hint: "on|off" },
     Cmd { name: "/workflows", args: "", group: Group::Model, about: "Show orchestration: running workers, ones waiting for review, recent delegations (also /workers)", example: "", hint: "" },
-pub const COMMANDS: [Cmd; 38] = [
+pub const COMMANDS: [Cmd; 42] = [
     Cmd { name: "/effort", args: "[default|auto|low|medium|high]", group: Group::Model, about: "Set how hard the model thinks (a thinking budget or reasoning effort)", example: "/effort high", hint: "default|auto|low|medium|high" },
     Cmd { name: "/why", args: "", group: Group::Model, about: "Explain why the router picked the last turn's model", example: "", hint: "" },
     Cmd { name: "/new", args: "", group: Group::Session, about: "Start a fresh session on every provider", example: "", hint: "" },
@@ -57,6 +58,10 @@ pub const COMMANDS: [Cmd; 38] = [
     Cmd { name: "/cache", args: "", group: Group::Info, about: "Show cache hit rate per provider, when it expires, and why a turn missed", example: "", hint: "" },
     Cmd { name: "/agents", args: "", group: Group::Info, about: "Show the workers a planner handed pieces to, and their state", example: "", hint: "" },
     Cmd { name: "/orchestration", args: "", group: Group::Info, about: "Show whether orchestration is on and draw the turn as a flow", example: "", hint: "" },
+    Cmd { name: "/budget", args: "[usd <n> | tokens <n> | off]", group: Group::Info, about: "Show spend by model and the plan use; set a cap on paid models", example: "/budget usd 5", hint: "[usd <n>|tokens <n>|off]" },
+    Cmd { name: "/privacy", args: "[audit | local-only on|off]", group: Group::Info, about: "Show the privacy rules, the audit trail, local-only mode", example: "/privacy audit", hint: "[audit|local-only on|off]" },
+    Cmd { name: "/failover", args: "[max-attempts <n> | paid-fallback on|off]", group: Group::Info, about: "Show or change how a turn fails over to another model", example: "/failover paid-fallback off", hint: "[max-attempts <n>|paid-fallback on|off]" },
+    Cmd { name: "/scoreboard", args: "", group: Group::Info, about: "Show how each provider did this session: answers, failures, speed", example: "", hint: "" },
     Cmd { name: "/config", args: "", group: Group::Info, about: "Show the effective settings and where to change them", example: "/config", hint: "" },
     Cmd { name: "/providers", args: "[refresh]", group: Group::Info, about: "Show what was detected; `refresh` probes again", example: "/providers refresh", hint: "[refresh]" },
     Cmd { name: "/mcp", args: "[list|login <server>]", group: Group::Info, about: "Show configured MCP servers across ready providers, or log in", example: "/mcp login lunagraph-remote", hint: "[list|login <server>]" },

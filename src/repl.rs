@@ -312,6 +312,10 @@ impl Repl {
             Command::Cost => self.page_out(&self.cost_text()),
             Command::Cache => self.page_out(&self.cache_text()),
             Command::Effort(setting) => self.effort(setting),
+            Command::Guard(cmd) => {
+                let text = self.engine.run_guard_command(cmd);
+                self.page_out(&text);
+            }
             Command::Why => {
                 let pin = self.engine.pin().to_string();
                 self.page_out(&uifmt::why_text(self.console.last_route().as_ref(), &pin, self.engine.enabled(), style));
