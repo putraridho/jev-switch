@@ -70,7 +70,7 @@ impl Interrupt for SigInt {
 }
 
 /// Answers a yes/no question through the terminal.
-pub trait Confirm {
+pub trait Confirm: Send {
     fn confirm(&mut self, question: &str) -> bool;
 }
 
@@ -258,7 +258,7 @@ impl Repl {
             Command::Empty => {}
             Command::Quit => return Flow::Quit,
             Command::Prompt(text) => return self.prompt(&text, io).await,
-            Command::Help => self.page_out(&uifmt::help_text(style)),
+            Command::Help => self.page_out(&uifmt::help_text(style, self.console.width())),
             Command::Status => {
                 let facts = views::status_facts(&self.engine, self.last_summary.as_ref(), self.home.as_deref(), self.now());
                 self.page_out(&uifmt::status_text(&facts, style));
@@ -517,7 +517,7 @@ impl Repl {
         let chosen = if candidates.len() == 1 {
             Some(0)
         } else if self.paging && std::io::IsTerminal::is_terminal(&std::io::stdin()) {
-            picker::run(candidates.clone(), now, style, terminal::rows(), terminal::width())
+            self.console.with_terminal(|| picker::run(candidates.clone(), now, style, terminal::rows(), terminal::width()))
         } else {
             let mut lines = picker::numbered(&candidates, now, terminal::width(), style);
             lines.push(style.dim("  Resume one with /resume <number>, or narrow the list with /resume <words>."));
@@ -566,7 +566,7 @@ impl Repl {
             return;
         }
         let colored = uifmt::diff_colorize(&text, style);
-        if self.paging && views::should_page(&text, terminal::rows(), true) && page(&colored) {
+        if self.paging && views::should_page(&text, terminal::rows(), true) && self.console.with_terminal(|| page(&colored)) {
             return;
         }
         self.console.out(colored.trim_end_matches('\n'));

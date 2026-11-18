@@ -1,0 +1,340 @@
+//! The interactive loop: keys, the session's messages and a timer in, the screen out.
+//!
+//! The session ([`Repl`]) runs each line on a task of its own, so the screen keeps reading
+//! keys while a turn works: typing queues the next message, Esc and Ctrl-C stop the turn,
+//! and approvals are answered on a card. Between lines the session comes back here.
+
+use std::future::Future;
+use std::path::PathBuf;
+use std::pin::Pin;
+use std::time::Instant;
+
+use crossterm::event::{Event, EventStream, KeyboardEnhancementFlags, PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags};
+use crossterm::{execute, terminal};
+use futures_util::StreamExt;
+use tokio::sync::mpsc;
+use tokio::task::JoinHandle;
+
+use super::app::{Action, App};
+use super::history::History;
+use super::screen::Screen;
+use super::view;
+use crate::commands;
+use crate::console::TICK;
+use crate::front::{Front, FrontMsg};
+use crate::lineedit;
+use crate::log;
+use crate::repl::{Confirm, Flow, Interrupt, Io, Repl};
+use crate::uifmt::Style;
+use crate::views;
+
+/// What the loop needs besides the session.
+pub struct Options {
+    pub style: Style,
+    /// `<state dir>/history`, when there is a state folder.
+    pub history: Option<PathBuf>,
+}
+
+/// Stop requests from the screen, as the session's [`Interrupt`].
+struct Stops(mpsc::UnboundedReceiver<()>);
+
+impl Interrupt for Stops {
+    fn wait(&mut self) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
+        Box::pin(async move {
+            // A closed channel never fires: it must not look like a stop.
+            if self.0.recv().await.is_none() {
+                std::future::pending::<()>().await;
+            }
+        })
+    }
+
+    fn drain(&mut self) {
+        while self.0.try_recv().is_ok() {}
+    }
+}
+
+/// Yes/no questions from commands, answered on a card.
+struct CardConfirm(Option<Front>);
+
+impl Confirm for CardConfirm {
+    fn confirm(&mut self, question: &str) -> bool {
+        let question = question.trim_end().trim_end_matches("[y/N]").trim_end();
+        self.0.as_ref().is_some_and(|f| f.confirm(question))
+    }
+}
+
+/// Switch on the keyboard modes the screen needs: raw keys, bracketed paste, and the
+/// keyboard protocol that reports Shift-Enter apart from Enter (terminals that do not know it
+/// ignore the request).
+fn keys_on() -> std::io::Result<()> {
+    terminal::enable_raw_mode()?;
+    let mut out = std::io::stdout();
+    execute!(out, crossterm::event::EnableBracketedPaste, PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES))?;
+    crate::terminal::note_front_keys(true);
+    Ok(())
+}
+
+/// Put the keyboard back as a command or the shell expects it.
+fn keys_off() {
+    let mut out = std::io::stdout();
+    let _ = execute!(out, PopKeyboardEnhancementFlags, crossterm::event::DisableBracketedPaste);
+    let _ = terminal::disable_raw_mode();
+    crate::terminal::note_front_keys(false);
+}
+
+/// Turns the keyboard modes off when dropped, on every way out of the loop.
+struct KeyModes;
+
+impl Drop for KeyModes {
+    fn drop(&mut self) {
+        keys_off();
+    }
+}
+
+fn width() -> usize {
+    terminal::size().map(|(w, _)| usize::from(w)).unwrap_or_else(|_| crate::terminal::width())
+}
+
+/// The footer's routing word: the pin, `claude only`, or `auto`.
+fn route_label(repl: &Repl) -> String {
+    views::prompt_label(repl.engine.pin(), repl.engine.enabled()).unwrap_or_else(|| "auto".to_string())
+}
+
+/// What was sent, as it stays in the scrollback: `› text` with continuation lines indented.
+fn sent_line(text: &str, style: Style) -> String {
+    let body = text.replace('\n', "\n  ");
+    format!("{} {}\n", style.cyan(&style.bold("›")), style.bold(&body))
+}
+
+/// The next key or paste, or `None` while the terminal belongs to a command.
+async fn next_event(events: &mut Option<EventStream>) -> Option<std::io::Result<Event>> {
+    match events {
+        Some(stream) => stream.next().await,
+        None => std::future::pending().await,
+    }
+}
+
+/// The running line, or never.
+async fn finished(task: &mut Option<JoinHandle<Done>>) -> Option<Done> {
+    match task {
+        Some(handle) => {
+            let done = handle.await.ok();
+            *task = None;
+            done
+        }
+        None => std::future::pending().await,
+    }
+}
+
+/// A finished line: the session back, its stop channel back, and what to do next.
+type Done = (Repl, Stops, Flow);
+
+/// Run the interactive session until the person quits. Returns the exit code.
+pub async fn run(repl: Repl, mut rx: mpsc::UnboundedReceiver<FrontMsg>, opts: Options) -> i32 {
+    let style = opts.style;
+    let _modes = match keys_on() {
+        Ok(()) => KeyModes,
+        Err(e) => {
+            repl.console.err(&format!("jev-code: cannot read keys from this terminal: {e}"));
+            return 1;
+        }
+    };
+    let project = repl.engine.dir().to_path_buf();
+    let tracked = lineedit::tracked_files(&project);
+    let mut app = App::new(project, History::load(opts.history.as_deref()), repl.engine.mode(), route_label(&repl), tracked);
+    app.ctx = views::complete_ctx(&repl.engine, log::now_ms());
+
+    let mut screen = Screen::new(std::io::stdout(), style.enabled);
+    let mut events = Some(EventStream::new());
+    let (stop_tx, stop_rx) = mpsc::unbounded_channel();
+    let mut idle: Option<(Repl, Stops)> = Some((repl, Stops(stop_rx)));
+    let mut task: Option<JoinHandle<Done>> = None;
+    let mut mode_picked_during_turn = false;
+    let mut tick = tokio::time::interval(TICK);
+    let mut last_width = width();
+
+    let code = loop {
+        // Idle: catch up with the session, then run the next queued message, if any.
+        if let Some((repl, _)) = idle.as_mut() {
+            repl.engine.runtime.absorb_late();
+            repl.console.flush_notices();
+            if app.mode != repl.engine.mode() {
+                repl.engine.set_mode(app.mode);
+                repl.remember_mode();
+            }
+        }
+        if task.is_none() && !app.suspended {
+            if let Some(line) = app.queue.pop_front() {
+                if let Some(started) = start(&mut idle, &line, style, &mut screen, &app) {
+                    task = Some(started);
+                }
+            }
+        }
+        if !app.suspended {
+            screen.draw(&view::render(&app, width(), Instant::now(), style));
+        }
+
+        let mut actions = tokio::select! {
+            ev = next_event(&mut events) => match ev {
+                Some(Ok(Event::Key(k))) => app.on_key(k, Instant::now()),
+                Some(Ok(Event::Paste(text))) => {
+                    app.on_paste(&text);
+                    Vec::new()
+                }
+                Some(Ok(Event::Resize(w, _))) => {
+                    let w = usize::from(w);
+                    if w < last_width {
+                        screen.resized(w);
+                    }
+                    last_width = w;
+                    Vec::new()
+                }
+                Some(Ok(_)) => Vec::new(),
+                // The terminal went away: end the session.
+                Some(Err(_)) | None => vec![Action::Quit],
+            },
+            msg = rx.recv() => match msg {
+                Some(m) => app.on_front(m),
+                None => Vec::new(),
+            },
+            _ = tick.tick(), if app.needs_ticks() => {
+                app.expire(Instant::now());
+                Vec::new()
+            }
+            done = finished(&mut task) => {
+                match done {
+                    Some((repl, stops, flow)) => {
+                        let flow_code = match flow {
+                            Flow::Continue => None,
+                            Flow::Quit => Some(0),
+                            Flow::Aborted => Some(130),
+                        };
+                        if mode_picked_during_turn {
+                            mode_picked_during_turn = false;
+                        } else {
+                            app.mode = repl.engine.mode();
+                        }
+                        app.route = route_label(&repl);
+                        app.ctx = views::complete_ctx(&repl.engine, log::now_ms());
+                        idle = Some((repl, stops));
+                        if let Some(c) = flow_code {
+                            break c;
+                        }
+                    }
+                    // The line's task panicked: the session is lost with it.
+                    None => break 1,
+                }
+                Vec::new()
+            }
+        };
+        // Everything else the session said meanwhile, in order, before the next redraw.
+        while let Ok(msg) = rx.try_recv() {
+            actions.extend(app.on_front(msg));
+        }
+        let next = carry_out(actions, &mut app, &mut screen, &mut events, &stop_tx, &mut idle, &mut mode_picked_during_turn, style);
+        if let Some(started) = next.start {
+            task = Some(started);
+        }
+        if let Some(c) = next.exit {
+            break c;
+        }
+    };
+
+    // Let the session print what it still has (a save error), then hand the terminal back.
+    while let Ok(FrontMsg::Print(text)) = rx.try_recv() {
+        screen.print_above(&text, &view::Frame { rows: Vec::new(), cursor: None });
+    }
+    screen.erase();
+    drop(events);
+    keys_off();
+    if let Some((mut repl, _)) = idle {
+        if let Err(e) = repl.engine.save_now() {
+            eprintln!("  could not save the session: {e}");
+        }
+    }
+    code
+}
+
+/// What carrying out actions asks of the loop.
+#[derive(Default)]
+struct Next {
+    start: Option<JoinHandle<Done>>,
+    exit: Option<i32>,
+}
+
+/// Start running `line` on its own task, if the session is idle. The line is printed above
+/// first, as it stays in the scrollback.
+fn start(idle: &mut Option<(Repl, Stops)>, line: &str, style: Style, screen: &mut Screen<std::io::Stdout>, app: &App) -> Option<JoinHandle<Done>> {
+    let (mut repl, mut stops) = idle.take()?;
+    screen.print_above(&sent_line(line, style), &view::render(app, width(), Instant::now(), style));
+    let line = line.to_string();
+    Some(tokio::spawn(async move {
+        let mut confirm = CardConfirm(repl.console.front());
+        let flow = {
+            let mut io = Io { interrupt: &mut stops, confirm: Some(&mut confirm) };
+            repl.handle(commands::parse(&line), &mut io).await
+        };
+        (repl, stops, flow)
+    }))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn carry_out(
+    actions: Vec<Action>,
+    app: &mut App,
+    screen: &mut Screen<std::io::Stdout>,
+    events: &mut Option<EventStream>,
+    stop_tx: &mpsc::UnboundedSender<()>,
+    idle: &mut Option<(Repl, Stops)>,
+    mode_picked_during_turn: &mut bool,
+    style: Style,
+) -> Next {
+    let mut next = Next::default();
+    for action in actions {
+        match action {
+            Action::Submit(line) => {
+                if let Some(started) = start(idle, &line, style, screen, app) {
+                    next.start = Some(started);
+                } else {
+                    // A line sent while the session is busy waits for it.
+                    app.queue.push_back(line);
+                }
+            }
+            Action::Stop => {
+                let _ = stop_tx.send(());
+            }
+            Action::Quit => {
+                next.exit = Some(0);
+                return next;
+            }
+            Action::Print(text) => screen.print_above(&text, &view::render(app, width(), Instant::now(), style)),
+            Action::Mode(_) => {
+                if idle.is_none() {
+                    *mode_picked_during_turn = true;
+                }
+            }
+            Action::ClearScreen => {
+                screen.raw("\x1b[H\x1b[2J\x1b[3J");
+                screen.forget();
+            }
+            Action::Bell => screen.raw("\x07"),
+            Action::Suspend(ack) => {
+                screen.erase();
+                // The key reader must let go of stdin before the command reads it.
+                *events = None;
+                keys_off();
+                let _ = ack.send(());
+            }
+            Action::Resume => {
+                if let Err(e) = keys_on() {
+                    eprintln!("jev-code: cannot take the terminal back: {e}");
+                    next.exit = Some(1);
+                    return next;
+                }
+                screen.forget();
+                *events = Some(EventStream::new());
+            }
+        }
+    }
+    next
+}

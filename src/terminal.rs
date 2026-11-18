@@ -20,6 +20,15 @@ pub fn note_cursor_hidden(hidden: bool) {
     CURSOR_HIDDEN.store(hidden, Ordering::SeqCst);
 }
 
+/// Set while the interactive front end has the keyboard in its own modes (bracketed paste,
+/// the keyboard protocol that tells Shift-Enter from Enter), so [`restore`] turns them off.
+static FRONT_KEYS: AtomicBool = AtomicBool::new(false);
+
+/// Record that the front end switched its key modes on (`true`) or off (`false`).
+pub fn note_front_keys(on: bool) {
+    FRONT_KEYS.store(on, Ordering::SeqCst);
+}
+
 #[cfg(unix)]
 static SAVED_TERMIOS: std::sync::OnceLock<libc::termios> = std::sync::OnceLock::new();
 
@@ -53,6 +62,12 @@ impl Drop for TerminalGuard {
 /// nothing to undo.
 pub fn restore() {
     use std::io::Write;
+    if FRONT_KEYS.swap(false, Ordering::SeqCst) {
+        // Pop the keyboard protocol, stop bracketed paste, show the cursor.
+        let mut out = std::io::stdout();
+        let _ = out.write_all(b"\x1b[<u\x1b[?2004l\x1b[?25h");
+        let _ = out.flush();
+    }
     if CURSOR_HIDDEN.swap(false, Ordering::SeqCst) {
         let mut err = std::io::stderr();
         let _ = err.write_all(show_cursor().as_bytes());

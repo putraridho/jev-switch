@@ -7,26 +7,40 @@ use super::text::{one_line, plural};
 use super::width::{clamp_width, display_width, pad_to_width, truncate_to_width};
 use super::wrap::wrap_to_width;
 
-/// The `/help` screen: commands in three groups, each with a line and, where it takes
-/// an argument, an example; then the keys.
-pub fn help_text(style: Style) -> String {
-    let col = COMMANDS.iter().map(|c| display_width(&usage(c))).max().unwrap_or(0) + 2;
-    let mut lines: Vec<String> = vec![style.bold("Commands & shortcuts"), style.dim("Use /command to run an action. Tab completes commands and paths."), String::new()];
-    for (group, title) in [(Group::Model, "Model & routing"), (Group::Session, "Session"), (Group::Context, "Context & output"), (Group::Project, "Project"), (Group::Info, "Info")] {
-        lines.push(style.bold(&style.cyan(title)));
-        for c in COMMANDS.iter().filter(|c| c.group == group) {
-            lines.push(format!("  {}{}", style.cyan(&pad_to_width(&usage(c), col)), c.about));
-            if !c.example.is_empty() {
-                lines.push(format!("  {}{}", " ".repeat(col), style.dim(&format!("e.g. {}", c.example))));
+/// The `/help` screen for `width` columns: the commands in five groups, then the keys. A
+/// description that does not fit wraps at a word, under itself; on a narrow terminal it goes
+/// on the line under its command. No row is ever wider than `width`.
+pub fn help_text(style: Style, width: usize) -> String {
+    let width = width.max(super::MIN_WIDTH);
+    let mut lines: Vec<String> = vec![style.bold("Commands & shortcuts")];
+    lines.extend(super::wrap_to_width("Type / to pick a command from a menu; Tab completes, Enter runs.", width).iter().map(|l| style.dim(l)));
+    lines.push(String::new());
+    let command_col = COMMANDS.iter().map(|c| display_width(&usage(c))).max().unwrap_or(0) + 2;
+    let key_col = KEYS.iter().map(|(k, _)| display_width(k)).max().unwrap_or(0) + 2;
+    let rows = |pairs: Vec<(String, &str)>, col: usize, lines: &mut Vec<String>| {
+        // Side by side while the description keeps 30 columns; else under the command.
+        let side = width >= 2 + col + 30;
+        let (indent, room) = if side { (2 + col, width - 2 - col) } else { (4, width - 4) };
+        for (key, about) in pairs {
+            let wrapped = super::wrap_to_width(about, room);
+            if side {
+                for (i, part) in wrapped.iter().enumerate() {
+                    let lead = if i == 0 { format!("  {}", style.cyan(&pad_to_width(&key, col))) } else { " ".repeat(indent) };
+                    lines.push(format!("{lead}{part}"));
+                }
+            } else {
+                lines.push(truncate_to_width(&format!("  {}", style.cyan(&key)), width));
+                lines.extend(wrapped.iter().map(|part| format!("{}{part}", " ".repeat(indent))));
             }
         }
+    };
+    for (group, title) in [(Group::Model, "Model & routing"), (Group::Session, "Session"), (Group::Context, "Context & output"), (Group::Project, "Project"), (Group::Info, "Info")] {
+        lines.push(style.bold(&style.cyan(title)));
+        rows(COMMANDS.iter().filter(|c| c.group == group).map(|c| (usage(c), c.about)).collect(), command_col, &mut lines);
         lines.push(String::new());
     }
     lines.push(style.bold("Keys"));
-    let key_col = KEYS.iter().map(|(k, _)| display_width(k)).max().unwrap_or(0) + 2;
-    for (k, what) in KEYS {
-        lines.push(format!("  {}{what}", style.cyan(&pad_to_width(k, key_col))));
-    }
+    rows(KEYS.iter().map(|(k, what)| (k.to_string(), *what)).collect(), key_col, &mut lines);
     lines.join("\n")
 }
 
@@ -180,7 +194,7 @@ mod tests {
 
     #[test]
     fn help_lists_every_command_and_key() {
-        let s = help_text(OFF);
+        let s = help_text(OFF, 100);
         no_esc(&s);
         for c in [
             "/help", "/status", "/providers [refresh]", "/doctor", "/model [target]", "/provider auto|off", "/orchestrate [on|off]",
@@ -199,14 +213,29 @@ mod tests {
         assert!(line_of("/model") > at("Model & routing") && line_of("/model") < at("Session"));
         assert!(line_of("/undo") > at("Session") && line_of("/undo") < at("Info"));
         assert!(line_of("/doctor") > at("Info") && line_of("/doctor") < at("Keys"));
-        assert!(s.contains("e.g. /model codex:gpt-6.1-sol"));
-        assert_eq!(strip_ansi(&help_text(ON)), s);
-        assert!(help_text(ON).contains("\x1b[1mKeys\x1b[0m"));
+        assert_eq!(strip_ansi(&help_text(ON, 100)), s);
+        assert!(help_text(ON, 100).contains("\x1b[1mKeys\x1b[0m"));
+    }
+
+    #[test]
+    fn help_fits_every_width_and_never_splits_a_word() {
+        for width in [MIN_WIDTH, 50, 60, 80, 100, 200] {
+            let s = help_text(OFF, width);
+            for line in s.lines() {
+                assert!(crate::uifmt::display_width(line) <= width, "{line:?} at {width}");
+            }
+            if width >= 50 {
+                assert!(s.contains("Summarise the conversation"), "{s}");
+            }
+            assert!(!s.contains("summa\n"), "{s}");
+        }
+        let narrow = help_text(OFF, 50);
+        assert!(narrow.contains("  /permissions [allow|remove|dir <x>]\n    Show or change"), "under the command when narrow: {narrow}");
     }
 
     #[test]
     fn help_columns_align() {
-        let s = help_text(OFF);
+        let s = help_text(OFF, 100);
         let col = s.lines().find(|l| l.trim_start().starts_with("/new")).map(|l| l.find("Start").unwrap()).unwrap();
         let col2 = s.lines().find(|l| l.trim_start().starts_with("/model [target]")).map(|l| l.find("Pin").unwrap()).unwrap();
         assert_eq!(col, col2);

@@ -220,7 +220,7 @@ pub struct Runtime {
 struct LateProbes {
     answers: tokio::sync::mpsc::UnboundedReceiver<Availability>,
     /// Called from `absorb_late`, only for a provider that really became Ready.
-    on_ready: Box<dyn Fn(&Availability) + Send>,
+    on_ready: Box<dyn Fn(&Availability) + Send + Sync>,
 }
 
 impl fmt::Debug for LateProbes {
@@ -407,11 +407,11 @@ impl Runtime {
     /// where the caller holds `&mut self`, so a running turn never sees routing change under it.
     /// `on_ready` runs there too, once per provider that was Unknown and is now Ready: a
     /// late answer a `/providers refresh` already settled is refused, and so is not announced.
-    pub fn retry_slow_probes(&mut self, on_ready: impl Fn(&Availability) + Send + 'static) {
+    pub fn retry_slow_probes(&mut self, on_ready: impl Fn(&Availability) + Send + Sync + 'static) {
         self.retry_slow_probes_with(availability::RETRY_CAP, availability::probe_provider, on_ready);
     }
 
-    fn retry_slow_probes_with<P, Fut>(&mut self, cap: std::time::Duration, probe: P, on_ready: impl Fn(&Availability) + Send + 'static)
+    fn retry_slow_probes_with<P, Fut>(&mut self, cap: std::time::Duration, probe: P, on_ready: impl Fn(&Availability) + Send + Sync + 'static)
     where
         P: Fn(ProviderId) -> Fut + Send + 'static,
         Fut: std::future::Future<Output = Availability> + Send + 'static,

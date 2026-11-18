@@ -173,7 +173,7 @@ pub fn path_candidates(word: &str, project: &Path, tracked: &[String]) -> Vec<Pa
 }
 
 /// The files git tracks in `dir` (empty outside a repository).
-fn tracked_files(dir: &Path) -> Vec<String> {
+pub fn tracked_files(dir: &Path) -> Vec<String> {
     let out = std::process::Command::new("git").args(["ls-files", "-z"]).current_dir(dir).stderr(std::process::Stdio::null()).output();
     match out {
         Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout).split('\0').filter(|s| !s.is_empty()).map(String::from).collect(),

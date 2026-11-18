@@ -2,7 +2,7 @@
 //! REPL's parsing all read.
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-pub(super) enum Group {
+pub enum Group {
     Model,
     Session,
     Context,
@@ -11,19 +11,19 @@ pub(super) enum Group {
 }
 
 /// One slash command: the single table that help, completion and hints all read.
-pub(super) struct Cmd {
-    pub(super) name: &'static str,
+pub struct Cmd {
+    pub name: &'static str,
     /// The argument synopsis shown in `/help`.
-    pub(super) args: &'static str,
-    pub(super) group: Group,
-    pub(super) about: &'static str,
+    pub args: &'static str,
+    pub group: Group,
+    pub about: &'static str,
     /// An example line for `/help`; empty when the bare command says it all.
-    pub(super) example: &'static str,
+    pub example: &'static str,
     /// What the inline hint shows after the command.
-    pub(super) hint: &'static str,
+    pub hint: &'static str,
 }
 
-pub(super) const COMMANDS: [Cmd; 28] = [
+pub const COMMANDS: [Cmd; 28] = [
     Cmd { name: "/model", args: "[target]", group: Group::Model, about: "Pin a model or provider, or `auto` to let the router choose", example: "/model codex:gpt-6.1-sol", hint: "auto|codex|claude:..." },
     Cmd { name: "/provider", args: "auto|off", group: Group::Model, about: "Route across providers (auto), or use Claude only (off)", example: "/provider off", hint: "auto|off" },
     Cmd { name: "/orchestrate", args: "[on|off]", group: Group::Model, about: "Let a planner split a big task across cheaper workers", example: "/orchestrate on", hint: "on|off" },
@@ -55,18 +55,18 @@ pub(super) const COMMANDS: [Cmd; 28] = [
 ];
 
 pub(super) const KEYS: [(&str, &str); 13] = [
-    ("Enter", "send; while a turn runs, queue the message for after it"),
-    ("Alt-Enter, \\ Enter", "new line inside your message (Shift-Enter after /terminal-setup)"),
+    ("Enter", "send; while a turn runs, queue it for after the turn"),
+    ("Shift-Enter", "new line inside your message (also Alt-Enter, Ctrl-J, or \\ then Enter)"),
+    ("/", "open the command menu: ↑↓ choose, Tab complete, Enter run, Esc close"),
+    ("@", "pick a file or folder to point the agent at"),
     ("Esc", "stop the running turn; what you typed is sent right after (queue kept)"),
-    ("Ctrl-C", "stop the running turn and drop the queue; on the prompt, twice to exit"),
-    ("Ctrl-D", "exit (on an empty line)"),
+    ("Ctrl-C", "stop the running turn and drop the queue; on the box, clear it; twice on an empty box to exit"),
+    ("Ctrl-D", "exit (on an empty box)"),
     ("↑ / ↓", "earlier and later messages"),
-    ("Ctrl-R", "search earlier messages"),
+    ("Ctrl-R", "search earlier messages for what is typed"),
     ("Ctrl-L", "clear the screen"),
-    ("Tab", "complete a command, its argument, or an @path"),
     ("Shift-Tab", "cycle the mode: ask, edit, plan, auto"),
     ("!command", "run it in the shell; the output goes with your next message"),
-    ("@path", "point the agent at a file or folder (Tab completes)"),
     ("drop a file", "drag a file or image into the terminal to attach it"),
 ];
 

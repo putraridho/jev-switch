@@ -324,12 +324,17 @@ class World:
 
 
 def alive(pid):
+    """Running and not a zombie. Linux has /proc; elsewhere (macOS) ask ps."""
     try:
         with open(f"/proc/{pid}/stat") as f:
             state = f.read().rsplit(")", 1)[1].split()[0]
+        return state != "Z"
     except FileNotFoundError:
-        return False
-    return state != "Z"
+        if os.path.isdir("/proc/self"):
+            return False
+    r = subprocess.run(["ps", "-o", "stat=", "-p", str(pid)], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
+    state = r.stdout.strip()
+    return bool(state) and not state.startswith("Z")
 
 
 def wait_dead(pid, what, timeout=5):
@@ -344,7 +349,7 @@ def wait_dead(pid, what, timeout=5):
 # --------------------------------------------------------------------- the pty
 
 
-CSI = re.compile(r"\x1b\[([0-9;?]*)([ -/]*[@-~])")
+CSI = re.compile(r"\x1b\[([0-9;?<>=]*)([ -/]*[@-~])")
 
 
 def clean(text):
@@ -398,7 +403,7 @@ class VT:
     leftover fragment stays visible for the assertions. A resize crops rows, like a terminal that
     does not reflow."""
 
-    SEQ = re.compile(r"\x1b\[([0-9;?]*)([ -/]*[@-~])")
+    SEQ = re.compile(r"\x1b\[([0-9;?<>=]*)([ -/]*[@-~])")
 
     def __init__(self, cols):
         self.cols = cols
@@ -468,7 +473,9 @@ class VT:
             self.rows.append([])
 
     def csi(self, params, final):
-        nums = [int(p) if p.isdigit() else 0 for p in params.lstrip("?").split(";")] if params else []
+        nums = [int(p) if p.isdigit() else 0 for p in params.lstrip("?<>=").split(";")] if params else []
+        if params[:1] in ("<", ">", "="):
+            return  # keyboard-protocol and other private requests: nothing on screen
         n = nums[0] if nums and nums[0] else 1
         line = self.rows[self.row]
         if params.startswith("?"):
@@ -569,12 +576,18 @@ class Pty:
                 self.eof = True
 
     def visible(self):
-        return clean(self.raw.decode("utf-8", "replace"))
+        """What the emulated terminal shows, every row since the start (it never scrolls)."""
+        return "\n".join(self.vt.screen())
+
+    def printed(self):
+        """Everything written, escape sequences removed: every redraw of the live area stays
+        in it, so a needle drawn again counts again (`visible` folds redraws together)."""
+        return strip_known_escapes(self.raw.decode("utf-8", "replace"))
 
     def expect(self, needle, timeout=10, what=None):
         deadline = time.time() + timeout
         while True:
-            text = self.visible()
+            text = self.printed()
             seen = text.count(needle)
             if seen > self.counts.get(needle, 0):
                 self.counts[needle] = seen
@@ -590,6 +603,10 @@ class Pty:
 
     def tail(self, n=1500):
         return "    | " + self.visible()[-n:].replace("\n", "\n    | ")
+
+    def screen_tail(self, n=40):
+        """The last rows as the emulated terminal shows them."""
+        return "    | " + "\n    | ".join(self.vt.screen()[-n:])
 
     # -- writing and process state
     def send(self, text):
@@ -616,32 +633,57 @@ class Pty:
         return self.poll() is None
 
     def close(self):
-        if self.poll() is None:
+        # Close our end first: a killed process whose terminal output nobody reads can be held
+        # up draining it (macOS), and the wait would never end.
+        running = self.poll() is None
+        if running:
             try:
                 os.kill(self.pid, signal.SIGKILL)
-                os.waitpid(self.pid, 0)
-            except (ProcessLookupError, ChildProcessError):
-                pass
+            except ProcessLookupError:
+                running = False
         try:
             os.close(self.fd)
         except OSError:
             pass
+        if running:
+            try:
+                os.waitpid(self.pid, 0)
+            except ChildProcessError:
+                pass
+
+
+MODES = ("ask mode", "edit mode", "plan mode", "auto mode")
+
+
+def footer(p):
+    """The last row of the live area: the footer with the mode, or a card's key hint."""
+    rows = [r for r in p.vt.screen() if r.strip()]
+    return rows[-1] if rows else ""
+
+
+def idle_now(p):
+    """The input box is up and no turn runs: the footer names the mode and offers send."""
+    last = footer(p).lstrip()
+    return last.startswith(MODES) and "esc stop" not in last
 
 
 def wait_prompt(p, timeout=15, what="the prompt"):
-    """Wait for a NEW real prompt. While a turn runs, the field under the status line also
-    starts with `› `, but it carries the cursor mark `▏` and the prompt never does."""
+    """Wait for the input box to be back after something happened: new output arrived since
+    this was called (or since the last prompt), no turn is running, and the screen has been
+    quiet for a moment (a turn starts within milliseconds of Enter, so a quiet idle screen
+    is a finished one)."""
     deadline = time.time() + timeout
+    seen = p.counts.get("<prompt>", 0)
+    quiet_since, size = time.time(), len(p.raw)
     while True:
-        text = p.visible()
-        last = text.rstrip("\n").split("\n")[-1].lstrip()
-        seen = text.count("› ")
-        if seen > p.counts.get("› ", 0) and re.match(r"(\[[^\]]*\] )?›", last) and "▏" not in last:
-            p.counts["› "] = seen
-            return text
+        p.pump(0.05)
+        if len(p.raw) != size:
+            quiet_since, size = time.time(), len(p.raw)
+        if size > seen and idle_now(p) and time.time() - quiet_since >= 0.3:
+            p.counts["<prompt>"] = size
+            return p.visible()
         if time.time() >= deadline or (p.eof and p.poll() is not None):
-            raise Fail(f"{what} '› ' within {timeout}s, got:\n{p.tail()}")
-        p.pump(0.1)
+            raise Fail(f"{what} (the input box, idle) within {timeout}s, got:\n{p.screen_tail()}")
 
 
 def prompt_ready(p, timeout=15):
@@ -655,14 +697,9 @@ def ask(p, text, answer=ANSWER, timeout=20):
     wait_prompt(p, timeout, "the next prompt")
 
 
-MODE_HINT = re.compile(r"\s*\[(ask|edit|plan|auto) mode \u00b7 shift-tab to change\]\s*$")
-
-
 def at_empty_prompt(p):
-    # An empty prompt shows the permission mode as a dim hint after it.
-    last = MODE_HINT.sub("", p.visible().rstrip("\n").split("\n")[-1]).strip()
-    # A pinned or Claude-only session labels its prompt: `[claude only] ›`.
-    return re.sub(r"^\[[^\]]*\]\s*", "", last) == "›"
+    """The input box is idle and empty: it shows its placeholder."""
+    return idle_now(p) and any("Ask anything" in r for r in p.vt.screen())
 
 
 def quit_with_ctrl_d(p):
@@ -709,20 +746,26 @@ def expect_no_escapes(label, text):
         raise Fail(f"{label} has escape bytes with colour off:\n{shown[:600]}")
 
 
+def banner_line(p):
+    """The first row on screen: the one-line session header."""
+    rows = [r for r in p.vt.screen() if r.strip()]
+    return rows[0] if rows else ""
+
+
 @scenario
-def banner_is_compact(w):
+def the_banner_is_one_line_naming_the_ready_providers(w):
     p = Pty(w, [w.repo], "banner")
     try:
         prompt_ready(p)
-        before = p.visible().split("› ")[0]
-        lines = [l for l in before.split("\n") if l.strip()]
-        if len(lines) > 6:
-            raise Fail(f"banner should be at most 6 lines, got {len(lines)}:\n{p.tail()}")
-        if not any(re.match(r"\s*jev-code\s+\d+\.\d+\.\d+\S*\s+·\s+routing on", l) for l in lines):
-            raise Fail(f"banner should show the version and routing state:\n{p.tail()}")
-        if not any("claude" in l and "●" in l for l in lines):
-            raise Fail(f"second banner line should show provider glyphs (● claude ...):\n{p.tail()}")
-        if "checking providers" in before.replace("checking providers...", "", 1):
+        rows = [r for r in p.vt.screen() if r.strip()]
+        line = banner_line(p)
+        if not re.match(r"jev-code \d+\.\d+\.\d+\S* · ", line):
+            raise Fail(f"the banner should start with the name and version:\n{p.screen_tail()}")
+        if "claude ready" not in line:
+            raise Fail(f"the banner should name the ready provider in words:\n{p.screen_tail()}")
+        if "╭" not in rows[1]:
+            raise Fail(f"the input box should follow the one banner line:\n{p.screen_tail()}")
+        if "checking providers" in p.visible().replace("checking providers...", "", 1):
             raise Fail("the progress notice must be erased, not left as a banner line")
         quit_with_ctrl_d(p)
     finally:
@@ -730,12 +773,12 @@ def banner_is_compact(w):
 
 
 @scenario
-def a_typed_prompt_runs_a_turn_with_route_tools_answer_and_summary(w):
+def a_typed_prompt_runs_a_turn_with_tools_answer_and_summary(w):
     p = Pty(w, [w.repo], "turn")
     try:
         prompt_ready(p)
         p.send("explain the code quick\r")
-        p.expect("→ claude", 15, "the route line")
+        p.expect("› explain the code quick", 15, "the sent message, kept in the scrollback")
         p.expect("⏺ Read a.txt", 15, "the tool line")
         p.expect(ANSWER, 15, "the answer")
         p.expect("✓ claude", 15, "the turn summary")
@@ -746,6 +789,8 @@ def a_typed_prompt_runs_a_turn_with_route_tools_answer_and_summary(w):
                 raise Fail(f"summary line should contain {part!r}: {line!r}")
         if not re.search(r"· \d+(ms|s)\b", line):
             raise Fail(f"summary line should have the elapsed time: {line!r}")
+        if "→ claude" in summary:
+            raise Fail("the router's reasoning stays behind /why, out of the conversation")
         quit_with_ctrl_d(p)
     finally:
         p.close()
@@ -770,8 +815,8 @@ def status_line_shows_during_a_slow_turn_and_is_erased_after(w):
         if frames < 5:
             raise Fail(f"the status line should be redrawn about every 100 ms (saw {frames} frames in a 3 s turn)")
         last = max(turn.rfind(g) for g in SPINNER)
-        if "\x1b[2K" not in turn[last:]:
-            raise Fail("the status line was not erased (no \\x1b[2K after the last spinner frame)")
+        if "\x1b[J" not in turn[last:]:
+            raise Fail("the status line was not erased (no \\x1b[J after the last spinner frame)")
         if turn.rfind("\x1b[?25h") < turn.find("\x1b[?25l"):
             raise Fail("the cursor was hidden for the status line and never shown again")
         # The line carries the model and what is running.
@@ -811,11 +856,15 @@ def ctrl_c_at_the_prompt_warns_and_a_second_one_exits(w):
     try:
         prompt_ready(p)
         p.send("half typed")
+        p.settle(0.3)
         p.send("\x03")
-        p.expect("press Ctrl-C again", 5, "the exit hint")
-        wait_prompt(p, 5, "a fresh prompt after the first Ctrl-C")
+        p.settle(0.4)
+        if not at_empty_prompt(p):
+            raise Fail(f"Ctrl-C on typed text should clear the box:\n{p.screen_tail()}")
+        p.send("\x03")
+        p.expect("Press Ctrl-C again to exit", 5, "the exit hint")
         if not p.still_running():
-            raise Fail("the first Ctrl-C at the prompt must not exit")
+            raise Fail("Ctrl-C at the prompt must not exit at once")
         p.send("\x03")
         code = p.wait_exit(10)
         if code != 0:
@@ -830,11 +879,11 @@ def ctrl_c_twice_far_apart_does_not_exit(w):
     try:
         prompt_ready(p)
         p.send("\x03")
-        p.expect("press Ctrl-C again", 5, "the exit hint")
-        wait_prompt(p, 5, "a fresh prompt")
-        time.sleep(2.4)
+        p.expect("Press Ctrl-C again to exit", 5, "the exit hint")
+        # Past the 2 s exit window and the 3 s the hint stays up, so a new hint is drawn.
+        p.settle(3.4)
         p.send("\x03")
-        p.expect("press Ctrl-C again", 5, "the hint again, because the window had passed")
+        p.expect("Press Ctrl-C again to exit", 5, "the hint again, because the window had passed")
         if not p.still_running():
             raise Fail("two Ctrl-Cs more than 2 s apart must not exit")
         quit_with_ctrl_d(p)
@@ -903,7 +952,7 @@ def an_unknown_command_suggests_the_closest(w):
         p.expect("Did you mean /providers?", 5, "the suggestion")
         p.expect("/help", 5, "the pointer to /help")
         wait_prompt(p, 5, "the prompt")
-        if "→ claude" in p.visible():
+        if "✓ claude" in p.visible():
             raise Fail("a mistyped command must not be sent to the model")
         quit_with_ctrl_d(p)
     finally:
@@ -944,7 +993,7 @@ def alt_enter_and_paste_make_one_multi_line_message(w):
         p.send("first line\x1b\rexplain quick\r")
         p.expect(ANSWER, 15, "an answer to the two-line message")
         wait_prompt(p, 10, "the prompt")
-        if p.visible().count("→ claude") != 1:
+        if p.visible().count("✓ claude") != 1:
             raise Fail("Alt-Enter should add a line, not send the message")
         before = p.visible().count(ANSWER)
         p.send("\x1b[200~pasted one\nexplain quick two\x1b[201~")
@@ -954,7 +1003,7 @@ def alt_enter_and_paste_make_one_multi_line_message(w):
         p.send("\r")
         p.expect(ANSWER, 15, "an answer to the pasted message")
         wait_prompt(p, 10, "the prompt")
-        if p.visible().count("→ claude") != 2:
+        if p.visible().count("✓ claude") != 2:
             raise Fail("the pasted two lines should be ONE message (one turn)")
         quit_with_ctrl_d(p)
     finally:
@@ -974,8 +1023,9 @@ def diff_and_undo_review_what_a_turn_changed(w):
         p.expect("+hi", 10, "the diff")
         wait_prompt(p, 5, "the prompt")
         p.send("/undo\r")
-        p.expect("Revert 1 file? [y/N]", 10, "the confirmation through the editor")
-        p.send("y\r")
+        p.expect("Revert 1 file?", 10, "the confirmation card")
+        p.settle(0.3)
+        p.send("y")
         p.expect("reverted", 10, "the confirmation of the undo")
         if os.path.exists(os.path.join(w.repo, "new.txt")):
             raise Fail("/undo should have removed the file the turn created")
@@ -1122,7 +1172,14 @@ def piped_stdin_still_works_line_by_line(w):
 
 # ------------------------------------------------------------ tool approvals
 
-QUESTION = "Allow Bash: cargo test --quiet?"
+QUESTION = "Allow Bash?"
+CHOICES = ("1. Yes", "2. Yes, and don't ask again", "3. No, and tell the model what to do instead")
+
+
+def answer_card(p, key):
+    """Press a key at the card once it has been up long enough to be read."""
+    p.settle(0.35)
+    p.send(key)
 
 
 def settings_rules(w):
@@ -1144,14 +1201,15 @@ def a_tool_that_needs_approval_asks_and_y_lets_it_run_once(w):
     try:
         prompt_ready(p)
         p.send("approve it quick\r")
-        shown = p.expect(QUESTION, 15, "the approval question")
-        question = [l for l in shown.split("\n") if QUESTION in l][-1]
-        for part in ("[y]es", "[n]o", "[a]lways in this project"):
-            if part not in question:
-                raise Fail(f"the question should offer {part!r}: {question!r}")
-        if spinner_in(p.visible().split(QUESTION)[-1]):
-            raise Fail("the status line must stay away while the question waits")
-        p.send("y")
+        p.expect(QUESTION, 15, "the approval card")
+        p.expect(CHOICES[2], 5, "the last choice")
+        screen = screen_text(p.vt)
+        for part in ("cargo test --quiet",) + CHOICES:
+            if part not in screen:
+                raise Fail(f"the card should show {part!r}:\n{screen}")
+        if spinner_in(screen.split(QUESTION)[-1]):
+            raise Fail("the working row must stay away while the question waits")
+        answer_card(p, "y")
         p.expect("✓ allowed", 10, "the allowed line")
         p.expect("FAKE ALLOWED", 10, "the answer after approval")
         wait_prompt(p, 10, "the next prompt")
@@ -1178,7 +1236,7 @@ def n_denies_with_a_reason_and_the_turn_goes_on(w):
         prompt_ready(p)
         p.send("approve it quick\r")
         p.expect(QUESTION, 15, "the approval question")
-        p.send("n")
+        answer_card(p, "n")
         p.expect("✗ denied", 10, "the denied line")
         p.expect("FAKE DENIED", 10, "the answer after the denial")
         answer = host_reply(w)["response"]
@@ -1197,7 +1255,7 @@ def always_saves_a_private_rule_and_the_next_turn_does_not_ask_again(w):
         prompt_ready(p)
         p.send("approve it quick\r")
         p.expect(QUESTION, 15, "the approval question")
-        p.send("a")
+        answer_card(p, "2")
         p.expect("always in this project: Bash(cargo test:*)", 10, "the saved-rule line")
         p.expect("FAKE ALLOWED", 10, "the answer after approval")
         wait_prompt(p, 10, "the next prompt")
@@ -1208,7 +1266,7 @@ def always_saves_a_private_rule_and_the_next_turn_does_not_ask_again(w):
             raise Fail(f"the settings file should be private (0600), is {oct(mode)}")
         p.send("approve it quick again\r")
         p.expect("FAKE ALLOWED by rule", 15, "the second turn, answered without a question")
-        if p.visible().count(QUESTION) != 1:
+        if QUESTION in p.printed().split("approve it quick again")[-1]:
             raise Fail(f"the second turn must not ask again:\n{p.tail()}")
         wait_prompt(p, 10, "the next prompt")
         p.send("/permissions\r")
@@ -1224,12 +1282,13 @@ def a_sub_agent_question_shows_the_whole_prompt_before_the_key(w):
     try:
         prompt_ready(p)
         p.send("subagent please\r")
-        shown = p.expect("[y]es", 15, "the sub-agent question")
-        for part in ("Allow Task:", "description=tidy up", "subagent_type=general-purpose", "prompt=Read the code.",
+        p.expect("1. Yes", 15, "the sub-agent question")
+        shown = screen_text(p.vt)
+        for part in ("Allow Task?", "description=tidy up", "subagent_type=general-purpose", "prompt=Read the code.",
                      "Then delete the build folder and push to main."):
             if part not in shown:
-                raise Fail(f"the question should show {part!r}:\n{p.tail()}")
-        p.send("n")
+                raise Fail(f"the question should show {part!r}:\n{shown}")
+        answer_card(p, "n")
         p.expect("✗ denied", 10, "the denied line")
         wait_prompt(p, 10, "the next prompt")
         quit_with_ctrl_d(p)
@@ -1243,14 +1302,13 @@ def a_read_of_a_system_folder_is_never_offered_always(w):
     try:
         prompt_ready(p)
         p.send("broadread please\r")
-        shown = p.expect("[y]es", 15, "the read question")
-        question = shown.split("Allow Read:")[-1]
-        if "[a]lways" in question:
-            raise Fail(f"a read in /etc/ssh must not offer always:\n{p.tail()}")
+        p.expect("1. Yes", 15, "the read question")
         p.expect("too broad or too sensitive to allow for good", 10, "the reason always is missing")
-        p.send("a")
+        if "don't ask again" in screen_text(p.vt).split("Allow Read?")[-1]:
+            raise Fail(f"a read in /etc/ssh must not offer always:\n{screen_text(p.vt)}")
+        answer_card(p, "a")
         time.sleep(0.5)
-        if "✓" in p.visible().split("Allow Read:")[-1]:
+        if "✓" in p.visible().split("Allow Read?")[-1]:
             raise Fail(f"`a` must not answer a question that does not offer it:\n{p.tail()}")
         p.send("y")
         p.expect("✓ allowed", 10, "the allowed line")
@@ -1271,6 +1329,7 @@ def ctrl_c_at_the_question_denies_stops_the_turn_and_leaves_no_process_behind(w)
         p.send("approve it quick\r")
         p.expect(QUESTION, 15, "the approval question")
         cli = w.pid_file("cli.pid")
+        p.settle(0.3)
         p.send("\x03")
         p.expect("stopped", 10, "the `stopped` summary after Ctrl-C")
         wait_prompt(p, 10, "the prompt after the stopped turn")
@@ -1286,21 +1345,27 @@ def ctrl_c_at_the_question_denies_stops_the_turn_and_leaves_no_process_behind(w)
 
 
 @scenario
-def an_arrow_key_or_enter_at_the_question_does_not_answer_it(w):
+def keys_typed_ahead_never_answer_a_card_and_arrows_only_move_the_choice(w):
     p = Pty(w, [w.repo], "approve-keys")
     try:
         prompt_ready(p)
         p.send("approve it quick\r")
         p.expect(QUESTION, 15, "the approval question")
-        # Up arrow is Esc [ A: the `A` must not be read as "always"; Enter and a stray letter say nothing.
-        p.send("\x1b[A")
-        p.send("\rq")
-        p.settle(0.6)
+        # Enter and y the moment the card appears were typed ahead: they must not answer it.
+        p.send("\ry")
+        p.settle(0.5)
         if "✓" in p.visible().split(QUESTION)[-1] or "denied" in p.visible().split(QUESTION)[-1]:
-            raise Fail(f"nothing should have answered the question yet:\n{p.tail()}")
+            raise Fail(f"keys typed ahead must not answer the card:\n{p.tail()}")
+        # Up arrow is Esc [ A: it moves the choice (the `A` is not "always"); a stray letter says nothing.
+        p.send("\x1b[Aq")
+        p.settle(0.4)
+        if "✓" in p.visible().split(QUESTION)[-1] or "denied" in p.visible().split(QUESTION)[-1]:
+            raise Fail(f"an arrow key or a stray letter must not answer:\n{p.tail()}")
+        if "› 3. No" not in screen_text(p.vt):
+            raise Fail(f"↑ from the first choice should select the last:\n{screen_text(p.vt)}")
         if settings_rules(w) is not None:
             raise Fail("an arrow key must not save a rule")
-        p.send("n")
+        p.send("\r")
         p.expect("✗ denied", 10, "the denial once `n` is pressed")
         wait_prompt(p, 10, "the next prompt")
         quit_with_ctrl_d(p)
@@ -1319,50 +1384,40 @@ def local_flags(p):
 
 
 @scenario
-def a_question_the_cli_withdraws_is_erased_and_the_terminal_and_keyboard_are_left_as_they_were(w):
+def a_question_the_cli_withdraws_is_erased_and_the_keyboard_stays_with_the_box(w):
     p = Pty(w, [w.repo], "withdrawn")
     try:
         prompt_ready(p)
         p.send("withdraw it please\r")
         p.expect(QUESTION, 15, "the approval question")
         if screen_text(p.vt).count(QUESTION) != 1:
-            raise Fail(f"the question should be on screen once:\n{p.tail()}")
-        asking = local_flags(p)
-        if asking & (termios.ICANON | termios.ECHO | termios.ISIG):
-            raise Fail("while the question waits the terminal should be raw (no ICANON, ECHO, ISIG)")
+            raise Fail(f"the question should be on screen once:\n{screen_text(p.vt)}")
+        # The screen owns the keyboard the whole session: raw keys, Ctrl-C read as a key.
+        if local_flags(p) & (termios.ICANON | termios.ECHO | termios.ISIG):
+            raise Fail("while the session runs the terminal should be raw (no ICANON, ECHO, ISIG)")
         # Nobody presses a key: a second later the CLI takes the question back.
         p.expect("(the tool call was withdrawn)", 10, "the withdrawal line")
         p.settle(0.3)
         screen = screen_text(p.vt)
-        if QUESTION in screen or "[y]es" in screen:
+        if QUESTION in screen or "1. Yes" in screen:
             raise Fail(f"the withdrawn question should be gone from the screen:\n{screen}")
         if "✓" in screen.split("withdrawn")[-1] or "denied" in screen or "stopped" in screen:
             raise Fail(f"a withdrawn question is not an answer:\n{screen}")
-        # Raw mode is off again: Ctrl-C is a signal. The turn is still running, so keys are read
-        # one at a time for type-ahead (no ICANON), and echo stays off under the status line.
-        now = local_flags(p)
-        if not now & termios.ISIG:
-            raise Fail(f"the terminal was left in raw mode after the withdrawal (lflag {now:#x})")
-        if now & termios.ECHO:
-            raise Fail("echo should be as it was during the turn (off), not switched on early")
-        # A key typed now belongs to the next prompt: no stale reader may take it.
+        # A key typed now goes into the box, not to a stale question.
         p.send("z")
         p.expect("FAKE CARRIED ON", 15, "the turn going on without the answer")
-        wait_prompt(p, 10, "the next prompt")
-        p.settle(0.4)
-        if not p.visible().rstrip("\n").split("\n")[-1].strip().endswith("› z"):
-            raise Fail(f"the key typed after the withdrawal should be waiting at the next prompt:\n{p.tail()}")
+        p.settle(0.5)
         if os.path.exists(os.path.join(w.pids, "reply.json")):
             raise Fail("a withdrawn question must never be answered")
         if settings_rules(w) is not None:
             raise Fail("a withdrawn question must not save a rule")
-        # The prompt works normally: the keys echo, Ctrl-C is a signal again.
+        if "│ › z" not in screen_text(p.vt):
+            raise Fail(f"the key typed after the withdrawal should be in the box:\n{screen_text(p.vt)}")
         p.send("yz")
         p.settle(0.4)
-        if not p.visible().rstrip("\n").split("\n")[-1].strip().endswith("› zyz"):
-            raise Fail(f"typing at the prompt should echo:\n{p.tail()}")
-        p.send("\x03")
-        p.expect("Ctrl-C again", 10, "the Ctrl-C hint at the prompt")
+        if "│ › zyz" not in screen_text(p.vt):
+            raise Fail(f"typing in the box should show:\n{screen_text(p.vt)}")
+        p.send("\x15")  # clear the box
         ask(p, "explain quick")
         quit_with_ctrl_d(p)
     finally:
@@ -1410,47 +1465,34 @@ def wait_for_file(p, path, what, timeout=15):
 
 
 @scenario
-def a_question_withdrawn_while_its_pager_is_open_is_never_shown_and_ctrl_c_there_does_not_stop_the_turn(w):
-    p = Pty(w, [w.repo], "pager-withdrawn", env=w.env(PAGER=w.pager))
+def a_long_command_scrolls_inside_its_card_and_a_withdrawal_takes_the_card_away(w):
+    p = Pty(w, [w.repo], "long-card", env=w.env(PAGER=w.pager))
     try:
         prompt_ready(p)
         p.send("pagewithdraw please\r")
-        wait_for_file(p, os.path.join(w.pids, "pager.open"), "the pager opening")
-        cli = w.pid_file("cli.pid")
-        # No key reader holds the terminal while the pager has it: line mode and signals are on.
-        paging = local_flags(p)
-        if not (paging & termios.ICANON and paging & termios.ISIG):
-            raise Fail(f"the terminal should be the pager's, not in raw mode (lflag {paging:#x})")
-        # Ctrl-C inside the pager belongs to the pager.
-        p.send("\x03")
-        # The engine keeps reading the CLI while the pager is open: the withdrawal arrives and
-        # the turn runs to its end without waiting for the pager.
-        deadline = time.time() + 10
-        while alive(cli):
-            if time.time() >= deadline:
-                raise Fail(f"the CLI should finish while the pager is open:\n{p.tail()}")
+        p.expect("Allow Bash?", 15, "the card of the long command")
+        p.expect("more lines · pgup/pgdn to scroll", 5, "the scroll hint of a long command")
+        if os.path.exists(os.path.join(w.pids, "pager.open")):
+            raise Fail("a long command scrolls in its card: no pager takes the screen")
+        if "line-1" not in screen_text(p.vt):
+            raise Fail(f"the card should start with the first line:\n{screen_text(p.vt)}")
+        # Page down to the end: the whole command can be read before answering.
+        p.settle(0.3)
+        for _ in range(15):
+            p.send("\x1b[6~")
+        deadline = time.time() + 5
+        while "rm -rf ~" not in screen_text(p.vt):
+            if time.time() > deadline:
+                raise Fail(f"paging down should reach the end of the command:\n{screen_text(p.vt)}")
             p.pump(0.05)
-        p.settle(0.5)
-        shown = p.visible().split("pagewithdraw please")[-1]
-        for held in ("withdrawn", "FAKE CARRIED ON", "stopped", "[y]es", "›"):
-            if held in shown:
-                raise Fail(f"nothing may be printed over the pager ({held!r}):\n{p.tail()}")
-        open(os.path.join(w.pids, "pager.close"), "w").close()
-        p.expect("(the tool call was withdrawn)", 10, "the withdrawal line once the pager closed")
-        p.expect("FAKE CARRIED ON", 10, "the answer, held until the pager closed")
+        # The CLI withdraws it: the card goes, the turn carries on, nothing was answered.
+        p.expect("(the tool call was withdrawn)", 10, "the withdrawal line")
+        p.expect("FAKE CARRIED ON", 10, "the turn going on")
         wait_prompt(p, 10, "the next prompt")
-        shown = p.visible().split("pagewithdraw please")[-1]
-        if "[y]es" in shown or "stopped" in shown:
-            raise Fail(f"a question withdrawn while paged is never shown, and the turn was not stopped:\n{p.tail()}")
-        with open(os.path.join(w.pids, "paged.txt")) as f:
-            paged = f.read()
-        if "line-60" not in paged or "rm -rf ~" not in paged:
-            raise Fail(f"the pager should have had the whole command:\n{paged[-300:]}")
+        if "Allow Bash?" in screen_text(p.vt) or "stopped" in p.visible().split("pagewithdraw please")[-1]:
+            raise Fail(f"a withdrawn card is gone and the turn was not stopped:\n{screen_text(p.vt)}")
         if os.path.exists(os.path.join(w.pids, "reply.json")):
             raise Fail("a withdrawn question must never be answered")
-        # The keyboard works at the prompt, and a Ctrl-C there is a signal again.
-        p.send("\x03")
-        p.expect("Ctrl-C again", 10, "the Ctrl-C hint at the prompt")
         ask(p, "explain quick")
         quit_with_ctrl_d(p)
     finally:
@@ -1559,7 +1601,7 @@ def the_permission_mode_carries_over_to_the_next_session(w):
         return p
 
     def hint(p):
-        m = MODE_HINT.search(p.visible().rstrip("\n").split("\n")[-1])
+        m = re.match(r"\s*(ask|edit|plan|auto) mode", footer(p))
         return m.group(1) if m else None
 
     # /mode is kept: the next session starts in it, with no flag.
@@ -1579,6 +1621,7 @@ def the_permission_mode_carries_over_to_the_next_session(w):
             raise Fail(f"the mode set with /mode should carry over:\n{q.tail()}")
         q.send("\x1b[Z")
         q.expect("ask mode", 10, "shift-tab moves to the next mode")
+        q.settle(0.3)
         quit_with_ctrl_d(q)
     finally:
         q.close()
@@ -1610,7 +1653,7 @@ def orchestrate_starts_on_and_it_and_provider_carry_over_to_the_next_session(w):
         return p
 
     def banner_routing(p):
-        return "routing off" if "routing off" in p.visible() else "routing on"
+        return "routing off" if "Claude only" in banner_line(p) else "routing on"
 
     # A first session: orchestration is on, routing is on. Turn both off.
     p = start("flags-1")
@@ -1693,7 +1736,7 @@ def status_width(vt):
 
 
 def strip_known_escapes(raw):
-    return re.sub(r"\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b[78]", "", raw)
+    return re.sub(r"\x1b\[[0-9;?<>=]*[ -/]*[@-~]|\x1b[78]", "", raw)
 
 
 def expect_one_row_status_then_nothing_left(p, label):
@@ -1715,7 +1758,6 @@ def the_status_line_is_one_row_on_a_narrow_terminal_whatever_columns_says(w):
         prompt_ready(p)
         watch_status_rows(p)
         p.send("longcmd please\r")
-        p.expect("→ claude", 15, "the route line")
         p.expect("⏺ Bash", 15, "the tool line")
         p.settle(2.0)
         width = status_width(p.vt)
@@ -1726,7 +1768,8 @@ def the_status_line_is_one_row_on_a_narrow_terminal_whatever_columns_says(w):
         expect_one_row_status_then_nothing_left(p, "narrow")
         # Nothing but known escape sequences was written for the turn: no lone ESC, bell or other control byte.
         raw = p.raw.decode("utf-8", "replace")
-        turn = strip_known_escapes(raw[raw.find("→ claude") : raw.find("✓ claude")])
+        plain = strip_known_escapes(raw)
+        turn = plain[plain.find("longcmd please") : plain.find("✓ claude")]
         stray = sorted({c for c in turn if ord(c) < 0x20 and c not in "\r\n"} | ({"\x7f"} if "\x7f" in turn else set()))
         if stray:
             raise Fail(f"stray control bytes were written during the turn: {[hex(ord(c)) for c in stray]}")
@@ -1771,7 +1814,7 @@ def providers_line(p, name):
     deadline = time.time() + 10
     while True:
         text = p.visible()
-        shown = text[text.rfind("› /providers") :] if "› /providers" in text else ""
+        shown = text[text.rfind("› /providers\n") :] if "› /providers\n" in text else ""
         rows = re.findall(rf"^\s*[●○✕?]\s+{name}\b.*$", shown, re.M)
         if rows:
             return rows[-1]
@@ -1789,9 +1832,8 @@ def a_slow_provider_probe_is_retried_in_the_background_applied_after_the_turn_an
         wait_prompt(p, 20, "the prompt")
         if time.time() - started > 9:
             raise Fail("the banner waited for the slow probe: startup must only wait for the 5 s cap")
-        banner = p.visible().split("› ")[0]
-        if "? codex" not in banner:
-            raise Fail(f"a probe that timed out shows as `? codex` in the banner:\n{banner}")
+        if "codex" in banner_line(p):
+            raise Fail(f"a probe that timed out is not named ready in the banner:\n{banner_line(p)}")
         watch_status_rows(p)
         p.send("please stall forever\r")
         p.expect("⏺ Bash", 15, "the tool line of the stalled turn")
@@ -1824,16 +1866,18 @@ def a_slow_provider_probe_that_finishes_at_the_prompt_is_reported_at_the_next_in
     p = Pty(w, [w.repo], "slow-probe-idle")
     try:
         prompt_ready(p, 20)
-        if "? codex" not in p.visible().split("› ")[0]:
-            raise Fail(f"the banner should show `? codex`:\n{p.tail()}")
-        # Idle at the prompt, the retry finishes ~7 s after the banner. Nothing may be printed
-        # over the line being typed, so the notice waits for the next input.
+        if "codex" in banner_line(p):
+            raise Fail(f"the banner should not name codex ready yet:\n{banner_line(p)}")
+        # Idle at the prompt, the retry finishes ~7 s after the banner. The notice goes above
+        # the input box at the next key, and what is being typed stays as it is.
         p.send("typed ")
         p.settle(9.0)
-        if "ready now" in p.visible():
-            raise Fail(f"the notice landed inside the prompt line:\n{p.tail()}")
-        p.send("\x15\r")  # clear the line, send nothing
-        p.expect("codex is ready now", 10, "the notice at the next input")
+        p.send("x")
+        p.expect("codex is ready now", 10, "the notice at the next key")
+        p.settle(0.3)
+        if "│ › typed x" not in screen_text(p.vt):
+            raise Fail(f"the notice must not disturb what is being typed:\n{screen_text(p.vt)}")
+        p.send("\x15")  # clear the box
         line = providers_line(p, "codex")
         if "● codex" not in line:
             raise Fail(f"/providers should show codex ready (●), got {line!r}:\n{p.tail()}")
@@ -1861,12 +1905,12 @@ def typing_during_a_turn_queues_a_message_that_runs_after_it(w):
     try:
         prompt_ready(p)
         p.send("slow work please\r")
-        p.expect("→ claude", 15, "the route of the slow turn")
+        p.expect("esc to stop", 15, "the working row of the slow turn")
         p.settle(0.3)
         p.send("and then hello")
-        p.expect("and then hello▏", 5, "the typed message at the end of the status line")
+        p.expect("│ › and then hello", 5, "the typed message in the box")
         p.send("\r")
-        p.expect("(queued: after this turn)", 5, "the queued line")
+        p.expect("↳ and then hello (queued)", 5, "the queued message above the box")
         p.expect("✓ claude", 20, "the end of the slow turn")
         p.expect("› and then hello", 10, "the queued message run as the next one")
         p.expect(ANSWER, 20, "the answer to the queued message")
@@ -1877,29 +1921,30 @@ def typing_during_a_turn_queues_a_message_that_runs_after_it(w):
 
 
 @scenario
-def a_field_stays_under_the_status_line_for_the_whole_turn(w):
+def the_input_box_stays_under_the_working_row_for_the_whole_turn(w):
     p = Pty(w, [w.repo], "field")
     try:
         prompt_ready(p)
         p.send("slow work please\r")
-        # Before anything is typed the field is already there, with what it is for.
-        p.expect("type to queue the next message", 15, "the field with its hint")
-        rows = [l for l in p.visible().split("\n") if l.strip()]
-        if "›" not in rows[-1] or "▏" not in rows[-1] or "claude" not in rows[-2] and "routing" not in rows[-2]:
-            raise Fail(f"the field should be the last row, right under the status line:\n{p.tail()}")
-        # It stays while the turn prints lines above it, and shows what is typed.
+        # Before anything is typed the box is there, saying what it is for during a turn.
+        p.expect("Type to queue a message for after this turn", 15, "the box with its turn hint")
+        p.settle(0.2)
+        rows = [r for r in p.vt.screen() if r.strip()]
+        work = [i for i, r in enumerate(rows) if "esc to stop" in r]
+        box = [i for i, r in enumerate(rows) if r.startswith("╭")]
+        if not work or not box or box[-1] != work[-1] + 1:
+            raise Fail(f"the box should sit right under the working row:\n{p.screen_tail()}")
+        if "enter queue · esc stop" not in rows[-1]:
+            raise Fail(f"the footer should say what Enter and Esc do now:\n{p.screen_tail()}")
         p.send("and then hello")
-        p.expect("› and then hello▏", 5, "what is typed in the field")
+        p.expect("│ › and then hello", 5, "what is typed in the box")
         p.send("\r")
-        p.expect("1 queued", 5, "the count of waiting messages in the field")
-        rows = [l for l in p.visible().split("\n") if l.strip()]
-        if "▏" not in rows[-1]:
-            raise Fail(f"the field should still be the last row after a message was queued:\n{p.tail()}")
+        p.expect("↳ and then hello (queued)", 5, "the waiting message above the box")
         p.expect("✓ claude", 20, "the end of the turn")
         p.expect(ANSWER, 20, "the answer to the queued message")
         wait_prompt(p, 10, "the next prompt")
-        if "▏" in p.visible().rstrip().split("\n")[-1]:
-            raise Fail(f"the field must be gone once the turn is over:\n{p.tail()}")
+        if "esc to stop" in screen_text(p.vt):
+            raise Fail(f"the working row must be gone once the turn is over:\n{p.screen_tail()}")
         quit_with_ctrl_d(p)
     finally:
         p.close()
@@ -1911,12 +1956,11 @@ def esc_stops_the_turn_and_sends_what_was_typed_right_after(w):
     try:
         prompt_ready(p)
         p.send("slow work please\r")
-        p.expect("→ claude", 15, "the route of the slow turn")
+        p.expect("esc to stop", 15, "the working row of the slow turn")
         p.settle(0.3)
         p.send("do this now")
-        p.expect("do this now▏", 5, "the typed message on the status line")
+        p.expect("│ › do this now", 5, "the typed message in the box")
         p.send("\x1b")
-        p.expect("(queued: next, after the stop)", 5, "the message sent with Esc")
         p.expect("stopped", 10, "the stopped turn")
         p.expect("› do this now", 10, "the message run at once")
         p.expect(ANSWER, 20, "its answer")
@@ -1933,8 +1977,8 @@ def backslash_enter_adds_a_line_and_bang_runs_a_shell_command(w):
         start = len(p.raw)
         p.send("first line\\\r")
         p.settle(0.6)
-        if "→ claude" in p.raw[start:].decode("utf-8", "replace"):
-            raise Fail(f"backslash then Enter must not send the message:\n{p.tail()}")
+        if "✓ claude" in p.raw[start:].decode("utf-8", "replace") or "│   " not in screen_text(p.vt):
+            raise Fail(f"backslash then Enter must add a line, not send the message:\n{p.screen_tail()}")
         ask(p, "second line")
         p.send("!echo shell-says-hi\r")
         p.expect("shell-says-hi", 10, "the shell output")

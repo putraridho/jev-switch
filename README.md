@@ -262,16 +262,25 @@ jev-code doctor                   # checks the setup, says exactly what to run f
 You need the Jev key and at least one provider that is installed and logged in; you do not
 need all of them. The first time you start with fewer than two providers ready, a short hint
 says what to run; it is shown once per machine (marker file `first-run-done` in the state
-directory) and `/doctor` always has the full story. Start-up is two lines: the project and
-whether routing is on, then each provider as a glyph (`●` ready, `○` not logged in or no key,
-`✕` not installed, `◐` cooling down after a limit, `?` could not tell).
+directory) and `/doctor` always has the full story. Start-up is one line: the version, the
+providers that are ready, named in words (`claude, codex ready`; `no provider ready ·
+/doctor` when none is), `Claude only` when routing is off, and the project folder.
 
 #### Using it
 
-Type a request and press Enter. While a model works there is one live line under the output
-(`⠹ codex · gpt-6.1-sol · 12s · Bash cargo test`); tool calls are listed as they happen; the
-answer follows, then a dim summary (provider, model, time, tokens, plan use, files changed).
-When files changed, `/diff` shows them and `/undo` puts them back.
+Type in the box at the bottom and press Enter. The conversation goes into the terminal's own
+scrollback (scroll, search and copy work as usual); only the area under it is redrawn: a
+working row while a model works (`⠹ codex · gpt-6.1-sol · 12s · Bash cargo test   esc to
+stop`), the input box, and a footer with the permission mode and the routing (`edit mode
+(shift-tab) · auto`). What you sent stays as `› your message`; tool calls are listed as they
+happen; the answer follows, then a dim summary (provider, model, time, tokens, plan use, files
+changed). Why the router picked a model is behind `/why`, not in the conversation. When files
+changed, `/diff` shows them and `/undo` puts them back.
+
+Typing `/` opens a menu of every command with what it does; typing narrows it (`/re` →
+`/resume`, `/review`), ↑/↓ choose, Tab completes, Enter runs, Esc closes. After a command, its
+choices are listed (`/mode ` → ask, edit, plan, auto). `@` opens the same menu over the
+project's files. `JEV_CLASSIC_UI=1` starts the previous line-editor interface instead.
 
 | command                     | what it does                                                                                                                                                                                                       |
 | --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
@@ -307,17 +316,20 @@ A mistyped command (`/provders`) is never sent to the model: it says so and sugg
 
 | key                       | what it does                                                                                                                                                                                                             |
 | ------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| Tab                       | complete a command, or its argument (providers, `provider:model`, changed files for `/diff`), or an `@path` (files of the folder, and tracked files anywhere by name); a faint hint after the cursor shows the arguments |
-| typing during a turn      | what you type shows at the end of the live line; Enter queues it to run after the turn (several can wait, in order); whatever is unfinished comes back into the prompt                                                   |
+| `/`, `@`                  | open the command menu or the file menu (above); Tab completes the selected item, Enter runs it                                                                                                                         |
+| typing during a turn      | the box stays usable; Enter queues the message to run after the turn (queued ones are listed above the box, in order)                                                                                                    |
 | Esc                       | while a turn runs: stop it; a message typed before Esc is sent right after (queued ones keep waiting)                                                                                                                    |
-| Ctrl-C                    | while a turn runs: stop it (the model CLI and everything it started are killed), drop the queue, and carry on; at the prompt: clear the line, press again within 2 s to exit                                             |
-| Ctrl-D                    | exit (on an empty line)                                                                                                                                                                                                  |
-| Alt-Enter, `\` then Enter | a new line inside your message; pasting several lines works too; Shift-Enter after `/terminal-setup`                                                                                                                     |
+| Ctrl-C                    | while a turn runs: stop it (the model CLI and everything it started are killed), drop the queue, and carry on; in the box: clear it; on an empty box, press again within 2 s to exit                                     |
+| Ctrl-D                    | exit (on an empty box)                                                                                                                                                                                                   |
+| Shift-Enter               | a new line inside your message (terminals with the keyboard protocol: kitty, Ghostty, WezTerm, foot, iTerm2; elsewhere after `/terminal-setup`); Alt-Enter, Ctrl-J and `\` then Enter work everywhere; pasting keeps lines |
+| Ctrl-R                    | the next earlier message containing what is typed                                                                                                                                                                         |
+| Shift-Tab                 | cycle the permission mode (ask, edit, plan, auto); a change during a turn applies from the next one                                                                                                                      |
 | drag and drop             | dropping a file or image into the terminal pastes its path; images are sent as images (Claude, Codex) or by path (Gemini, Grok), other files and folders become plain paths the model opens                              |
 | ↑ / ↓                     | earlier messages, kept across runs in `<state dir>/history` (private, 2000 lines)                                                                                                                                        |
 
 Piped input still works (`printf 'explain src/lib.rs\n/quit\n' | jev-code`): one line per
-message, no prompt, no colours, no live line.
+message, no prompt, no colours, no live line. `NO_COLOR=1` keeps the box and menus but draws them
+without colour and without animation.
 
 **One-shot and scripting.** `jev-code -p "what does this repo do?"` runs one turn and prints
 only the answer on stdout; the route, tool calls and summary go to stderr. `jev-code -p -`
@@ -413,9 +425,17 @@ In `ask` and `edit` modes, anything else that needs approval (a command, a read 
 run through Claude Code, which `jev-code` starts with `--input-format stream-json
 --permission-prompt-tool stdio`, so it asks its host instead of denying):
 
-    Allow Bash: cargo test --quiet?  [y]es  [n]o  [a]lways in this project
+    ╭─ Allow Bash? ───────────────────────────────────────╮
+    │ cargo test --quiet                                  │
+    │                                                     │
+    │ › 1. Yes                                            │
+    │   2. Yes, and don't ask again (Bash(cargo test:*))  │
+    │   3. No, and tell the model what to do instead      │
+    ╰─────────────────────────────────────────────────────╯
 
-One key answers. `a` also saves a rule in `<project>/.claude/settings.local.json`
+One key answers: `1`/`y`, `2`/`a`, `3`/`n`/Esc, or ↑/↓ and Enter. Keys pressed in the first
+quarter second after the card appears are ignored, so a message typed ahead cannot approve a
+call you have not seen. A long input scrolls inside the card (PgUp/PgDn). "Don't ask again" also saves a rule in `<project>/.claude/settings.local.json`
 (`Bash(cargo test:*)`, `Read(//abs/dir/**)`, `Edit(//abs/file)`, the rule Claude Code checks
 every file-editing tool against), which Claude Code reads itself, so it does not ask again.
 `a` is offered only for what is safe to remember for good: read-only programs (`ls`, `cat`,
@@ -429,7 +449,7 @@ for a plain project file (never a hidden, settings or credentials file such as
 inside your home folder (not home itself, not a hidden or credentials folder such as
 `~/.ssh`) or inside the temp folder, and nothing is granted through a `HOME` or `TMPDIR`
 that is a system or shared top folder. Otherwise the
-question says why and offers only y/n. The question shows the call exactly as it will run
+card says why and offers only yes and no. The question shows the call exactly as it will run
 (a sub-agent's whole prompt included); only path fields are shown relative to the project.
 Ctrl-C at the question denies it and stops the turn. The
 idle timeout does not run while a question waits. `/permissions` lists the rules (and your

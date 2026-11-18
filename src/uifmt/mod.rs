@@ -45,7 +45,7 @@ mod testutil;
 
 pub use ansi::{clear_line, hide_cursor, restore_cursor, save_cursor, show_cursor, strip_ansi, up_row};
 pub use changes::{changes_block, diff_colorize, relativize_paths, tool_line, FileChange, MAX_CHANGE_ROWS};
-pub use commands::{command_names, command_usage};
+pub use commands::{command_names, command_usage, Cmd, COMMANDS};
 pub use complete::{complete, completion_start, hint, Candidate, CompleteCtx};
 pub use failure::{error_block, failover_note, next_steps_for, no_route_message, problem_block};
 pub use markdown::answer_text;
@@ -85,7 +85,7 @@ mod tests {
         no_esc(&changes_block(&[fc('M', "a", 1, 1)], OFF, 40));
         no_esc(&diff_colorize("+a\n-b\n@@ x\n", OFF));
         no_esc(&tool_line("Edit a", Path::new("/p"), OFF, 40));
-        no_esc(&help_text(OFF));
+        no_esc(&help_text(OFF, 100));
         no_esc(&status_text(&StatusFacts::default(), OFF));
         no_esc(&providers_table(&all_rows, OFF, 80));
         no_esc(&doctor_report(&[item(Severity::Fail, "t", "d", &["c"])], OFF, 80));
@@ -107,7 +107,7 @@ mod tests {
             ),
             (changes_block(&[fc('M', "a", 1, 1)], ON, 40), changes_block(&[fc('M', "a", 1, 1)], OFF, 40)),
             (tool_line("Edit a", Path::new("/p"), ON, 40), tool_line("Edit a", Path::new("/p"), OFF, 40)),
-            (help_text(ON), help_text(OFF)),
+            (help_text(ON, 100), help_text(OFF, 100)),
             (doctor_summary(&[item(Severity::Warn, "t", "", &[])], ON), doctor_summary(&[item(Severity::Warn, "t", "", &[])], OFF)),
             (status_line("m", Duration::from_secs(3), Some("a"), 40, ON), status_line("m", Duration::from_secs(3), Some("a"), 40, OFF)),
         ];

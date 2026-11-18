@@ -106,7 +106,7 @@ impl Repl {
     /// `/edit`: write the message in the editor, then send it.
     pub(super) async fn edit(&mut self, io: &mut Io<'_>) -> Flow {
         let style = self.out_style();
-        match host::compose(self.state_dir.as_deref()) {
+        match self.console.with_terminal(|| host::compose(self.state_dir.as_deref())) {
             Ok(Some(text)) => {
                 let first = text.lines().next().unwrap_or_default();
                 let more = text.lines().count().saturating_sub(1);
@@ -254,7 +254,7 @@ impl Repl {
             "  {}",
             style.dim("Codex reads AGENTS.md, Claude CLAUDE.md, Gemini GEMINI.md; /init writes AGENTS.md and points the others at it.")
         ));
-        match host::edit_file(&dir.join(file)) {
+        match self.console.with_terminal(|| host::edit_file(&dir.join(file))) {
             Ok(()) if dir.join(file).is_file() => self.console.out(&format!("{} {file} saved; every model reads it from the next turn", style.green("✓"))),
             Ok(()) => self.console.out(&format!("  {}", style.dim(&format!("{file} was not created.")))),
             Err(e) => self.console.out(&format!("{} {e}", style.yellow("⚠"))),
@@ -392,9 +392,7 @@ impl Repl {
         };
 
         self.console.out(&format!("  {}", style.dim(&format!("Logging in to `{server}` via `{bin} mcp login`..."))));
-        let status = std::process::Command::new(bin)
-            .args(["mcp", "login", server])
-            .status();
+        let status = self.console.with_terminal(|| std::process::Command::new(bin).args(["mcp", "login", server]).status());
 
         match status {
             Ok(s) if s.success() => self.console.out(&format!("{} Signed in to `{server}`.", style.green("✓"))),

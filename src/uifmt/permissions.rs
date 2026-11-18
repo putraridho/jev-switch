@@ -327,7 +327,7 @@ mod tests {
     #[test]
     fn permissions_is_in_the_command_table_help_and_completion() {
         assert!(command_names().contains(&"/permissions"));
-        assert!(help_text(OFF).contains("/permissions"));
+        assert!(help_text(OFF, 100).contains("/permissions"));
         assert_eq!(command_usage("/permissions").as_deref(), Some("/permissions [allow|remove|dir <x>]"));
         let c = complete("/permissions ", &CompleteCtx::default());
         assert_eq!(c.iter().map(|c| c.replacement.as_str()).collect::<Vec<_>>(), ["allow", "remove", "dir", "list"]);

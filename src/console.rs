@@ -18,6 +18,7 @@ use std::task::{Context, Poll};
 use std::time::{Duration, Instant};
 
 use crate::backend::{self, Decision, Event, PermissionRequest};
+use crate::front::{ApprovalAsk, Front, FrontMsg};
 use crate::lineedit::{self, AnswerKey};
 use crate::permissions::{self, Offer, Review, Settled};
 use crate::terminal::{self, Screen, StdScreen};
@@ -196,6 +197,9 @@ struct Inner {
     type_ahead: bool,
     /// Messages typed during a turn, to run when it is over (oldest first).
     queued: std::collections::VecDeque<String>,
+    /// The interactive front end, when one owns the screen: everything goes to it as a
+    /// message and nothing is drawn here.
+    front: Option<Front>,
 }
 
 /// The terminal output. Cheap to clone; every clone writes through the same lock.
@@ -232,6 +236,7 @@ impl Console {
             draft: String::new(),
             type_ahead: false,
             queued: std::collections::VecDeque::new(),
+            front: None,
         };
         Self {
             inner: Arc::new(Mutex::new(inner)),
@@ -249,9 +254,34 @@ impl Console {
         self
     }
 
+    /// Hand the screen to an interactive front end ([`crate::tui`]): from now on lines,
+    /// the turn's status and approvals go to it as messages, and it reads the keys.
+    pub fn with_front(self, front: Front) -> Self {
+        self.lock().front = Some(front);
+        self
+    }
+
+    /// The front end, when one is attached.
+    pub fn front(&self) -> Option<Front> {
+        self.lock().front.clone()
+    }
+
+    /// Run `f` with the real terminal: the front end, if any, steps aside meanwhile (an
+    /// editor, a pager or a login prompt needs the whole screen and the keyboard).
+    pub fn with_terminal<T>(&self, f: impl FnOnce() -> T) -> T {
+        match self.front() {
+            Some(front) => front.with_terminal(f),
+            None => f(),
+        }
+    }
+
     /// Ring the terminal bell (a long turn is over), on a live terminal only.
     pub fn bell(&self) {
         let mut g = self.lock();
+        if let Some(front) = &g.front {
+            front.send(FrontMsg::Bell);
+            return;
+        }
         if g.cfg.live {
             let _ = g.err.write_all(b"\x07");
             let _ = g.err.flush();
@@ -330,7 +360,7 @@ impl Console {
     /// Whether a tool approval can be asked here (a key reader is attached). Without one every
     /// question would be denied, so the run should not ask the CLI to send any.
     pub fn can_ask(&self) -> bool {
-        self.keys.is_some()
+        self.keys.is_some() || self.lock().front.is_some()
     }
 
     /// Whether the pager of an approval question is open. A Ctrl-C then belongs to the pager
@@ -444,7 +474,7 @@ impl Console {
     pub fn notify(&self, text: &str) {
         let mut g = self.lock();
         let line = format!("  {}", g.cfg.err_style.dim(text));
-        if g.live.is_some() {
+        if g.live.is_some() || g.front.is_some() {
             g.emit_err(&line);
         } else {
             g.deferred.push(line);
@@ -483,6 +513,10 @@ impl Console {
     /// Clear the screen and its scrollback, on a terminal only.
     pub fn clear_screen(&self) {
         let mut g = self.lock();
+        if let Some(front) = &g.front {
+            front.send(FrontMsg::ClearScreen);
+            return;
+        }
         if g.cfg.out_style.enabled {
             let _ = g.out.write_all(b"\x1b[H\x1b[2J\x1b[3J");
             let _ = g.out.flush();
@@ -589,6 +623,10 @@ impl Inner {
     }
 
     fn emit_err(&mut self, text: &str) {
+        if let Some(front) = &self.front {
+            front.send(FrontMsg::Print(text.strip_suffix('\n').unwrap_or(text).to_string()));
+            return;
+        }
         if let Some(held) = self.held.as_mut() {
             held.push(HeldLine::Err(text.to_string()));
             return;
@@ -604,6 +642,10 @@ impl Inner {
     }
 
     fn emit_out(&mut self, text: &str) {
+        if let Some(front) = &self.front {
+            front.send(FrontMsg::Print(text.strip_suffix('\n').unwrap_or(text).to_string()));
+            return;
+        }
         if let Some(held) = self.held.as_mut() {
             held.push(HeldLine::Out(text.to_string()));
             return;
@@ -621,6 +663,10 @@ impl Inner {
     }
 
     fn begin(&mut self) {
+        if let Some(front) = &self.front {
+            front.send(FrontMsg::TurnStarted);
+            return;
+        }
         if !self.cfg.live {
             return;
         }
@@ -657,9 +703,15 @@ impl Inner {
             let line = self.failover_line(&p, None);
             self.emit_err(&line);
         }
+        if let Some(front) = &self.front {
+            front.send(FrontMsg::TurnEnded);
+        }
     }
 
     fn set_activity(&mut self, text: &str) {
+        if let Some(front) = &self.front {
+            front.send(FrontMsg::Activity(text.to_string()));
+        }
         if let Some(l) = self.live.as_mut() {
             l.activity = Some(text.to_string());
         }
@@ -675,8 +727,15 @@ impl Inner {
             let line = self.failover_line(&p, Some((&f.provider, &f.model)));
             self.emit_err(&line);
         }
+        let label = if f.model.is_empty() { f.provider.clone() } else { format!("{} · {}", f.provider, f.model) };
+        if let Some(front) = &self.front {
+            // The model shows on the working row and the reason behind `/why`: the
+            // transcript is for the conversation, not the router's bookkeeping.
+            front.send(FrontMsg::Label(label));
+            return;
+        }
         if let Some(l) = self.live.as_mut() {
-            l.label = if f.model.is_empty() { f.provider.clone() } else { format!("{} · {}", f.provider, f.model) };
+            l.label = label;
             l.activity = None;
         }
         let line = format!("  {}", uifmt::route_line(f, self.cfg.err_style));
@@ -789,6 +848,12 @@ impl Ui for Console {
     fn permission_withdrawn(&mut self, _req: &PermissionRequest) {
         let mut g = self.lock();
         let Some(rows) = g.asking.take() else { return };
+        if let Some(front) = g.front.clone() {
+            front.send(FrontMsg::ApprovalGone);
+            let line = format!("  {}", g.cfg.err_style.dim(WITHDRAWN));
+            g.emit_err(&line);
+            return;
+        }
         if rows > 0 && g.cfg.err_style.enabled {
             let _ = g.err.write_all(erase_rows_above(rows).as_bytes());
         }
@@ -856,6 +921,9 @@ impl Console {
     /// itself cannot be abandoned: it stays until the person closes it, and the turn waits
     /// for that ([`Console::pager_closed`]) before giving the terminal back.
     fn ask_with_pager(&self, req: &PermissionRequest, offer: &Offer, pager: Pager) -> Answer {
+        if let Some(front) = self.front() {
+            return self.ask_front(&front, req, offer);
+        }
         let Some(keys) = self.keys.clone() else {
             return Box::pin(std::future::ready(Some(Decision::Deny { reason: backend::NO_ONE_TO_ASK.to_string() })));
         };
@@ -920,13 +988,53 @@ impl Console {
     async fn wait_for_key(&self, keys: KeyReader, offered: bool) -> Option<Decision> {
         let key = keys(offered).await;
         self.lock().asking = None;
-        match key {
-            AnswerKey::Yes => Some(Decision::Allow),
-            AnswerKey::Always if offered => Some(Decision::AllowAlways),
-            AnswerKey::Always => Some(Decision::Allow),
-            AnswerKey::No => Some(Decision::Deny { reason: "the user denied this tool call".to_string() }),
-            AnswerKey::Interrupt => None,
-        }
+        decision_for(key, offered)
+    }
+
+    /// The approval path with a front end: the question goes to it as a card, and the card's
+    /// answer comes back on a channel. Dropping the answer (the CLI withdrew the call) closes
+    /// the channel, which the front sees, and [`Ui::permission_withdrawn`] follows.
+    fn ask_front(&self, front: &Front, req: &PermissionRequest, offer: &Offer) -> Answer {
+        let offered = offer.is_ok();
+        let note = match offer {
+            Ok(permissions::Always { folder: Some(dir), .. }) => Some(format!("\"don't ask again\" also lets Claude Code use everything in the folder {}", dir.display())),
+            Ok(_) => None,
+            Err(refusal) => Some(refusal.line()),
+        };
+        let project = {
+            let mut g = self.lock();
+            g.asking = Some(0);
+            g.cfg.project.clone()
+        };
+        let review = permissions::review(&req.tool, &req.input, Some(&project));
+        let (reply, answer) = tokio::sync::oneshot::channel();
+        front.send(FrontMsg::Approval(Box::new(ApprovalAsk {
+            tool: req.tool.clone(),
+            notes: review.notes,
+            lines: review.lines,
+            always: offer.as_ref().ok().map(permissions::Always::label),
+            note,
+            reply,
+        })));
+        let console = self.clone();
+        Box::pin(async move {
+            // A front that went away without answering says no.
+            let key = answer.await.unwrap_or(AnswerKey::No);
+            console.lock().asking = None;
+            decision_for(key, offered)
+        })
+    }
+}
+
+/// What a key at an approval question decides. "Always" counts as a plain yes when nothing
+/// could be saved.
+fn decision_for(key: AnswerKey, offered: bool) -> Option<Decision> {
+    match key {
+        AnswerKey::Yes => Some(Decision::Allow),
+        AnswerKey::Always if offered => Some(Decision::AllowAlways),
+        AnswerKey::Always => Some(Decision::Allow),
+        AnswerKey::No => Some(Decision::Deny { reason: "the user denied this tool call".to_string() }),
+        AnswerKey::Interrupt => None,
     }
 }
 

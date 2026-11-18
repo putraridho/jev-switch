@@ -20,6 +20,8 @@ use jev_router::cli::{self, Action, Args, PromptSource};
 use jev_router::commands;
 use jev_router::console::{Console, ConsoleConfig};
 use jev_router::envfile;
+use jev_router::front::{Front, FrontMsg};
+use jev_router::tui;
 use jev_router::handoff;
 use jev_router::lineedit::{self, Input, InterruptGuard};
 use jev_router::log;
@@ -67,17 +69,21 @@ impl Term {
 }
 
 /// `stream_answers` is false for `-p`, which also never asks: a one-shot run behaves the
-/// same on a terminal and in a pipe. A session on a terminal asks the person about each
-/// tool call that needs approval, with one key press.
-fn console_for(term: &Term, project: &Path, stream_answers: bool) -> Console {
+/// same on a terminal and in a pipe. A session on a terminal hands the screen to the
+/// interactive front end (`front`), which draws everything and asks about each tool call on
+/// a card.
+fn console_for(term: &Term, project: &Path, stream_answers: bool, front: Option<Front>) -> Console {
     let console = Console::stdio(ConsoleConfig {
         out_style: term.out_style,
         err_style: term.err_style,
         width: term.width,
-        live: term.live(),
+        live: term.live() && front.is_none(),
         project: project.to_path_buf(),
         stream_answers,
     });
+    if let Some(front) = front {
+        return console.with_front(front);
+    }
     if term.interactive() && stream_answers {
         let console = console.with_key_reader(jev_router::console::terminal_keys());
         // What is typed during a turn shows on the status line: without one it would be blind.
@@ -90,6 +96,9 @@ fn console_for(term: &Term, project: &Path, stream_answers: bool) -> Console {
         console
     }
 }
+
+/// The front end's end of the channel from the session.
+type FrontRx = tokio::sync::mpsc::UnboundedReceiver<FrontMsg>;
 
 #[tokio::main]
 async fn main() {
@@ -129,11 +138,20 @@ async fn run() -> i32 {
             return 2;
         }
     };
-    let console = console_for(&term, &dir, !matches!(args.action, Action::Print(_)));
+    // A person at a terminal gets the interactive screen; everything else prints plainly.
+    let (front, front_rx) = match args.action {
+        Action::Doctor | Action::Print(_) => (None, None),
+        _ if term.interactive() && std::env::var_os("JEV_CLASSIC_UI").is_none() => {
+            let (front, rx) = Front::channel();
+            (Some(front), Some(rx))
+        }
+        _ => (None, None),
+    };
+    let console = console_for(&term, &dir, !matches!(args.action, Action::Print(_)), front);
     match &args.action {
         Action::Doctor => doctor(&dir, &console).await,
         Action::Print(source) => print_mode(&args, source, &dir, &term, console, state_dir).await,
-        _ => session(&args, &dir, &term, console, state_dir).await,
+        _ => session(&args, &dir, &term, console, state_dir, front_rx).await,
     }
 }
 
@@ -285,7 +303,7 @@ impl Confirm for EditorConfirm<'_> {
     }
 }
 
-async fn session(args: &Args, dir: &Path, term: &Term, console: Console, state_dir: Option<PathBuf>) -> i32 {
+async fn session(args: &Args, dir: &Path, term: &Term, console: Console, state_dir: Option<PathBuf>, front_rx: Option<FrontRx>) -> i32 {
     let router = match jev_client(term.err_style) {
         Ok(ts) => router_for(ts),
         Err(message) => {
@@ -308,6 +326,11 @@ async fn session(args: &Args, dir: &Path, term: &Term, console: Console, state_d
             return 1;
         }
     };
+    if let Some(rx) = front_rx {
+        // The front end saves the session when it ends.
+        let opts = tui::run::Options { style: term.out_style, history: state_dir.as_deref().map(lineedit::history_path) };
+        return tui::run::run(repl, rx, opts).await;
+    }
     let code = if term.interactive() {
         edit_loop(&mut repl, term, &console, state_dir.as_deref(), &mut sigint).await
     } else {
@@ -349,7 +372,9 @@ fn startup(repl: &mut Repl, args: &Args, term: &Term, console: &Console, state_d
         console.out(&views::previous_session_line(&info, now, style));
     }
     if term.interactive() {
-        console.out(&uifmt::truncate_to_width(&style.dim("/help commands  ·  Shift+Tab mode"), width));
+        if repl.console.front().is_none() {
+            console.out(&uifmt::truncate_to_width(&style.dim("/help commands  ·  Shift+Tab mode"), width));
+        }
         if let Some(hint) = views::first_run_hint_once(&repl.engine.runtime.avail, state_dir) {
             for line in hint.lines() {
                 console.out(&style.dim(line));

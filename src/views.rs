@@ -173,16 +173,22 @@ pub fn display_path(dir: &Path, home: Option<&str>) -> String {
     }
 }
 
-/// A compact session header. The long provider table lives behind `/providers`.
+/// The session header, one line: `jev-code 0.1.1 · claude, codex ready · ~/proj`. Providers
+/// are named in words (no symbol to learn); the full table lives behind `/providers`, and
+/// with nothing ready the line says where to look.
 pub fn banner(dir: &Path, home: Option<&str>, routing_on: bool, rows: &[AvailRow], style: Style, width: usize) -> String {
     let width = width.max(uifmt::MIN_WIDTH);
-    let rule = style.dim(&"─".repeat(width.min(56)));
-    let brand = format!("{}  {}", style.bold(&style.cyan("jev-code")), style.dim(env!("CARGO_PKG_VERSION")));
-    let routing = if routing_on { style.green("routing on") } else { style.yellow("routing off (Claude only)") };
-    let project = uifmt::truncate_to_width(&display_path(dir, home), width.saturating_sub(4));
-    let providers = uifmt::truncate_to_width(&uifmt::provider_glyphs(rows, style, width.saturating_sub(2)), width.saturating_sub(2));
-    let heading = uifmt::truncate_to_width(&format!("  {brand}  {}  {routing}", style.dim("·")), width);
-    format!("{rule}\n{heading}\n  {project}\n  {providers}\n{rule}")
+    let ready: Vec<&str> = rows.iter().filter(|r| r.status == ProviderStatus::Ready && r.cooldown.is_none()).map(|r| r.provider.as_str()).collect();
+    let cooling: Vec<&str> = rows.iter().filter(|r| r.status == ProviderStatus::Ready && r.cooldown.is_some()).map(|r| r.provider.as_str()).collect();
+    let mut providers = if ready.is_empty() { style.yellow("no provider ready · /doctor") } else { format!("{} ready", ready.join(", ")) };
+    if !cooling.is_empty() {
+        providers.push_str(&style.dim(&format!(" · {} cooling down", cooling.join(", "))));
+    }
+    let routing = if routing_on { String::new() } else { format!(" {} {}", style.dim("·"), style.yellow("Claude only")) };
+    let brand = format!("{} {}", style.bold(&style.cyan("jev-code")), style.dim(env!("CARGO_PKG_VERSION")));
+    let sep = style.dim("·");
+    // What can run comes before the folder: a long path is what gets cut, never the providers.
+    uifmt::truncate_to_width(&format!("{brand} {sep} {providers}{routing} {sep} {}", display_path(dir, home)), width)
 }
 
 /// "just now", "5m ago", "2h ago", "3d ago".
@@ -456,17 +462,27 @@ mod tests {
     }
 
     #[test]
-    fn the_banner_is_a_compact_session_header() {
+    fn the_banner_is_one_line_naming_the_ready_providers_in_words() {
         let rows = avail_rows(&runtime(), NOW);
+        let ready: Vec<String> = rows.iter().filter(|r| r.status == ProviderStatus::Ready && r.cooldown.is_none()).map(|r| r.provider.clone()).collect();
         let b = banner(Path::new("/home/me/proj"), Some("/home/me"), true, &rows, Style::off(), 100);
         let v = env!("CARGO_PKG_VERSION");
-        assert!(b.contains(&format!("jev-code  {v}  ·  routing on\n  ~/proj\n  ● claude")), "{b}");
+        assert!(b.starts_with(&format!("jev-code {v} · ")) && b.ends_with(" · ~/proj"), "{b}");
+        assert_eq!(b.lines().count(), 1);
+        if ready.is_empty() {
+            assert!(b.contains("no provider ready · /doctor"), "{b}");
+        } else {
+            assert!(b.contains(&format!("{} ready", ready.join(", "))), "{b}");
+        }
+        assert!(!b.contains('●') && !b.contains('✕'), "no symbols to decode: {b}");
         let off = banner(Path::new("/x"), None, false, &rows, Style::off(), 100);
-        assert!(off.contains("routing off (Claude only)\n  /x"), "{off}");
-        assert_eq!(off.lines().count(), 5);
+        assert!(off.ends_with("· Claude only · /x"), "{off}");
+        let none = banner(Path::new("/x"), None, true, &[], Style::off(), 100);
+        assert!(none.contains("no provider ready · /doctor · /x"), "{none}");
+        let long = banner(Path::new(&format!("/{}", "deep/".repeat(40))), None, true, &rows, Style::off(), 60);
+        assert!(long.contains(" ready") || long.contains("no provider ready"), "a long path never hides the providers: {long}");
         let narrow = banner(Path::new("/a/very/long/project/directory"), None, true, &rows, Style::off(), 40);
-        assert!(narrow.contains("routing on"), "{narrow}");
-        assert!(narrow.lines().all(|line| uifmt::display_width(line) <= 40));
+        assert!(uifmt::display_width(&narrow) <= 40, "{narrow}");
     }
 
     #[test]
