@@ -137,14 +137,9 @@ mod tests {
 
     #[test]
     fn completes_slash_commands() {
-        assert_eq!(
-            replacements("/"),
-            vec![
-                "/clear", "/compact", "/config", "/context", "/copy", "/cost", "/diff", "/doctor", "/edit", "/export", "/help", "/init", "/mcp", "/memory", "/mode",
-                "/model", "/new", "/orchestrate", "/permissions", "/provider", "/providers", "/quit", "/rename", "/resume", "/review", "/status", "/terminal-setup",
-                "/undo", "/why"
-            ]
-        );
+        let mut every: Vec<&str> = COMMANDS.iter().map(|c| c.name).collect();
+        every.sort_unstable();
+        assert_eq!(replacements("/"), every);
         assert_eq!(replacements("/mcp "), vec!["list", "login"]);
         assert_eq!(replacements("/terminal-setup "), vec!["install"]);
         assert_eq!(replacements("/mo"), vec!["/mode", "/model"]);

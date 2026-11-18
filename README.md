@@ -368,6 +368,24 @@ bad command line). A one-shot starts a fresh conversation and leaves your saved 
 the terminal bell when it ends (`JEV_BELL=off` to silence it). `jev-code doctor` exits 1 when
 something is a Problem.
 
+**Scripting and automation.** `-p ... --output-format json` prints one JSON object on stdout
+(status, exit_code, answer, message, provider, model, attempts, elapsed_ms, usage, files).
+`-p "..." --every 10m [--times 3]` runs the prompt again on a schedule (an interval such as
+`30s`, `2h`, `1d`, or a quoted five-field cron expression in UTC) until Ctrl-C; a failed run does
+not stop the loop.
+
+**Extending.** Custom commands, skills and recipes are markdown files in `.jev/commands/`,
+`.jev/skills/` and `.jev/recipes/` (or the same folders in `~/.config/jev-code`): `$ARGUMENTS`
+and `$1` fill in, a `## step` heading per turn in a recipe. `/extensions`, `/recipe`, `/hooks`
+list them; hooks (`hooks.json`) run shell commands before and after tool calls and at turn end,
+and a project's own hooks stay off until `/hooks trust`. `jev-code ext list|install|update|remove|pack`
+manages extension folders with a SHA-256 for every file (`jev-extension.json`).
+
+**Settings and profiles.** `~/.config/jev-code/config.env`, `profiles/<name>.env` (chosen with
+`--profile <name>` or `JEV_PROFILE`) and `.jev/config.env` (a few harmless names only) hold
+`KEY=VALUE` settings; the environment wins, keys and tokens are refused there. `/settings` shows
+each value and which file it came from.
+
 **Saved sessions.** Every session has its own file under `<state dir>/sessions/<project>/`
 (`~/.local/state/jev-router`, or `$XDG_STATE_HOME/jev-router`), written after every turn. A new
 session never touches an older one: the last 10 per folder are kept, for 14 days. On start, the

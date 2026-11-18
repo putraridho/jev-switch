@@ -27,6 +27,9 @@ use crate::views;
 use crate::changes::UndoError;
 use crate::sessionlog::{SessionLog, TurnRecord};
 
+mod ext_cmds;
+mod headless;
+pub use headless::sleeper;
 mod session_cmds;
 
 // ------------------------------------------------------------------- interrupts
@@ -324,7 +327,11 @@ impl Repl {
             Command::Diff(path) => self.diff(path.as_deref()),
             Command::Undo => self.undo(io).await,
             Command::Invalid(message) => self.console.out(&format!("{} {message}", style.yellow("⚠"))),
-            Command::Unknown { typed, suggestion } => {
+            Command::Ext(cmd) => return self.ext_command(cmd, io).await,
+            Command::Unknown { typed, args, suggestion } => {
+                if let Some(flow) = self.custom(&typed, &args, io).await {
+                    return flow;
+                }
                 let mut text = format!("{} unknown command {typed}", style.red("✗"));
                 if let Some(s) = suggestion {
                     text.push_str(&format!(". Did you mean {}?", style.cyan(s)));
@@ -407,6 +414,8 @@ impl Repl {
         let facts = views::summary_facts(report, elapsed.as_millis() as u64, &self.engine.runtime);
         let files = report.changes.as_ref().map(views::file_changes).unwrap_or_default();
         self.console.turn_end(&facts, &files);
+        let outcome = if report.status == TurnStatus::Answered { "answered" } else { "failed" };
+        crate::ext::hooks::fire(self.engine.hooks(), crate::ext::hooks::Event::TurnEnd, None, Some(outcome));
         if bell_after(elapsed, crate::envfile::lookup("JEV_BELL").as_deref()) {
             self.console.bell();
         }
@@ -709,7 +718,7 @@ mod tests {
         }
         fn command(&self, req: &TurnRequest) -> TokioCommand {
             let mut c = TokioCommand::new("sh");
-            c.args(["-c", &self.script]).current_dir(&req.dir);
+            c.args(["-c", &self.script]).current_dir(&req.dir).env("FAKE_PROMPT", &req.prompt);
             c
         }
         fn parse_line(&self, line: &str) -> Vec<Event> {
@@ -1018,6 +1027,57 @@ mod tests {
         assert!(!e.contains("the answer"), "the answer is not repeated on stderr: {e}");
     }
 
+    #[tokio::test]
+    async fn json_output_is_one_object_on_stdout_and_progress_stays_on_stderr() {
+        let mut r = rig("oneshot-json", ANSWER);
+        r.repl = Repl::new(
+            r.repl.engine,
+            Console::new(
+                Box::new(r.out.clone()),
+                Box::new(r.err.clone()),
+                ConsoleConfig { out_style: Style::off(), err_style: Style::off(), width: 80, live: false, project: r.dir.clone(), stream_answers: false },
+            ),
+            None,
+            false,
+        );
+        let mut int = Presses { pending: vec![] };
+        let code = r.repl.one_shot_as("change a", crate::headless::OutputFormat::Json, &mut int).await;
+        assert_eq!(code, 0);
+        let out = r.out.text();
+        assert_eq!(out.lines().count(), 1, "{out}");
+        assert!(out.starts_with("{\"status\":\"answered\",\"exit_code\":0,\"answer\":\"the answer\"") && out.contains("\"files\":["), "{out}");
+        assert!(r.err.text().contains("⏺ Edit a.txt"), "{}", r.err.text());
+    }
+
+    #[tokio::test]
+    async fn every_runs_the_prompt_again_until_the_times_are_done() {
+        use crate::schedule::{Repeat, Schedule};
+        let mut r = rig("repeat", ANSWER);
+        r.repl = Repl::new(
+            r.repl.engine,
+            Console::new(
+                Box::new(r.out.clone()),
+                Box::new(r.err.clone()),
+                ConsoleConfig { out_style: Style::off(), err_style: Style::off(), width: 80, live: false, project: r.dir.clone(), stream_answers: false },
+            ),
+            None,
+            false,
+        );
+        let waits = Arc::new(Mutex::new(Vec::new()));
+        let seen = waits.clone();
+        let mut pause: headless::Pause = Box::new(move |d| {
+            seen.lock().unwrap().push(d);
+            Box::pin(async {})
+        });
+        let repeat = Repeat { schedule: Schedule::Every(std::time::Duration::from_secs(600)), times: Some(3) };
+        let mut int = Presses { pending: vec![] };
+        let code = r.repl.repeat_shot("change a", crate::headless::OutputFormat::Json, &repeat, &mut int, &mut pause).await;
+        assert_eq!(code, 0);
+        assert_eq!(r.out.text().lines().count(), 3, "one JSON line per run: {}", r.out.text());
+        assert_eq!(*waits.lock().unwrap(), vec![std::time::Duration::from_secs(600); 2], "it waits between runs, not after the last");
+        assert!(r.err.text().contains("run 2 answered; next in 600s"), "{}", r.err.text());
+    }
+
     /// A prompt through the REPL, routed without Jev (the test router has no server).
     async fn send(r: &mut Rig, line: &str) {
         let mut int = Presses { pending: vec![] };
@@ -1184,5 +1244,51 @@ mod tests {
         run(&mut r, "/permissions allow WebSearch").await;
         assert!(r.out.text().contains("not valid JSON") && r.out.text().contains("left as it is"), "{}", r.out.text());
         assert_eq!(std::fs::read_to_string(r.dir.join(".claude/settings.local.json")).unwrap(), "{ broken");
+    }
+
+    const ECHO_PROMPT: &str = "printf 'FIN:%s\\n' \"$(printf '%s' \"$FAKE_PROMPT\" | tr '\\n' ' ')\"";
+
+    fn write_ext(r: &Rig, rel: &str, text: &str) {
+        let path = r.dir.join(rel);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, text).unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_custom_command_runs_its_prompt_with_the_arguments() {
+        let mut r = rig("custom-cmd", ECHO_PROMPT);
+        write_ext(&r, ".jev/commands/shout.md", "---\ndescription: Shout\n---\nSHOUT about $ARGUMENTS now");
+        assert_eq!(run(&mut r, "/shout the parser").await, Flow::Continue);
+        assert!(r.out.text().contains("SHOUT about the parser now"), "{}", r.out.text());
+        assert_eq!(r.repl.log().turns()[0].prompt, "/shout the parser");
+        // Still an unknown command when no file defines it.
+        r.out.clear();
+        run(&mut r, "/nothing-here").await;
+        assert!(r.out.text().contains("unknown command /nothing-here"), "{}", r.out.text());
+    }
+
+    #[tokio::test]
+    async fn a_recipe_runs_its_steps_in_order_and_lists_with_recipe() {
+        let mut r = rig("recipe", ECHO_PROMPT);
+        write_ext(&r, ".jev/recipes/two.md", "---\ndescription: Two steps\n---\n## First\nstep-one for $1\n## Second\nstep-two");
+        run(&mut r, "/recipe").await;
+        assert!(r.out.text().contains("/two") && r.out.text().contains("2 steps"), "{}", r.out.text());
+        r.out.clear();
+        run(&mut r, "/recipe two alpha").await;
+        let o = r.out.text();
+        assert!(o.contains("step 1/2: First") && o.contains("step-one for alpha") && o.contains("step-two"), "{o}");
+        let turns = r.repl.log().turns();
+        assert_eq!((turns.len(), turns[0].prompt.as_str(), turns[1].prompt.as_str()), (2, "/two alpha [1/2]", "/two alpha [2/2]"));
+        r.out.clear();
+        run(&mut r, "/recipe missing").await;
+        assert!(r.out.text().contains("no recipe named missing"), "{}", r.out.text());
+    }
+
+    #[tokio::test]
+    async fn a_recipe_stops_at_the_first_step_that_fails() {
+        let mut r = rig("recipe-stop", "printf 'FAIL:boom\\n'; exit 1");
+        write_ext(&r, ".jev/recipes/two.md", "## A\none\n## B\ntwo");
+        run(&mut r, "/recipe two").await;
+        assert_eq!(r.repl.log().turns().len(), 1, "the second step was not sent");
     }
 }
