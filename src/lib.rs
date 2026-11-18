@@ -27,6 +27,7 @@ pub mod doctor;
 pub mod effort;
 pub mod envfile;
 pub mod front;
+pub mod gimmicks;
 pub mod handoff;
 pub mod host;
 pub mod lineedit;

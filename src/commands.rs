@@ -94,6 +94,8 @@ pub enum Command {
     TerminalSetup { install: bool },
     /// `!command`: run it in the shell; its output goes with the next message.
     Shell(String),
+    /// `#note`: append a line to the project's AGENTS.md.
+    Note(String),
     /// A slash word that is no command, with the closest real one when there is one. Never
     /// sent to the model: a typo must not cost a turn.
     Unknown { typed: String, suggestion: Option<&'static str> },
@@ -155,6 +157,9 @@ pub fn parse(line: &str) -> Command {
     if let Some(shell) = line.strip_prefix('!') {
         let shell = shell.trim();
         return if shell.is_empty() { invalid("usage: !<command>, e.g. !git status") } else { Command::Shell(shell.to_string()) };
+    }
+    if let crate::gimmicks::shortcuts::Shortcut::Note(note) = crate::gimmicks::shortcuts::parse(line) {
+        return Command::Note(note);
     }
     // The rest of the line after the command word, for commands that take free text.
     let rest = || {
@@ -417,6 +422,8 @@ mod tests {
 
     #[test]
     fn a_bang_runs_a_shell_command() {
+        assert_eq!(parse("# remember x"), Command::Note("remember x".into()));
+        assert_eq!(parse("## Heading"), Command::Prompt("## Heading".into()));
         assert_eq!(parse("!git status"), Command::Shell("git status".into()));
         assert_eq!(parse("  ! ls -la "), Command::Shell("ls -la".into()));
         assert!(matches!(parse("!"), Command::Invalid(m) if m.contains("!git status")));

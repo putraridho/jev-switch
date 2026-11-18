@@ -1204,6 +1204,31 @@ def print_mode_exit_codes(w):
 
 
 @scenario
+def the_answer_has_a_gutter_naming_who_wrote_it_and_it_can_be_turned_off(w):
+    p = Pty(w, [w.repo], "gutter")
+    try:
+        prompt_ready(p)
+        p.send("explain the code quick\r")
+        p.expect("▌ ◆ claude · claude-sonnet-5-5", 15, "the attribution header above the answer")
+        p.expect("▌ " + ANSWER, 15, "the answer behind the gutter")
+        wait_prompt(p, 15, "the next prompt")
+        quit_with_ctrl_d(p)
+    finally:
+        p.close()
+    off = Pty(w, [w.repo], "gutter-off", env=w.env(JEV_CODE_GUTTER="0"))
+    try:
+        prompt_ready(off)
+        off.send("explain the code quick\r")
+        off.expect(ANSWER, 15, "the answer")
+        wait_prompt(off, 15, "the next prompt")
+        if "▌" in off.visible():
+            raise Fail("JEV_CODE_GUTTER=0 should leave the answer without a gutter")
+        quit_with_ctrl_d(off)
+    finally:
+        off.close()
+
+
+@scenario
 def no_color_output_has_no_escape_bytes(w):
     env = w.env(NO_COLOR="1")
     r = run_cli(w, ["-p", "say hi quick", w.repo], env=env)

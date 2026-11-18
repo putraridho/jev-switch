@@ -730,7 +730,15 @@ impl Inner {
     fn flush_text(&mut self, narration: bool) {
         let Some(text) = self.pending_text.take() else { return };
         let (style, width) = (self.cfg.out_style, self.width());
-        let shown = if narration { self.step(uifmt::narration(&text, style, width)) } else { uifmt::answer_block(&uifmt::answer_text(&text, style, width)) };
+        let shown = if narration {
+            self.step(uifmt::narration(&text, style, width))
+        } else if let Some(route) = self.last_route.as_ref().filter(|_| attribution_gutter_enabled()) {
+            // The answer says who wrote it, so a mid-session switch shows at a glance.
+            let laid_out = uifmt::answer_text(&text, style, width.saturating_sub(2));
+            uifmt::ProviderTheme::from_env(style).attributed_answer(&[(route.provider.as_str(), route.model.as_str())], &laid_out)
+        } else {
+            uifmt::answer_block(&uifmt::answer_text(&text, style, width))
+        };
         self.fresh_turn = false;
         self.emit_out(&shown);
     }
@@ -826,8 +834,31 @@ impl Inner {
     }
 }
 
+/// The answer gutter and attribution header are opt-in: `JEV_CODE_GUTTER=1`. Off by default
+/// so existing users' answers (and the PTY scenarios) keep their layout.
+fn attribution_gutter_enabled() -> bool {
+    gutter_setting(std::env::var("JEV_CODE_GUTTER").ok().as_deref())
+}
+
+fn gutter_setting(value: Option<&str>) -> bool {
+    value == Some("1")
+}
+
+#[cfg(test)]
+mod gutter_default_tests {
+    use super::gutter_setting;
+
+    #[test]
+    fn gutter_is_off_unless_asked_for() {
+        assert!(!gutter_setting(None));
+        assert!(!gutter_setting(Some("0")));
+        assert!(gutter_setting(Some("1")));
+    }
+}
+
 /// A plain engine note ("[jev] unavailable ...") as a warning line: the bracketed tag
 /// becomes a prefix (`jev: unavailable ...`).
+
 pub fn note_line(line: &str, style: Style) -> String {
     let line = line.trim();
     let text = match line.strip_prefix('[').and_then(|r| r.split_once("] ")) {

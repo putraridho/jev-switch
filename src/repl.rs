@@ -322,6 +322,7 @@ impl Repl {
             Command::Config => self.page_out(&self.config_text()),
             Command::TerminalSetup { install } => self.terminal_setup(install, io),
             Command::Shell(command) => self.shell(&command),
+            Command::Note(note) => self.note(&note),
             Command::Resume(query) => self.resume(query.as_deref()),
             Command::Rename(name) => self.rename(name.as_deref()),
             Command::Workflows => {

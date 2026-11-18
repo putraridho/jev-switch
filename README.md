@@ -307,6 +307,10 @@ Typing `/` opens a menu of every command with what it does; typing narrows it (`
 `/resume`, `/review`), ↑/↓ choose, Tab completes, Enter runs, Esc closes. After a command, its
 choices are listed (`/mode ` → ask, edit, plan, auto). `@` opens the same menu over the
 project's files. `JEV_CLASSIC_UI=1` starts the previous line-editor interface instead.
+Each answer carries a coloured gutter and a header naming the provider and model that wrote it
+(`JEV_CODE_GUTTER=0` turns it off). Provider look: `JEV_CODE_PALETTE=colorblind` for the
+colour-blind safe accents, `JEV_CODE_THEME_OVERRIDES='claude.accent=#d97706;codex.glyph=*;gemini.badge=agy'`
+to change an accent, glyph or badge; truecolor, 256 and 16-colour terminals are detected.
 
 | command                     | what it does                                                                                                                                                                                                       |
 | --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
