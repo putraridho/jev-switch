@@ -24,13 +24,13 @@ pub fn panel_rows(sections: &[Section], width: usize, style: Style) -> Vec<Strin
     for s in sections.iter().filter(|s| !s.rows.is_empty()) {
         let title = truncate_to_width(&s.title, inner.saturating_sub(2));
         let fill = width.saturating_sub(display_width(&title) + 5);
-        out.push(format!("{}{}{}", style.dim("╭─ "), style.bold(&title), style.dim(&format!(" {}╮", "─".repeat(fill)))));
+        out.push(format!("{}{}{}", style.chrome("╭─ "), style.bold(&title), style.chrome(&format!(" {}╮", "─".repeat(fill)))));
         for r in &s.rows {
             let shown = truncate_to_width(r, inner);
             let pad = " ".repeat(inner - display_width(&shown));
-            out.push(format!("{} {shown}{pad} {}", style.dim("│"), style.dim("│")));
+            out.push(format!("{} {shown}{pad} {}", style.chrome("│"), style.chrome("│")));
         }
-        out.push(style.dim(&format!("╰{}╯", "─".repeat(width.saturating_sub(2)))));
+        out.push(style.chrome(&format!("╰{}╯", "─".repeat(width.saturating_sub(2)))));
     }
     out
 }
@@ -43,7 +43,7 @@ pub fn compose(main: &[String], side: &[String], width: usize, style: Style) -> 
     }
     if width < SPLIT_MIN_WIDTH {
         let mut out: Vec<String> = main.iter().map(|r| truncate_to_width(r, width)).collect();
-        out.push(style.dim(&"─".repeat(width)));
+        out.push(style.chrome(&"─".repeat(width)));
         out.extend(side.iter().map(|r| truncate_to_width(r, width)));
         return out;
     }

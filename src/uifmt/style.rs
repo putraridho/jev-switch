@@ -141,7 +141,20 @@ impl Style {
     /// The accent for structure (markers, the prompt, headings): readable on either
     /// background, where plain cyan washes out on light.
     pub fn accent(&self, s: &str) -> String {
-        self.paint(if light_background() { "38;5;25" } else { "36" }, s)
+        self.paint(if light_background() { "38;5;25" } else { "38;5;110" }, s)
+    }
+    /// Box lines and rules: a quiet grey, so the frame recedes behind the text it holds.
+    pub fn chrome(&self, s: &str) -> String {
+        self.paint(if light_background() { "38;5;250" } else { "38;5;240" }, s)
+    }
+    /// The meter's three states in soft tones (sage, amber, rose) instead of raw ANSI colours.
+    pub fn level(&self, pct: u8, s: &str) -> String {
+        let n = match pct {
+            0..=59 => 108,
+            60..=84 => 179,
+            _ => 167,
+        };
+        self.fg256(n, s)
     }
 }
 
@@ -165,7 +178,7 @@ impl Theme {
             "codex" => s.green(text),
             "gemini" => s.magenta(text),
             "grok" => s.blue(text),
-            "deepseek" => s.accent(text),
+            "deepseek" => s.cyan(text),
             _ => s.bold(text),
         }
     }

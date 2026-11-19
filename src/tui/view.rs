@@ -53,7 +53,7 @@ impl Theme {
         self.0.yellow(s)
     }
     fn border(&self, s: &str) -> String {
-        self.0.dim(s)
+        self.0.chrome(s)
     }
     fn selected(&self, s: &str) -> String {
         self.0.bold(&self.0.accent(s))
@@ -124,7 +124,7 @@ pub fn working_line(work: &super::app::Working, elapsed: std::time::Duration, wi
     let time = if secs >= 60 { format!("{}m{:02}s", secs / 60, secs % 60) } else { format!("{secs}s") };
     let what = doing(work.activity.as_deref());
     let who = if work.label == "thinking" { String::new() } else { format!(" · {}", work.label) };
-    truncate_to_width(&format!("{} {} {}", style.cyan(spinner), style.bold(&what), style.dim(&format!("· {time}{who}"))), width)
+    truncate_to_width(&format!("{} {} {}", style.accent(spinner), style.bold(&what), style.dim(&format!("· {time}{who}"))), width)
 }
 
 /// The most workers listed by name above the box; the rest are counted.
@@ -289,7 +289,7 @@ fn sidebar(app: &App, width: usize, height: usize, style: Style) -> Vec<String> 
     if rows.len() < height {
         let bottom = rows.pop().unwrap_or_default();
         let inner = width.saturating_sub(4);
-        let blank = format!("{} {} {}", style.dim("│"), " ".repeat(inner), style.dim("│"));
+        let blank = format!("{} {} {}", style.chrome("│"), " ".repeat(inner), style.chrome("│"));
         while rows.len() + 1 < height {
             rows.push(blank.clone());
         }
@@ -355,12 +355,8 @@ fn meter(pct: u8, cells: usize, style: Style) -> String {
     let pct = pct.min(100);
     let filled = (usize::from(pct) * cells + 50) / 100;
     let on = "▰".repeat(filled);
-    let on = match pct {
-        0..=59 => style.green(&on),
-        60..=84 => style.yellow(&on),
-        _ => style.red(&on),
-    };
-    format!("{on}{}", style.dim(&"▱".repeat(cells - filled)))
+    let on = style.level(pct, &on);
+    format!("{on}{}", style.chrome(&"▱".repeat(cells - filled)))
 }
 
 /// What the side panel lists: each subscription's plan use as a meter (or its cooldown), how
