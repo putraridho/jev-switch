@@ -77,6 +77,27 @@ impl Interrupt for SigInt {
     }
 }
 
+#[cfg(not(unix))]
+pub struct SigInt;
+
+#[cfg(not(unix))]
+impl SigInt {
+    pub fn install() -> std::io::Result<Self> {
+        Ok(Self)
+    }
+}
+
+#[cfg(not(unix))]
+impl Interrupt for SigInt {
+    fn wait(&mut self) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
+        Box::pin(async {
+            let _ = tokio::signal::ctrl_c().await;
+        })
+    }
+
+    fn drain(&mut self) {}
+}
+
 /// Answers a yes/no question through the terminal.
 pub trait Confirm: Send {
     fn confirm(&mut self, question: &str) -> bool;
