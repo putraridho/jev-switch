@@ -4,6 +4,15 @@ See [docs/changelog-guide.md](docs/changelog-guide.md) for changelog formatting,
 
 ## Unreleased
 
+## 1.7.1
+
+A quieter, more premium look for the terminal UI.
+
+- Box borders and rules use a recessive grey, so the frame steps back behind the text.
+- The accent (prompt, markers, spinner) is a soft steel blue instead of plain cyan on dark terminals.
+- Usage meters use sage, amber and rose instead of raw green, yellow and red.
+- Provider colours are unchanged.
+
 ## 1.7.0
 
 A live answer, and reasoning you can choose to see.
