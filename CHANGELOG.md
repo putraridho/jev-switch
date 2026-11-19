@@ -4,6 +4,10 @@ See [docs/changelog-guide.md](docs/changelog-guide.md) for changelog formatting,
 
 ## Unreleased
 
+## 1.8.0
+
+Delegation that does not waste the planner's time or tokens, and plan usage from the start.
+
 - `delegate` no longer makes the planner sit idle: it returns a task id at once, and the worker runs and is tested in the background while the planner keeps working. A new `wait` tool collects the results, and auto-merges happen there, never while the planner may be editing. `wait` takes optional task ids and a timeout (`0` only checks).
 - Delegated work merges itself when it is proven: when an editing worker finishes, jev runs the project's tests in its worktree, and if they pass and the changes apply cleanly they go into your working tree when the planner collects the result. The planner gets the report and the file list instead of reading the whole diff, which saves tokens on every worker. A new `undo` tool takes one worker's changes back out. With no test command, failing tests, a conflict, or `review: true`, the planner reviews the diff as before. `JEV_AUTO_MERGE=0` turns auto-merge off.
 - Read-only delegated pieces (research, finding code) now run in your project folder in plan mode with no worktree, so they see your uncommitted edits and leave nothing to merge. On Gemini and Grok, whose CLIs do not enforce plan mode, they still get a throwaway worktree.
