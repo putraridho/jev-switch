@@ -8,7 +8,7 @@ Fixes from code review round 4.
   a hash of `.claude/settings.json`; the file (hooks, `env`, helper commands) is loaded only
   while it still matches, so a later `git pull` that changes it waits for `/hooks trust`
   again. Projects trusted by an earlier version load no project settings until `/hooks trust`
-  is run once more. `/hooks` shows everything in the file while it is not trusted (hook commands,
+  is run once more. `/hooks` shows everything in the file while it is not trusted (each hook command with the tools it fires for,
   `env`, permissions, every other key and its value), also when it changed after you trusted it,
   and `/hooks trust` lists what it approved.
 - A project's `.claude/settings.local.json` is no longer trusted as your own when git cannot

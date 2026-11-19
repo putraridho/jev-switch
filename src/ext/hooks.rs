@@ -175,9 +175,9 @@ fn settings_preview(bytes: &[u8]) -> Vec<(String, String)> {
                     };
                     for matcher in list {
                         // Which tools it fires for belongs to the review.
-                        let label = match matcher.get("matcher").and_then(Value::as_str) {
-                            Some(m) => format!("{label}[{m}]"),
-                            None => label.clone(),
+                        let label = match matcher.get("matcher") {
+                            Some(m) => format!("{label}[{}]", m.as_str().map_or_else(|| m.to_string(), str::to_string)),
+                            None => format!("{label}[*]"),
                         };
                         match matcher.get("hooks").and_then(Value::as_array) {
                             Some(hooks) => out.extend(hooks.iter().map(|hook| (label.clone(), hook.get("command").map_or_else(|| hook.to_string(), text)))),
@@ -685,7 +685,9 @@ mod tests {
         let odd = settings_preview(br#"{"hooks":{"Stop":{"command":"odd"},"Pre":[{"command":"direct"}]}}"#);
         assert_eq!(odd.len(), 2, "{odd:?}");
         assert!(odd.iter().all(|(w, v)| w.starts_with("hook ") && (v.contains("odd") || v.contains("direct"))));
-        assert!(has("hook PreToolUse[*]", "touch x"), "{preview:?}");
+        let shapes = settings_preview(br#"{"hooks":{"Pre":[{"matcher":"Bash|Write","hooks":[{"command":"a"}]},{"matcher":["Bash"],"hooks":[{"command":"b"}]},{"hooks":[{"command":"c"}]}]}}"#);
+        let labels: Vec<(&str, &str)> = shapes.iter().map(|(w, v)| (w.as_str(), v.as_str())).collect();
+        assert_eq!(labels, [("hook Pre[Bash|Write]", "a"), ("hook Pre[[\"Bash\"]]", "b"), ("hook Pre[*]", "c")]);
         // Never trusted: nothing is loaded, and the contents are there to read with /hooks.
         let never = Hooks::load(&Places { project: project.clone(), user: Some(user.clone()) });
         assert_eq!(never.untrusted_settings().len(), preview.len());
