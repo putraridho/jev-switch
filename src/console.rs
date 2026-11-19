@@ -28,6 +28,10 @@ use crate::uifmt::{self, FileChange, RouteFacts, Style, SummaryFacts, Theme};
 /// How often the status line is redrawn (the spinner frame changes every 100 ms).
 pub const TICK: Duration = Duration::from_millis(100);
 
+/// Home the cursor, clear the screen, and clear its scrollback: the whole display belongs to
+/// this session. Shared by the startup clear, `/clear`, and Ctrl-L.
+pub const CLEAR_SCREEN: &str = "\x1b[H\x1b[2J\x1b[3J";
+
 /// What the console needs to know about its surroundings.
 #[derive(Debug, Clone)]
 pub struct ConsoleConfig {
@@ -544,7 +548,7 @@ impl Console {
             return;
         }
         if g.cfg.out_style.enabled {
-            let _ = g.out.write_all(b"\x1b[H\x1b[2J\x1b[3J");
+            let _ = g.out.write_all(CLEAR_SCREEN.as_bytes());
             let _ = g.out.flush();
         }
     }

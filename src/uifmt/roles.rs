@@ -223,7 +223,7 @@ pub fn edit_preview(removed: &[String], added: &[String], style: Style, width: u
 
 /// What the model says between tool calls: it is a message to you, so full brightness (the
 /// tool rows around it are the dim ones), indented with them.
-pub fn narration(text: &str, style: Style, width: usize) -> String {
+pub fn narration(text: &str, _style: Style, width: usize) -> String {
     let width = clamp_width(width);
     let mut rows = Vec::new();
     for line in clean_text(text).trim().lines() {

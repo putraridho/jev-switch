@@ -555,6 +555,16 @@ impl App {
             }
             KeyCode::Up => {
                 if !self.editor.up() {
+                    // A message sent during the turn that is still queued comes back before
+                    // history does: ↑ takes the newest one out of the queue. Only into an
+                    // empty box, so a draft is never thrown away for it.
+                    if self.editor.is_empty() {
+                        if let Some(queued) = self.queue.pop_back() {
+                            self.editor.set(&queued);
+                            self.menu = None;
+                            return Vec::new();
+                        }
+                    }
                     if let Some(older) = self.history.older(self.editor.text()) {
                         self.editor.set(&older);
                         self.menu = None;
@@ -839,6 +849,43 @@ mod tests {
         assert_eq!(a.editor.text(), "older message");
         a.on_key(key(KeyCode::Down), Instant::now());
         assert_eq!(a.editor.text(), "draft");
+    }
+
+    #[test]
+    fn up_takes_the_last_queued_message_back_into_the_box() {
+        let mut a = app();
+        a.on_front(FrontMsg::TurnStarted);
+        typed(&mut a, "first");
+        a.on_key(key(KeyCode::Enter), Instant::now());
+        typed(&mut a, "second");
+        a.on_key(key(KeyCode::Enter), Instant::now());
+        assert_eq!(a.queue.iter().cloned().collect::<Vec<_>>(), vec!["first".to_string(), "second".to_string()]);
+
+        a.on_key(key(KeyCode::Up), Instant::now());
+        assert_eq!(a.editor.text(), "second", "↑ pops the newest queued message");
+        assert_eq!(a.queue.iter().cloned().collect::<Vec<_>>(), vec!["first".to_string()]);
+
+        // The box holds that one now; clearing it lets ↑ take the other.
+        a.on_key(with(KeyCode::Char('u'), KeyModifiers::CONTROL), Instant::now());
+        a.on_key(key(KeyCode::Up), Instant::now());
+        assert_eq!(a.editor.text(), "first");
+        assert!(a.queue.is_empty());
+
+        // With nothing queued, ↑ is history again (the messages sent above are in it).
+        a.on_key(with(KeyCode::Char('u'), KeyModifiers::CONTROL), Instant::now());
+        a.on_key(key(KeyCode::Up), Instant::now());
+        assert_eq!(a.editor.text(), "second");
+    }
+
+    #[test]
+    fn a_draft_in_the_box_is_not_thrown_away_for_a_queued_message() {
+        let mut a = app();
+        a.on_front(FrontMsg::TurnStarted);
+        a.queue.push_back("queued".into());
+        typed(&mut a, "draft");
+        a.on_key(key(KeyCode::Up), Instant::now());
+        assert_eq!(a.editor.text(), "older message", "↑ is history while the box has a draft");
+        assert_eq!(a.queue.len(), 1);
     }
 
     #[test]

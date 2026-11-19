@@ -12,13 +12,13 @@
 //!   jev-code -p "prompt"      one turn, only the answer on stdout
 //!   jev-code doctor           check the setup
 
-use std::io::{IsTerminal, Read};
+use std::io::{IsTerminal, Read, Write};
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use jev_router::cli::{self, Action, Args, PromptSource};
 use jev_router::commands;
-use jev_router::console::{Console, ConsoleConfig};
+use jev_router::console::{Console, ConsoleConfig, CLEAR_SCREEN};
 use jev_router::envfile;
 use jev_router::front::{Front, FrontMsg};
 use jev_router::tui;
@@ -415,6 +415,14 @@ impl Confirm for EditorConfirm<'_> {
 }
 
 async fn session(args: &Args, dir: &Path, term: &Term, console: Console, state_dir: Option<PathBuf>, front_rx: Option<FrontRx>) -> i32 {
+    // Start on a clean screen: what the shell showed before is not part of this session. Only
+    // on a person's terminal and only with colour on, the rule the console's own clear follows;
+    // a pipe or `--no-color` must never get escape bytes.
+    if term.interactive() && term.out_style.enabled {
+        let mut out = std::io::stdout();
+        let _ = out.write_all(CLEAR_SCREEN.as_bytes());
+        let _ = out.flush();
+    }
     let mut timeline = Timeline::start(args.trace);
     let router = match timeline.time(Phase::JevClient, || jev_client(term.err_style)) {
         Ok(ts) => router_for(ts),

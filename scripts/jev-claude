@@ -6,6 +6,14 @@ set -euo pipefail
 ADDR="${JEV_GATEWAY_ADDR:-127.0.0.1:18780}"
 STATE="${XDG_STATE_HOME:-$HOME/.local/state}/jev-router"
 mkdir -p "$STATE"
+# Start on a clean screen, right before handing the terminal to Claude Code. Only on a
+# terminal, and never on a dumb one: a piped or dumb run must not get escape codes. This
+# is the same sequence jev-code uses for its own clear (home, screen, scrollback).
+clear_screen() {
+  [ -t 1 ] || return 0
+  case "${TERM:-}" in ""|dumb) return 0 ;; esac
+  printf '\033[H\033[2J\033[3J'
+}
 up() { curl -fsS --max-time 1 "http://$ADDR/healthz" >/dev/null 2>&1; }
 if ! up; then
   JEV_GATEWAY_ADDR="$ADDR" nohup jev-gateway >>"$STATE/gateway.out" 2>&1 &
@@ -36,10 +44,11 @@ if [ -n "${key:-}" ]; then
   mcp=("--mcp-config=$cfg")
 fi
 for a in "$@"; do
-  case "$a" in --model|--model=*) exec claude ${mcp[@]+"${mcp[@]}"} "$@" ;; esac
+  case "$a" in --model|--model=*) clear_screen; exec claude ${mcp[@]+"${mcp[@]}"} "$@" ;; esac
 done
 # Orchestrate mode (off by default; /orchestrate on turns it on for a session).
 MOD="${XDG_DATA_HOME:-$HOME/.local/share}/jev-router/mods/jev-orchestrate"
 plugin=()
 [ -d "$MOD" ] && plugin=(--plugin-dir "$MOD")
+clear_screen
 exec claude ${mcp[@]+"${mcp[@]}"} --model 'jev-code[1m]' ${plugin[@]+"${plugin[@]}"} "$@"

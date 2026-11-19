@@ -48,7 +48,7 @@ pub fn compose(main: &[String], side: &[String], width: usize, style: Style) -> 
         return out;
     }
     let main_w = width - PANEL_WIDTH - 3;
-    let bar = style.dim(" │ ");
+    let bar = "   ";
     (0..main.len().max(side.len()))
         .map(|i| {
             let left = truncate_to_width(main.get(i).map_or("", String::as_str), main_w);
@@ -91,7 +91,7 @@ mod tests {
         let side = panel_rows(&sections(), PANEL_WIDTH, OFF);
         let wide = compose(&main, &side, 120, OFF);
         assert_eq!(wide.len(), 6, "as tall as the panel when that is taller");
-        assert!(wide[0].starts_with("line 0") && wide[0].contains("│ ╭─ Tasks"), "{:?}", wide[0]);
+        assert!(wide[0].starts_with("line 0") && wide[0].contains("   ╭─ Tasks"), "{:?}", wide[0]);
         assert!(wide.iter().all(|r| display_width(r) <= 120));
         let narrow = compose(&main, &side, 60, OFF);
         assert_eq!(narrow.len(), 5 + 1 + side.len());

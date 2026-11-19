@@ -1,3 +1,11 @@
+## Unreleased
+
+- Start on a clean screen: jev-code and jev-claude clear the terminal when an interactive session opens. Pipes, `--no-color` and `-p` runs never get escape bytes.
+- ↑ with an empty box takes the newest queued message out of the queue and back into the box for editing.
+- Your messages are a full-width shaded band; light and dark terminals follow the background.
+- btop-style side panel on 100+ column terminals; live workers listed above the box.
+- Long prompts wrap at spaces; model narration is full brightness; quieter auto-allow lines.
+
 ## 1.4.0
 
 - Queued input during a turn reaches the running turn (inline steering for Claude).

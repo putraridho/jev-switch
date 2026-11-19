@@ -424,7 +424,7 @@ fn carry_out(
                 }
             }
             Action::ClearScreen => {
-                screen.raw("\x1b[H\x1b[2J\x1b[3J");
+                screen.raw(crate::console::CLEAR_SCREEN);
                 screen.forget();
             }
             Action::Bell => screen.raw("\x07"),
