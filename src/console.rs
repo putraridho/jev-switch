@@ -209,6 +209,9 @@ struct Inner {
     tools_waiting: std::collections::VecDeque<String>,
     /// With a front: nothing of this turn printed yet (the first step needs no blank line).
     fresh_turn: bool,
+    /// Where messages typed during the turn go to be added to it ([`Ui::steering`]); a send
+    /// that fails means the turn is over.
+    steer: Option<tokio::sync::mpsc::UnboundedSender<String>>,
 }
 
 /// The terminal output. Cheap to clone; every clone writes through the same lock.
@@ -249,6 +252,7 @@ impl Console {
             pending_text: None,
             tools_waiting: std::collections::VecDeque::new(),
             fresh_turn: true,
+            steer: None,
         };
         Self {
             inner: Arc::new(Mutex::new(inner)),
@@ -329,9 +333,19 @@ impl Console {
         if first {
             g.queued.push_front(message);
         } else {
+            if let Some(tx) = g.steer.as_ref().filter(|_| steerable_text(&message)) {
+                let _ = tx.send(message.clone());
+            }
             g.queued.push_back(message);
         }
         g.emit_err(&line);
+    }
+
+    /// Offer a message typed during the turn to the model as part of it. `false`: the turn
+    /// cannot take it (another provider, or it is over); the message keeps its place in the
+    /// person's queue either way, and the turn reports it ([`Event::Steered`]) once taken.
+    pub fn steer(&self, text: &str) -> bool {
+        steerable_text(text) && self.lock().steer.as_ref().is_some_and(|tx| tx.send(text.to_string()).is_ok())
     }
 
     /// The next queued message, oldest first (one sent with Esc before the rest).
@@ -790,6 +804,15 @@ impl Inner {
                 let text = format!("  {}", style.yellow(&uifmt::strip_ansi(t)));
                 self.emit_err(&text);
             }
+            Event::Steered(text) => {
+                self.flush_text(true);
+                if let Some(front) = &self.front {
+                    front.send(FrontMsg::Steered(text.clone()));
+                }
+                self.fresh_turn = false;
+                let line = steered_line(text, style);
+                self.emit_err(&line);
+            }
             Event::Text(t) if self.cfg.stream_answers => {
                 // Two texts in a row: the first was part of the answer.
                 self.flush_text(false);
@@ -871,6 +894,19 @@ pub fn note_line(line: &str, style: Style) -> String {
     format!("  {} {text}", style.yellow("⚠"))
 }
 
+/// Whether a queued line is a message for the model. A command (`/model`, `!ls`, a custom
+/// `/name`) is run by the session after the turn and is never written into the turn.
+fn steerable_text(text: &str) -> bool {
+    !text.trim_start().starts_with(['/', '!']) && matches!(crate::commands::parse(text), crate::commands::Command::Prompt(_))
+}
+
+/// `↳ message (taken into the running turn)`: a queued message the model has now.
+fn steered_line(text: &str, style: Style) -> String {
+    let shown = text.lines().next().unwrap_or_default();
+    let more = if text.lines().count() > 1 { " …" } else { "" };
+    format!("  {} {}{more} {}", style.cyan("↳"), shown, style.dim("(taken into the running turn)"))
+}
+
 impl Ui for Console {
     fn route(&mut self, line: &str) {
         let mut g = self.lock();
@@ -905,8 +941,26 @@ impl Ui for Console {
                 let text = uifmt::answer_text(t, g.cfg.out_style, g.width());
                 g.emit_out(&format!("{text}\n"));
             }
+            // The model has it: it no longer waits for the next turn.
+            Event::Steered(text) => {
+                if let Some(at) = g.queued.iter().position(|q| q == text) {
+                    g.queued.remove(at);
+                }
+                let line = steered_line(text, g.cfg.err_style);
+                g.emit_err(&line);
+            }
             _ => {}
         }
+    }
+
+    fn steering(&mut self) -> Option<tokio::sync::mpsc::UnboundedReceiver<String>> {
+        let mut g = self.lock();
+        if !(self.type_ahead || g.front.is_some()) {
+            return None;
+        }
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        g.steer = Some(tx);
+        Some(rx)
     }
 
     fn note(&mut self, line: &str) {
@@ -1240,6 +1294,54 @@ mod tests {
     use super::testing::Buf;
     use super::*;
     use crate::backend::{ErrorKind, ProviderId};
+
+    #[test]
+    fn a_front_gets_messages_for_the_turn_and_hears_when_the_model_took_one() {
+        let (mut c, _, _) = console(false, Style::off(), true);
+        assert!(c.steering().is_none(), "no input during a turn: nothing to steer");
+        assert!(!c.steer("hi"));
+        let (front, mut heard) = Front::channel();
+        let mut c = c.with_front(front);
+        let mut turn = c.steering().expect("a front types during the turn");
+        assert!(c.steer("also run clippy"));
+        assert_eq!(turn.try_recv().unwrap(), "also run clippy");
+        c.event(&Event::Steered("also run clippy".into()));
+        let mut steered = None;
+        while let Ok(msg) = heard.try_recv() {
+            if let FrontMsg::Steered(t) = msg {
+                steered = Some(t);
+            }
+        }
+        assert_eq!(steered.as_deref(), Some("also run clippy"));
+        // The turn is over: its receiver is gone, and a message can no longer be offered.
+        drop(turn);
+        assert!(!c.steer("too late"));
+    }
+
+    #[test]
+    fn commands_typed_during_a_turn_are_never_written_into_it() {
+        let (front, _heard) = Front::channel();
+        let (mut c, _, _) = console(false, Style::off(), true);
+        c = c.with_front(front);
+        let mut turn = c.steering().unwrap();
+        for command in ["/clear", "/model sonnet", "!git status", "  /new", "/review-pr 12", "# remember this"] {
+            assert!(!c.steer(command), "{command}");
+        }
+        assert!(turn.try_recv().is_err());
+        assert!(c.steer("also run clippy") && turn.try_recv().is_ok());
+    }
+
+    #[test]
+    fn the_line_editor_queue_drops_a_message_the_model_took() {
+        let (c, _, err) = console(false, Style::off(), true);
+        c.queue_message("first".into(), false);
+        c.queue_message("second".into(), false);
+        let mut c2 = c.clone();
+        c2.event(&Event::Steered("first".into()));
+        assert_eq!(c.queued_len(), 1);
+        assert_eq!(c.take_queued().as_deref(), Some("second"));
+        assert!(err.text().contains("(taken into the running turn)"), "{}", err.text());
+    }
 
     fn console(live: bool, style: Style, stream_answers: bool) -> (Console, Buf, Buf) {
         let (out, err) = (Buf::default(), Buf::default());

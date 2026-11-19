@@ -7,6 +7,11 @@
   ownership" or any other git failure still does.
 - `--every` takes at most 365 days.
 - `ext install` refuses a package file or manifest that is, or sits behind, a symbolic link.
+- **Messages typed during a turn reach the running turn (Claude).** As in Claude Code, a message you
+  queue while Claude works is taken into that turn at its next step instead of waiting for the
+  turn to finish: `↳ message (taken into the running turn)`. A turn that ends first, and the
+  other providers (Codex, Antigravity), keep the old behaviour: it runs as the next turn. The
+  privacy policy and the secret scan apply to it.
 
 - **`jev-claude` attaches the delegate tool.** Claude Code gets the MCP server `jev`
   (`delegate`, `show_diff`, `merge`, `discard`), so it can hand pieces of a task to workers on your

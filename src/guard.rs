@@ -151,6 +151,19 @@ impl Guards {
         out
     }
 
+    /// A message the person typed while a turn runs on `provider`, as it may be added to that
+    /// turn: `None` when the privacy policy does not let this text go to `provider` (it then
+    /// waits as a turn of its own, where routing decides), else with its secrets blanked and
+    /// the audit log told, as for a prompt.
+    pub fn steer_text(&self, root: &Path, text: &str, provider: ProviderId, model: &str, now_ms: u64) -> Option<String> {
+        self.privacy.check(root, text, &[]).permits(provider).then(|| self.outgoing(text, provider, model, now_ms).prompt)
+    }
+
+    /// Whether the privacy policy lets `text` go to `provider` (nothing is audited or changed).
+    pub fn text_permitted(&self, root: &Path, text: &str, provider: ProviderId) -> bool {
+        self.privacy.check(root, text, &[]).permits(provider)
+    }
+
     /// Note in the audit log that the policy kept the prompt from providers.
     pub fn audit_blocked(&self, blocked: &[(ProviderId, String)], now_ms: u64) {
         if let Some(log) = &self.audit {

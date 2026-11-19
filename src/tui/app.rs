@@ -25,6 +25,8 @@ use crate::workstation::vim::{self, Outcome, Vim};
 pub enum Action {
     /// Run this line now (the session is idle).
     Submit(String),
+    /// Offer this queued message to the running turn.
+    Steer(String),
     /// Stop the running turn.
     Stop,
     /// End the program.
@@ -293,6 +295,11 @@ impl App {
             }
             FrontMsg::ClearScreen => return vec![Action::ClearScreen],
             FrontMsg::Bell => return vec![Action::Bell],
+            FrontMsg::Steered(text) => {
+                if let Some(at) = self.queue.iter().position(|q| *q == text) {
+                    self.queue.remove(at);
+                }
+            }
         }
         Vec::new()
     }
@@ -450,8 +457,9 @@ impl App {
         self.suggestion = None;
         self.history.remember(&text);
         if self.working.is_some() {
-            self.queue.push_back(text);
-            return Vec::new();
+            self.queue.push_back(text.clone());
+            // The turn may take it in right away; it stays queued until the model has it.
+            return vec![Action::Steer(text)];
         }
         vec![Action::Submit(text)]
     }
@@ -765,11 +773,24 @@ mod tests {
     }
 
     #[test]
+    fn a_message_the_model_took_into_the_turn_leaves_the_queue() {
+        let mut a = app();
+        a.on_front(FrontMsg::TurnStarted);
+        a.queue.extend(["first".to_string(), "second".to_string()]);
+        a.on_front(FrontMsg::Steered("first".into()));
+        assert_eq!(a.queue.iter().cloned().collect::<Vec<_>>(), vec!["second".to_string()]);
+        // A message nobody queued changes nothing.
+        a.on_front(FrontMsg::Steered("other".into()));
+        assert_eq!(a.queue.len(), 1);
+    }
+
+    #[test]
     fn typing_during_a_turn_queues_and_esc_stops_sending_the_text_first() {
         let mut a = app();
         a.on_front(FrontMsg::TurnStarted);
         typed(&mut a, "later");
-        assert!(a.on_key(key(KeyCode::Enter), Instant::now()).is_empty());
+        // Queued, and offered to the running turn.
+        assert!(matches!(a.on_key(key(KeyCode::Enter), Instant::now()).as_slice(), [Action::Steer(t)] if t == "later"));
         typed(&mut a, "now");
         let out = a.on_key(key(KeyCode::Esc), Instant::now());
         assert!(matches!(out.as_slice(), [Action::Stop]));
