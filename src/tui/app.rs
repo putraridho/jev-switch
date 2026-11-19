@@ -117,6 +117,9 @@ pub struct WorkerChip {
     pub running: bool,
     /// How long ago it started.
     pub age_ms: u64,
+    /// Tool calls made so far, and the latest one.
+    pub tools: usize,
+    pub activity: Option<String>,
 }
 
 /// The working row while a turn runs.

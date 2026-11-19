@@ -151,7 +151,12 @@ fn workers_rows(app: &App, w: usize, style: Style) -> Vec<String> {
             (style.yellow("✓"), style.yellow("ready to review"))
         };
         let who = if wk.model.is_empty() { names.name(&wk.provider) } else { format!("{} {} {}", names.name(&wk.provider), style.dim("·"), wk.model) };
-        rows.push(boxed(&format!("{glyph} {}  {who}   {state}", style.bold(&wk.id)), w, &th));
+        let calls = if wk.running && wk.tools > 0 { style.dim(&format!(" · {} tool calls", wk.tools)) } else { String::new() };
+        rows.push(boxed(&format!("{glyph} {}  {who}   {state}{calls}", style.bold(&wk.id)), w, &th));
+        // What a running worker is doing right now, under it.
+        if let Some(doing) = wk.activity.as_deref().filter(|_| wk.running) {
+            rows.push(boxed(&format!("  {}", th.muted(&format!("⎿ {doing}"))), w, &th));
+        }
     }
     if app.workers.len() > WORKER_ROWS {
         rows.push(boxed(&style.dim(&format!("… and {} more", app.workers.len() - WORKER_ROWS)), w, &th));
@@ -487,12 +492,17 @@ mod tests {
     fn open_workers_are_listed_above_the_box_with_who_and_how_long() {
         use super::super::app::WorkerChip;
         let mut a = app();
-        let chip = |id: &str, running: bool, age_ms: u64| WorkerChip { id: id.into(), provider: "gemini".into(), model: "argon".into(), running, age_ms };
+        let chip = |id: &str, running: bool, age_ms: u64| WorkerChip { id: id.into(), provider: "gemini".into(), model: "argon".into(), running, age_ms, tools: 0, activity: None };
         a.workers = vec![chip("w1", true, 42_000), chip("w2", false, 90_000)];
         let text = screen(&a, 80);
         assert!(text.contains("⇉ Workers · 1 running · 1 to review"), "{text}");
         assert!(text.contains("▶ w1  gemini · argon   running 0:42"), "{text}");
         assert!(text.contains("✓ w2  gemini · argon   ready to review"), "{text}");
+        a.workers[0].tools = 7;
+        a.workers[0].activity = Some("Bash cargo test".into());
+        let text = screen(&a, 80);
+        assert!(text.contains("running 0:42 · 7 tool calls"), "{text}");
+        assert!(text.contains("⎿ Bash cargo test"), "{text}");
         a.workers = (0..6).map(|i| chip(&format!("w{i}"), true, 1000)).collect();
         assert!(screen(&a, 80).contains("… and 2 more"));
         assert!(!screen(&app(), 80).contains("Workers"));

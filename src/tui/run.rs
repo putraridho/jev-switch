@@ -161,7 +161,7 @@ fn worker_chips(state_dir: Option<&std::path::Path>, project: &std::path::Path) 
         .map(|s| crate::delegate::open_workers(s, project))
         .unwrap_or_default()
         .into_iter()
-        .map(|w| super::app::WorkerChip { id: w.worker_id, provider: w.provider, model: w.model, running: w.running, age_ms: now.saturating_sub(w.created_ms) })
+        .map(|w| super::app::WorkerChip { id: w.worker_id, provider: w.provider, model: w.model, running: w.running, age_ms: now.saturating_sub(w.created_ms), tools: w.tools, activity: w.activity })
         .collect()
 }
 

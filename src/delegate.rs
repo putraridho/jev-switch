@@ -645,17 +645,24 @@ pub struct OpenWorker {
     /// Files the planner has seen in full, and files already merged.
     pub shown: usize,
     pub merged: usize,
+    /// Tool calls made so far, and the latest one (`Bash cargo test`).
+    pub tools: usize,
+    pub activity: Option<String>,
 }
 
 /// The open workers of the project `repo`, from the registry in `<state_dir>/workers`,
 /// oldest first. Read only: nothing is adopted, changed or removed.
 pub fn open_workers(state_dir: &Path, repo: &Path) -> Vec<OpenWorker> {
     let key = handoff_key(repo);
-    let mut out: Vec<OpenWorker> = Store { dir: state_dir.join("workers") }
+    let store = Store { dir: state_dir.join("workers") };
+    let mut out: Vec<OpenWorker> = store
         .load()
         .into_iter()
         .filter(|s| handoff_key(&s.repo) == key)
-        .map(|s| OpenWorker { worker_id: s.worker_id, provider: s.provider, model: s.model, created_ms: s.created_ms, running: s.running, shown: s.shown.len(), merged: s.merged.len() })
+        .map(|s| {
+            let (tools, activity) = store.activity(&s.worker_id).map_or((0, None), |(n, a)| (n, Some(a)));
+            OpenWorker { worker_id: s.worker_id, provider: s.provider, model: s.model, created_ms: s.created_ms, running: s.running, shown: s.shown.len(), merged: s.merged.len(), tools, activity }
+        })
         .collect();
     out.sort_by_key(|w| w.created_ms);
     out
@@ -812,6 +819,9 @@ trait Records: Send + Sync {
     fn save(&self, s: &Saved);
     fn remove(&self, id: &str);
     fn load(&self) -> Vec<Saved>;
+    /// The worker just began a tool call (`summary`), the `count`th. Kept beside its record
+    /// so a screen can show what a running worker is doing; nothing depends on it.
+    fn note_activity(&self, _id: &str, _count: usize, _summary: &str) {}
 }
 
 /// One JSON file per worker under `<state dir>/workers`, so two servers sharing a state
@@ -828,6 +838,17 @@ fn plain_id(id: &str) -> bool {
 impl Store {
     fn file(&self, id: &str) -> PathBuf {
         self.dir.join(format!("{id}.json"))
+    }
+
+    fn activity_file(&self, id: &str) -> PathBuf {
+        self.dir.join(format!("{id}.activity"))
+    }
+
+    /// How many tool calls the worker has made and the latest one, if it has made any.
+    fn activity(&self, id: &str) -> Option<(usize, String)> {
+        let text = std::fs::read_to_string(self.activity_file(id)).ok()?;
+        let (count, summary) = text.split_once('\n')?;
+        Some((count.parse().ok()?, summary.to_string()))
     }
 }
 
@@ -846,6 +867,14 @@ impl Records for Store {
     fn remove(&self, id: &str) {
         if plain_id(id) {
             let _ = std::fs::remove_file(self.file(id));
+            let _ = std::fs::remove_file(self.activity_file(id));
+        }
+    }
+
+    fn note_activity(&self, id: &str, count: usize, summary: &str) {
+        if plain_id(id) && self.dir.is_dir() {
+            let one_line: String = summary.split_whitespace().collect::<Vec<_>>().join(" ");
+            let _ = std::fs::write(self.activity_file(id), format!("{count}\n{one_line}"));
         }
     }
 
@@ -1427,12 +1456,17 @@ impl Delegator {
     // ---- delegating
 
     /// Run the worker CLI in its worktree. Plan usage it reports feeds the spreading.
-    async fn run_worker(&self, spec: &'static ModelSpec, dir: &Path, prompt: String) -> (Result<TurnOutcome, TurnError>, Vec<String>) {
+    async fn run_worker(&self, id: &str, spec: &'static ModelSpec, dir: &Path, prompt: String) -> (Result<TurnOutcome, TurnError>, Vec<String>) {
         let backend = (self.backend_factory)(spec.provider);
         let req = TurnRequest { dir: dir.to_path_buf(), model: spec.id.to_string(), prompt, images: vec![], session_id: None, mode: Default::default() };
         let mut tools: Vec<String> = Vec::new();
         let mut on_event = |e: &Event| match e {
-            Event::Tool(summary) => tools.push(summary.clone()),
+            Event::Tool(summary) => {
+                tools.push(summary.clone());
+                if let Some(records) = &self.records {
+                    records.note_activity(id, tools.len(), summary);
+                }
+            }
             Event::Plan(plan) => lock(&self.runtime).note_plan(spec.provider, plan.clone()),
             _ => {}
         };
@@ -1503,7 +1537,7 @@ impl Delegator {
         let started = Instant::now();
         // Secrets are blanked as for any provider, and the audit log notes what was sent.
         let prompt = self.guards.outgoing(&worker_prompt(&req.brief, &req.files), spec.provider, spec.id, (self.now)()).prompt;
-        let (result, tools) = self.run_worker(spec, &path, prompt).await;
+        let (result, tools) = self.run_worker(&id, spec, &path, prompt).await;
         self.update(&id, |w| w.running = false).await;
         let wall_ms = started.elapsed().as_millis() as u64;
         let task = worker_task(signals);
@@ -2734,6 +2768,20 @@ mod tests {
             std::thread::sleep(self.load_delay);
             self.saved.lock().unwrap().values().cloned().collect()
         }
+    }
+
+    #[test]
+    fn a_workers_latest_tool_call_is_kept_beside_its_record_and_goes_with_it() {
+        let state = temp_dir("activity");
+        let store = Store { dir: state.join("workers") };
+        std::fs::create_dir_all(&store.dir).unwrap();
+        assert_eq!(store.activity("w1"), None);
+        store.note_activity("w1", 3, "Bash   cargo\ntest");
+        assert_eq!(store.activity("w1"), Some((3, "Bash cargo test".to_string())));
+        store.note_activity("../evil", 1, "x");
+        assert!(!state.join("evil.activity").exists(), "only plain ids are written");
+        store.remove("w1");
+        assert_eq!(store.activity("w1"), None);
     }
 
     fn record_file(state: &Path, id: &str) -> PathBuf {
