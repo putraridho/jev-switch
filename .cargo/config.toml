@@ -1,0 +1,4 @@
+[env]
+# Many tests wait on git or child processes rather than the CPU; more test threads than
+# cores lets those waits overlap (about 13s -> 9s for the library suite on 12 cores).
+RUST_TEST_THREADS = "24"

@@ -4,6 +4,10 @@ version = "1.4.0"
 edition = "2021"
 description = "A Jev-gated router for Claude Code: a gateway for jev-claude that routes between Claude models, and jev-code, a terminal agent that routes across Claude, Codex, Gemini, Grok and DeepSeek with failover and orchestration."
 
+[lib]
+# There are no doc-tests; skipping the doc-test pass saves a compile on every `cargo test`.
+doctest = false
+
 [dependencies]
 tokio = { version = "1", features = ["time", "macros", "rt-multi-thread", "io-std", "io-util", "process", "sync", "signal"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
@@ -25,18 +29,26 @@ tokio = { version = "1", features = ["net"] }
 [[bin]]
 name = "chat"
 path = "src/bin/chat.rs"
+# No tests of its own: no empty test harness to build on every `cargo test`.
+test = false
 
 [[bin]]
 name = "tune"
 path = "src/bin/tune.rs"
+# No tests of its own: no empty test harness to build on every `cargo test`.
+test = false
 
 [[bin]]
 name = "route"
 path = "src/bin/route.rs"
+# No tests of its own: no empty test harness to build on every `cargo test`.
+test = false
 
 [[bin]]
 name = "code"
 path = "src/bin/code.rs"
+# No tests of its own: no empty test harness to build on every `cargo test`.
+test = false
 
 [[bin]]
 name = "gateway"
@@ -45,6 +57,8 @@ path = "src/bin/gateway.rs"
 [[bin]]
 name = "ask"
 path = "src/bin/ask.rs"
+# No tests of its own: no empty test harness to build on every `cargo test`.
+test = false
 
 [[bin]]
 name = "orch_tune"
@@ -53,3 +67,10 @@ path = "src/bin/orch_tune.rs"
 [[bin]]
 name = "delegate_mcp"
 path = "src/bin/delegate_mcp.rs"
+
+# What `scripts/install.sh` builds for this machine: release speed, but incremental, so
+# reinstalling after a small change recompiles only what changed. Releases use `release`.
+[profile.local]
+inherits = "release"
+incremental = true
+codegen-units = 256

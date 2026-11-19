@@ -13,6 +13,9 @@ See [docs/changelog-guide.md](docs/changelog-guide.md) for changelog formatting,
 - **Turns close with a rule.** The end-of-turn summary is set into a dim rule (`── ✓ claude · 14s ─────`), so where one turn ends and the next prompt begins is plain to see.
 - **Live workers.** With orchestration on, the planner's open workers are listed in a titled box above the input box (`▶ running 0:42 · 7 tool calls`, `✓ ready to review`), refreshed about once a second. Under each running worker is its latest tool call (`⎿ Bash cargo test`), so you can see what a subagent is doing.
 
+### Development
+- **Faster tests and reinstalls.** The library suite runs in about 9s instead of 22s: its slowest test (21s alone) runs its 30 rounds in parallel, and tests use 24 threads (`.cargo/config.toml`), since most wait on git or child processes. `cargo test` no longer builds empty harnesses for binaries without tests or a doc-test pass. `scripts/install.sh` builds the new incremental `local` profile, so a reinstall after a small change takes seconds instead of a full optimised rebuild.
+
 ### Fixes
 - **Long prompts no longer break mid-word.** The input box wraps at spaces; only a word wider than the box is cut.
 - **What the model says between tool calls is readable.** It was dim italic; it is now full brightness, indented with the tool rows. Answers share that margin.

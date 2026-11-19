@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build jev-router in release mode and install jev-code, jev-ask, jev-chat, jev-gateway,
+# Build jev-router (optimised, incremental `local` profile) and install jev-code, jev-ask, jev-chat, jev-gateway,
 # jev-claude and the delegate tool that jev-code's orchestration needs.
 #
 #   scripts/install.sh [dest]        dest defaults to ~/.local/bin
@@ -9,12 +9,14 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 dest="${1:-$HOME/.local/bin}"
-cargo build --release --bin code --bin ask --bin chat --bin gateway --bin delegate_mcp
-install -Dm755 target/release/code "$dest/jev-code"
-install -Dm755 target/release/ask "$dest/jev-ask"
-install -Dm755 target/release/delegate_mcp "$dest/jev-delegate-mcp"
-install -Dm755 target/release/chat "$dest/jev-chat"
-install -Dm755 target/release/gateway "$dest/jev-gateway"
+# The `local` profile is release with incremental builds: a reinstall after a small change
+# takes seconds instead of a full optimised rebuild.
+cargo build --profile local --bin code --bin ask --bin chat --bin gateway --bin delegate_mcp
+install -Dm755 target/local/code "$dest/jev-code"
+install -Dm755 target/local/ask "$dest/jev-ask"
+install -Dm755 target/local/delegate_mcp "$dest/jev-delegate-mcp"
+install -Dm755 target/local/chat "$dest/jev-chat"
+install -Dm755 target/local/gateway "$dest/jev-gateway"
 install -Dm755 scripts/jev-claude "$dest/jev-claude"
 # The orchestrate-mode mod, loaded by jev-claude with --plugin-dir.
 mods="${XDG_DATA_HOME:-$HOME/.local/share}/jev-router/mods"
