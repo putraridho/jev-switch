@@ -4,6 +4,8 @@ See [docs/changelog-guide.md](docs/changelog-guide.md) for changelog formatting,
 
 ## Unreleased
 
+## 1.6.1
+
 - The Router panel and `/providers` now show `agy` next to `gemini` when Antigravity is the CLI running it.
 
 ## 1.6.0
