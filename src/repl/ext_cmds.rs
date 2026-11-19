@@ -56,6 +56,10 @@ impl Repl {
             Ok((newly, approved)) => {
                 let loaded = Hooks::load(places);
                 self.page_out(&view::approved_hooks_text(&approved, style));
+                let settings = view::approved_settings_text(&hooks::claude_settings_preview(&places.project), style);
+                if !settings.is_empty() {
+                    self.page_out(&settings);
+                }
                 if loaded.skipped_untrusted > 0 || !loaded.problems.is_empty() {
                     self.page_out(&view::hooks_text(&loaded, style));
                 }

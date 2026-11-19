@@ -115,18 +115,26 @@ fn hash_file(path: &Path) -> Result<String, MarketError> {
     std::fs::read(path).map(|b| sha256::hex(&b)).map_err(|e| MarketError(format!("{}: {e}", path.display())))
 }
 
-fn walk(dir: &Path, base: &Path, out: &mut Vec<PathBuf>) {
+/// Deepest folder nesting `pack` follows; links that lead back into each other stop here.
+const MAX_DEPTH: usize = 16;
+
+fn walk(dir: &Path, base: &Path, out: &mut Vec<PathBuf>, depth: usize) {
+    if depth > MAX_DEPTH {
+        return;
+    }
+    let here = std::fs::canonicalize(dir).ok();
     let Ok(read) = std::fs::read_dir(dir) else { return };
     for entry in read.filter_map(Result::ok) {
         let path = entry.path();
-        // `file_type` does not follow links: a link to a folder (possibly back to a parent) is
-        // skipped, so the walk cannot loop.
-        let is_dir_link = entry.file_type().is_ok_and(|t| t.is_symlink()) && path.is_dir();
-        if is_dir_link {
+        let is_link = entry.file_type().is_ok_and(|t| t.is_symlink());
+        // A link to a folder is followed (a shared folder can be linked in), except back to the
+        // folder it is in or one above it, which would never end.
+        let loops = is_link && path.is_dir() && matches!((std::fs::canonicalize(&path), &here), (Ok(target), Some(here)) if here.starts_with(&target));
+        if loops {
             continue;
         }
-        if entry.file_type().is_ok_and(|t| t.is_dir()) {
-            walk(&path, base, out);
+        if path.is_dir() {
+            walk(&path, base, out, depth + 1);
         } else if let Ok(rel) = path.strip_prefix(base) {
             out.push(rel.to_path_buf());
         }
@@ -141,7 +149,7 @@ pub fn pack(dir: &Path, name: &str, version: &str) -> Result<Manifest, MarketErr
     }
     let mut files = Vec::new();
     for top in ALLOWED_DIRS {
-        walk(&dir.join(top), dir, &mut files);
+        walk(&dir.join(top), dir, &mut files, 0);
     }
     if files.is_empty() {
         return fail(format!("nothing to pack: no files in {}", ALLOWED_DIRS.join(", ")));
@@ -325,6 +333,12 @@ mod tests {
         std::os::unix::fs::symlink("..", src.join("commands/up")).unwrap();
         let manifest = pack(&src, "hello-kit", "1.0.0").unwrap();
         assert_eq!(manifest.files.keys().collect::<Vec<_>>(), ["commands/hello.md"]);
+        // A link to a folder elsewhere is followed.
+        std::fs::create_dir_all(root.join("shared")).unwrap();
+        std::fs::write(root.join("shared/extra.md"), "more").unwrap();
+        std::os::unix::fs::symlink(root.join("shared"), src.join("commands/shared")).unwrap();
+        let manifest = pack(&src, "hello-kit", "1.0.0").unwrap();
+        assert_eq!(manifest.files.keys().collect::<Vec<_>>(), ["commands/hello.md", "commands/shared/extra.md"]);
     }
 
     #[test]
@@ -337,10 +351,9 @@ mod tests {
         std::fs::write(user.join("extensions/.hello-kit.new"), "x").unwrap();
         package(&src, "2.0.0", "say hi");
         let done = install(&user, &src);
-        // Whatever the outcome, the installed folder is complete and one version.
-        let text = std::fs::read_to_string(user.join("extensions/hello-kit/commands/hello.md")).unwrap();
-        assert!(done.is_ok() == (text == "say hi"), "{done:?} {text}");
-        assert!(installed_dirs(&user).len() == 1);
+        assert!(done.is_err(), "{done:?}");
+        assert_eq!(std::fs::read_to_string(user.join("extensions/hello-kit/commands/hello.md")).unwrap(), "say hello");
+        assert_eq!(installed_dirs(&user), vec![user.join("extensions/hello-kit")]);
     }
 
     #[test]

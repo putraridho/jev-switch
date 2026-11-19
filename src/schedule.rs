@@ -76,7 +76,7 @@ fn interval(text: &str) -> Result<Duration, ScheduleError> {
     if n == 0 {
         return bad("an interval must be more than zero");
     }
-    n.checked_mul(seconds).map(Duration::from_secs).ok_or_else(usage)
+    n.checked_mul(seconds).map(Duration::from_secs).ok_or_else(|| ScheduleError(format!("`{text}` is too long an interval")))
 }
 
 /// One cron field as a bit set over `lo..=hi`.

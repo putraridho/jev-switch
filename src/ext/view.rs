@@ -90,6 +90,17 @@ pub fn approved_hooks_text(defs: &[HookDef], style: Style) -> String {
     lines.join("\n")
 }
 
+/// What the project's `.claude/settings.json` makes Claude Code run or allow, which
+/// `/hooks trust` approves together with the hooks (see `hooks::claude_settings_preview`).
+pub fn approved_settings_text(preview: &[(String, String)], style: Style) -> String {
+    if preview.is_empty() {
+        return String::new();
+    }
+    let mut lines = vec!["  project .claude/settings.json approved:".to_string()];
+    lines.extend(preview.iter().map(|(what, value)| format!("  {}  {}", style.cyan(&visible(what)), visible(value))));
+    lines.join("\n")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

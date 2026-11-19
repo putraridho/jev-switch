@@ -120,28 +120,102 @@ fn parse_hunk_header(line: &str) -> Option<(u32, u32, u32, u32)> {
     Some((os, oc, ns, nc))
 }
 
-fn unquote_path(p: &str) -> &str {
-    p.trim_matches('"')
+/// The quoted token at the start of `s` (quotes included) and what follows it.
+fn take_quoted(s: &str) -> Option<(&str, &str)> {
+    let bytes = s.as_bytes();
+    if bytes.first() != Some(&b'"') {
+        return None;
+    }
+    let mut i = 1;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'\\' => i += 2,
+            b'"' => return Some((&s[..=i], &s[i + 1..])),
+            _ => i += 1,
+        }
+    }
+    None
+}
+
+/// Git's C-style quoting undone: `"na\"me"` is `na"me`, `\303\251` is the bytes of `é`.
+fn git_unquote(token: &str) -> String {
+    let Some(inner) = token.strip_prefix('"').and_then(|t| t.strip_suffix('"')) else { return token.to_string() };
+    let bytes = inner.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] != b'\\' || i + 1 >= bytes.len() {
+            out.push(bytes[i]);
+            i += 1;
+            continue;
+        }
+        let c = bytes[i + 1];
+        i += 2;
+        match c {
+            b'0'..=b'7' => {
+                let mut value = u32::from(c - b'0');
+                for _ in 0..2 {
+                    match bytes.get(i) {
+                        Some(d @ b'0'..=b'7') => {
+                            value = value * 8 + u32::from(d - b'0');
+                            i += 1;
+                        }
+                        _ => break,
+                    }
+                }
+                out.push((value & 0xff) as u8);
+            }
+            b'a' => out.push(7),
+            b'b' => out.push(8),
+            b'f' => out.push(12),
+            b'n' => out.push(b'\n'),
+            b'r' => out.push(b'\r'),
+            b't' => out.push(b'\t'),
+            b'v' => out.push(11),
+            other => out.push(other),
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+/// The name on a `--- a/x` or `+++ b/x` line: `rest` is what follows the marker, `side` is
+/// `a/` or `b/`. A name git quoted is decoded; an unquoted one ends at a tab.
+fn side_path(rest: &str, side: &str) -> Option<String> {
+    let name = match take_quoted(rest) {
+        Some((token, _)) => git_unquote(token),
+        None => rest.split('\t').next().unwrap_or(rest).to_string(),
+    };
+    name.strip_prefix(side).map(str::to_string)
 }
 
 fn path_of_header(header: &[String]) -> String {
-    let side = |prefix: &str| header.iter().find_map(|l| l.strip_prefix(prefix)).map(|p| unquote_path(p.split('\t').next().unwrap_or(p)));
-    // Git quotes a name with a quote, a backslash or a control character: `+++ "b/na\"me"`.
-    for (plain, quoted) in [("+++ b/", "+++ \"b/"), ("--- a/", "--- \"a/")] {
-        if let Some(p) = side(plain).or_else(|| side(quoted)) {
-            return p.to_string();
-        }
+    let find = |marker: &str, side: &str| header.iter().find_map(|l| l.strip_prefix(marker).and_then(|rest| side_path(rest, side)));
+    if let Some(p) = find("+++ ", "b/").or_else(|| find("--- ", "a/")) {
+        return p;
     }
     // A pure rename, a mode change or a binary file has no ---/+++ lines.
     if let Some(p) = header.iter().find_map(|l| l.strip_prefix("rename to ")) {
-        return p.to_string();
+        return git_unquote(p);
     }
-    header
-        .first()
-        .and_then(|l| l.strip_prefix("diff --git "))
-        .and_then(|l| l.rsplit_once(" b/"))
-        .map(|(_, p)| unquote_path(p).to_string())
-        .unwrap_or_default()
+    let Some(rest) = header.first().and_then(|l| l.strip_prefix("diff --git ")) else { return String::new() };
+    // `diff --git "a/x" "b/y"`: the second name is the last quoted token.
+    if rest.ends_with('"') {
+        let mut at = rest;
+        let mut last = None;
+        while let Some(i) = at.find('"') {
+            match take_quoted(&at[i..]) {
+                Some((token, after)) => {
+                    last = Some(token);
+                    at = after;
+                }
+                None => break,
+            }
+        }
+        if let Some(name) = last.map(git_unquote).and_then(|n| n.strip_prefix("b/").map(str::to_string)) {
+            return name;
+        }
+    }
+    rest.rsplit_once(" b/").map(|(_, p)| p.to_string()).unwrap_or_default()
 }
 
 /// Split diff text into files and hunks. Text that is not a diff gives no files.
@@ -201,9 +275,14 @@ mod tests {
     const TWO: &str = "diff --git a/src/a.rs b/src/a.rs\nindex 1..2 100644\n--- a/src/a.rs\n+++ b/src/a.rs\n@@ -1,3 +1,3 @@ fn main\n one\n-two\n+TWO\n three\n@@ -10 +10,2 @@\n ten\n+eleven\n\\ No newline at end of file\ndiff --git a/new.txt b/new.txt\nnew file mode 100644\n--- /dev/null\n+++ b/new.txt\n@@ -0,0 +1 @@\n+hi\n";
 
     #[test]
-    fn quoted_paths_are_read() {
+    fn quoted_paths_are_decoded() {
         let text = "diff --git \"a/na\\\"me.txt\" \"b/na\\\"me.txt\"\nindex 1..2 100644\n--- \"a/na\\\"me.txt\"\n+++ \"b/na\\\"me.txt\"\n@@ -1 +1 @@\n-a\n+b\n";
-        assert_eq!(parse(text)[0].path, "na\\\"me.txt");
+        assert_eq!(parse(text)[0].path, "na\"me.txt");
+        // No ---/+++ lines (a mode change), and a name ending in an escaped quote.
+        let text = "diff --git \"a/x\\\"\" \"b/x\\\"\"\nold mode 100644\nnew mode 100755\n";
+        assert_eq!(parse(text)[0].path, "x\"");
+        let text = "diff --git \"a/old\\t1\" \"b/caf\\303\\251\"\nsimilarity index 100%\nrename from \"old\\t1\"\nrename to \"caf\\303\\251\"\n";
+        assert_eq!(parse(text)[0].path, "café");
     }
 
     #[test]
