@@ -115,26 +115,18 @@ fn hash_file(path: &Path) -> Result<String, MarketError> {
     std::fs::read(path).map(|b| sha256::hex(&b)).map_err(|e| MarketError(format!("{}: {e}", path.display())))
 }
 
-/// Deepest folder nesting `pack` follows; links that lead back into each other stop here.
-const MAX_DEPTH: usize = 16;
-
-fn walk(dir: &Path, base: &Path, out: &mut Vec<PathBuf>, depth: usize) {
-    if depth > MAX_DEPTH {
-        return;
-    }
-    let here = std::fs::canonicalize(dir).ok();
+fn walk(dir: &Path, base: &Path, out: &mut Vec<PathBuf>) {
     let Ok(read) = std::fs::read_dir(dir) else { return };
     for entry in read.filter_map(Result::ok) {
         let path = entry.path();
-        let is_link = entry.file_type().is_ok_and(|t| t.is_symlink());
-        // A link to a folder is followed (a shared folder can be linked in), except back to the
-        // folder it is in or one above it, which would never end.
-        let loops = is_link && path.is_dir() && matches!((std::fs::canonicalize(&path), &here), (Ok(target), Some(here)) if here.starts_with(&target));
-        if loops {
+        let Ok(kind) = entry.file_type() else { continue };
+        // `file_type` does not follow links. A link to a folder is not packed: it could lead
+        // back up (an endless walk) or out of the extension (a private folder in a package).
+        if kind.is_symlink() && path.is_dir() {
             continue;
         }
-        if path.is_dir() {
-            walk(&path, base, out, depth + 1);
+        if kind.is_dir() {
+            walk(&path, base, out);
         } else if let Ok(rel) = path.strip_prefix(base) {
             out.push(rel.to_path_buf());
         }
@@ -149,7 +141,7 @@ pub fn pack(dir: &Path, name: &str, version: &str) -> Result<Manifest, MarketErr
     }
     let mut files = Vec::new();
     for top in ALLOWED_DIRS {
-        walk(&dir.join(top), dir, &mut files, 0);
+        walk(&dir.join(top), dir, &mut files);
     }
     if files.is_empty() {
         return fail(format!("nothing to pack: no files in {}", ALLOWED_DIRS.join(", ")));
@@ -333,12 +325,12 @@ mod tests {
         std::os::unix::fs::symlink("..", src.join("commands/up")).unwrap();
         let manifest = pack(&src, "hello-kit", "1.0.0").unwrap();
         assert_eq!(manifest.files.keys().collect::<Vec<_>>(), ["commands/hello.md"]);
-        // A link to a folder elsewhere is followed.
-        std::fs::create_dir_all(root.join("shared")).unwrap();
-        std::fs::write(root.join("shared/extra.md"), "more").unwrap();
-        std::os::unix::fs::symlink(root.join("shared"), src.join("commands/shared")).unwrap();
+        // So is a link out of the extension: its files are not packed.
+        std::fs::create_dir_all(root.join("private")).unwrap();
+        std::fs::write(root.join("private/key"), "secret").unwrap();
+        std::os::unix::fs::symlink(root.join("private"), src.join("commands/private")).unwrap();
         let manifest = pack(&src, "hello-kit", "1.0.0").unwrap();
-        assert_eq!(manifest.files.keys().collect::<Vec<_>>(), ["commands/hello.md", "commands/shared/extra.md"]);
+        assert_eq!(manifest.files.keys().collect::<Vec<_>>(), ["commands/hello.md"]);
     }
 
     #[test]

@@ -52,11 +52,11 @@ impl Repl {
             self.console.out(&format!("{} no config folder to remember the trust in (HOME is not set)", style.yellow("⚠")));
             return;
         };
-        match hooks::trust_project_with_preview(user, &places.project) {
-            Ok((newly, approved)) => {
+        match hooks::trust_project_full(user, &places.project) {
+            Ok((newly, approved, settings_lines)) => {
                 let loaded = Hooks::load(places);
                 self.page_out(&view::approved_hooks_text(&approved, style));
-                let settings = view::approved_settings_text(&hooks::claude_settings_preview(&places.project), style);
+                let settings = view::approved_settings_text(&settings_lines, style);
                 if !settings.is_empty() {
                     self.page_out(&settings);
                 }

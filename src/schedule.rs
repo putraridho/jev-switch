@@ -65,7 +65,8 @@ fn interval(text: &str) -> Result<Duration, ScheduleError> {
     let usage = || ScheduleError(format!("`{text}` is not a schedule: use an interval like 30s, 10m, 2h, 1d or a five-field cron expression"));
     let split = text.find(|c: char| !c.is_ascii_digit()).ok_or_else(usage)?;
     let (digits, unit) = text.split_at(split);
-    let n: u64 = digits.parse().map_err(|_| usage())?;
+    let too_long = || ScheduleError(format!("`{text}` is too long an interval"));
+    let n: u64 = digits.parse().map_err(|_| if digits.is_empty() { usage() } else { too_long() })?;
     let seconds = match unit {
         "s" => 1,
         "m" => 60,
@@ -76,7 +77,7 @@ fn interval(text: &str) -> Result<Duration, ScheduleError> {
     if n == 0 {
         return bad("an interval must be more than zero");
     }
-    n.checked_mul(seconds).map(Duration::from_secs).ok_or_else(|| ScheduleError(format!("`{text}` is too long an interval")))
+    n.checked_mul(seconds).map(Duration::from_secs).ok_or_else(too_long)
 }
 
 /// One cron field as a bit set over `lo..=hi`.

@@ -72,6 +72,10 @@ pub fn hooks_text(hooks: &Hooks, style: Style) -> String {
             format!("  {} {}  {}", style.cyan(d.event.as_str()), visible(d.tool.as_deref().unwrap_or("*")), visible(&d.run))
         }));
     }
+    if !hooks.untrusted_settings().is_empty() {
+        lines.push(format!("{} this project's .claude/settings.json is off until you trust it: /hooks trust. It holds:", style.yellow("⚠")));
+        lines.extend(hooks.untrusted_settings().iter().map(|(what, value)| format!("  {}  {}", style.cyan(&visible(what)), visible(value))));
+    }
     for problem in &hooks.problems {
         lines.push(format!("{} {problem}", style.yellow("⚠")));
     }

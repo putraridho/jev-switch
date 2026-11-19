@@ -8,9 +8,9 @@ Fixes from code review round 4.
   a hash of `.claude/settings.json`; the file (hooks, `env`, helper commands) is loaded only
   while it still matches, so a later `git pull` that changes it waits for `/hooks trust`
   again. Projects trusted by an earlier version load no project settings until `/hooks trust`
-  is run once more. `/hooks trust` now lists what that file would run or allow (hook and helper
-  commands, `env`, allow rules, other keys), and `/hooks` says when the file is new or changed
-  and so not loaded.
+  is run once more. `/hooks` shows everything in the file while it is not trusted (hook commands,
+  `env`, permissions, every other key and its value), `/hooks trust` lists what it approved, and
+  Claude sessions say when a trusted project's file changed and so is not loaded.
 - A project's `.claude/settings.local.json` is no longer trusted as your own when git cannot
   say whether it is tracked (for instance "dubious ownership"). A folder that is not under git
   is unchanged.
@@ -18,7 +18,7 @@ Fixes from code review round 4.
   typed (`/note pay $5` no longer loses the `$5`).
 - `/cache` no longer lists turns that reported no token counts (Antigravity over ACP) as misses.
 - Updating an extension keeps the installed copy if the new one cannot be written; `ext pack`
-  follows links to folders but not back up into the folder it is in; `/diff` reads file names that git quotes (non-ASCII characters, quotes,
+  does not follow links to folders (they could loop or lead out of the extension); `/diff` reads file names that git quotes (non-ASCII characters, quotes,
   backslashes); `--every` refuses an interval too large to hold; `/export` writes a private
   (0600) file.
 
