@@ -108,6 +108,17 @@ impl Confirm {
     }
 }
 
+/// One open worker as the workers rows show it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkerChip {
+    pub id: String,
+    pub provider: String,
+    pub model: String,
+    pub running: bool,
+    /// How long ago it started.
+    pub age_ms: u64,
+}
+
 /// The working row while a turn runs.
 #[derive(Debug, Clone)]
 pub struct Working {
@@ -150,6 +161,8 @@ pub struct App {
     pub providers: Vec<ProviderChip>,
     /// A planner may hand pieces to workers (`/orchestrate`).
     pub orchestrate: bool,
+    /// The workers the planner has open, oldest first, for the workers rows above the box.
+    pub workers: Vec<WorkerChip>,
     /// Vim input mode (`JEV_VIM=1`); `None` when off.
     pub vim: Option<Vim>,
     /// The user's own key bindings.
@@ -203,6 +216,7 @@ impl App {
             session_name: None,
             providers: Vec::new(),
             orchestrate: false,
+            workers: Vec::new(),
             vim: vim::enabled_from(std::env::var("JEV_VIM").ok().as_deref()).then(Vim::default),
             keymap: Keymap::default(),
             suggestion: None,
@@ -236,7 +250,7 @@ impl App {
 
     /// Something to animate or expire: the loop redraws on its timer only then.
     pub fn needs_ticks(&self) -> bool {
-        self.working.is_some() || self.notice.is_some()
+        self.working.is_some() || self.notice.is_some() || self.workers.iter().any(|w| w.running)
     }
 
     /// Drop a notice that has been up long enough.

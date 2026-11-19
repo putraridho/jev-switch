@@ -10,6 +10,30 @@ pub fn stderr_is_tty() -> bool {
     std::io::IsTerminal::is_terminal(&std::io::stderr())
 }
 
+static LIGHT_BACKGROUND: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Tell the painters the terminal has a light background (`true`) or a dark one. Set once at
+/// startup from [`background_from_env`] or by asking the terminal; dark until told.
+pub fn set_light_background(light: bool) {
+    LIGHT_BACKGROUND.store(light, std::sync::atomic::Ordering::Relaxed);
+}
+
+pub fn light_background() -> bool {
+    LIGHT_BACKGROUND.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// The terminal background the environment names: `JEV_THEME=light|dark`, else the
+/// `COLORFGBG` hint (`15;0` is a dark terminal, `0;15` a light one). `None` when neither says.
+pub fn background_from_env(theme: Option<&str>, colorfgbg: Option<&str>) -> Option<bool> {
+    match theme.map(|t| t.trim().to_ascii_lowercase()).as_deref() {
+        Some("light") => return Some(true),
+        Some("dark") => return Some(false),
+        _ => {}
+    }
+    let bg: u8 = colorfgbg?.rsplit(';').next()?.trim().parse().ok()?;
+    Some(matches!(bg, 7 | 9..=15))
+}
+
 /// Whether and how to colour. Disabled means NOTHING is added to any string.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Style {
@@ -97,6 +121,17 @@ impl Style {
     pub fn fg256(&self, n: u8, s: &str) -> String {
         self.paint(&format!("38;5;{n}"), s)
     }
+    /// `s` on a full-width shaded row for the user's own messages: a step off the terminal's
+    /// background (darker grey on dark, light grey on light), the text in its own colour so
+    /// it reads on either. Plain when colour is off.
+    pub fn band(&self, s: &str) -> String {
+        self.paint(if light_background() { "48;5;254" } else { "48;5;236" }, s)
+    }
+    /// The accent for structure (markers, the prompt, headings): readable on either
+    /// background, where plain cyan washes out on light.
+    pub fn accent(&self, s: &str) -> String {
+        self.paint(if light_background() { "38;5;25" } else { "36" }, s)
+    }
 }
 
 /// Where the provider colours live. Plain when the style is disabled.
@@ -119,7 +154,7 @@ impl Theme {
             "codex" => s.green(text),
             "gemini" => s.magenta(text),
             "grok" => s.blue(text),
-            "deepseek" => s.cyan(text),
+            "deepseek" => s.accent(text),
             _ => s.bold(text),
         }
     }
@@ -210,6 +245,17 @@ mod tests {
         assert_eq!(th.name("deepseek"), "\x1b[36mdeepseek\x1b[0m");
         assert_eq!(th.name("Codex"), "\x1b[32mCodex\x1b[0m");
         assert_eq!(th.name("mystery"), "\x1b[1mmystery\x1b[0m");
+    }
+
+    #[test]
+    fn the_background_comes_from_the_theme_then_colorfgbg() {
+        assert_eq!(background_from_env(Some("light"), Some("15;0")), Some(true));
+        assert_eq!(background_from_env(Some("Dark"), Some("0;15")), Some(false));
+        assert_eq!(background_from_env(None, Some("15;0")), Some(false));
+        assert_eq!(background_from_env(None, Some("0;15")), Some(true));
+        assert_eq!(background_from_env(Some("auto"), Some("0;default;15")), Some(true));
+        assert_eq!(background_from_env(None, Some("garbage")), None);
+        assert_eq!(background_from_env(None, None), None);
     }
 
     #[test]

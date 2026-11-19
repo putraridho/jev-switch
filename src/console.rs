@@ -751,7 +751,9 @@ impl Inner {
             let laid_out = uifmt::answer_text(&text, style, width.saturating_sub(2));
             uifmt::ProviderTheme::from_env(style).attributed_answer(&[(route.provider.as_str(), route.model.as_str())], &laid_out)
         } else {
-            uifmt::answer_block(&uifmt::answer_text(&text, style, width))
+            // On the interactive screen the answer shares the margin of the rows around it.
+            let margin = if self.front.is_some() { 2 } else { 0 };
+            uifmt::answer_block(&uifmt::answer_text(&text, style, width.saturating_sub(margin)), margin)
         };
         self.fresh_turn = false;
         self.emit_out(&shown);
@@ -911,6 +913,13 @@ fn steered_line(text: &str, style: Style) -> String {
 /// instead of filling the screen (the tool row above it already shows the whole call).
 fn hint_line(text: &str, style: Style, width: usize) -> String {
     let flat = uifmt::strip_ansi(text).split_whitespace().collect::<Vec<_>>().join(" ");
+    // A call that went through unasked is a quiet note under its tool row, which already
+    // shows the whole call: repeating the command made every call twice as noisy.
+    for (prefix, short) in [("\u{2713} auto-allowed ", "auto-allowed"), ("\u{2713} allowed (remembered) ", "allowed (remembered)")] {
+        if flat.starts_with(prefix) {
+            return format!("    {}", style.dim(&format!("\u{2713} {short}")));
+        }
+    }
     format!("  {}", style.yellow(&uifmt::truncate_to_width(&flat, width.saturating_sub(2))))
 }
 
@@ -1353,10 +1362,12 @@ mod tests {
 
     #[test]
     fn a_hint_is_one_line_cut_to_the_width() {
-        let long = format!("\u{2713} auto-allowed cd $(mktemp -d) && python3 - <<'EOF'\n{}\nEOF", "x = 1; ".repeat(60));
+        let long = format!("\u{2717} denied cd $(mktemp -d) && python3 - <<'EOF'\n{}\nEOF", "x = 1; ".repeat(60));
         let line = hint_line(&long, Style::off(), 80);
         assert!(!line.contains('\n') && crate::uifmt::display_width(&line) <= 80, "{line}");
-        assert!(line.starts_with("  \u{2713} auto-allowed cd") && line.ends_with('\u{2026}'), "{line}");
+        assert!(line.starts_with("  \u{2717} denied cd") && line.ends_with('\u{2026}'), "{line}");
+        let auto = format!("\u{2713} auto-allowed cd $(mktemp -d) && python3 - <<'EOF'\n{}\nEOF", "x = 1; ".repeat(60));
+        assert_eq!(hint_line(&auto, Style::off(), 80), "    \u{2713} auto-allowed");
         assert_eq!(hint_line("\u{2717} denied Bash", Style::off(), 80), "  \u{2717} denied Bash");
     }
 

@@ -36,7 +36,7 @@ impl Theme {
         crate::uifmt::Theme::new(style)
     }
     fn accent(&self, s: &str) -> String {
-        self.0.cyan(s)
+        self.0.accent(s)
     }
     fn muted(&self, s: &str) -> String {
         self.0.dim(s)
@@ -51,7 +51,7 @@ impl Theme {
         self.0.dim(s)
     }
     fn selected(&self, s: &str) -> String {
-        self.0.bold(&self.0.cyan(s))
+        self.0.bold(&self.0.accent(s))
     }
     /// The mode's name, coloured by how much it lets the agent do.
     fn mode(&self, m: Mode) -> String {
@@ -122,6 +122,50 @@ pub fn working_line(work: &super::app::Working, elapsed: std::time::Duration, wi
     truncate_to_width(&format!("{} {} {}", style.cyan(spinner), style.bold(&what), style.dim(&format!("· {time}{who}"))), width)
 }
 
+/// The most workers listed by name above the box; the rest are counted.
+const WORKER_ROWS: usize = 4;
+
+/// What the planner's workers are doing, above the box, in a titled box of their own:
+/// `╭─ ⇉ Workers · 1 running · 1 to review ─╮`, then a row each (`▶ w1  gemini · argon
+/// running 0:42`, `✓ w2  codex  ready to review`). Nothing when no worker is open.
+fn workers_rows(app: &App, w: usize, style: Style) -> Vec<String> {
+    if app.workers.is_empty() {
+        return Vec::new();
+    }
+    let th = Theme(style);
+    let names = Theme::provider_theme(style);
+    let running = app.workers.iter().filter(|x| x.running).count();
+    let waiting = app.workers.len() - running;
+    let mut title = String::from("⇉ Workers");
+    if running > 0 {
+        title.push_str(&format!(" · {running} running"));
+    }
+    if waiting > 0 {
+        title.push_str(&format!(" · {waiting} to review"));
+    }
+    let mut rows = vec![border('╭', '╮', &title, w, &th)];
+    for wk in app.workers.iter().take(WORKER_ROWS) {
+        let (glyph, state) = if wk.running {
+            (style.accent("▶"), style.dim(&format!("running {}", clock(wk.age_ms))))
+        } else {
+            (style.yellow("✓"), style.yellow("ready to review"))
+        };
+        let who = if wk.model.is_empty() { names.name(&wk.provider) } else { format!("{} {} {}", names.name(&wk.provider), style.dim("·"), wk.model) };
+        rows.push(boxed(&format!("{glyph} {}  {who}   {state}", style.bold(&wk.id)), w, &th));
+    }
+    if app.workers.len() > WORKER_ROWS {
+        rows.push(boxed(&style.dim(&format!("… and {} more", app.workers.len() - WORKER_ROWS)), w, &th));
+    }
+    rows.push(border('╰', '╯', "", w, &th));
+    rows
+}
+
+/// `0:42`, `12:05`: a worker's age.
+fn clock(ms: u64) -> String {
+    let s = ms / 1000;
+    format!("{}:{:02}", s / 60, s % 60)
+}
+
 /// Draw the live area for `width` terminal columns at time `now`.
 pub fn render(app: &App, width: usize, now: Instant, style: Style) -> Frame {
     let th = Theme(style);
@@ -138,6 +182,7 @@ pub fn render(app: &App, width: usize, now: Instant, style: Style) -> Frame {
         let line = working_line(work, elapsed, budget, style);
         rows.push(spread(&line, &th.muted(hint), w));
     }
+    rows.extend(workers_rows(app, w, style));
     for (i, queued) in app.queue.iter().take(3).enumerate() {
         let first = queued.lines().next().unwrap_or_default();
         let more = if queued.lines().count() > 1 { " …" } else { "" };
@@ -160,7 +205,7 @@ pub fn render(app: &App, width: usize, now: Instant, style: Style) -> Frame {
         rows.extend(approval_card(a, w, &th));
     } else {
         // On a wide terminal the side panel (router, changed files) sits beside the box.
-        let side = if w >= SPLIT_MIN_WIDTH { panel_rows(&panel_sections(app), PANEL_WIDTH, style) } else { Vec::new() };
+        let side = if w >= SPLIT_MIN_WIDTH { panel_rows(&panel_sections(app, style), PANEL_WIDTH, style) } else { Vec::new() };
         let main_w = if side.is_empty() { w } else { w - PANEL_WIDTH - 3 };
         let (box_rows, at) = input_box(app, main_w, &th);
         let top = rows.len();
@@ -176,19 +221,40 @@ pub fn render(app: &App, width: usize, now: Instant, style: Style) -> Frame {
     Frame { rows, cursor }
 }
 
-/// What the side panel lists: each subscription's plan use or cooldown, and the git state.
-fn panel_sections(app: &App) -> Vec<Section> {
+/// A usage meter, `▰▰▰▱▱▱▱▱`, filled in proportion to `pct` and coloured by how close to the
+/// limit it is (green, then yellow, then red). The shapes differ, so it reads without colour.
+fn meter(pct: u8, cells: usize, style: Style) -> String {
+    let pct = pct.min(100);
+    let filled = (usize::from(pct) * cells + 50) / 100;
+    let on = "▰".repeat(filled);
+    let on = match pct {
+        0..=59 => style.green(&on),
+        60..=84 => style.yellow(&on),
+        _ => style.red(&on),
+    };
+    format!("{on}{}", style.dim(&"▱".repeat(cells - filled)))
+}
+
+/// What the side panel lists: each subscription's plan use as a meter (or its cooldown), how
+/// full the context window is, and the git state.
+fn panel_sections(app: &App, style: Style) -> Vec<Section> {
+    let th = Theme::provider_theme(style);
     let router = app
         .providers
         .iter()
-        .map(|p| match (&p.cooling, p.used) {
-            (Some(left), _) => format!("{} cooling {left}", p.name),
-            (None, Some(u)) => format!("{} {u}%", p.name),
-            (None, None) => p.name.clone(),
+        .map(|p| {
+            let name = format!("{}{}", th.name(&p.name), " ".repeat(8usize.saturating_sub(display_width(&p.name))));
+            match (&p.cooling, p.used) {
+                (Some(left), _) => format!("{name} {}", style.yellow(&format!("cooling {left}"))),
+                (None, Some(u)) => format!("{name} {} {u:>3}%", meter(u, 8, style)),
+                (None, None) => format!("{name} {}", style.dim("ready")),
+            }
         })
         .collect();
+    let context = app.context.map(|c| vec![format!("{} {c:>3}%", meter(c, 14, style))]).unwrap_or_default();
     vec![
         Section { title: "Router".into(), rows: router },
+        Section { title: "Context".into(), rows: context },
         Section { title: "Branch".into(), rows: app.git.iter().cloned().collect() },
     ]
 }
@@ -415,6 +481,21 @@ mod tests {
         assert!(inside.len() >= 3, "{:?}", f.rows);
         let (row, col) = f.cursor.unwrap_or_default();
         assert!(row >= 3 && col >= 4, "{:?}", f.cursor);
+    }
+
+    #[test]
+    fn open_workers_are_listed_above_the_box_with_who_and_how_long() {
+        use super::super::app::WorkerChip;
+        let mut a = app();
+        let chip = |id: &str, running: bool, age_ms: u64| WorkerChip { id: id.into(), provider: "gemini".into(), model: "argon".into(), running, age_ms };
+        a.workers = vec![chip("w1", true, 42_000), chip("w2", false, 90_000)];
+        let text = screen(&a, 80);
+        assert!(text.contains("⇉ Workers · 1 running · 1 to review"), "{text}");
+        assert!(text.contains("▶ w1  gemini · argon   running 0:42"), "{text}");
+        assert!(text.contains("✓ w2  gemini · argon   ready to review"), "{text}");
+        a.workers = (0..6).map(|i| chip(&format!("w{i}"), true, 1000)).collect();
+        assert!(screen(&a, 80).contains("… and 2 more"));
+        assert!(!screen(&app(), 80).contains("Workers"));
     }
 
     #[test]

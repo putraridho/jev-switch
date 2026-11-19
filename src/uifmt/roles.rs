@@ -1,11 +1,11 @@
 //! How each kind of thing in the interactive conversation looks, so a glance tells them
 //! apart:
 //!
-//! - what **you** sent: a rule between turns, then `❯ your message` in bold;
+//! - what **you** sent: a shaded band with `❯` (a rule and `❯` without colour);
 //! - **tool calls**: dim, under a `⏺` marker, with what came back on a `⎿` row under it and
 //!   an edit's lines as a small diff;
-//! - the model's **narration** between tool calls: dim italic, it is the model thinking
-//!   aloud;
+//! - the model's **narration** between tool calls: plain bright text, it is a message to
+//!   you, set apart by a blank line and indented with the tool rows;
 //! - the **answer**: plain bright text, set apart by a blank line.
 //!
 //! Colour is never the only cue: each role also has its own marker, indent or weight.
@@ -17,25 +17,31 @@ use super::changes::relativize_paths;
 use super::route::{short_reason, RouteFacts};
 use super::style::{Style, Theme};
 use super::text::one_line;
-use super::width::{clamp_width, truncate_to_width};
+use super::width::{clamp_width, display_width, truncate_to_width};
 use super::wrap::wrap_to_width;
 
 /// The most lines of an edit shown under it; the rest are counted.
 pub const EDIT_PREVIEW_LINES: usize = 6;
 
-/// The message you sent, as it stays in the scrollback: a dim rule across (between turns,
-/// `first` leaves it out), then `❯ ` and the text in bold, continuation lines under it.
+/// The message you sent, as it stays in the scrollback: with colour, a full-width shaded
+/// band with `❯` on its first row, the one block of background in the scrollback so your
+/// prompts are easy to find; without colour, `❯ text` under a rule between turns. `first`
+/// leaves out the separation above.
 pub fn sent_block(text: &str, first: bool, style: Style, width: usize) -> String {
     let width = clamp_width(width);
     let mut out = Vec::new();
     if !first {
-        out.push(style.dim(&"─".repeat(width.saturating_sub(1))));
+        out.push(if style.enabled { String::new() } else { "─".repeat(width.saturating_sub(1)) });
     }
     for (i, line) in text.split('\n').enumerate() {
-        let lead = if i == 0 { style.bold(&style.cyan("❯")) } else { " ".to_string() };
-        for (j, part) in wrap_to_width(line, width.saturating_sub(3)).iter().enumerate() {
-            let lead = if j == 0 { lead.clone() } else { " ".to_string() };
-            out.push(format!("{lead} {}", style.bold(part)));
+        for (j, part) in wrap_to_width(line, width.saturating_sub(5)).iter().enumerate() {
+            let lead = if i == 0 && j == 0 { "❯" } else { " " };
+            if style.enabled {
+                let fill = width.saturating_sub(1).saturating_sub(display_width(part) + 3);
+                out.push(style.band(&format!(" {} {part}{}", style.accent(lead), " ".repeat(fill))));
+            } else {
+                out.push(format!("{lead} {part}"));
+            }
         }
     }
     out.push(String::new());
@@ -215,13 +221,14 @@ pub fn edit_preview(removed: &[String], added: &[String], style: Style, width: u
     rows.join("\n")
 }
 
-/// The model thinking aloud between tool calls: dim italic, indented with the tool rows.
+/// What the model says between tool calls: it is a message to you, so full brightness (the
+/// tool rows around it are the dim ones), indented with them.
 pub fn narration(text: &str, style: Style, width: usize) -> String {
     let width = clamp_width(width);
     let mut rows = Vec::new();
     for line in clean_text(text).trim().lines() {
         for part in wrap_to_width(line, width.saturating_sub(4)) {
-            rows.push(format!("  {}", style.dim(&style.italic(&part))));
+            rows.push(format!("  {part}"));
         }
     }
     rows.join("\n")
@@ -250,9 +257,12 @@ pub fn thinking_block(text: &str, style: Style, width: usize) -> String {
     rows.join("\n")
 }
 
-/// The answer: laid out text, set apart by a blank line above it.
-pub fn answer_block(laid_out: &str) -> String {
-    format!("\n{}", laid_out.trim_end_matches('\n'))
+/// The answer: laid out text, set apart by a blank line above it and indented `margin`
+/// columns so it lines up with the rows around it.
+pub fn answer_block(laid_out: &str, margin: usize) -> String {
+    let pad = " ".repeat(margin);
+    let body: Vec<String> = laid_out.trim_end_matches('\n').split('\n').map(|l| if l.is_empty() { String::new() } else { format!("{pad}{l}") }).collect();
+    format!("\n{}", body.join("\n"))
 }
 
 #[cfg(test)]
@@ -262,11 +272,14 @@ mod tests {
     use crate::uifmt::testutil::*;
 
     #[test]
-    fn a_sent_message_is_bold_behind_a_marker_and_turns_are_ruled_apart() {
+    fn a_sent_message_is_a_shaded_band_or_a_plain_marker_without_colour() {
         assert_eq!(sent_block("fix it", true, OFF, 40), "❯ fix it\n");
-        let later = sent_block("one\ntwo", false, OFF, 20);
-        assert_eq!(later, format!("{}\n❯ one\n  two\n", "─".repeat(19)));
-        assert!(sent_block("x", true, ON, 40).contains("\x1b[1mx"));
+        assert_eq!(sent_block("one\ntwo", false, OFF, 20), format!("{}\n❯ one\n  two\n", "─".repeat(19)));
+        let band = sent_block("x", false, ON, 40);
+        let rows: Vec<&str> = band.lines().collect();
+        assert_eq!(rows[0], "", "a blank line separates turns");
+        assert!(rows[1].contains("\x1b[48;5;236") && strip_ansi(rows[1]).contains("❯ x"));
+        assert_eq!(crate::uifmt::display_width(&strip_ansi(rows[1])), 39);
     }
 
     #[test]
@@ -369,10 +382,11 @@ mod tests {
     }
 
     #[test]
-    fn narration_is_dim_italic_and_the_answer_is_set_apart() {
+    fn narration_is_plain_bright_text_and_the_answer_is_set_apart() {
         assert_eq!(narration("Let me look.\n", OFF, 80), "  Let me look.");
-        assert!(narration("x", ON, 80).contains("\x1b[2m\x1b[3mx"));
-        assert_eq!(answer_block("The answer.\n"), "\nThe answer.");
+        assert!(!narration("x", ON, 80).contains("\x1b["), "not dimmed: it is for reading");
+        assert_eq!(answer_block("The answer.\n", 0), "\nThe answer.");
+        assert_eq!(answer_block("One.\n\nTwo.\n", 2), "\n  One.\n\n  Two.");
         no_esc(&strip_ansi(&narration("a", ON, 80)));
     }
 }

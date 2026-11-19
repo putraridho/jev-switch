@@ -62,7 +62,7 @@ pub use route::{route_line, short_reason, RouteFacts};
 pub use screens::{doctor_report, doctor_summary, help_text, status_text, DoctorItem, ReadyProvider, Severity, StatusFacts};
 pub use session::{config_text, context_text, cost_text, mcp_text, terminal_setup_text, why_text, ConfigRow, ContextFacts, CostRow, TerminalSetupFacts, COMPACT_SUGGEST_AT};
 pub use status::{input_row, status_line, Spinner, SPINNER_FRAMES, SPINNER_FRAME_MS};
-pub use style::{stderr_is_tty, stdout_is_tty, Style, Theme};
+pub use style::{background_from_env, light_background, set_light_background, stderr_is_tty, stdout_is_tty, Style, Theme};
 pub use summary::{turn_summary, turn_summary_brief, SummaryFacts};
 pub use text::{human_count, human_duration};
 pub use width::{char_width, display_width, terminal_width, truncate_to_width, width_from_env, DEFAULT_WIDTH, MIN_WIDTH};

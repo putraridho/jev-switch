@@ -7,7 +7,7 @@
 use std::future::Future;
 use std::path::PathBuf;
 use std::pin::Pin;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use crossterm::event::{Event, EventStream, KeyboardEnhancementFlags, PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags};
 use crossterm::{execute, terminal};
@@ -68,6 +68,7 @@ impl Confirm for CardConfirm {
 /// ignore the request).
 fn keys_on() -> std::io::Result<()> {
     terminal::enable_raw_mode()?;
+    pick_background();
     let mut out = std::io::stdout();
     execute!(out, crossterm::event::EnableBracketedPaste)?;
     // Inside tmux or on a console the request could be printed instead of understood.
@@ -77,6 +78,17 @@ fn keys_on() -> std::io::Result<()> {
     }
     crate::terminal::note_front_keys(true);
     Ok(())
+}
+
+/// Light or dark terminal: what `JEV_THEME` or `COLORFGBG` says, else what the terminal
+/// answers (not asked inside tmux or screen, which may print the question instead).
+fn pick_background() {
+    let var = |k: &str| std::env::var(k).ok();
+    let light = crate::uifmt::background_from_env(var("JEV_THEME").as_deref(), var("COLORFGBG").as_deref()).or_else(|| {
+        let env = term_env();
+        (env.multiplexer.is_none() && env.kind == crate::termenv::Kind::Normal).then(crate::bgquery::query_light).flatten()
+    });
+    crate::uifmt::set_light_background(light.unwrap_or(false));
 }
 
 fn term_env() -> crate::termenv::TermEnv {
@@ -142,6 +154,17 @@ fn refresh(app: &mut App, repl: &Repl) {
     app.orchestrate = repl.engine.orchestrate();
 }
 
+/// The project's open workers, for the rows above the box.
+fn worker_chips(state_dir: Option<&std::path::Path>, project: &std::path::Path) -> Vec<super::app::WorkerChip> {
+    let now = log::now_ms();
+    state_dir
+        .map(|s| crate::delegate::open_workers(s, project))
+        .unwrap_or_default()
+        .into_iter()
+        .map(|w| super::app::WorkerChip { id: w.worker_id, provider: w.provider, model: w.model, running: w.running, age_ms: now.saturating_sub(w.created_ms) })
+        .collect()
+}
+
 /// The footer's routing word: the pin, `claude only`, or `auto`.
 fn route_label(repl: &Repl) -> String {
     views::prompt_label(repl.engine.pin(), repl.engine.enabled()).unwrap_or_else(|| "auto".to_string())
@@ -185,8 +208,10 @@ pub async fn run(repl: Repl, mut rx: mpsc::UnboundedReceiver<FrontMsg>, opts: Op
     // typed meanwhile can still reach that turn.
     let console = repl.console.clone();
     let project = repl.engine.dir().to_path_buf();
+    let state_dir = repl.state_dir().map(std::path::Path::to_path_buf);
+    let mut workers_read = Instant::now();
     let tracked = lineedit::tracked_files(&project);
-    let mut app = App::new(project, History::load(opts.history.as_deref()), repl.engine.mode(), route_label(&repl), tracked);
+    let mut app = App::new(project.clone(), History::load(opts.history.as_deref()), repl.engine.mode(), route_label(&repl), tracked);
     refresh(&mut app, &repl);
     let (keymap, problems) = crate::workstation::keymap::load();
     app.keymap = keymap;
@@ -213,6 +238,9 @@ pub async fn run(repl: Repl, mut rx: mpsc::UnboundedReceiver<FrontMsg>, opts: Op
             repl.console.flush_notices();
             // A provider that just became ready (or came off a cooldown) shows on the router row.
             app.providers = provider_chips(repl);
+            if app.orchestrate {
+                app.workers = worker_chips(state_dir.as_deref(), &project);
+            }
             if app.mode != repl.engine.mode() {
                 app.mode = repl.adopt_mode(app.mode);
             }
@@ -260,6 +288,12 @@ pub async fn run(repl: Repl, mut rx: mpsc::UnboundedReceiver<FrontMsg>, opts: Op
             },
             _ = tick.tick(), if app.needs_ticks() => {
                 app.expire(Instant::now());
+                // Workers start and finish while a turn runs, in other processes: look at the
+                // registry about once a second.
+                if workers_read.elapsed() >= Duration::from_secs(1) {
+                    workers_read = Instant::now();
+                    app.workers = worker_chips(state_dir.as_deref(), &project);
+                }
                 Vec::new()
             }
             done = finished(&mut task) => {

@@ -253,46 +253,77 @@ impl Editor {
     }
 
     /// The text wrapped to rows of at most `width` columns (wide characters count 2), and the
-    /// row and column of the cursor in them. A row never ends in the middle of a character.
+    /// row and column of the cursor in them. Rows break after a space, so a word is never cut
+    /// unless it alone is wider than a row; a row never ends in the middle of a character.
     pub fn layout(&self, width: usize) -> (Vec<String>, (usize, usize)) {
         let width = width.max(2);
-        let mut rows: Vec<String> = vec![String::new()];
+        let mut rows: Vec<String> = Vec::new();
         let mut cursor = (0, 0);
-        let mut col = 0;
-        for (i, c) in self.text.char_indices() {
-            if i == self.cursor {
-                cursor = (rows.len() - 1, col);
-            }
-            if c == '\n' {
-                rows.push(String::new());
-                col = 0;
-                continue;
-            }
-            let w = char_width(c);
-            if col + w > width {
-                rows.push(String::new());
-                col = 0;
-                if i == self.cursor {
-                    cursor = (rows.len() - 1, 0);
+        let mut found = false;
+        let mut line_start = 0;
+        for line in self.text.split('\n') {
+            let segs = wrap_segments(line, width);
+            for (i, &(a, b)) in segs.iter().enumerate() {
+                let (abs_a, abs_b) = (line_start + a, line_start + b);
+                let next = segs.get(i + 1).map(|n| line_start + n.0);
+                let inside = match next {
+                    Some(n) => self.cursor >= abs_a && self.cursor < n,
+                    None => self.cursor >= abs_a && self.cursor <= abs_b,
+                };
+                if !found && inside {
+                    cursor = (rows.len(), display_width(&self.text[abs_a..self.cursor.min(abs_b)]));
+                    found = true;
                 }
+                rows.push(line[a..b].to_string());
             }
-            if let Some(row) = rows.last_mut() {
-                row.push(c);
-            }
-            col += w;
+            line_start += line.len() + 1;
         }
-        if self.cursor >= self.text.len() {
+        if self.cursor >= self.text.len() && rows.last().is_some_and(|r| display_width(r) >= width) {
             // The cursor after the last character: on a new row when that one is full.
-            let last = rows.last().map_or(0, |r| display_width(r));
-            if last >= width {
-                rows.push(String::new());
-                cursor = (rows.len() - 1, 0);
-            } else {
-                cursor = (rows.len() - 1, last);
-            }
+            rows.push(String::new());
+            cursor = (rows.len() - 1, 0);
         }
         (rows, cursor)
     }
+}
+
+/// Where one line (no newline in it) breaks into rows of at most `width` columns: byte ranges
+/// of each row's text. The space a row breaks at is left out of both rows.
+fn wrap_segments(line: &str, width: usize) -> Vec<(usize, usize)> {
+    let mut segs = Vec::new();
+    let (mut start, mut col) = (0, 0);
+    // The last space in the current row: where its text would end, and where the next starts.
+    let mut brk: Option<(usize, usize)> = None;
+    for (idx, c) in line.char_indices() {
+        let w = char_width(c);
+        if c == ' ' {
+            if col + w <= width {
+                brk = Some((idx, idx + 1));
+                col += w;
+            } else {
+                segs.push((start, idx));
+                (start, col, brk) = (idx + 1, 0, None);
+            }
+            continue;
+        }
+        while col + w > width {
+            match brk.take() {
+                Some((end, next)) => {
+                    segs.push((start, end));
+                    start = next;
+                    col = display_width(&line[next..idx]);
+                }
+                None => {
+                    segs.push((start, idx));
+                    start = idx;
+                    col = 0;
+                }
+            }
+        }
+        col += w;
+    }
+    segs.push((start, line.len()));
+    segs
 }
 
 #[cfg(test)]
@@ -368,6 +399,22 @@ mod tests {
         let lines = ed("a\nbc", 1);
         assert_eq!(lines.layout(10), (vec!["a".into(), "bc".into()], (0, 1)));
         assert_eq!(Editor::default().layout(10), (vec![String::new()], (0, 0)));
+    }
+
+    #[test]
+    fn layout_breaks_at_spaces_and_never_inside_a_word_that_fits() {
+        let e = ed("the quick brown fox", 19);
+        assert_eq!(e.layout(10), (vec!["the quick".into(), "brown fox".into()], (1, 9)));
+        // The cursor on the space a row breaks at sits at the end of that row.
+        let e = ed("the quick brown fox", 9);
+        assert_eq!(e.layout(10), (vec!["the quick".into(), "brown fox".into()], (0, 9)));
+        let e = ed("the quick brown fox", 10);
+        assert_eq!(e.layout(10).1, (1, 0));
+        // A word wider than a row is still cut by column; a row's text is never lost.
+        let e = ed("a supercalifragilistic b", 24);
+        let (rows, _) = e.layout(8);
+        assert_eq!(rows.join(" ").replace("  ", " "), "a supercal ifragili stic b".replace("  ", " "));
+        assert!(rows.iter().all(|r| display_width(r) <= 8), "{rows:?}");
     }
 
     #[test]

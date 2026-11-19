@@ -14,6 +14,7 @@ pub mod attach;
 pub mod audit;
 pub mod availability;
 pub mod base64;
+pub mod bgquery;
 pub mod backend;
 pub mod budget;
 pub mod bench;

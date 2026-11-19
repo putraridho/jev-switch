@@ -15,16 +15,22 @@ pub struct Section {
     pub rows: Vec<String>,
 }
 
-/// The panel's rows: each section's title in bold over its rows, a blank row between sections,
-/// every row cut to `width` columns. A section with no rows is left out.
+/// The panel's rows: each non-empty section a rounded box, its title in the top border
+/// (`╭─ Router ───────╮`) and its rows inside, every row exactly `width` columns. Boxes sit
+/// directly on one another, so the panel reads as a stack of labelled panes.
 pub fn panel_rows(sections: &[Section], width: usize, style: Style) -> Vec<String> {
+    let inner = width.saturating_sub(4).max(1);
     let mut out: Vec<String> = Vec::new();
     for s in sections.iter().filter(|s| !s.rows.is_empty()) {
-        if !out.is_empty() {
-            out.push(String::new());
+        let title = truncate_to_width(&s.title, inner.saturating_sub(2));
+        let fill = width.saturating_sub(display_width(&title) + 5);
+        out.push(format!("{}{}{}", style.dim("╭─ "), style.bold(&title), style.dim(&format!(" {}╮", "─".repeat(fill)))));
+        for r in &s.rows {
+            let shown = truncate_to_width(r, inner);
+            let pad = " ".repeat(inner - display_width(&shown));
+            out.push(format!("{} {shown}{pad} {}", style.dim("│"), style.dim("│")));
         }
-        out.push(truncate_to_width(&style.bold(&s.title), width));
-        out.extend(s.rows.iter().map(|r| truncate_to_width(&format!("  {r}"), width)));
+        out.push(style.dim(&format!("╰{}╯", "─".repeat(width.saturating_sub(2)))));
     }
     out
 }
@@ -71,8 +77,12 @@ mod tests {
     #[test]
     fn sections_stack_with_a_blank_between_and_empty_ones_vanish() {
         let rows = panel_rows(&sections(), 30, OFF);
-        assert_eq!(rows, vec!["Tasks", "  ☐ write tests", "", "Changed", "  M src/lib.rs"]);
-        assert!(panel_rows(&sections(), 8, OFF).iter().all(|r| display_width(r) <= 8));
+        assert_eq!(rows[0], "╭─ Tasks ────────────────────╮");
+        assert_eq!(rows[1], "│ ☐ write tests              │");
+        assert_eq!(rows[2], format!("╰{}╯", "─".repeat(28)));
+        assert!(rows[3].starts_with("╭─ Changed") && rows.len() == 6, "empty sections leave no box: {rows:?}");
+        assert!(panel_rows(&sections(), 30, OFF).iter().all(|r| display_width(r) == 30));
+        assert!(panel_rows(&sections(), 8, OFF).iter().all(|r| display_width(r) == 8));
     }
 
     #[test]
@@ -80,12 +90,12 @@ mod tests {
         let main: Vec<String> = (0..5).map(|i| format!("line {i}")).collect();
         let side = panel_rows(&sections(), PANEL_WIDTH, OFF);
         let wide = compose(&main, &side, 120, OFF);
-        assert_eq!(wide.len(), 5);
-        assert!(wide[0].starts_with("line 0") && wide[0].ends_with("│ Tasks"), "{:?}", wide[0]);
+        assert_eq!(wide.len(), 6, "as tall as the panel when that is taller");
+        assert!(wide[0].starts_with("line 0") && wide[0].contains("│ ╭─ Tasks"), "{:?}", wide[0]);
         assert!(wide.iter().all(|r| display_width(r) <= 120));
         let narrow = compose(&main, &side, 60, OFF);
         assert_eq!(narrow.len(), 5 + 1 + side.len());
-        assert!(narrow[5].starts_with('─') && narrow[6] == "Tasks");
+        assert!(narrow[5].starts_with('─') && narrow[6].starts_with("╭─ Tasks"));
         assert!(narrow.iter().all(|r| display_width(r) <= 60));
     }
 

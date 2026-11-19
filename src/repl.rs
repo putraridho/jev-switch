@@ -263,6 +263,11 @@ impl Repl {
         self
     }
 
+    /// Where the worker registry and scratch files live.
+    pub fn state_dir(&self) -> Option<&std::path::Path> {
+        self.state_dir.as_deref()
+    }
+
     /// The session's turns so far.
     pub fn log(&self) -> &SessionLog {
         &self.log
