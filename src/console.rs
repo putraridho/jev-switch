@@ -801,7 +801,7 @@ impl Inner {
                 }
             }
             Event::Hint(t) => {
-                let text = format!("  {}", style.yellow(&uifmt::strip_ansi(t)));
+                let text = hint_line(t, style, width);
                 self.emit_err(&text);
             }
             Event::Steered(text) => {
@@ -907,6 +907,13 @@ fn steered_line(text: &str, style: Style) -> String {
     format!("  {} {}{more} {}", style.cyan("↳"), shown, style.dim("(taken into the running turn)"))
 }
 
+/// A hint as one yellow line that fits the terminal: a long command or message is cut with `…`
+/// instead of filling the screen (the tool row above it already shows the whole call).
+fn hint_line(text: &str, style: Style, width: usize) -> String {
+    let flat = uifmt::strip_ansi(text).split_whitespace().collect::<Vec<_>>().join(" ");
+    format!("  {}", style.yellow(&uifmt::truncate_to_width(&flat, width.saturating_sub(2))))
+}
+
 impl Ui for Console {
     fn route(&mut self, line: &str) {
         let mut g = self.lock();
@@ -934,7 +941,8 @@ impl Ui for Console {
             }
             // Diagnostics, never part of the answer: stderr, in print mode too.
             Event::Hint(t) => {
-                let text = format!("  {}", g.cfg.err_style.yellow(&uifmt::strip_ansi(t)));
+                let (style, width) = (g.cfg.err_style, g.width());
+                let text = hint_line(t, style, width);
                 g.emit_err(&text);
             }
             Event::Text(t) if g.cfg.stream_answers => {
@@ -1341,6 +1349,15 @@ mod tests {
         assert_eq!(c.queued_len(), 1);
         assert_eq!(c.take_queued().as_deref(), Some("second"));
         assert!(err.text().contains("(taken into the running turn)"), "{}", err.text());
+    }
+
+    #[test]
+    fn a_hint_is_one_line_cut_to_the_width() {
+        let long = format!("\u{2713} auto-allowed cd $(mktemp -d) && python3 - <<'EOF'\n{}\nEOF", "x = 1; ".repeat(60));
+        let line = hint_line(&long, Style::off(), 80);
+        assert!(!line.contains('\n') && crate::uifmt::display_width(&line) <= 80, "{line}");
+        assert!(line.starts_with("  \u{2713} auto-allowed cd") && line.ends_with('\u{2026}'), "{line}");
+        assert_eq!(hint_line("\u{2717} denied Bash", Style::off(), 80), "  \u{2717} denied Bash");
     }
 
     fn console(live: bool, style: Style, stream_answers: bool) -> (Console, Buf, Buf) {

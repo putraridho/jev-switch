@@ -12,6 +12,9 @@
   turn to finish: `↳ message (taken into the running turn)`. A turn that ends first, and the
   other providers (Codex, Antigravity), keep the old behaviour: it runs as the next turn. The
   privacy policy and the secret scan apply to it.
+- The yellow hints (`✓ auto-allowed …`, `✓ allowed (remembered) …`, denied calls) are one line, cut to
+  the terminal width with `…`. A long command no longer fills the screen; the tool row above
+  already shows it.
 
 - **`jev-claude` attaches the delegate tool.** Claude Code gets the MCP server `jev`
   (`delegate`, `show_diff`, `merge`, `discard`), so it can hand pieces of a task to workers on your
