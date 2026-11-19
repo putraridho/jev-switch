@@ -120,9 +120,9 @@ fn walk(dir: &Path, base: &Path, out: &mut Vec<PathBuf>) {
     for entry in read.filter_map(Result::ok) {
         let path = entry.path();
         let Ok(kind) = entry.file_type() else { continue };
-        // `file_type` does not follow links. A link to a folder is not packed: it could lead
-        // back up (an endless walk) or out of the extension (a private folder in a package).
-        if kind.is_symlink() && path.is_dir() {
+        // `file_type` does not follow links. A link is never packed: it could lead back up
+        // (an endless walk) or out of the extension (a private file or folder in a package).
+        if kind.is_symlink() {
             continue;
         }
         if kind.is_dir() {
@@ -141,7 +141,12 @@ pub fn pack(dir: &Path, name: &str, version: &str) -> Result<Manifest, MarketErr
     }
     let mut files = Vec::new();
     for top in ALLOWED_DIRS {
-        walk(&dir.join(top), dir, &mut files);
+        let folder = dir.join(top);
+        // A linked top folder is a link like any other.
+        if std::fs::symlink_metadata(&folder).is_ok_and(|m| m.file_type().is_symlink()) {
+            continue;
+        }
+        walk(&folder, dir, &mut files);
     }
     if files.is_empty() {
         return fail(format!("nothing to pack: no files in {}", ALLOWED_DIRS.join(", ")));
@@ -325,9 +330,11 @@ mod tests {
         std::os::unix::fs::symlink("..", src.join("commands/up")).unwrap();
         let manifest = pack(&src, "hello-kit", "1.0.0").unwrap();
         assert_eq!(manifest.files.keys().collect::<Vec<_>>(), ["commands/hello.md"]);
-        // So is a link out of the extension: its files are not packed.
+        // Links out of the extension are not packed: a folder, a file, or a linked top folder.
         std::fs::create_dir_all(root.join("private")).unwrap();
         std::fs::write(root.join("private/key"), "secret").unwrap();
+        std::os::unix::fs::symlink(root.join("private/key"), src.join("commands/key.md")).unwrap();
+        std::os::unix::fs::symlink(root.join("private"), src.join("skills")).unwrap();
         std::os::unix::fs::symlink(root.join("private"), src.join("commands/private")).unwrap();
         let manifest = pack(&src, "hello-kit", "1.0.0").unwrap();
         assert_eq!(manifest.files.keys().collect::<Vec<_>>(), ["commands/hello.md"]);
