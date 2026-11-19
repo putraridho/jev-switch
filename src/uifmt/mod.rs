@@ -47,7 +47,7 @@ mod wrap;
 #[cfg(test)]
 mod testutil;
 
-pub use ansi::{clear_line, hide_cursor, restore_cursor, save_cursor, show_cursor, strip_ansi, up_row};
+pub use ansi::{clean_text, clear_line, hide_cursor, restore_cursor, save_cursor, show_cursor, strip_ansi, up_row};
 pub use changes::{changes_block, diff_colorize, relativize_paths, tool_line, FileChange, MAX_CHANGE_ROWS};
 pub use commands::{command_names, command_usage, Cmd, Group, COMMANDS, KEYS};
 pub use complete::{complete, completion_start, hint, Candidate, CompleteCtx};

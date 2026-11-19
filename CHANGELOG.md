@@ -1,5 +1,22 @@
 # Changelog
 
+## 1.3.0
+
+Updating from inside jev-code.
+
+- `/update` (and `jev-code update [--yes]` in a shell) brings jev-code up to the newest commit
+  of its checkout's upstream (`origin/master`): it fetches, lists the new commits and the
+  version change, and after a yes fast-forwards and runs `scripts/install.sh`, its output
+  shown as it runs. When the checkout is already newer than the installed program, it offers
+  to reinstall without pulling.
+- It never merges, rebases or discards anything: changes to tracked files (when something
+  would change), a detached head, no upstream, or a branch that has diverged from it stop it,
+  with what to do. Commit subjects are shown with control characters removed. The checkout is
+  the one the program was built from; only `JEV_SOURCE_DIR` (environment or your own settings,
+  never a project's) names another.
+- It says before asking that the build cannot be stopped halfway and that installing stops a
+  running jev-gateway. A running session keeps the old program until it is restarted.
+
 ## 1.2.0
 
 Prompt suggestions.

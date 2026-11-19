@@ -75,6 +75,7 @@ pub mod routing;
 pub mod routing_rules;
 pub mod scoreboard;
 pub mod secrets;
+pub mod selfupdate;
 pub mod sessionimport;
 pub mod sessionlib;
 pub mod sessionlog;

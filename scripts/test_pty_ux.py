@@ -833,6 +833,58 @@ def an_answer_that_offers_a_next_step_suggests_it_and_right_takes_it(w):
 
 
 @scenario
+def update_shows_the_new_commits_asks_then_pulls_and_reinstalls(w):
+    # A throwaway checkout and its upstream: JEV_SOURCE_DIR keeps the real repository out of it.
+    up, clone = os.path.join(w.tmp, "src-upstream"), os.path.join(w.tmp, "src-clone")
+    os.makedirs(os.path.join(up, "scripts"))
+    git = lambda cwd, *a: subprocess.run(["git", "-c", "user.email=t@t", "-c", "user.name=t", *a], cwd=cwd, check=True, capture_output=True)
+    with open(os.path.join(up, "Cargo.toml"), "w") as f:
+        f.write('[package]\nversion = "0.0.1"\n')
+    with open(os.path.join(up, "scripts", "install.sh"), "w") as f:
+        f.write("#!/bin/sh\necho FAKE INSTALL RAN\n: > installed\n")
+    os.chmod(os.path.join(up, "scripts", "install.sh"), 0o755)
+    git(up, "init", "-q", "-b", "master")
+    git(up, "add", "-A")
+    git(up, "commit", "-qm", "first")
+    git(w.tmp, "clone", "-q", up, clone)
+    with open(os.path.join(up, "Cargo.toml"), "w") as f:
+        f.write('[package]\nversion = "9.9.9"\n')
+    git(up, "commit", "-qam", "release 9.9.9")
+
+    p = Pty(w, [w.repo], "update", env=w.env(JEV_SOURCE_DIR=clone))
+    try:
+        prompt_ready(p)
+        p.send("/update\r")
+        p.expect("→ 9.9.9: 1 new commit on origin/master", 15, "the version change and the commit count")
+        p.expect("release 9.9.9", 5, "the incoming commit")
+        p.expect("Pull it and reinstall jev-code now?", 10, "the confirmation card")
+        p.settle(0.3)
+        p.send("y")
+        p.expect("FAKE INSTALL RAN", 15, "the install script's output")
+        p.expect("jev-code 9.9.9 is installed", 15, "the result")
+        if not os.path.exists(os.path.join(clone, "installed")):
+            raise Fail("the install script should have run in the checkout")
+        wait_prompt(p, 10, "the prompt")
+        # Now nothing is newer upstream; the running program is older than the checkout, so
+        # it offers to reinstall without pulling, and No leaves everything as it is.
+        p.send("/update\r")
+        p.expect("the checkout is newer than the installed program", 15, "the reinstall offer")
+        p.expect("Reinstall jev-code from the checkout now?", 10, "its confirmation card")
+        p.settle(0.3)
+        p.send("n")
+        p.expect("Left as it is.", 10, "the refusal")
+        wait_prompt(p, 10, "the prompt")
+        # A tracked change in the checkout stops it before anything happens.
+        with open(os.path.join(clone, "Cargo.toml"), "a") as f:
+            f.write("# local edit\n")
+        p.send("/update\r")
+        p.expect("uncommitted changes to tracked files", 15, "the refusal with local changes")
+        quit_with_ctrl_d(p)
+    finally:
+        p.close()
+
+
+@scenario
 def a_typed_prompt_runs_a_turn_with_tools_answer_and_summary(w):
     p = Pty(w, [w.repo], "turn")
     try:

@@ -30,6 +30,8 @@ pub enum Action {
     Doctor,
     /// `ext ...`: install, update, remove, list and pack extensions.
     Ext(ExtAction),
+    /// `update [--yes]`: pull the newest jev-code and reinstall it; `--yes` skips the question.
+    Update { yes: bool },
     Help,
     Version,
 }
@@ -72,7 +74,7 @@ impl std::fmt::Display for UsageError {
 impl std::error::Error for UsageError {}
 
 /// The short usage printed under a usage error.
-pub const USAGE: &str = "usage: jev-code [options] [dir]\n       jev-code doctor [dir]\n       jev-code ext list|install|update|remove|pack\ntry `jev-code --help`";
+pub const USAGE: &str = "usage: jev-code [options] [dir]\n       jev-code doctor [dir]\n       jev-code ext list|install|update|remove|pack\n       jev-code update [--yes]\ntry `jev-code --help`";
 
 fn err<T>(message: impl Into<String>) -> Result<T, UsageError> {
     Err(UsageError(message.into()))
@@ -96,6 +98,15 @@ where
     let mut every: Option<Schedule> = None;
     let mut times: Option<u32> = None;
     while let Some(arg) = it.next() {
+        if first && arg == "update" {
+            let rest: Vec<String> = it.collect();
+            out.action = match rest.iter().map(String::as_str).collect::<Vec<_>>().as_slice() {
+                [] => Action::Update { yes: false },
+                ["--yes" | "-y"] => Action::Update { yes: true },
+                _ => return err("usage: jev-code update [--yes]"),
+            };
+            return Ok(out);
+        }
         if std::mem::take(&mut first) && arg == "ext" {
             let rest: Vec<String> = it.collect();
             out.action = Action::Ext(crate::ext::cli::parse(&rest).map_err(UsageError)?);
@@ -193,6 +204,7 @@ USAGE:
   jev-code [options] [project-dir]   start in project-dir (default: the current directory)
   jev-code doctor [project-dir]      check the setup and say how to fix what is missing
   jev-code ext <list|install|update|remove|pack>   manage extensions (checksummed folders)
+  jev-code update [--yes]            pull the newest jev-code (its checkout's upstream) and reinstall it
 
 OPTIONS:
   -p, --print <prompt>   run one turn, print only the answer on stdout (progress goes to
@@ -407,6 +419,10 @@ mod tests {
 
     #[test]
     fn ext_is_a_subcommand_only_in_first_place() {
+        assert_eq!(ok(&["update"]).action, Action::Update { yes: false });
+        assert_eq!(ok(&["update", "--yes"]).action, Action::Update { yes: true });
+        assert!(bad(&["update", "now"]).contains("jev-code update [--yes]"));
+        assert_eq!(ok(&["./update"]).dir, Some(PathBuf::from("./update")), "a folder called update is reachable");
         assert_eq!(ok(&["ext", "list"]).action, Action::Ext(ExtAction::List));
         assert_eq!(ok(&["ext", "remove", "kit"]).action, Action::Ext(ExtAction::Remove("kit".into())));
         assert!(bad(&["ext"]).contains("jev-code ext list"));

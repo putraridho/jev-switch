@@ -54,6 +54,8 @@ pub enum Command {
     Status,
     /// `/doctor`: the setup check, inside the session.
     Doctor,
+    /// `/update`: pull the newest version of jev-code's checkout and reinstall it.
+    Update,
     /// `/diff [file]`: what the last turn changed.
     Diff(Option<String>),
     /// `/undo`: put back what the last turn changed.
@@ -196,7 +198,7 @@ pub fn parse(line: &str) -> Command {
     match head {
         "/quit" | "/exit" => Command::Quit,
         "/new" => Command::New,
-        "/help" | "/status" | "/doctor" | "/undo" | "/clear" | "/context" | "/cost" | "/usage" | "/why" | "/copy" | "/edit" | "/cache"
+        "/help" | "/status" | "/doctor" | "/update" | "/undo" | "/clear" | "/context" | "/cost" | "/usage" | "/why" | "/copy" | "/edit" | "/cache"
         | "/init" | "/memory" | "/config" | "/agents" | "/orchestration"
             if arg.is_some() =>
         {
@@ -233,6 +235,7 @@ pub fn parse(line: &str) -> Command {
         "/help" => Command::Help,
         "/status" => Command::Status,
         "/doctor" => Command::Doctor,
+        "/update" => Command::Update,
         "/undo" => Command::Undo,
         "/rewind" => match (arg, extra) {
             (None, _) => Command::Rewind(None),
@@ -397,6 +400,8 @@ mod tests {
         assert_eq!(parse("/help"), Command::Help);
         assert_eq!(parse("/status"), Command::Status);
         assert_eq!(parse("/doctor"), Command::Doctor);
+        assert_eq!(parse("/update"), Command::Update);
+        assert!(matches!(parse("/update now"), Command::Invalid(_)));
         assert_eq!(parse("/undo"), Command::Undo);
         assert_eq!(parse("/rewind"), Command::Rewind(None));
         assert_eq!(parse("/rewind 2"), Command::Rewind(Some(2)));

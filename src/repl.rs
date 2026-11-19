@@ -344,6 +344,7 @@ impl Repl {
                 self.page_out(&text);
             }
             Command::TerminalSetup { install } => self.terminal_setup(install, io),
+            Command::Update => self.update(io),
             Command::Shell(command) => self.shell(&command),
             Command::Note(note) => self.note(&note),
             Command::Resume(query) => self.resume(query.as_deref()),

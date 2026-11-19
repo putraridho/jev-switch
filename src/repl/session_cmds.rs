@@ -339,6 +339,58 @@ impl Repl {
         uifmt::config_text(&session, &env, &files, self.out_style())
     }
 
+    /// `/update`: fetch the checkout's upstream, show what is new, and after a yes fast-forward
+    /// and reinstall. The running session keeps the old program until it is restarted.
+    pub(super) fn update(&mut self, io: &mut Io<'_>) {
+        use crate::selfupdate::{self, Plan};
+        let style = self.out_style();
+        let dir = match selfupdate::source_dir() {
+            Ok(dir) => dir,
+            Err(why) => {
+                self.console.out(&format!("{} cannot update: {why}", style.yellow("⚠")));
+                return;
+            }
+        };
+        self.console.out(&style.dim(&format!("  checking {} for a new version...", tilde(&dir, self.home.as_deref()))));
+        let plan = match selfupdate::check(&dir) {
+            Ok(facts) => selfupdate::plan(&facts, selfupdate::running_version()),
+            Err(why) => Plan::Refused(why),
+        };
+        let lines = selfupdate::plan_text(&plan);
+        let pull = match &plan {
+            Plan::UpToDate { .. } => {
+                self.console.out(&format!("{} {}", style.green("✓"), lines.join("\n")));
+                return;
+            }
+            Plan::Refused(_) => {
+                self.console.out(&format!("{} {}", style.yellow("⚠"), lines.join("\n  ")));
+                return;
+            }
+            Plan::Update { pull, .. } => *pull,
+        };
+        let mut shown = lines.into_iter();
+        if let Some(head) = shown.next() {
+            self.console.out(&format!("  {}", style.bold(&head)));
+        }
+        for line in shown {
+            self.console.out(&format!("  {}", style.dim(&line)));
+        }
+        let Some(confirm) = io.confirm.as_mut() else {
+            self.console.out(&format!("{} Not updated: asking needs a terminal. Run `jev-code update` in one.", style.yellow("⚠")));
+            return;
+        };
+        let question = if pull { "Pull it and reinstall jev-code now? [y/N] " } else { "Reinstall jev-code from the checkout now? [y/N] " };
+        if !confirm.confirm(question) {
+            self.console.out(&format!("  {}", style.dim("Left as it is.")));
+            return;
+        }
+        let console = &self.console;
+        match selfupdate::apply(&dir, pull, &mut |line| console.out(&format!("  {}", style.dim(line)))) {
+            Ok(version) => self.console.out(&format!("{} jev-code {version} is installed. Restart jev-code to use it (this session keeps running the old one).", style.green("✓"))),
+            Err(why) => self.console.out(&format!("{} {why}", style.yellow("⚠"))),
+        }
+    }
+
     /// `/terminal-setup [install]`.
     pub(super) fn terminal_setup(&mut self, install: bool, io: &mut Io<'_>) {
         let style = self.out_style();

@@ -23,7 +23,7 @@ pub struct Cmd {
     pub hint: &'static str,
 }
 
-pub const COMMANDS: [Cmd; 56] = [
+pub const COMMANDS: [Cmd; 57] = [
     Cmd { name: "/model", args: "[target]", group: Group::Model, about: "Pin a model or provider, or `auto` to let the router choose", example: "/model codex:gpt-6.1-sol", hint: "auto|codex|claude:..." },
     Cmd { name: "/provider", args: "auto|off", group: Group::Model, about: "Route across providers (auto), or use Claude only (off)", example: "/provider off", hint: "auto|off" },
     Cmd { name: "/orchestrate", args: "[on|off]", group: Group::Model, about: "Let a planner split a big task across cheaper workers", example: "/orchestrate on", hint: "on|off" },
@@ -79,6 +79,7 @@ pub const COMMANDS: [Cmd; 56] = [
     Cmd { name: "/keys", args: "", group: Group::Info, about: "Show the key cheat sheet (also ? on an empty box)", example: "", hint: "" },
     Cmd { name: "/whatsnew", args: "[all]", group: Group::Info, about: "Show what changed in this version, or in every version", example: "/whatsnew all", hint: "[all]" },
     Cmd { name: "/doctor", args: "", group: Group::Info, about: "Check the setup and show how to fix problems", example: "", hint: "" },
+    Cmd { name: "/update", args: "", group: Group::Info, about: "Update jev-code to the newest version on master and reinstall it", example: "", hint: "" },
     Cmd { name: "/terminal-setup", args: "[install]", group: Group::Info, about: "Make Shift-Enter insert a new line in your terminal", example: "/terminal-setup install", hint: "[install]" },
 ];
 

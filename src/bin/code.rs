@@ -127,6 +127,7 @@ async fn run() -> i32 {
             return 0;
         }
         Action::Ext(action) => return ext_command(&action, args.no_color),
+        Action::Update { yes } => return update_command(yes),
         _ => {}
     }
     let term = Term::detect(args.no_color);
@@ -170,6 +171,58 @@ fn apply_layered_settings(args: &Args, dir: &Path) {
     let profile = std::env::var("JEV_PROFILE").ok().filter(|p| !p.is_empty());
     let places = jev_router::ext::Places::from_env(dir);
     jev_router::layers::Layered::load(&places, profile.as_deref()).apply_to_process();
+}
+
+/// `jev-code update [--yes]`: the same as `/update`, from the shell. Asks on the terminal unless
+/// `--yes`; without a terminal to ask on, only `--yes` updates. Exit code: 0 updated or already
+/// the newest, 1 refused or failed, 2 not confirmed.
+fn update_command(yes: bool) -> i32 {
+    use jev_router::selfupdate::{self, Plan};
+    use std::io::{BufRead, IsTerminal, Write};
+    let dir = match selfupdate::source_dir() {
+        Ok(dir) => dir,
+        Err(why) => {
+            eprintln!("cannot update: {why}");
+            return 1;
+        }
+    };
+    eprintln!("checking {} for a new version...", dir.display());
+    let plan = match selfupdate::check(&dir) {
+        Ok(facts) => selfupdate::plan(&facts, selfupdate::running_version()),
+        Err(why) => Plan::Refused(why),
+    };
+    for line in selfupdate::plan_text(&plan) {
+        println!("{line}");
+    }
+    let pull = match plan {
+        Plan::UpToDate { .. } => return 0,
+        Plan::Refused(_) => return 1,
+        Plan::Update { pull, .. } => pull,
+    };
+    if !yes {
+        if !std::io::stdin().is_terminal() {
+            eprintln!("not updated: run it in a terminal to be asked, or pass --yes");
+            return 2;
+        }
+        eprint!("{}", if pull { "Pull it and reinstall jev-code now? [y/N] " } else { "Reinstall jev-code from the checkout now? [y/N] " });
+        let _ = std::io::stderr().flush();
+        let mut answer = String::new();
+        let _ = std::io::stdin().lock().read_line(&mut answer);
+        if !matches!(answer.trim().to_ascii_lowercase().as_str(), "y" | "yes") {
+            eprintln!("left as it is");
+            return 2;
+        }
+    }
+    match selfupdate::apply(&dir, pull, &mut |line| println!("  {line}")) {
+        Ok(version) => {
+            println!("jev-code {version} is installed");
+            0
+        }
+        Err(why) => {
+            eprintln!("{why}");
+            1
+        }
+    }
 }
 
 /// `jev-code ext ...`: no providers and no terminal setup, only the config folder.
