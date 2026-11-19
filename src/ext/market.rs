@@ -14,7 +14,7 @@
 //! Sources are folders on disk. Hooks are not an extension file type: a hook runs shell
 //! commands, so it can only be written by the person themselves.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Component, Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -150,6 +150,42 @@ fn walk(dir: &Path, base: &Path, out: &mut Vec<PathBuf>) {
     }
 }
 
+// Unlike `walk` used for packing, this must refuse links and unreadable entries: anything
+// hidden from inspection could be lost when an unregistered folder is replaced.
+fn contains_only_manifest_files(dir: &Path, base: &Path, allowed: &BTreeSet<PathBuf>) -> bool {
+    let Ok(entries) = std::fs::read_dir(dir) else { return false };
+    for entry in entries {
+        let Ok(entry) = entry else { return false };
+        let Ok(kind) = entry.file_type() else { return false };
+        let path = entry.path();
+        if kind.is_dir() {
+            if !contains_only_manifest_files(&path, base, allowed) {
+                return false;
+            }
+        } else if !kind.is_file() || !path.strip_prefix(base).is_ok_and(|rel| allowed.contains(rel)) {
+            return false;
+        }
+    }
+    true
+}
+
+fn changed_files(dir: &Path, manifest: &Manifest) -> Vec<String> {
+    manifest.files.iter().filter(|(rel, sum)| hash_file(&dir.join(rel)).map_or(true, |now| !now.eq_ignore_ascii_case(sum))).map(|(rel, _)| rel.clone()).collect()
+}
+
+fn is_pristine_copy(dir: &Path, name: &str) -> bool {
+    if !std::fs::symlink_metadata(dir).is_ok_and(|m| m.file_type().is_dir()) {
+        return false;
+    }
+    let Ok(manifest) = read_manifest(dir) else { return false };
+    if manifest.name != name {
+        return false;
+    }
+    let Ok(mut allowed) = manifest.files.keys().map(|rel| checked_path(rel)).collect::<Result<BTreeSet<_>, _>>() else { return false };
+    allowed.insert(PathBuf::from(MANIFEST));
+    contains_only_manifest_files(dir, dir, &allowed) && changed_files(dir, &manifest).is_empty()
+}
+
 /// Write `<dir>/jev-extension.json` for the files in the allowed folders of `dir`. The name
 /// and version are the ones given, or the existing manifest's.
 pub fn pack(dir: &Path, name: &str, version: &str) -> Result<Manifest, MarketError> {
@@ -211,9 +247,9 @@ pub fn install(user: &Path, source: &Path) -> Result<Installed, MarketError> {
     let target = extensions_dir(user).join(&manifest.name);
     let mut registry = load_registry(user);
     let replaced = registry.extensions.iter().find(|r| r.name == manifest.name).map(|r| r.version.clone());
-    // A copy jev installed is listed in the registry, or carries the manifest every install
-    // writes into it, so a lost, unreadable or unsaved registry does not make it "hand-written".
-    let installed_by_jev = replaced.is_some() || read_manifest(&target).is_ok_and(|m| m.name == manifest.name);
+    // A registry entry identifies a managed copy. Without one, only a pristine copy with
+    // the expected manifest can be safely replaced after a lost or unreadable registry.
+    let installed_by_jev = replaced.is_some() || is_pristine_copy(&target, &manifest.name);
     if target.exists() && !installed_by_jev {
         return fail(format!("{} exists and was not installed from a package; remove or rename it first", target.display()));
     }
@@ -312,8 +348,7 @@ fn listing_of(user: &Path, record: &Record) -> Listing {
     let state = match read_manifest(&dir) {
         Err(_) => State::Changed(vec![MANIFEST.to_string()]),
         Ok(manifest) => {
-            let bad: Vec<String> =
-                manifest.files.iter().filter(|(rel, sum)| hash_file(&dir.join(rel)).map_or(true, |now| !now.eq_ignore_ascii_case(sum))).map(|(rel, _)| rel.clone()).collect();
+            let bad = changed_files(&dir, &manifest);
             if bad.is_empty() {
                 State::Verified
             } else {
@@ -440,6 +475,8 @@ mod tests {
         let (src, user) = (root.join("src"), root.join("cfg"));
         package(&src, "1.0.0", "old");
         install(&user, &src).unwrap();
+        std::fs::write(user.join("extensions/hello-kit/commands/hello.md"), "edited").unwrap();
+        std::fs::write(user.join("extensions/hello-kit/commands/draft.md"), "draft").unwrap();
         package(&src, "2.0.0", "new");
 
         let installed = install(&user, &src).unwrap();
@@ -465,6 +502,83 @@ mod tests {
             assert_eq!(installed.version, "2.0.0");
             assert_eq!(std::fs::read_to_string(user.join("extensions/hello-kit/commands/hello.md")).unwrap(), "new");
         }
+    }
+
+    #[test]
+    fn lost_registry_with_an_extra_file_preserves_the_draft() {
+        let root = temp("lost-registry-draft");
+        let (src, user) = (root.join("src"), root.join("cfg"));
+        package(&src, "1.0.0", "original");
+        install(&user, &src).unwrap();
+        std::fs::remove_file(user.join(REGISTRY)).unwrap();
+        let draft = user.join("extensions/hello-kit/commands/draft.md");
+        std::fs::write(&draft, "unfinished").unwrap();
+
+        let error = install(&user, &src).unwrap_err();
+        assert!(error.0.contains("was not installed from a package"), "{error}");
+        assert_eq!(std::fs::read_to_string(draft).unwrap(), "unfinished");
+    }
+
+    #[test]
+    fn lost_registry_with_a_modified_file_preserves_the_edit() {
+        let root = temp("lost-registry-edit");
+        let (src, user) = (root.join("src"), root.join("cfg"));
+        package(&src, "1.0.0", "original");
+        install(&user, &src).unwrap();
+        std::fs::remove_file(user.join(REGISTRY)).unwrap();
+        let edited = user.join("extensions/hello-kit/commands/hello.md");
+        std::fs::write(&edited, "my changes").unwrap();
+
+        let error = install(&user, &src).unwrap_err();
+        assert!(error.0.contains("was not installed from a package"), "{error}");
+        assert_eq!(std::fs::read_to_string(edited).unwrap(), "my changes");
+    }
+
+    #[test]
+    fn lost_registry_with_a_missing_file_refuses_replacement() {
+        let root = temp("lost-registry-missing");
+        let (src, user) = (root.join("src"), root.join("cfg"));
+        package(&src, "1.0.0", "original");
+        install(&user, &src).unwrap();
+        std::fs::remove_file(user.join(REGISTRY)).unwrap();
+        let missing = user.join("extensions/hello-kit/commands/hello.md");
+        std::fs::remove_file(&missing).unwrap();
+
+        let error = install(&user, &src).unwrap_err();
+        assert!(error.0.contains("was not installed from a package"), "{error}");
+        assert!(!missing.exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn lost_registry_with_a_link_refuses_replacement() {
+        let root = temp("lost-registry-link");
+        let (src, user) = (root.join("src"), root.join("cfg"));
+        package(&src, "1.0.0", "original");
+        install(&user, &src).unwrap();
+        std::fs::remove_file(user.join(REGISTRY)).unwrap();
+        let link = user.join("extensions/hello-kit/commands/link.md");
+        std::os::unix::fs::symlink("hello.md", &link).unwrap();
+
+        let error = install(&user, &src).unwrap_err();
+        assert!(error.0.contains("was not installed from a package"), "{error}");
+        assert!(std::fs::symlink_metadata(link).unwrap().file_type().is_symlink());
+    }
+
+    #[test]
+    fn copied_manifest_does_not_make_a_handmade_folder_managed() {
+        let root = temp("copied-manifest");
+        let (src, user) = (root.join("src"), root.join("cfg"));
+        package(&src, "1.0.0", "original");
+        let target = user.join("extensions/hello-kit");
+        std::fs::create_dir_all(target.join("commands")).unwrap();
+        std::fs::copy(src.join(MANIFEST), target.join(MANIFEST)).unwrap();
+        std::fs::copy(src.join("commands/hello.md"), target.join("commands/hello.md")).unwrap();
+        std::fs::write(target.join("notes.txt"), "my notes").unwrap();
+
+        let error = install(&user, &src).unwrap_err();
+        assert!(error.0.contains("was not installed from a package"), "{error}");
+        assert_eq!(std::fs::read_to_string(target.join("notes.txt")).unwrap(), "my notes");
     }
 
     #[test]

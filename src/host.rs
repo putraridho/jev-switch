@@ -54,6 +54,7 @@ pub fn run_shell(command: &str, dir: &Path, on_line: &mut dyn FnMut(&str)) -> Sh
     }
     let mut output = ShellTail::default();
     let mut take = |line: String, output: &mut ShellTail| {
+        // The UI may display a long line as multiple pieces; the model tail joins them.
         on_line(line.trim_end_matches(['\n', '\r']));
         output.push(&line);
     };
@@ -104,6 +105,9 @@ fn next_piece(reader: &mut impl std::io::Read, pending: &mut Vec<u8>, cap: usize
             while cut > 0 && pending[cut] & 0xC0 == 0x80 {
                 cut -= 1;
             }
+            if cut > 1 && pending[cut] == b'\n' && pending[cut - 1] == b'\r' {
+                cut -= 1;
+            }
             return Some(pending.drain(..if cut == 0 { cap } else { cut }).collect());
         }
         match reader.read(&mut buf) {
@@ -126,10 +130,13 @@ struct ShellTail {
     lines: VecDeque<String>,
     bytes: usize,
     cut: bool,
+    unfinished: bool,
 }
 
 impl ShellTail {
     fn push(&mut self, raw: &str) {
+        let continuation = self.unfinished;
+        self.unfinished = !raw.ends_with('\n');
         let line = match raw.strip_suffix('\n') {
             Some(line) => line.strip_suffix('\r').unwrap_or(line),
             None => raw,
@@ -146,8 +153,15 @@ impl ShellTail {
             self.bytes = line.len() - start;
             return;
         }
-        self.bytes += line.len() + usize::from(!self.lines.is_empty());
-        self.lines.push_back(line.to_string());
+        if continuation && !self.lines.is_empty() {
+            if let Some(last) = self.lines.back_mut() {
+                last.push_str(line);
+                self.bytes += line.len();
+            }
+        } else {
+            self.bytes += line.len() + usize::from(!self.lines.is_empty());
+            self.lines.push_back(line.to_string());
+        }
         while self.lines.len() > SHELL_KEEP_LINES {
             if let Some(first) = self.lines.pop_front() {
                 self.bytes -= first.len() + 1;
@@ -392,11 +406,19 @@ mod tests {
             format!("{}\n{}", "a".repeat(SHELL_KEEP_BYTES - 1), "é"),
             "\n".repeat(205),
             format!("{}\n\n", "a".repeat(SHELL_KEEP_BYTES)),
+            format!("{}\nend\n", "a".repeat(30_000)),
+            format!("{}\r\nend\n", "a".repeat(SHELL_KEEP_BYTES - 1)),
+            format!("{}\r\n", "a".repeat(SHELL_KEEP_BYTES)),
+            format!("{}\nend", "é".repeat(SHELL_KEEP_BYTES)),
         ];
         for text in cases {
             let mut tail = ShellTail::default();
-            for line in text.split_inclusive('\n') {
-                tail.push(line);
+            let (mut reader, mut pending) = (text.as_bytes(), Vec::new());
+            while let Some(piece) = next_piece(&mut reader, &mut pending, SHELL_KEEP_BYTES) {
+                tail.push(std::str::from_utf8(&piece).unwrap());
+                assert!(tail.lines.len() <= SHELL_KEEP_LINES);
+                assert!(tail.bytes <= SHELL_KEEP_BYTES);
+                assert_eq!(tail.bytes, tail.lines.iter().map(String::len).sum::<usize>() + tail.lines.len().saturating_sub(1));
             }
             let expected = keep_tail(&text);
             let cut = tail.cut;
@@ -431,6 +453,7 @@ mod tests {
         };
         assert_eq!(pieces(b"a\nbc\nd", 10), ["a\n", "bc\n", "d"]);
         assert_eq!(pieces(b"abcdefgh\n", 3), ["abc", "def", "gh\n"]);
+        assert_eq!(pieces(b"ab\r\n", 3), ["ab", "\r\n"]);
         // `é` is two bytes: a cut never splits it.
         assert_eq!(pieces("aéé".as_bytes(), 2), ["a", "é", "é"]);
         assert!(pieces(b"", 4).is_empty());
@@ -441,6 +464,25 @@ mod tests {
         let run = run_shell("yes x | tr -d '\\n' | head -c 3000000", Path::new("."), &mut |line| assert!(line.len() <= SHELL_KEEP_BYTES));
         assert_eq!(run.code, Some(0));
         assert!(run.truncated && run.output.len() <= SHELL_KEEP_BYTES, "{}", run.output.len());
+    }
+
+    #[test]
+    fn shell_retains_long_lines_without_inserting_newlines() {
+        let run = run_shell("printf '%030000d\\nend\\n' 0 | tr 0 a", Path::new("."), &mut |_| {});
+        let full = format!("{}\nend\n", "a".repeat(30_000));
+        assert_eq!(run.code, Some(0));
+        assert_eq!((run.output.as_str(), run.truncated), (keep_tail(&full).0.as_str(), true));
+        assert!(run.output.ends_with("\nend"));
+        assert!(!run.output.strip_suffix("\nend").unwrap().contains('\n'));
+    }
+
+    #[test]
+    fn shell_does_not_add_an_empty_line_after_a_cap_sized_line() {
+        let run = run_shell("printf '%020000d\\nend\\n' 0 | tr 0 a", Path::new("."), &mut |_| {});
+        let full = format!("{}\nend\n", "a".repeat(SHELL_KEEP_BYTES));
+        assert_eq!(run.code, Some(0));
+        assert_eq!((run.output.as_str(), run.truncated), (keep_tail(&full).0.as_str(), true));
+        assert!(!run.output.contains("\n\n"));
     }
 
     #[test]

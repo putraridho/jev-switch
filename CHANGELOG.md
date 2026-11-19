@@ -5,12 +5,13 @@ See [docs/changelog-guide.md](docs/changelog-guide.md) for changelog formatting,
 ## Unreleased
 
 - Vim `dd` on the last line of a multi-line message no longer crashes jev-code.
-- A repo's `.jev/team.json` pin now respects your own `avoid` and `only` rules for the turn's task. When they exclude the pinned provider, or it cannot do that kind of work, the turn routes automatically and the route line says why. A pinned provider that is logged out or cooling down is still reported, not swapped.
-- jev-code's own git calls (status bar, doctor, completion, repo map, undo, delegate worktrees) no longer run programs the repo's own git config names: `core.fsmonitor`, hooks, and filter drivers. Their diffs skip `textconv` and external diff programs. Filter drivers in your global git config, such as git-lfs, still run.
-- Privacy rules catch files mentioned with `path:line:col`, `path:10-20` or `path#L4` suffixes.
+- A repo's `.jev/team.json` pin now respects your own `avoid` and `only` rules for the turn's task. When they exclude the pinned provider, or it cannot do that kind of work, the turn routes automatically and the route line says why. A pinned provider or model that is logged out, cooling down, failed over or unknown is still reported, not swapped.
+- jev-code's own git calls (status bar, doctor, completion, repo map, undo, delegate worktrees) no longer run a repo's `core.fsmonitor` program or its hooks, and their diffs skip `textconv` and external diff programs. Filter, merge and credential programs still run, because git-crypt and git-lfs depend on them.
+- Privacy rules catch files mentioned with `path:line:col`, `path:10-20` or `path#L4` suffixes, also inside quotes (`` `config/.env`:12 ``).
 - Huge day counts in `/sessions clean <days>` and `since:Nd` no longer overflow; they can never delete recent sessions.
-- Installing an extension refuses to replace a hand-written folder of the same name.
-- `!command` keeps only the output tail it sends to the model in memory, so long-running noisy commands no longer grow without bound.
+- `since:` with a non-ASCII unit (`since:7日`) is refused instead of crashing jev-code.
+- Installing an extension refuses to replace a folder of the same name unless jev installed it: it is in the extension list, or its files match its manifest exactly.
+- `!command` keeps only the output tail it sends to the model in memory, even for output without line breaks, so long-running noisy commands no longer grow without bound. Long lines reach the model unbroken.
 - Cron schedules treat `*/n` in the day fields as unrestricted, as standard cron does (`0 9 */2 * 1` means odd days that are Mondays).
 
 ## 1.7.1

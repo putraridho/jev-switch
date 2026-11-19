@@ -120,12 +120,12 @@ pub fn plan(facts: &Facts, running: &str) -> Plan {
 
 /// `git -C dir args`, its stdout when it succeeded, else git's own words. Never asks for a
 /// password (the session owns the terminal) and never runs a program the checkout's config
-/// names ([`crate::gitflow::no_repo_programs`]).
+/// names on its own ([`crate::gitflow::NO_REPO_PROGRAMS`]).
 fn git(dir: &Path, args: &[&str]) -> Result<String, String> {
     let out = Command::new("git")
         .arg("-C")
         .arg(dir)
-        .args(crate::gitflow::no_repo_programs(dir))
+        .args(crate::gitflow::NO_REPO_PROGRAMS)
         .args(args)
         .env("GIT_TERMINAL_PROMPT", "0")
         .stdin(Stdio::null())

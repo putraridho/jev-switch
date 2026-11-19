@@ -5,70 +5,24 @@
 use std::path::Path;
 use std::process::{Command, Stdio};
 
-/// The programs a repository's own config can name that git runs without being asked:
-/// `core.fsmonitor` (on `status`/`diff`) and hooks (`post-checkout` on `worktree add`,
-/// `post-merge`). An empty `core.fsmonitor` turns it off in every git version; a hooks path
-/// with no hooks in it turns hooks off.
-const NO_FIXED_PROGRAMS: [&str; 4] = ["-c", "core.fsmonitor=", "-c", "core.hooksPath=/dev/null"];
-
-/// Put before the subcommand of every git call jev-code makes by itself: an agent that may
-/// edit files could name a program in `.git/config` that git then runs. Besides
-/// [`NO_FIXED_PROGRAMS`], every filter driver the repository's own config defines (a
-/// `.gitattributes` line switches it on, and `status`, `add` and checkouts run its `clean`,
-/// `smudge` or `process` program) is emptied, which git treats as no filter. Drivers in the
-/// person's global or system config (git-lfs) are theirs and stay on. Diff drivers
-/// (`textconv`, external diff) only run when a diff call asks for them, and ours pass
-/// `--no-textconv --no-ext-diff`.
-pub fn no_repo_programs(dir: &Path) -> Vec<String> {
-    let mut args: Vec<String> = NO_FIXED_PROGRAMS.iter().map(|s| (*s).to_string()).collect();
-    for driver in repo_filter_drivers(dir) {
-        for (key, value) in [("clean", ""), ("smudge", ""), ("process", ""), ("required", "false")] {
-            args.push("-c".to_string());
-            args.push(format!("filter.{driver}.{key}={value}"));
-        }
-    }
-    args
-}
-
-/// The filter drivers named in the repository's own config files (`.git/config`, its
-/// `config.worktree`, and what they include). Reading config runs no program.
-fn repo_filter_drivers(dir: &Path) -> Vec<String> {
-    let out = Command::new("git")
-        .arg("-C")
-        .arg(dir)
-        .args(NO_FIXED_PROGRAMS)
-        .args(["config", "--show-scope", "--includes", "--null", "--get-regexp", r"^filter\..+\.(clean|smudge|process)$"])
-        .stdin(Stdio::null())
-        .stderr(Stdio::null())
-        .output();
-    out.map_or_else(|_| Vec::new(), |o| repo_driver_names(&String::from_utf8_lossy(&o.stdout)))
-}
-
-/// The driver names from the repository's own scopes (`local`, `worktree`) in
-/// `git config --show-scope --null --get-regexp` output: `scope\0key\nvalue\0` per entry,
-/// keys `filter.<driver>.<variable>` (the driver may itself contain dots).
-fn repo_driver_names(listing: &str) -> Vec<String> {
-    let mut fields = listing.split('\0');
-    let mut drivers: Vec<String> = Vec::new();
-    while let (Some(scope), Some(entry)) = (fields.next(), fields.next()) {
-        if !matches!(scope, "local" | "worktree") {
-            continue;
-        }
-        let key = entry.split('\n').next().unwrap_or_default();
-        let Some((driver, _)) = key.strip_prefix("filter.").and_then(|rest| rest.rsplit_once('.')) else { continue };
-        if !driver.is_empty() && !drivers.iter().any(|d| d == driver) {
-            drivers.push(driver.to_string());
-        }
-    }
-    drivers
-}
+/// Put before the subcommand of every git call jev-code makes by itself. It turns off the
+/// programs a repository's config names that git would run on its own during the calls jev
+/// makes: `core.fsmonitor` (on `status`/`diff`; empty turns it off in every git version) and
+/// hooks (`post-checkout` on `worktree add`, `post-merge`; a hooks path with no hooks in it).
+/// Our diffs also pass `--no-textconv --no-ext-diff`.
+///
+/// This is a narrow guard, not a sandbox: filter, merge and credential programs still run,
+/// because real repositories depend on them (git-crypt and git-lfs install filter drivers in
+/// `.git/config`, and undo and worktrees need them to write real file contents). An agent
+/// that can rewrite `.git/config` can usually run commands directly anyway.
+pub const NO_REPO_PROGRAMS: [&str; 4] = ["-c", "core.fsmonitor=", "-c", "core.hooksPath=/dev/null"];
 
 /// The branches a pull request is never opened from.
 const TRUNKS: [&str; 3] = ["main", "master", "trunk"];
 
 /// The checked-out branch of `dir`; `None` outside a repository or on a detached head.
 pub fn current_branch(dir: &Path) -> Option<String> {
-    let out = Command::new("git").args(no_repo_programs(dir)).args(["symbolic-ref", "--short", "-q", "HEAD"]).current_dir(dir).stderr(Stdio::null()).output().ok()?;
+    let out = Command::new("git").args(NO_REPO_PROGRAMS).args(["symbolic-ref", "--short", "-q", "HEAD"]).current_dir(dir).stderr(Stdio::null()).output().ok()?;
     let name = String::from_utf8(out.stdout).ok()?.trim().to_string();
     (out.status.success() && !name.is_empty()).then_some(name)
 }
@@ -180,43 +134,31 @@ mod tests {
         }
     }
 
-    #[test]
-    fn driver_names_come_from_the_repos_own_scopes_only() {
-        let listing = "local\0filter.evil.clean\nsh -c x\0worktree\0filter.a.b.process\ny\0local\0filter.evil.smudge\nz\0\
-global\0filter.lfs.clean\ngit-lfs clean\0system\0filter.sys.clean\nq\0local\0diff.t.textconv\nz\0";
-        assert_eq!(repo_driver_names(listing), ["evil", "a.b"]);
-        assert!(repo_driver_names("").is_empty());
-    }
-
     #[cfg(unix)]
     #[test]
-    fn a_repo_filter_driver_and_hooks_do_not_run() {
-        let repo = scratch::Repo::new("filter");
+    fn hooks_do_not_run_but_the_repos_own_filter_drivers_still_do() {
+        let repo = scratch::Repo::new("hooks");
         repo.git(&["commit", "-q", "--allow-empty", "-m", "init"]);
         let marker = repo.marker();
-        repo.git(&["config", "filter.evil.clean", &format!("sh -c 'printf x > {}; cat'", marker.display())]);
-        repo.git(&["config", "filter.evil.required", "true"]);
-        std::fs::write(repo.path.join(".gitattributes"), "*.txt filter=evil\n").unwrap();
-        std::fs::write(repo.path.join("a.txt"), "two\n").unwrap();
 
-        let ours = no_repo_programs(&repo.path);
-        assert!(ours.contains(&"filter.evil.clean=".to_string()), "{ours:?}");
-        assert!(repo.runs(&ours, &["add", "a.txt"]), "an emptied filter is no filter, even when required");
-        assert!(!marker.exists(), "jev-code's git must not run the repo's filter");
-        std::fs::write(repo.path.join("a.txt"), "three\n").unwrap();
-        assert!(repo.runs(&[], &["add", "a.txt"]));
-        assert!(marker.exists(), "without the override the configured filter runs (the test is real)");
-        std::fs::remove_file(&marker).unwrap();
-
-        // A post-checkout hook does not run on `worktree add` either.
+        // A post-checkout hook does not run on `worktree add`.
         let hook = repo.path.join(".git/hooks/post-checkout");
         std::fs::write(&hook, format!("#!/bin/sh\nprintf x > {}\n", marker.display())).unwrap();
         std::fs::set_permissions(&hook, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
         let (ours_wt, plain_wt) = (repo.path.join("wt-ours"), repo.path.join("wt-plain"));
-        assert!(repo.runs(&no_repo_programs(&repo.path), &["worktree", "add", "-q", "--detach", &ours_wt.to_string_lossy()]));
+        assert!(repo.runs(&NO_REPO_PROGRAMS, &["worktree", "add", "-q", "--detach", &ours_wt.to_string_lossy()]));
         assert!(!marker.exists(), "jev-code's git must not run the repo's hooks");
         assert!(repo.runs(&[], &["worktree", "add", "-q", "--detach", &plain_wt.to_string_lossy()]));
         assert!(marker.exists(), "without the override the hook runs (the test is real)");
+        std::fs::remove_file(&marker).unwrap();
+
+        // A filter driver in `.git/config` keeps working: git-crypt and `git lfs install
+        // --local` put theirs there, and undo must write real contents, not ciphertext.
+        repo.git(&["config", "filter.crypt.clean", &format!("sh -c 'printf x > {}; cat'", marker.display())]);
+        std::fs::write(repo.path.join(".gitattributes"), "*.txt filter=crypt\n").unwrap();
+        std::fs::write(repo.path.join("a.txt"), "secret\n").unwrap();
+        assert!(repo.runs(&NO_REPO_PROGRAMS, &["add", "a.txt"]));
+        assert!(marker.exists(), "the repository's own filter driver must still run");
     }
 }
 
@@ -245,7 +187,7 @@ pub(crate) mod scratch {
             repo
         }
 
-        fn command(&self, prefix: &[String], args: &[&str]) -> Command {
+        fn command(&self, prefix: &[&str], args: &[&str]) -> Command {
             let mut command = Command::new("git");
             command
                 .args(prefix)
@@ -266,12 +208,12 @@ pub(crate) mod scratch {
         }
 
         /// `git prefix... args...`; whether it succeeded.
-        pub fn runs(&self, prefix: &[String], args: &[&str]) -> bool {
+        pub fn runs(&self, prefix: &[&str], args: &[&str]) -> bool {
             self.command(prefix, args).output().is_ok_and(|o| o.status.success())
         }
 
-        /// The file the test's hostile programs write when they run (outside the work tree,
-        /// so it never shows up in `git status`).
+        /// The file the test's programs write when they run (outside the work tree, so it
+        /// never shows up in `git status`).
         pub fn marker(&self) -> PathBuf {
             self.path.join(".git/marker")
         }

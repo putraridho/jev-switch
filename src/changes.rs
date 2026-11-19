@@ -321,7 +321,7 @@ fn merge_untracked(tree_files: Vec<FileChange>, before: &Snapshot, after: &Snaps
 /// Run `git -C dir args...` (optionally on another index) and return stdout.
 fn git(dir: &Path, index: Option<&Path>, args: &[&str]) -> Option<Vec<u8>> {
     let mut cmd = Command::new("git");
-    cmd.arg("-C").arg(dir).args(crate::gitflow::no_repo_programs(dir)).args(args).stdin(Stdio::null()).stderr(Stdio::null());
+    cmd.arg("-C").arg(dir).args(crate::gitflow::NO_REPO_PROGRAMS).args(args).stdin(Stdio::null()).stderr(Stdio::null());
     cmd.env("GIT_OPTIONAL_LOCKS", "0").env_remove("GIT_DIR").env_remove("GIT_WORK_TREE");
     match index {
         Some(i) => cmd.env("GIT_INDEX_FILE", i),
@@ -406,7 +406,7 @@ fn git_with_input(root: &Path, index: &Path, args: &[&str], input: &[u8]) -> Opt
     let mut child = Command::new("git")
         .arg("-C")
         .arg(root)
-        .args(crate::gitflow::no_repo_programs(root))
+        .args(crate::gitflow::NO_REPO_PROGRAMS)
         .args(args)
         .env("GIT_OPTIONAL_LOCKS", "0")
         .env_remove("GIT_DIR")

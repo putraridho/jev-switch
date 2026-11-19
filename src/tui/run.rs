@@ -193,7 +193,7 @@ fn show(screen: &mut Screen<std::io::Stdout>, app: &mut App, text: &str, style: 
 
 fn git_command(dir: &std::path::Path, args: &[&str]) -> std::process::Command {
     let mut command = std::process::Command::new("git");
-    command.args(crate::gitflow::no_repo_programs(dir)).args(args).current_dir(dir).stderr(std::process::Stdio::null());
+    command.args(crate::gitflow::NO_REPO_PROGRAMS).args(args).current_dir(dir).stderr(std::process::Stdio::null());
     command
 }
 
@@ -219,8 +219,7 @@ mod git_tests {
         for args in [&["rev-parse", "--abbrev-ref", "HEAD"][..], &["status", "--porcelain"][..]] {
             let command = git_command(dir, args);
             let actual: Vec<_> = command.get_args().collect();
-            let hardening = crate::gitflow::no_repo_programs(dir);
-            let expected: Vec<_> = hardening.iter().map(String::as_str).chain(args.iter().copied()).map(std::ffi::OsStr::new).collect();
+            let expected: Vec<_> = crate::gitflow::NO_REPO_PROGRAMS.iter().chain(args.iter()).map(std::ffi::OsStr::new).collect();
             assert_eq!(actual, expected);
         }
     }

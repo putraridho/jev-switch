@@ -376,7 +376,7 @@ pub fn git_status_short(dir: &Path) -> String {
     std::process::Command::new("git")
         .arg("-C")
         .arg(dir)
-        .args(crate::gitflow::no_repo_programs(dir))
+        .args(crate::gitflow::NO_REPO_PROGRAMS)
         .args(["status", "--short"])
         .output()
         .ok()
@@ -1226,10 +1226,14 @@ impl Engine {
             return Ok(self.legacy_choice(want, base));
         }
         let usable = self.runtime.usable(now).without(excluded);
-        // A team pin whose provider can take turns at all (logged in, not cooling down, not
-        // failed over); one that cannot is reported like any pin.
+        // A team pin that can take turns at all (provider logged in, not cooling down, not
+        // failed over; a pinned model known and still usable); one that cannot is reported
+        // like any pin.
         let team_pin_reachable = match (&self.pin, self.pin_origin) {
-            (Pin::Provider(p) | Pin::Model(p, _), PinOrigin::Team) => usable.has_provider(*p).then_some(*p),
+            (Pin::Provider(p), PinOrigin::Team) => usable.has_provider(*p).then_some(*p),
+            (Pin::Model(p, id), PinOrigin::Team) => {
+                catalog::find(*p, id).is_some_and(|spec| usable.contains(spec)).then_some(*p)
+            }
             _ => None,
         };
         let catch_ups = self.privacy_catch_ups(&usable);
@@ -2270,6 +2274,25 @@ mod tests {
         let mut r = rig(&[Claude, DeepSeek]);
         r.engine.runtime.cool_down(Claude, None, NOW);
         r.engine.set_team_pin(Pin::Provider(Claude));
+        let report = r.turn("add a retry to the client", want(TaskType::Feature)).await;
+        assert_eq!(report.status, TurnStatus::NoRoute, "{}", report.message);
+        assert!(r.started().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_team_pin_to_an_unknown_model_is_reported_not_swapped() {
+        let mut r = rig(&[Claude, DeepSeek]);
+        r.engine.set_team_pin(Pin::Model(Claude, "nope".into()));
+        let report = r.turn("add a retry to the client", want(TaskType::Feature)).await;
+        assert_eq!(report.status, TurnStatus::NoRoute, "{}", report.message);
+        assert!(r.started().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_team_pin_to_an_unusable_model_is_reported_not_swapped() {
+        let mut r = rig(&[Claude, DeepSeek]);
+        r.engine.runtime.unusable_models.insert((Claude, "claude-opus-5-5".to_string()));
+        r.engine.set_team_pin(Pin::Model(Claude, "claude-opus-5-5".into()));
         let report = r.turn("add a retry to the client", want(TaskType::Feature)).await;
         assert_eq!(report.status, TurnStatus::NoRoute, "{}", report.message);
         assert!(r.started().is_empty());
