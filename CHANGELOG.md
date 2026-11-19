@@ -4,6 +4,8 @@ See [docs/changelog-guide.md](docs/changelog-guide.md) for changelog formatting,
 
 ## Unreleased
 
+- `/help` is easier to scan: descriptions start in a narrower column, so most fit on one line instead of wrapping.
+
 ## 1.5.1
 
 A fix for `/compact` on a full session, bounded test concurrency, and an audit log that shows what a long turn did.

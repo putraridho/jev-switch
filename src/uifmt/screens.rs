@@ -7,6 +7,9 @@ use super::text::{one_line, plural};
 use super::width::{clamp_width, display_width, pad_to_width, truncate_to_width};
 use super::wrap::wrap_to_width;
 
+/// The widest the command column of `/help` grows.
+const COMMAND_COL_MAX: usize = 28;
+
 /// The `/help` screen for `width` columns: the commands in five groups, then the keys. A
 /// description that does not fit wraps at a word, under itself; on a narrow terminal it goes
 /// on the line under its command. No row is ever wider than `width`.
@@ -15,7 +18,8 @@ pub fn help_text(style: Style, width: usize) -> String {
     let mut lines: Vec<String> = vec![style.bold("Commands & shortcuts")];
     lines.extend(super::wrap_to_width("Type / to pick a command from a menu; Tab completes, Enter runs.", width).iter().map(|l| style.dim(l)));
     lines.push(String::new());
-    let command_col = COMMANDS.iter().map(|c| display_width(&usage(c))).max().unwrap_or(0) + 2;
+    // Capped, so one long synopsis (`/diff ...`) does not push every description off to the right.
+    let command_col = (COMMANDS.iter().map(|c| display_width(&usage(c))).max().unwrap_or(0) + 2).min(COMMAND_COL_MAX);
     let key_col = KEYS.iter().map(|(k, _)| display_width(k)).max().unwrap_or(0) + 2;
     let rows = |pairs: Vec<(String, &str)>, col: usize, lines: &mut Vec<String>| {
         // Side by side while the description keeps 30 columns; else under the command.
@@ -23,7 +27,11 @@ pub fn help_text(style: Style, width: usize) -> String {
         let (indent, room) = if side { (2 + col, width - 2 - col) } else { (4, width - 4) };
         for (key, about) in pairs {
             let wrapped = super::wrap_to_width(about, room);
-            if side {
+            if side && display_width(&key) + 2 > col {
+                // Too wide for the column: it gets a row, its description starts under it.
+                lines.push(truncate_to_width(&format!("  {}", style.cyan(&key)), width));
+                lines.extend(wrapped.iter().map(|part| format!("{}{part}", " ".repeat(indent))));
+            } else if side {
                 for (i, part) in wrapped.iter().enumerate() {
                     let lead = if i == 0 { format!("  {}", style.cyan(&pad_to_width(&key, col))) } else { " ".repeat(indent) };
                     lines.push(format!("{lead}{part}"));
