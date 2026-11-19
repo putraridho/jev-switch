@@ -21,16 +21,19 @@ export ANTHROPIC_CUSTOM_MODEL_OPTION_DESCRIPTION="Routes each turn: Sonnet, or O
 # your other subscriptions (Codex, Antigravity ...), each in its own git worktree, and merge the
 # diffs it reviewed. Needs jev-delegate-mcp (installed beside jev-code); JEV_DELEGATE=off skips it.
 # The config is per project folder and rewritten each start (the content is the same for every
-# session in the folder). `--mcp-config` takes several values, so an option that is already the
-# default follows it: a prompt typed after it is not read as another config file.
+# session in the folder). `--mcp-config` takes several values, so it is written with `=`: a
+# prompt typed after `--mcp-config <file>` would be read as another config file.
 mcp=()
 DELEGATE="$(command -v jev-delegate-mcp || true)"
 if [ "${JEV_DELEGATE:-on}" != off ] && [ -n "$DELEGATE" ]; then
-  key="$(printf %s "$PWD" | shasum | cut -c1-12)"
+  # Any checksum tool will do; without one the delegate is skipped, not the launch.
+  key="$(printf %s "$PWD" | { shasum || sha1sum || cksum; } 2>/dev/null | cut -c1-12 | tr -c 'A-Za-z0-9\n' _ || true)"
+fi
+if [ -n "${key:-}" ]; then
   cfg="$STATE/mcp-delegate-claude-$key.json"
   json() { local s=${1//\\/\\\\}; printf '"%s"' "${s//\"/\\\"}"; }
   (umask 077; printf '{"mcpServers":{"jev":{"command":%s,"args":["--dir",%s]}}}\n' "$(json "$DELEGATE")" "$(json "$PWD")" >"$cfg")
-  mcp=(--mcp-config "$cfg" --setting-sources user,project,local)
+  mcp=("--mcp-config=$cfg")
 fi
 for a in "$@"; do
   case "$a" in --model|--model=*) exec claude ${mcp[@]+"${mcp[@]}"} "$@" ;; esac
@@ -39,4 +42,4 @@ done
 MOD="${XDG_DATA_HOME:-$HOME/.local/share}/jev-router/mods/jev-orchestrate"
 plugin=()
 [ -d "$MOD" ] && plugin=(--plugin-dir "$MOD")
-exec claude ${mcp[@]+"${mcp[@]}"} --model 'jev-code[1m]' "${plugin[@]}" "$@"
+exec claude ${mcp[@]+"${mcp[@]}"} --model 'jev-code[1m]' ${plugin[@]+"${plugin[@]}"} "$@"

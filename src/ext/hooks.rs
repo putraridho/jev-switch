@@ -111,6 +111,9 @@ pub struct Hooks {
     project_hash: Option<String>,
     untrusted_defs: Vec<HookDef>,
     untrusted_settings: Vec<(String, String)>,
+    /// The project was trusted before, but its `.claude/settings.json` is new or changed since
+    /// (or was trusted by a version that did not record it), so Claude Code does not load it.
+    pub settings_changed: bool,
     /// Hooks in the project's own file exist but the project is not trusted, so they were not loaded.
     pub skipped_untrusted: usize,
     /// Problems reading the files, one line each.
@@ -175,9 +178,12 @@ fn settings_preview(bytes: &[u8]) -> Vec<(String, String)> {
                     };
                     for matcher in list {
                         // Which tools it fires for belongs to the review.
-                        let label = match matcher.get("matcher") {
-                            Some(m) => format!("{label}[{}]", m.as_str().map_or_else(|| m.to_string(), str::to_string)),
-                            None => format!("{label}[*]"),
+                        // A well-formed entry without a matcher fires for every tool; anything else
+                        // is not claimed to.
+                        let label = match (matcher.get("matcher"), matcher.is_object()) {
+                            (Some(m), _) => format!("{label}[{}]", m.as_str().map_or_else(|| m.to_string(), str::to_string)),
+                            (None, true) => format!("{label}[*]"),
+                            (None, false) => label.clone(),
                         };
                         match matcher.get("hooks").and_then(Value::as_array) {
                             Some(hooks) => out.extend(hooks.iter().map(|hook| (label.clone(), hook.get("command").map_or_else(|| hook.to_string(), text)))),
@@ -310,6 +316,8 @@ impl Hooks {
         let settings_trusted = places.user.as_deref().is_some_and(|user| claude_settings_trusted(user, &places.project));
         if !settings_trusted {
             hooks.untrusted_settings = claude_settings_preview(&places.project);
+            hooks.settings_changed = !hooks.untrusted_settings.is_empty()
+                && places.user.as_deref().is_some_and(|user| is_trusted(user, &places.project));
         }
         hooks
     }
@@ -697,6 +705,8 @@ mod tests {
         std::fs::write(trusted_file(&user), format!("{}\n", project.display())).unwrap();
         let loaded = Hooks::load(&Places { project: project.clone(), user: Some(user.clone()) });
         assert!(!loaded.untrusted_settings().is_empty());
+        assert!(loaded.settings_changed, "a remembered project whose settings were never trusted");
+        assert!(!never.settings_changed, "not for a project that was never trusted");
         assert!(trust_project(&user, &project).unwrap());
         let loaded = Hooks::load(&Places { project, user: Some(user) });
         assert!(loaded.untrusted_settings().is_empty());

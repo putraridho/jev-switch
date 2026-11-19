@@ -490,6 +490,9 @@ fn startup(repl: &mut Repl, args: &Args, term: &Term, console: &Console, state_d
     if let Some(notice) = state_dir.and_then(|d| jev_router::inflight::recovery_notice(d, repl.engine.dir())) {
         console.out(&style.yellow(&notice));
     }
+    if repl.engine.hooks().settings_changed {
+        console.out(&style.yellow("⚠ this project's .claude/settings.json changed since you trusted it, so Claude Code is not loading it: /hooks to review, /hooks trust to accept"));
+    }
     if args.resume {
         match repl.engine.resume() {
             Ok(info) => console.out(&views::resumed_line(&info, now, style)),

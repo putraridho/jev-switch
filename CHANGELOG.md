@@ -14,7 +14,8 @@ Fixes from code review round 4.
   again. Projects trusted by an earlier version load no project settings until `/hooks trust`
   is run once more. `/hooks` shows everything in the file while it is not trusted (each hook command with the tools it fires for,
   `env`, permissions, every other key and its value), also when it changed after you trusted it,
-  and `/hooks trust` lists what it approved.
+  and `/hooks trust` lists what it approved. A project you trusted before whose settings
+  changed (or were trusted by an older version) says so when jev-code starts.
 - A project's `.claude/settings.local.json` is no longer trusted as your own when git cannot
   say whether it is tracked (for instance "dubious ownership"). A folder that is not under git
   is unchanged.
