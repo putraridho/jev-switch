@@ -18,9 +18,9 @@ Fixes from code review round 4.
   typed (`/note pay $5` no longer loses the `$5`).
 - `/cache` no longer lists turns that reported no token counts (Antigravity over ACP) as misses.
 - Updating an extension keeps the installed copy if the new one cannot be written; `ext pack`
-  does not follow symbolic links (they could loop or lead out of the extension); `/diff` reads file names that git quotes (non-ASCII characters, quotes,
-  backslashes); `--every` refuses an interval too large to hold; `/export` writes a private
-  (0600) file.
+  does not pack symbolic links (they could loop or lead out of the extension); `/diff` reads
+  file names that git quotes (non-ASCII characters, quotes, backslashes); `--every` refuses an
+  interval too large to hold; `/export` writes a private (0600) file.
 
 ## 1.3.1
 
