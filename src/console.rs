@@ -788,10 +788,18 @@ impl Inner {
             }
             Event::Thinking(t) => {
                 self.flush_text(true);
-                self.set_activity("Thinking");
-                let block = self.step(uifmt::thinking_block(t, style, width));
-                self.fresh_turn = false;
-                self.emit_err(&block);
+                if show_thinking() {
+                    self.set_activity("Thinking");
+                    let block = self.step(uifmt::thinking_block(t, style, width));
+                    self.fresh_turn = false;
+                    self.emit_err(&block);
+                } else {
+                    // The reasoning is noise once it is over, and the scrollback cannot be
+                    // taken back: it lives on the working row (its latest line) and is gone
+                    // with the turn.
+                    let latest = uifmt::strip_ansi(t).lines().rev().map(str::trim).find(|l| !l.is_empty()).unwrap_or_default().to_string();
+                    self.set_activity(&if latest.is_empty() { "Thinking".to_string() } else { format!("Thinking · {latest}") });
+                }
             }
             Event::Edit { removed, added, .. } => {
                 let preview = uifmt::edit_preview(removed, added, style, width);
@@ -868,6 +876,11 @@ impl Inner {
 
 /// The answer gutter and attribution header are opt-in: `JEV_CODE_GUTTER=1`. Off by default
 /// so existing users' answers (and the PTY scenarios) keep their layout.
+/// `JEV_SHOW_THINKING=1` prints the model's reasoning into the scrollback as it comes.
+fn show_thinking() -> bool {
+    std::env::var("JEV_SHOW_THINKING").is_ok_and(|v| !v.is_empty() && v != "0")
+}
+
 fn attribution_gutter_enabled() -> bool {
     gutter_setting(std::env::var("JEV_CODE_GUTTER").ok().as_deref())
 }
@@ -1315,6 +1328,22 @@ mod tests {
     use super::testing::Buf;
     use super::*;
     use crate::backend::{ErrorKind, ProviderId};
+
+    #[test]
+    fn reasoning_stays_off_the_scrollback_and_shows_as_the_latest_line_on_the_working_row() {
+        let (c, _, err) = console(false, Style::off(), true);
+        let (front, mut heard) = Front::channel();
+        let mut c = c.with_front(front);
+        c.event(&Event::Thinking("First I will look at run.rs.\n\nThen the screen code.".into()));
+        assert!(!err.text().contains("run.rs") && !err.text().contains("screen code"), "{}", err.text());
+        let mut activity = None;
+        while let Ok(msg) = heard.try_recv() {
+            if let FrontMsg::Activity(t) = msg {
+                activity = Some(t);
+            }
+        }
+        assert_eq!(activity.as_deref(), Some("Thinking · Then the screen code."));
+    }
 
     #[test]
     fn a_front_gets_messages_for_the_turn_and_hears_when_the_model_took_one() {

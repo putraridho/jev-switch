@@ -16,6 +16,7 @@ See [docs/changelog-guide.md](docs/changelog-guide.md) for changelog formatting,
 ### Fixes
 - **Long prompts no longer break mid-word.** The input box wraps at spaces; only a word wider than the box is cut.
 - **What the model says between tool calls is readable.** It was dim italic; it is now full brightness, indented with the tool rows. Answers share that margin.
+- **Reasoning no longer fills the scrollback.** The model's thinking is not printed between tool calls; its latest line shows on the working row (`Thinking · …`) and goes with the turn, leaving the tool rows and a short answer. `JEV_SHOW_THINKING=1` prints it as before.
 - **Quieter auto-allow.** `✓ auto-allowed <command>` no longer repeats the command under the tool row that already shows it: a short dim `✓ auto-allowed` instead.
 
 ## 1.4.0
