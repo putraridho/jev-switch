@@ -428,6 +428,10 @@ struct Attempt {
     discarded: bool,
     /// The user cancelled it; `result` then holds a placeholder error that is never acted on.
     cancelled: bool,
+    /// Tool outputs that said they left processes running.
+    background_results: usize,
+    /// The backend already said that work was left running.
+    background_noticed: bool,
 }
 
 pub struct Engine {
@@ -1067,7 +1071,17 @@ impl Engine {
                 return self.cancelled_report(&with_steered(prompt, &steered), Some(&attempt), attempts, ui);
             }
             let err = match attempt.result.clone() {
-                Ok(out) => return self.finish(&with_steered(prompt, &steered), attempt, out, attempts),
+                Ok(out) => {
+                    // A model cannot come back by itself: say so when it left work running or
+                    // promised to report later.
+                    if !attempt.background_noticed {
+                        let running = crate::background::spawned(&attempt.tools) + attempt.background_results;
+                        if let Some(notice) = crate::background::notice(running, crate::background::promises_update(&out.text)) {
+                            ui.event(&Event::Hint(notice));
+                        }
+                    }
+                    return self.finish(&with_steered(prompt, &steered), attempt, out, attempts);
+                }
                 Err(err) => err,
             };
             let spec = attempt.chosen.spec;
@@ -1342,6 +1356,11 @@ impl Engine {
                 Err(e) => ui.note(&format!("[orchestrate] could not write {}: {e}; running without workers", mcp.config_path.display())),
             }
         }
+        // Claude Code (and DeepSeek through it) has this in its system note; the other CLIs
+        // take none, so it follows the prompt.
+        if !matches!(provider, ProviderId::Claude | ProviderId::DeepSeek) {
+            sent = crate::background::with_note(&sent);
+        }
         let req = TurnRequest {
             dir: self.dir.clone(),
             model: chosen.spec.id.to_string(),
@@ -1352,6 +1371,7 @@ impl Engine {
         };
         let mut tools: Vec<String> = Vec::new();
         let mut steered: Vec<String> = Vec::new();
+        let (mut background_results, mut background_noticed) = (0usize, false);
         let steer_rx = if backend.steerable() { ui.steering() } else { None };
         // Progress (tools, plan) is shown as it happens; assistant text is held back until
         // the attempt is known to have succeeded, so a failed attempt's partial commentary
@@ -1385,6 +1405,8 @@ impl Engine {
                         }
                         Event::Plan(plan) => runtime.note_plan(provider, plan.clone()),
                         Event::Steered(text) => steered.push(text.clone()),
+                        Event::ToolResult { text, .. } if crate::background::result_reports_background(text) => background_results += 1,
+                        Event::Hint(t) if t.starts_with(crate::background::NOTICE_PREFIX) => background_noticed = true,
                         _ => {}
                     }
                 }
@@ -1424,7 +1446,7 @@ impl Engine {
                 ui.event(&Event::Text(answer.to_string()));
             }
         }
-        Attempt { chosen, tools, steered, wall_ms: started.elapsed().as_millis() as u64, result, discarded, cancelled }
+        Attempt { chosen, tools, steered, wall_ms: started.elapsed().as_millis() as u64, result, discarded, cancelled, background_results, background_noticed }
     }
 
     // ------------------------------------------------------------------ outcomes
@@ -1561,6 +1583,11 @@ fn legacy_spec(tier: usize) -> &'static ModelSpec {
 
 #[cfg(test)]
 mod tests {
+    /// What the user asked, without the note every non-Claude prompt ends with.
+    fn asked(prompt: &str) -> &str {
+        prompt.strip_suffix(crate::background::with_note("").as_str()).unwrap_or(prompt)
+    }
+
     use super::*;
     use std::collections::HashMap;
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -1683,6 +1710,7 @@ mod tests {
                         c.cancel();
                     }
                 }
+                Event::Hint(h) => self.seen.push(format!("hint:{h}")),
                 _ => {}
             }
         }
@@ -1810,6 +1838,21 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_turn_that_leaves_a_command_running_or_promises_to_report_back_says_to_ask_again() {
+        let mut r = rig_with(&[(Codex, State::Ready)], "printf 'TOOL:Bash npm test &\\nFIN:Started the tests.\\n'");
+        r.turn("run the tests", want(TaskType::Feature)).await;
+        assert!(r.ui.seen.iter().any(|s| s.starts_with("hint:") && s.contains("1 command was left running")), "{:?}", r.ui.seen);
+
+        let mut r = rig_with(&[(Codex, State::Ready)], "printf 'TOOL:Bash cargo test\\nFIN:Running them now. I will update you as soon as they finish.\\n'");
+        r.turn("run the tests", want(TaskType::Feature)).await;
+        assert!(r.ui.seen.iter().any(|s| s.starts_with("hint:") && s.contains("said it would report back")), "{:?}", r.ui.seen);
+
+        let mut r = rig_with(&[(Codex, State::Ready)], OK);
+        r.turn("run the tests", want(TaskType::Feature)).await;
+        assert!(!r.ui.seen.iter().any(|s| s.starts_with("hint:")), "a turn that finished its work says nothing: {:?}", r.ui.seen);
+    }
+
+    #[tokio::test]
     async fn quota_cools_the_provider_reruns_the_same_prompt_and_skips_it_next_turn() {
         let ready = [Claude, Codex];
         let mut r = rig(&ready);
@@ -1824,7 +1867,7 @@ mod tests {
         assert_eq!(report.attempts, 2);
         let s = r.started();
         assert_eq!(s.iter().map(|x| x.provider).collect::<Vec<_>>(), vec![a, b]);
-        assert_eq!(s[1].prompt, "add a retry to the client", "the same prompt, nothing to catch up on yet");
+        assert_eq!(asked(&s[1].prompt), "add a retry to the client", "the same prompt, nothing to catch up on yet");
         assert!(r.engine.runtime.cooldowns.active(a, NOW).is_some());
         assert!(r.ui.notes.iter().any(|n| n.contains("hit its limit") && n.contains("trying the next model")));
         // The failed attempt's output is never the answer.
@@ -2024,12 +2067,12 @@ mod tests {
         let on_b = r.started().last().unwrap().clone();
         assert_eq!(on_b.provider, b);
         assert!(on_b.prompt.contains("first request") && on_b.prompt.contains("M src/a.rs"), "{}", on_b.prompt);
-        assert!(on_b.prompt.ends_with("Now the user says:\nsecond request"), "{}", on_b.prompt);
+        assert!(asked(&on_b.prompt).ends_with("Now the user says:\nsecond request"), "{}", on_b.prompt);
         let recent = r.engine.sessions.recent_context(1, 200);
         assert!(recent.starts_with("user: second request"), "{recent}");
 
         r.turn("third request", want(TaskType::Feature)).await;
-        assert_eq!(r.started().last().unwrap().prompt, "third request", "B is up to date: no catch-up");
+        assert_eq!(asked(&r.started().last().unwrap().prompt), "third request", "B is up to date: no catch-up");
     }
 
     #[tokio::test]
@@ -2474,7 +2517,7 @@ mod tests {
         assert_eq!((next.status, next.provider), (TurnStatus::Answered, Some(Codex)));
         let prompt = &r.started()[1].prompt;
         assert!(prompt.contains("rename the client") && prompt.contains("interrupted by the user"), "{prompt}");
-        assert!(prompt.ends_with("try again"), "{prompt}");
+        assert!(asked(prompt).ends_with("try again"), "{prompt}");
         assert_eq!(r.engine.sessions.missed_turns(Codex), 0, "told once, then current");
     }
 

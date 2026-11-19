@@ -13,6 +13,7 @@ pub mod anthropic;
 pub mod attach;
 pub mod audit;
 pub mod availability;
+pub mod background;
 pub mod base64;
 pub mod bgquery;
 pub mod backend;

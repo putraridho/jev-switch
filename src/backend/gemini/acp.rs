@@ -116,6 +116,7 @@ impl Acp {
                 self.active = true;
                 self.text.clear();
                 self.calls.clear();
+                self.announced.clear();
                 self.outbound.push(rpc(
                     5,
                     "session/prompt",
@@ -132,7 +133,12 @@ impl Acp {
                         ),
                     }];
                 }
-                return vec![finish_or_empty(&self.text, self.session.clone(), self.usage, "")];
+                // A command still reported as running when the turn ends was left in the
+                // background (Antigravity moves slow commands there): nothing will report on it.
+                let running = self.calls.values().filter(|c| c["kind"] == "execute" && c["status"] == "in_progress").count();
+                let mut out: Vec<Event> = crate::background::notice(running, false).filter(|_| running > 0).map(Event::Hint).into_iter().collect();
+                out.push(finish_or_empty(&self.text, self.session.clone(), self.usage, ""));
+                return out;
             }
             _ => {}
         }
@@ -398,6 +404,18 @@ mod tests {
                 assert_eq!(reply["result"]["outcome"]["optionId"], "no");
             }
         }
+    }
+
+    #[test]
+    fn a_command_still_running_when_the_turn_ends_is_reported() {
+        let mut acp = Acp::default();
+        setup(&mut acp, Mode::Auto, None);
+        acp.parse(&update(json!({"sessionUpdate":"tool_call","toolCallId":"c","name":"run_command","kind":"execute","rawInput":{"CommandLine":"npm test"}})));
+        acp.parse(&update(json!({"sessionUpdate":"tool_call_update","toolCallId":"c","status":"in_progress"})));
+        acp.parse(&update(json!({"sessionUpdate":"tool_call","toolCallId":"d","name":"run_command","kind":"execute","rawInput":{"CommandLine":"ls"}})));
+        acp.parse(&update(json!({"sessionUpdate":"tool_call_update","toolCallId":"d","status":"completed"})));
+        let end = acp.parse(&json!({"id":5,"result":{"stopReason":"end_turn"}}));
+        assert!(matches!(&end[..], [Event::Hint(h), _] if h.contains("1 command was left running")), "{end:?}");
     }
 
     #[test]

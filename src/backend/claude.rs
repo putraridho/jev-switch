@@ -32,7 +32,8 @@ When a tool call needs approval, jev-code asks the user in the terminal by itsel
 The user manages permission rules with jev-code's /permissions command and the permission mode (ask, edit, plan, auto) with /mode or Shift+Tab. \
 Never tell the user to use Claude Code interface features such as /config or plugin commands: jev-code does not have them. \
 Use the Read, Grep, Glob and Edit tools to look at and change files, not sed, python or heredocs, and keep shell commands plain: scripts and heredocs are asked about every time. \
-Ask the user questions in your reply, not with a tool.";
+Ask the user questions in your reply, not with a tool. \
+Wait for commands to finish before you answer: you cannot speak again until the user writes, so never promise to report back later.";
 
 /// Turns off Claude Code's background shells and monitors (see [`ClaudeBackend::command`]).
 const NO_BACKGROUND_ENV: &str = "CLAUDE_CODE_DISABLE_BACKGROUND_TASKS";
