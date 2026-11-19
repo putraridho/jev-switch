@@ -718,6 +718,10 @@ beat any guess. Re-run `tune` when prompts, models, or request mix change.
   `src/backend/` has one adapter per CLI.
 - `scripts/test_pty_ux.py` — hermetic end-to-end test of the terminal UX over a pseudo-terminal
   (fake model CLI, fake Jev, temp home): `cargo build --bin code && python3 -I scripts/test_pty_ux.py`.
+- `scripts/cached-test.sh` — runs tests and remembers passes: `scripts/cached-test.sh` (every
+  `cargo test`), `changed` (only the library test modules of the files changed since `HEAD`, a quick
+  check), `pty [names]` (PTY scenarios), `clear`. A run whose inputs (sources, manifests, cargo
+  config; for PTY the built binary and the script) are unchanged since it passed is skipped.
 - `src/delegate.rs`, `src/orchestrate.rs`, `src/bin/delegate_mcp.rs` — cross-provider orchestration:
   worker choice and worktrees, planner choice and tool attachment, the MCP server.
 - `src/bin/orch_tune.rs` — scores logged prompts with `multi_part` to pick `ORCH_TRIGGER_P`.

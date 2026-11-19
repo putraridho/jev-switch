@@ -2347,7 +2347,8 @@ def main():
     ran = 0
     for fn in SCENARIOS:
         name = fn.__name__.replace("_", " ")
-        if wanted and not any(w in fn.__name__ for w in wanted):
+        # A filter matches the function name or the name as printed (`typed prompt`).
+        if wanted and not any(w in fn.__name__ or w in name for w in wanted):
             continue
         ran += 1
         world = World(url, fn.__name__[:12])
@@ -2369,6 +2370,10 @@ def main():
             signal.alarm(0)
             world.cleanup()
     jev.shutdown()
+    if ran == 0:
+        # A filter that matched nothing tested nothing: not a pass.
+        print(f"no scenario matches {' '.join(wanted)}", file=sys.stderr)
+        return 1
     print(f"\n{ran - failures}/{ran} scenarios passed")
     return 1 if failures else 0
 

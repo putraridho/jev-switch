@@ -14,6 +14,7 @@ See [docs/changelog-guide.md](docs/changelog-guide.md) for changelog formatting,
 - **Live workers.** With orchestration on, the planner's open workers are listed in a titled box above the input box (`▶ running 0:42 · 7 tool calls`, `✓ ready to review`), refreshed about once a second. Under each running worker is its latest tool call (`⎿ Bash cargo test`), so you can see what a subagent is doing.
 
 ### Development
+- **Cached test runs.** `scripts/cached-test.sh` skips a run whose inputs are unchanged since it passed (a repeat takes under a second), `changed` runs only the library test modules of the files changed since `HEAD`, and `pty [names]` caches PTY scenario runs by the built binary. Failures, and PTY filters that match no scenario, are never cached.
 - **Faster tests and reinstalls.** The library suite runs in about 9s instead of 22s: its slowest test (21s alone) runs its 30 rounds in parallel, and tests use 24 threads (`.cargo/config.toml`), since most wait on git or child processes. `cargo test` no longer builds empty harnesses for binaries without tests or a doc-test pass. `scripts/install.sh` builds the new incremental `local` profile, so a reinstall after a small change takes seconds instead of a full optimised rebuild.
 
 ### Fixes
