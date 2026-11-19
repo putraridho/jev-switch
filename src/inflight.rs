@@ -58,12 +58,14 @@ pub fn process_alive(pid: u32) -> bool {
 
 /// Whether a process that has run for `elapsed_secs` started after the marker was written:
 /// then the pid belongs to a newer, unrelated process (the number was reused).
+#[cfg(any(test, unix))]
 fn started_after(elapsed_secs: u64, now_ms: u64, marker_started_ms: u64) -> bool {
     // `ps` shows whole seconds, so allow a little slack.
     now_ms.saturating_sub(elapsed_secs.saturating_mul(1000)) > marker_started_ms.saturating_add(2000)
 }
 
 /// `ps` elapsed time (`[[dd-]hh:]mm:ss`) in seconds.
+#[cfg(any(test, unix))]
 fn parse_etime(text: &str) -> Option<u64> {
     let text = text.trim();
     let (days, rest) = match text.split_once('-') {

@@ -207,6 +207,7 @@ pub fn wait_for_reader() {
 }
 
 /// How long the reader waits for the rest of an escape sequence before taking Esc alone.
+#[cfg(unix)]
 const ESC_WAIT_MS: i32 = 40;
 
 impl TypeAhead {
@@ -258,6 +259,7 @@ fn reader_available() -> bool {
 }
 
 /// Apply one chunk of input to the draft through the console; true when Esc was pressed.
+#[cfg(any(test, unix))]
 fn handle_chunk(console: &Console, draft: &mut Draft, chunk: &[u8]) -> bool {
     let mut esc = false;
     for key in keys(chunk) {

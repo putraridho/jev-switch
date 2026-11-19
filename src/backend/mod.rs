@@ -1040,6 +1040,7 @@ impl Drop for CleanupOnDrop<'_> {
 
 /// The negative process-group id `kill(2)` takes to signal a whole group. `None` for
 /// a pid that would signal something else: `kill(-0)` is `kill(0)`, our own group.
+#[cfg(any(test, unix))]
 fn group_signal_target(pid: u32) -> Option<i32> {
     i32::try_from(pid).ok().filter(|p| *p > 0).map(|p| -p)
 }
@@ -1799,8 +1800,10 @@ mod tests {
     }
 
     /// An approver that never answers: the question stays open until the CLI ends it.
+    #[cfg(unix)]
     struct NeverAnswers;
 
+    #[cfg(unix)]
     impl Approver for NeverAnswers {
         fn decide<'a>(&'a self, _: &'a PermissionRequest) -> Pin<Box<dyn Future<Output = Decision> + Send + 'a>> {
             Box::pin(std::future::pending())
