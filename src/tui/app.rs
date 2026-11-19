@@ -192,6 +192,8 @@ pub struct ProviderChip {
     pub cooling: Option<String>,
     /// The CLI behind it when the name does not say (see `AvailRow::via`).
     pub via: Option<String>,
+    /// Account credit left, for a pay-per-token provider: `$12.34 left`.
+    pub credit: Option<String>,
 }
 
 /// How long a footer notice stays.

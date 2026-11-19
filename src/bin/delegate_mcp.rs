@@ -59,6 +59,11 @@ fn tools_list() -> Value {
         {
             "name": "delegate",
             "description": DELEGATE_DESCRIPTION,
+            // Claude Code runs MCP calls concurrently only for tools marked readOnlyHint, and
+            // serializes the rest. A worker changes only its own private git worktree, never the
+            // caller's working tree, so it is safe to claim; this is what lets parallel delegations
+            // fan out. Merging is a separate tool and is not read-only.
+            "annotations": { "readOnlyHint": true, "destructiveHint": false, "openWorldHint": true },
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -72,6 +77,7 @@ fn tools_list() -> Value {
         {
             "name": "show_diff",
             "description": SHOW_DIFF_DESCRIPTION,
+            "annotations": { "readOnlyHint": true },
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -85,6 +91,7 @@ fn tools_list() -> Value {
         {
             "name": "merge",
             "description": MERGE_DESCRIPTION,
+            "annotations": { "readOnlyHint": false, "destructiveHint": false },
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -97,6 +104,7 @@ fn tools_list() -> Value {
         {
             "name": "discard",
             "description": DISCARD_DESCRIPTION,
+            "annotations": { "readOnlyHint": false, "destructiveHint": true },
             "inputSchema": {
                 "type": "object",
                 "properties": { "worker_id": worker_id_schema() },
@@ -456,6 +464,10 @@ mod tests {
             assert_eq!(t["inputSchema"]["type"], "object");
             assert!(t["inputSchema"]["required"].is_array());
         }
+        assert_eq!(tools[0]["annotations"], json!({ "readOnlyHint": true, "destructiveHint": false, "openWorldHint": true }));
+        assert_eq!(tools[1]["annotations"], json!({ "readOnlyHint": true }));
+        assert_eq!(tools[2]["annotations"], json!({ "readOnlyHint": false, "destructiveHint": false }));
+        assert_eq!(tools[3]["annotations"], json!({ "readOnlyHint": false, "destructiveHint": true }));
         let delegate = &tools[0];
         let props = delegate["inputSchema"]["properties"].as_object().unwrap();
         assert_eq!(props.keys().map(String::as_str).collect::<Vec<_>>().len(), 3);

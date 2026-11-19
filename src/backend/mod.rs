@@ -6,6 +6,7 @@
 
 pub mod claude;
 pub mod codex;
+pub mod codex_plan;
 pub mod gemini;
 pub mod grok;
 
@@ -101,7 +102,8 @@ pub enum ErrorKind {
 }
 
 /// What a plan-limit window looked like when the CLI last reported it. Informational.
-#[derive(Debug, Clone, PartialEq)]
+/// Serializable so the last reading survives a restart (`crate::planstore`).
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct PlanUsage {
     pub window: String,
     pub utilization: f64,

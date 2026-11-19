@@ -274,6 +274,7 @@ fn login_steps(provider: ProviderId, env_path: &str) -> Vec<String> {
         ProviderId::Grok => vec![
             format!("{cmd} (first run installs it, which can take minutes)"),
             "Sign in when it asks (unverified; needs SuperGrok or X Premium+, the $8 plan likely lacks the CLI)".to_string(),
+            format!("or set XAI_API_KEY=<key> in {env_path} (billed per token by xAI)"),
         ],
         ProviderId::DeepSeek => vec![format!("Add DEEPSEEK_API_KEY=<key> to {env_path} (billed per token)")],
     }

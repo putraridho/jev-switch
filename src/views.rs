@@ -103,6 +103,7 @@ pub fn status_facts(engine: &Engine, last_turn: Option<&SummaryFacts>, home: Opt
             provider: p.to_string(),
             plan: rt.avail.iter().find(|a| a.provider == *p).and_then(|a| a.plan.clone()),
             plan_used: rt.plan_utilization(*p),
+            credit: rt.credit_left(*p),
         })
         .collect();
     let cooldowns = ALL_PROVIDERS

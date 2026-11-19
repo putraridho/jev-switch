@@ -29,21 +29,40 @@ const PERMISSION_MODE: &str = "default";
 /// `Edit`; Ask and Plan receive no allow rules.
 const ALLOWED_TOOLS: [&str; 2] = ["Edit", "Write"];
 
+/// The variable the Grok CLI reads an xAI API key from, as an alternative to `grok login`.
+pub const API_KEY_ENV: &str = "XAI_API_KEY";
+
 pub struct GrokBackend {
     pub bin: String,
     /// Prompt files of the current turn; one instance serves one turn.
     prompts: PromptFiles,
+    /// Variables the child needs that may live only in `~/.jev-router.env` (the API key),
+    /// which the child process would not otherwise see.
+    extra_env: Vec<(String, String)>,
 }
 
 impl GrokBackend {
     pub fn new(bin: impl Into<String>) -> Self {
-        Self { bin: bin.into(), prompts: PromptFiles::default() }
+        Self { bin: bin.into(), prompts: PromptFiles::default(), extra_env: Vec::new() }
     }
 
-    /// Grok Build with the user's own login; the binary can be overridden with `GROK_BIN`.
+    /// Pass these variables to the CLI (see `extra_env`).
+    pub fn with_env(mut self, env: Vec<(String, String)>) -> Self {
+        self.extra_env = env;
+        self
+    }
+
+    /// Grok Build with the user's own login or `XAI_API_KEY`; the binary can be
+    /// overridden with `GROK_BIN`.
     pub fn grok() -> Self {
         Self::new(crate::envfile::lookup("GROK_BIN").unwrap_or_else(|| "grok".into()))
     }
+}
+
+/// `XAI_API_KEY` when it is set in the environment OR in `~/.jev-router.env`, so a key
+/// kept only in that file still reaches the CLI (and the probe agrees).
+pub fn auth_env(lookup: &dyn Fn(&str) -> Option<String>) -> Vec<(String, String)> {
+    lookup(API_KEY_ENV).filter(|v| !v.trim().is_empty()).map(|v| (API_KEY_ENV.to_string(), v)).into_iter().collect()
 }
 
 /// Whether Grok has ever stored state for this user (`<home>/.grok`). Lets an
@@ -163,6 +182,7 @@ impl Backend for GrokBackend {
         if let Some(id) = &req.session_id {
             cmd.args(["--resume", id]);
         }
+        cmd.envs(self.extra_env.iter().map(|(k, v)| (k.as_str(), v.as_str())));
         cmd
     }
 
@@ -310,6 +330,21 @@ mod tests {
             expected.extend(["--resume", "abc"]);
             assert_eq!(args(&backend().command(&TurnRequest { mode, ..req(Some("abc")) })), expected);
         }
+    }
+
+    #[test]
+    fn extra_env_reaches_the_child_so_a_key_kept_in_the_env_file_works() {
+        let b = GrokBackend::new("grok").with_env(vec![("XAI_API_KEY".into(), "k".into())]);
+        let cmd = b.command(&req(None));
+        assert!(cmd.as_std().get_envs().any(|(k, v)| k == "XAI_API_KEY" && v == Some(std::ffi::OsStr::new("k"))));
+    }
+
+    #[test]
+    fn auth_env_picks_up_a_non_empty_key_only() {
+        let lookup = |n: &str| (n == "XAI_API_KEY").then(|| "from-file".to_string());
+        assert_eq!(auth_env(&lookup), vec![("XAI_API_KEY".to_string(), "from-file".to_string())]);
+        assert!(auth_env(&|_| None).is_empty());
+        assert!(auth_env(&|_| Some("  ".to_string())).is_empty());
     }
 
     #[test]

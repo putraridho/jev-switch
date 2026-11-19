@@ -512,14 +512,17 @@ struct GrokFacts {
     real_binary: bool,
     /// `~/.grok` exists: the CLI has been signed in or used.
     home_dir: bool,
+    /// `XAI_API_KEY` is set in the environment or `~/.jev-router.env`.
+    api_key: bool,
 }
 
 fn decide_grok(f: GrokFacts) -> Availability {
     let id = ProviderId::Grok;
-    match (f.real_binary, f.home_dir) {
-        (false, _) => avail(id, State::NotInstalled, "no installed `grok` (only a lazy mise wrapper, if anything)"),
-        (true, false) => avail(id, State::NotLoggedIn, "installed, but ~/.grok is missing: sign in first"),
-        (true, true) => avail(id, State::Ready, "installed, ~/.grok present"),
+    match (f.real_binary, f.api_key, f.home_dir) {
+        (false, _, _) => avail(id, State::NotInstalled, "no installed `grok` (only a lazy mise wrapper, if anything)"),
+        (true, true, _) => avail(id, State::Ready, "installed, XAI_API_KEY set"),
+        (true, false, true) => avail(id, State::Ready, "installed, ~/.grok present"),
+        (true, false, false) => avail(id, State::NotLoggedIn, "installed, but no ~/.grok or XAI_API_KEY: sign in or set the key"),
     }
 }
 
@@ -580,6 +583,8 @@ async fn probe_grok() -> Availability {
     decide_grok(GrokFacts {
         real_binary: installed_for_real("grok"),
         home_dir: home().is_some_and(|h| grok::session_dir_exists(&h)),
+        // The same rule the provider factory uses to pass the key on, so "ready" means it reaches the CLI.
+        api_key: !grok::auth_env(&envfile::lookup).is_empty(),
     })
 }
 
@@ -735,10 +740,14 @@ mod tests {
     #[test]
     fn grok_decisions() {
         assert_eq!(decide_grok(GrokFacts::default()).state, State::NotInstalled);
-        assert_eq!(decide_grok(GrokFacts { real_binary: false, home_dir: true }).state, State::NotInstalled);
-        assert_eq!(decide_grok(GrokFacts { real_binary: true, home_dir: false }).state, State::NotLoggedIn);
-        let a = decide_grok(GrokFacts { real_binary: true, home_dir: true });
+        assert_eq!(decide_grok(GrokFacts { real_binary: false, home_dir: true, api_key: true }).state, State::NotInstalled);
+        assert_eq!(decide_grok(GrokFacts { real_binary: true, ..Default::default() }).state, State::NotLoggedIn);
+        let a = decide_grok(GrokFacts { real_binary: true, home_dir: true, ..Default::default() });
         assert_eq!((a.state, a.verified), (State::Ready, false));
+        // An API key alone is enough: no `grok login`, no ~/.grok.
+        let k = decide_grok(GrokFacts { real_binary: true, api_key: true, ..Default::default() });
+        assert_eq!((k.state, k.verified), (State::Ready, false));
+        assert!(k.detail.contains("XAI_API_KEY"), "{}", k.detail);
     }
 
     #[test]

@@ -1484,6 +1484,12 @@ impl Delegator {
             o.insert("worker_id".into(), json!(a.id));
             o.insert("task".into(), json!(a.task.as_str()));
             o.insert("attempt".into(), json!(a.attempt));
+            // When the worker ran, so parallel workers' overlap can be read off the log. The finish
+            // is the start plus the measured wall time, so it can never precede the start even if
+            // the wall clock steps back mid-run.
+            o.insert("started_at".into(), json!(a.started_ms));
+            o.insert("finished_at".into(), json!(a.started_ms.saturating_add(a.wall_ms)));
+            o.insert("duration_ms".into(), json!(a.wall_ms));
             o.insert("read_only".into(), json!(a.read_only));
             o.insert("files_changed".into(), json!(a.files));
             o.insert("tool_calls".into(), json!(a.tools));
@@ -1535,6 +1541,7 @@ impl Delegator {
         };
         self.update(&id, |w| w.path = Some(path.clone())).await;
         let started = Instant::now();
+        let started_ms = (self.now)();
         // Secrets are blanked as for any provider, and the audit log notes what was sent.
         let prompt = self.guards.outgoing(&worker_prompt(&req.brief, &req.files), spec.provider, spec.id, (self.now)()).prompt;
         let (result, tools) = self.run_worker(&id, spec, &path, prompt).await;
@@ -1542,7 +1549,7 @@ impl Delegator {
         let wall_ms = started.elapsed().as_millis() as u64;
         let task = worker_task(signals);
         let log = |result: &Result<TurnOutcome, TurnError>, files: &[String]| {
-            self.log_attempt(&AttemptLog { spec, id: &id, task, attempt, read_only: req.read_only, jev, result, wall_ms, files, tools: &tools })
+            self.log_attempt(&AttemptLog { spec, id: &id, task, attempt, read_only: req.read_only, jev, result, wall_ms, started_ms, files, tools: &tools })
         };
         match result {
             Err(err) => {
@@ -1800,6 +1807,8 @@ struct AttemptLog<'a> {
     jev: &'a Value,
     result: &'a Result<TurnOutcome, TurnError>,
     wall_ms: u64,
+    /// Unix ms when the backend turn began.
+    started_ms: u64,
     files: &'a [String],
     tools: &'a [String],
 }
@@ -2312,6 +2321,11 @@ mod tests {
         assert_eq!(rows[1]["usage"]["output_tokens"], 7);
         assert_eq!(rows[1]["files_changed"].as_array().unwrap().len(), 1);
         assert!(rows[1]["wall_ms"].is_u64());
+        for row in &rows {
+            let (start, end) = (row["started_at"].as_u64().unwrap(), row["finished_at"].as_u64().unwrap());
+            assert!(end >= start && start > 0);
+            assert_eq!(row["duration_ms"], row["wall_ms"]);
+        }
     }
 
     // ---------------------------------------------------------------- real git

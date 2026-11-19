@@ -4,6 +4,9 @@ See [docs/changelog-guide.md](docs/changelog-guide.md) for changelog formatting,
 
 ## Unreleased
 
+- Parallel `delegate` calls now actually run at the same time. The tool is marked read-only for the client, because a worker only changes its own worktree; merging stays a separate, approved step. Worker log records carry `started_at`, `finished_at` and `duration_ms`, so overlap is visible.
+- The router row and `/status` show how much plan is left from the start, not only after a Claude turn. The last reading per provider is saved across restarts and dropped once its window resets. Codex usage is read from Codex's own session files, and DeepSeek shows its remaining balance (`deepseek $4.20 left`).
+- Grok works with an `XAI_API_KEY` instead of `grok login`. Set the key in your shell or in `~/.jev-router.env`: Grok shows as ready, jev-code passes the key to `grok`, and `doctor` offers it as a fix.
 - Vim `dd` on the last line of a multi-line message no longer crashes jev-code.
 - A repo's `.jev/team.json` pin now respects your own `avoid` and `only` rules for the turn's task. When they exclude the pinned provider, or it cannot do that kind of work, the turn routes automatically and the route line says why. A pinned provider or model that is logged out, cooling down, failed over or unknown is still reported, not swapped.
 - jev-code's own git calls (status bar, doctor, completion, repo map, undo, delegate worktrees) no longer run a repo's `core.fsmonitor` program or its hooks, and their diffs skip `textconv` and external diff programs. Filter, merge and credential programs still run, because git-crypt and git-lfs depend on them.

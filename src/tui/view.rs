@@ -371,9 +371,10 @@ fn panel_sections(app: &App, style: Style) -> Vec<Section> {
             match (&p.cooling, p.used) {
                 (Some(left), _) => format!("{name} {}", style.yellow(&format!("cooling {left}"))),
                 (None, Some(u)) => format!("{name} {} {u:>3}%", meter(u, 8, style)),
-                (None, None) => match p.via.as_deref().filter(|v| *v != p.name) {
-                    Some(v) => format!("{name} {}", style.dim(&format!("ready · {v}"))),
-                    None => format!("{name} {}", style.dim("ready")),
+                (None, None) => match (&p.credit, p.via.as_deref().filter(|v| *v != p.name)) {
+                    (Some(c), _) => format!("{name} {}", style.dim(c)),
+                    (None, Some(v)) => format!("{name} {}", style.dim(&format!("ready · {v}"))),
+                    (None, None) => format!("{name} {}", style.dim("ready")),
                 },
             }
         })
@@ -492,7 +493,10 @@ fn router_row(app: &App, w: usize, th: &Theme) -> String {
             (Some(left), _) => format!("{name} {}", th.muted(&format!("cooling {left}"))),
             (None, Some(u)) if u >= 80 => format!("{name} {}", th.warning(&format!("{u}%"))),
             (None, Some(u)) => format!("{name} {}", th.muted(&format!("{u}%"))),
-            (None, None) => name,
+            (None, None) => match &p.credit {
+                Some(c) => format!("{name} {}", th.muted(c)),
+                None => name,
+            },
         };
         parts.push(chip);
     }
@@ -701,7 +705,7 @@ mod tests {
     fn a_wide_terminal_shows_the_side_panel_beside_the_box_and_a_narrow_one_does_not() {
         let mut a = app();
         a.git = Some("main ±3".into());
-        a.providers = vec![crate::tui::app::ProviderChip { name: "codex".into(), used: Some(71), cooling: None, via: None }];
+        a.providers = vec![crate::tui::app::ProviderChip { name: "codex".into(), used: Some(71), cooling: None, via: None, credit: None }];
         let wide = render(&a, 140, Instant::now(), OFF);
         let text = wide.rows.join("\n");
         assert!(wide.rows[0].contains("Router"), "{text}");
@@ -721,7 +725,7 @@ mod tests {
         let mut a = app();
         a.fullscreen = true;
         a.git = Some("main ±3".into());
-        a.providers = vec![crate::tui::app::ProviderChip { name: "codex".into(), used: Some(71), cooling: None, via: None }];
+        a.providers = vec![crate::tui::app::ProviderChip { name: "codex".into(), used: Some(71), cooling: None, via: None, credit: None }];
         a.show("one\ntwo\nthree");
         a
     }
@@ -813,13 +817,14 @@ mod tests {
         use crate::tui::app::ProviderChip;
         let mut a = app();
         a.providers = vec![
-            ProviderChip { name: "claude".into(), used: Some(32), cooling: None, via: None },
-            ProviderChip { name: "codex".into(), used: Some(85), cooling: None, via: None },
-            ProviderChip { name: "gemini".into(), used: None, cooling: Some("1h20m".into()), via: None },
+            ProviderChip { name: "claude".into(), used: Some(32), cooling: None, via: None, credit: None },
+            ProviderChip { name: "codex".into(), used: Some(85), cooling: None, via: None, credit: None },
+            ProviderChip { name: "gemini".into(), used: None, cooling: Some("1h20m".into()), via: None, credit: None },
+            ProviderChip { name: "deepseek".into(), used: None, cooling: None, via: None, credit: Some("$4.20 left".into()) },
         ];
         a.orchestrate = true;
-        let s = screen(&a, 120);
-        assert!(s.contains("  ⇄ auto · claude 32% · codex 85% · gemini cooling 1h20m · orchestrate on"), "{s}");
+        let s = screen(&a, 140);
+        assert!(s.contains("  ⇄ auto · claude 32% · codex 85% · gemini cooling 1h20m · deepseek $4.20 left · orchestrate on"), "{s}");
         a.providers.clear();
         assert!(screen(&a, 120).contains("⇄ auto · no provider ready · /doctor"));
     }
@@ -830,7 +835,7 @@ mod tests {
         let style = crate::uifmt::Style::off();
         let rows = |via: Option<&str>| {
             let mut a = app();
-            a.providers = vec![ProviderChip { name: "gemini".into(), used: None, cooling: None, via: via.map(String::from) }];
+            a.providers = vec![ProviderChip { name: "gemini".into(), used: None, cooling: None, via: via.map(String::from), credit: None }];
             panel_sections(&a, style).remove(0).rows.join("\n")
         };
         assert!(rows(Some("agy")).contains("ready · agy"));

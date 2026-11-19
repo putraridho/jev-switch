@@ -1522,6 +1522,7 @@ impl Engine {
             }
         };
         let cancelled = result.is_none();
+        runtime.after_turn(provider);
         let result = result.unwrap_or_else(|| Err(TurnError::new(ErrorKind::Other, "cancelled by the user")));
         let discarded = result.is_err() && (!held.is_empty() || streamed_any);
         if let Ok(out) = &result {

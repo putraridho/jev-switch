@@ -61,6 +61,8 @@ pub struct ReadyProvider {
     pub plan: Option<String>,
     /// Fraction of its plan window used (0..1), when known.
     pub plan_used: Option<f64>,
+    /// Account credit left for a pay-per-token provider (`$12.34 left`), when known.
+    pub credit: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -113,6 +115,9 @@ pub fn status_text(f: &StatusFacts, style: Style) -> String {
             let pct = (used.clamp(0.0, 1.0) * 100.0).round() as u32;
             let text = format!("plan {pct}% used");
             v.push_str(&format!("  {}", if pct >= 80 { style.yellow(&text) } else { style.dim(&text) }));
+        }
+        if let Some(credit) = &p.credit {
+            v.push_str(&format!("  {}", style.dim(&one_line(credit))));
         }
         rows.push(status_row(if i == 0 { "Providers" } else { "" }, &v, style));
     }
@@ -257,8 +262,9 @@ mod tests {
             pin: "auto".into(),
             orchestrate: false,
             ready: vec![
-                ReadyProvider { provider: "claude".into(), plan: Some("max_5x".into()), plan_used: Some(0.32) },
-                ReadyProvider { provider: "codex".into(), plan: None, plan_used: None },
+                ReadyProvider { provider: "claude".into(), plan: Some("max_5x".into()), plan_used: Some(0.32), credit: None },
+                ReadyProvider { provider: "codex".into(), plan: None, plan_used: None, credit: None },
+                ReadyProvider { provider: "deepseek".into(), plan: None, plan_used: None, credit: Some("$4.20 left".into()) },
             ],
             cooldowns: vec![("gemini".into(), "1h 5m".into())],
             last_turn: Some(SummaryFacts { ok: true, provider: "codex".into(), model: "g".into(), elapsed_ms: 2000, ..Default::default() }),
@@ -266,7 +272,7 @@ mod tests {
         };
         assert_eq!(
             status_text(&f, OFF),
-            "Session overview\n\n  Project      /home/me/proj\n  Routing      on\n  Model        auto\n  Orchestrate  off\n  Providers    ● claude  max_5x  plan 32% used\n               ● codex\n  Cooling down gemini for 1h 5m\n  Last turn    ✓ codex · g · 2s\n  Session      4 turns"
+            "Session overview\n\n  Project      /home/me/proj\n  Routing      on\n  Model        auto\n  Orchestrate  off\n  Providers    ● claude  max_5x  plan 32% used\n               ● codex\n               ● deepseek  $4.20 left\n  Cooling down gemini for 1h 5m\n  Last turn    ✓ codex · g · 2s\n  Session      4 turns"
         );
         let bare = StatusFacts { project: "/p".into(), pin: "codex".into(), turns: 1, ..Default::default() };
         assert_eq!(
@@ -276,7 +282,7 @@ mod tests {
         let fresh = StatusFacts { ..Default::default() };
         assert!(status_text(&fresh, OFF).ends_with("Session      no turns yet"));
         assert_eq!(strip_ansi(&status_text(&f, ON)), status_text(&f, OFF));
-        let hot = StatusFacts { ready: vec![ReadyProvider { provider: "claude".into(), plan: None, plan_used: Some(0.9) }], ..Default::default() };
+        let hot = StatusFacts { ready: vec![ReadyProvider { provider: "claude".into(), plan: None, plan_used: Some(0.9), credit: None }], ..Default::default() };
         assert!(status_text(&hot, ON).contains("\x1b[33mplan 90% used\x1b[0m"));
     }
 

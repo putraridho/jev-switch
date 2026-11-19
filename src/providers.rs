@@ -94,7 +94,7 @@ fn build_backend(provider: ProviderId, session: bool) -> Box<dyn Backend> {
     match provider {
         ProviderId::Claude => claude_code(ClaudeBackend::claude()),
         ProviderId::Codex => Box::new(CodexBackend::codex()),
-        ProviderId::Grok => Box::new(GrokBackend::grok()),
+        ProviderId::Grok => Box::new(GrokBackend::grok().with_env(crate::backend::grok::auth_env(&envfile::lookup))),
         ProviderId::Gemini => Box::new(match detect_gemini_flavor() {
             Flavor::GeminiCli => GeminiBackend::gemini_cli().with_env(gemini_env(&envfile::lookup)),
             Flavor::Antigravity => GeminiBackend::antigravity().with_env(gemini_env(&envfile::lookup)),
@@ -216,6 +216,11 @@ pub struct Runtime {
     pub unusable_models: HashSet<(ProviderId, String)>,
     /// The latest plan utilization each provider reported.
     pub plan: HashMap<ProviderId, PlanUsage>,
+    /// Where `plan` is saved after every new reading; `None` in tests and without a state dir.
+    plan_path: Option<PathBuf>,
+    /// DeepSeek's remaining account balance, filled in by a background fetch (it is pay per
+    /// token, so a balance is what "credit left" means there, not a plan percentage).
+    balance: std::sync::Arc<Mutex<Option<crate::balance::Balance>>>,
     /// Providers that failed in a way another provider can cover and that is not a usage
     /// limit, with why. Session-only and kept out of the persisted cooldowns on purpose:
     /// a login problem or an unusable directory is not a limit, and an hour-long cooldown
@@ -285,7 +290,59 @@ impl Runtime {
         let cooldown_path = cooldown::default_path();
         let cooldowns = cooldown_path.as_deref().map(Cooldowns::load).unwrap_or_default();
         let allow = allowances_for(crate::envfile::lookup("JEV_ALLOW_CREDITS").as_deref(), &avail);
-        Self::build(avail, cooldowns, allow, Overrides::from_env(), cooldown_path)
+        let mut runtime = Self::build(avail, cooldowns, allow, Overrides::from_env(), cooldown_path);
+        runtime.seed_usage(crate::planstore::default_path());
+        runtime
+    }
+
+    /// Fill in what is known about each provider's usage before any turn: the readings an
+    /// earlier run saved, Codex's own latest reading from its session files (fresher than
+    /// anything saved), and DeepSeek's balance in the background. From now on every new
+    /// reading is saved to `plan_path`.
+    fn seed_usage(&mut self, plan_path: Option<PathBuf>) {
+        if let Some(path) = &plan_path {
+            self.plan = crate::planstore::load(path);
+        }
+        self.plan_path = plan_path;
+        self.refresh_codex_plan();
+        self.refresh_balance();
+    }
+
+    /// Codex reports its limits only in its session files, not in the turn's output.
+    fn refresh_codex_plan(&mut self) {
+        if let Some((plan, _)) = crate::backend::codex_plan::latest_plan() {
+            self.note_plan(ProviderId::Codex, plan);
+        }
+    }
+
+    /// Fetch DeepSeek's balance off the prompt's path when it has a key. The answer lands
+    /// in `balance` whenever it arrives; until then (or on any failure) none is shown.
+    fn refresh_balance(&self) {
+        let Some(key) = crate::envfile::lookup("DEEPSEEK_API_KEY").filter(|k| !k.trim().is_empty()) else { return };
+        let Ok(handle) = tokio::runtime::Handle::try_current() else { return };
+        let slot = self.balance.clone();
+        handle.spawn(async move {
+            if let Some(b) = crate::balance::fetch_deepseek_balance(&key).await {
+                *slot.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(b);
+            }
+        });
+    }
+
+    /// Update what a finished turn may have changed: Codex's plan reading, DeepSeek's balance.
+    pub fn after_turn(&mut self, provider: ProviderId) {
+        match provider {
+            ProviderId::Codex => self.refresh_codex_plan(),
+            ProviderId::DeepSeek => self.refresh_balance(),
+            _ => {}
+        }
+    }
+
+    /// DeepSeek's remaining balance for display, `$12.34 left`, once the fetch has answered.
+    pub fn credit_left(&self, p: ProviderId) -> Option<String> {
+        if p != ProviderId::DeepSeek {
+            return None;
+        }
+        self.balance.lock().unwrap_or_else(std::sync::PoisonError::into_inner).as_ref().map(crate::balance::format_balance)
     }
 
     /// Like [`Runtime::start`], but a recent probe answer saved by an earlier run is used at
@@ -306,6 +363,7 @@ impl Runtime {
         let cooldowns = cooldown_path.as_deref().map(Cooldowns::load).unwrap_or_default();
         let allow = allowances_for(crate::envfile::lookup("JEV_ALLOW_CREDITS").as_deref(), &cached);
         let mut runtime = Self::build(cached.clone(), cooldowns, allow, Overrides::from_env(), cooldown_path);
+        runtime.seed_usage(crate::planstore::default_path());
         runtime.refresh_in_background(cached, cache);
         (runtime, ProbeSource::Cache)
     }
@@ -345,6 +403,8 @@ impl Runtime {
             disk: Mutex::new(DiskWatch::default()),
             unusable_models: HashSet::new(),
             plan: HashMap::new(),
+            plan_path: None,
+            balance: std::sync::Arc::default(),
             blocked: HashMap::new(),
             late: None,
         }
@@ -400,12 +460,20 @@ impl Runtime {
     }
 
     pub fn note_plan(&mut self, p: ProviderId, plan: PlanUsage) {
+        if self.plan.get(&p) == Some(&plan) {
+            return;
+        }
         self.plan.insert(p, plan);
+        if let Some(path) = &self.plan_path {
+            crate::planstore::save(path, &self.plan);
+        }
     }
 
-    /// Fraction of the plan window used (as the CLI reported it), if any turn has said.
+    /// Fraction of the plan window used (as the CLI reported it), if a reading exists and
+    /// its window has not reset since.
     pub fn plan_utilization(&self, p: ProviderId) -> Option<f64> {
-        self.plan.get(&p).map(|u| u.utilization)
+        let now_s = crate::log::now_ms() / 1000;
+        self.plan.get(&p).filter(|u| crate::planstore::is_current(u, now_s)).map(|u| u.utilization)
     }
 
     /// Apply what a failed attempt teaches the router and say what happens next. `Some`
@@ -757,6 +825,25 @@ mod tests {
         rt.note_plan(Claude, PlanUsage { window: "5h".into(), utilization: 0.7, resets_at: None });
         assert_eq!(rt.plan_utilization(Claude), Some(0.7));
         assert_eq!(rt.plan_utilization(Codex), None);
+        // A window that has already reset says nothing about now.
+        rt.note_plan(Codex, PlanUsage { window: "5h".into(), utilization: 0.9, resets_at: Some(1) });
+        assert_eq!(rt.plan_utilization(Codex), None);
+    }
+
+    #[test]
+    fn new_readings_are_saved_and_a_restart_loads_them() {
+        let dir = std::env::temp_dir().join(format!("jev-plan-rt-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("plan-usage.json");
+        let mut rt = runtime();
+        rt.plan_path = Some(path.clone());
+        rt.note_plan(Claude, PlanUsage { window: "five_hour".into(), utilization: 0.4, resets_at: None });
+        assert_eq!(crate::planstore::load(&path).get(&Claude).map(|p| p.utilization), Some(0.4));
+        // The same reading again does not rewrite the file.
+        std::fs::remove_file(&path).unwrap();
+        rt.note_plan(Claude, PlanUsage { window: "five_hour".into(), utilization: 0.4, resets_at: None });
+        assert!(!path.exists());
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
