@@ -47,6 +47,23 @@ All code must follow SOLID and DRY.
 - **D, Dependency Inversion:** core logic depends on traits, not on concrete IO. Git, processes, clocks, the network and disk come in through injected traits (`Worktrees`, `Checks`, `Records`, `Liveness`, `BackendFactory`), so tests can use fakes.
 - **DRY, Don't Repeat Yourself:** each piece of knowledge lives in one place. Before writing a helper, look for an existing one and reuse or extend it. When the same logic, constant or string appears twice, extract it. Two things that only look alike but would change for different reasons may stay separate.
 
+## Code design: DDD
+
+All code must follow Domain-Driven Design. The target architecture is in `docs/architecture/DDD.md`. That move to a workspace with one crate per context has not started, so today new code follows the same rules inside the flat `src/` layout.
+
+- **Ubiquitous language:** name types, functions and messages with the domain's words (worker, planner, brief, landing, cooldown, plan usage, turn), the same words the docs and the user use. Do not invent synonyms. Section 1.1 of the plan lists the terms.
+- **Bounded contexts:** each area of the domain owns its model, for example catalog, judgment, routing, backend, providers, session, changes, approval, orchestration, turn, doctor and gateway (section 1.2). Code belongs to exactly one context, and a context imports only the contexts upstream of it in the context map (section 1.3), never downstream. No cycles.
+- **Layers inside a context:**
+  - **Domain:** entities, value objects and rules; pure computation, with time passed in as an argument.
+  - **Application:** use cases, plus the ports (traits) they need from outside.
+  - **Infrastructure:** adapters that implement the ports, such as CLIs, HTTP, git, files and the clock.
+  - **Interface:** delivery, such as the TUI, the MCP server and command output.
+  - Dependencies point inward only: domain imports none of the others.
+- **Entities and value objects:** an entity has an identity that lasts (a `Worker` with its id). A value object is defined only by its value and is immutable (`ProviderId`, `Tier`, `Landing`). Model states and choices as enums and newtypes, not strings or loose `Value`s.
+- **Aggregates:** one root guards its invariants, and others change the aggregate only through the root (for example, the worker registry decides what may be merged).
+- **Anti-corruption layers:** external systems (each provider CLI, Jev's API, git, Claude Code's settings) are wrapped by an adapter that turns their formats into domain types. Their wire formats never leak into the domain.
+- **Domain services:** a rule that belongs to no single entity is a plain function or service in its context (`pick_worker`, `plan_mode_enforced`), not a method forced onto a type.
+
 ## Conventions
 
 - Add a bullet under `## Unreleased` in `CHANGELOG.md` for every user-visible change, written for humans (no review-round labels). Format and release steps: `docs/changelog-guide.md`.

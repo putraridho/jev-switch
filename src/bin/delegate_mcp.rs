@@ -14,6 +14,7 @@
 
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::{Context, Result};
 use serde_json::{json, Value};
@@ -21,7 +22,7 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::sync::{mpsc, OnceCell};
 use tokio::task::JoinSet;
 
-use jev_router::delegate::{has_leftovers, router_judge, BoxFut, DelegateApi, DelegateRequest, DelegateResult, Delegator, GitWorktrees};
+use jev_router::delegate::{has_leftovers, router_judge, BoxFut, DelegateApi, DelegateRequest, Delegator, GitWorktrees};
 use jev_router::log;
 use jev_router::providers::Runtime;
 use jev_router::router::Router;
@@ -31,17 +32,22 @@ use jev_router::typesafe::TypeSafe;
 /// echoed when it is one of these, else the newest is offered (the client then decides).
 const PROTOCOL_VERSIONS: [&str; 3] = ["2025-06-18", "2025-03-26", "2024-11-05"];
 
-const DELEGATE_DESCRIPTION: &str = "Hand ONE self-contained piece of a larger task to a worker model. Use it for independent \
-pieces (you may call it several times in parallel). Give each call a COMPLETE, self-contained brief: the worker sees only the brief, \
-not your conversation. There is no model parameter: the worker model is chosen for you.\n\
+const DELEGATE_DESCRIPTION: &str = "Hand ONE self-contained piece of a larger task to a worker model. It returns a task id AT \
+ONCE and the worker runs in the background: start every independent piece first, carry on with your own work, then call wait to \
+collect the results. Give each call a COMPLETE, self-contained brief: the worker sees only the brief, not your conversation. There \
+is no model parameter: the worker model is chosen for you.\n\
 READ-ONLY pieces (read_only: true; research, finding code, explaining) run in your folder in plan mode, see your uncommitted edits, \
 change nothing and return a report.\n\
 EDITING pieces run in their own private git worktree cut from the last commit, so they do NOT see your uncommitted edits: commit what \
-a worker needs first or put it in the brief. When the worker finishes, jev runs the project's tests in its worktree. If they pass and \
-the changes apply cleanly, they are AUTO-MERGED into your working tree and you get the report and the list of EVERY file changed (with \
-+/- counts); undo(worker_id) takes them back out. Otherwise (no test command, failing tests, a conflict, or review: true) you get the \
-reason and the diffs of as many files as fit: review the diff yourself and merge only what you verified. A file whose diff is not \
-shown must be read with show_diff before it can be merged.";
+a worker needs first or put it in the brief. When the worker finishes, jev runs the project's tests in its worktree. When you call \
+wait and they passed and the changes apply cleanly, they are AUTO-MERGED into your working tree and you get the report and the list \
+of EVERY file changed (with +/- counts); undo(worker_id) takes them back out. Otherwise (no test command, failing tests, a conflict, \
+or review: true) you get the reason and the diffs of as many files as fit: review the diff yourself and merge only what you verified. \
+A file whose diff is not shown must be read with show_diff before it can be merged.";
+const WAIT_DESCRIPTION: &str = "Collect delegated tasks: wait until they end, then get each one's result (and its auto-merge, \
+which happens here, never while you work). Without task_ids it waits for every task not yet collected. With timeout_seconds it \
+returns after that long with whatever ended and lists the rest as still running (0 checks without waiting). Each task is \
+collected once.";
 const SHOW_DIFF_DESCRIPTION: &str = "Read a worker's diff in pages (about 20,000 characters each). Without `file` it pages the \
 whole diff; with `file` (a path from the delegate result's file list) it pages that one file, which is how to read a file the \
 delegate result did not show. Pass `offset` (characters) to continue where the previous page ended. A file counts as seen once \
@@ -70,10 +76,8 @@ fn tools_list() -> Value {
         {
             "name": "delegate",
             "description": DELEGATE_DESCRIPTION,
-            // Claude Code runs MCP calls concurrently only for tools marked readOnlyHint, and
-            // serializes the rest; this is what lets parallel delegations fan out. A worker edits
-            // only its own worktree, but work whose tests pass is auto-merged into the caller's
-            // tree, so the claim is not strictly true while `delegate` still blocks until then.
+            // Starting a worker changes nothing in the caller's tree: it edits only its own
+            // worktree, or reads in plan mode. Anything that lands does so in `wait`.
             "annotations": { "readOnlyHint": true, "destructiveHint": false, "openWorldHint": true },
             "inputSchema": {
                 "type": "object",
@@ -84,6 +88,20 @@ fn tools_list() -> Value {
                     "review": { "type": "boolean", "description": "True to review the diff yourself even if the tests pass (for risky changes). Default: auto-merge when tests pass." }
                 },
                 "required": ["brief"]
+            }
+        },
+        {
+            "name": "wait",
+            "description": WAIT_DESCRIPTION,
+            // Auto-merges land here, in the caller's working tree.
+            "annotations": { "readOnlyHint": false, "destructiveHint": false },
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "task_ids": { "type": "array", "items": { "type": "string" }, "description": "Optional: the task ids delegate returned. Default: every task not yet collected." },
+                    "timeout_seconds": { "type": "integer", "minimum": 0, "description": "Optional: return after this many seconds with what has ended. Default: wait until all have ended." }
+                },
+                "required": []
             }
         },
         {
@@ -147,6 +165,24 @@ fn string_list(args: &Value, key: &str) -> Result<Option<Vec<String>>, String> {
     }
 }
 
+/// `wait`'s optional `task_ids` and `timeout_seconds`.
+fn parse_wait(args: &Value) -> Result<(Option<Vec<String>>, Option<Duration>), String> {
+    let ids = string_list(args, "task_ids")?;
+    let timeout = match args.get("timeout_seconds") {
+        None | Some(Value::Null) => None,
+        Some(v) => Some(Duration::from_secs(v.as_u64().ok_or("`timeout_seconds` must be a non-negative integer")?)),
+    };
+    Ok((ids, timeout))
+}
+
+/// What the planner reads after starting a task.
+fn started_text(task_id: &str) -> String {
+    format!(
+        "started task {task_id}. The worker runs in the background: carry on with other work, then call wait (no arguments \
+         collects every task) to get its result. Nothing lands in your working tree until you call wait."
+    )
+}
+
 /// `show_diff`'s optional `file` and `offset`.
 fn parse_show_diff(args: &Value) -> Result<(Option<String>, usize), String> {
     let file = match args.get("file") {
@@ -200,9 +236,10 @@ async fn call_tool(server: &Server, params: &Value) -> Result<Value, String> {
     let name = params["name"].as_str().ok_or("tools/call needs a tool `name`")?;
     let args = &params["arguments"];
     match name {
-        "delegate" => {
-            let result = server.api.delegate(parse_delegate(args)?).await;
-            Ok(text_result(result.render(), !result.ok))
+        "delegate" => Ok(outcome(server.api.start(parse_delegate(args)?).await.map(|id| started_text(&id)))),
+        "wait" => {
+            let (ids, timeout) = parse_wait(args)?;
+            Ok(outcome(server.api.wait(ids, timeout).await))
         }
         "show_diff" => {
             let (file, offset) = parse_show_diff(args)?;
@@ -214,7 +251,7 @@ async fn call_tool(server: &Server, params: &Value) -> Result<Value, String> {
         }
         "discard" => Ok(outcome(server.api.discard(worker_id_arg(args)?).await)),
         "undo" => Ok(outcome(server.api.undo(worker_id_arg(args)?).await)),
-        other => Err(format!("unknown tool `{other}` (delegate, show_diff, merge, discard, undo)")),
+        other => Err(format!("unknown tool `{other}` (delegate, wait, show_diff, merge, discard, undo)")),
     }
 }
 
@@ -258,11 +295,11 @@ async fn handle(line: &str, server: &Server) -> Option<String> {
 struct Lazy {
     dir: PathBuf,
     planner: String,
-    cell: OnceCell<Delegator>,
+    cell: OnceCell<Arc<Delegator>>,
 }
 
 impl Lazy {
-    async fn build(&self) -> Result<Delegator> {
+    async fn build(&self) -> Result<Arc<Delegator>> {
         let router = Arc::new(Router::new(TypeSafe::from_env()?, 1.0));
         let state = log::state_dir().context("no state directory (is HOME set?)")?;
         let worktrees = GitWorktrees::new(&self.dir, state.join("worktrees"))?;
@@ -275,44 +312,49 @@ impl Lazy {
             .with_store(&state);
         // Workers an earlier run left: reload the mergeable ones, remove the abandoned ones.
         delegator.recover().await;
-        Ok(delegator)
+        Ok(Arc::new(delegator))
     }
 
-    async fn delegator(&self) -> Result<&Delegator> {
+    async fn delegator(&self) -> Result<&Arc<Delegator>> {
         self.cell.get_or_try_init(|| self.build()).await
     }
 
-    /// The delegator for a tool that works on an existing worker: built on demand, because
-    /// after a restart the worker lives only in the saved registry.
-    async fn known(&self) -> Result<&Delegator, String> {
+    /// The delegator, built on demand (after a restart a worker lives only in the saved
+    /// registry), or why delegation is unavailable.
+    async fn known(&self) -> Result<&Arc<Delegator>, String> {
         self.delegator().await.map_err(|e| format!("delegation is not available: {e:#}"))
     }
 }
 
+/// Every call goes to the real delegator's own [`DelegateApi`] once it is built.
 impl DelegateApi for Lazy {
-    fn delegate(&self, req: DelegateRequest) -> BoxFut<'_, DelegateResult> {
+    fn start(&self, req: DelegateRequest) -> BoxFut<'_, Result<String, String>> {
         Box::pin(async move {
-            match self.delegator().await {
-                Ok(d) => d.delegate(req).await,
-                Err(e) => DelegateResult::failed(format!("delegation is not available: {e:#}. Do this piece yourself."), vec![]),
+            match self.known().await {
+                Ok(d) => DelegateApi::start(d, req).await,
+                Err(e) => Err(format!("{e}. Do this piece yourself.")),
             }
         })
     }
 
+    fn wait(&self, task_ids: Option<Vec<String>>, timeout: Option<Duration>) -> BoxFut<'_, Result<String, String>> {
+        Box::pin(async move { DelegateApi::wait(self.known().await?, task_ids, timeout).await })
+    }
+
     fn show_diff(&self, worker_id: String, file: Option<String>, offset: usize) -> BoxFut<'_, Result<String, String>> {
-        Box::pin(async move { self.known().await?.show_diff(&worker_id, file.as_deref(), offset).await })
+        Box::pin(async move { DelegateApi::show_diff(self.known().await?, worker_id, file, offset).await })
     }
 
     fn merge(&self, worker_id: String, files: Option<Vec<String>>) -> BoxFut<'_, Result<String, String>> {
-        Box::pin(async move { self.known().await?.merge(&worker_id, files).await })
+        Box::pin(async move { DelegateApi::merge(self.known().await?, worker_id, files).await })
     }
 
     fn discard(&self, worker_id: String) -> BoxFut<'_, Result<String, String>> {
-        Box::pin(async move { self.known().await?.discard(&worker_id).await })
+        Box::pin(async move { DelegateApi::discard(self.known().await?, worker_id).await })
     }
 
     fn undo(&self, worker_id: String) -> BoxFut<'_, Result<String, String>> {
-        Box::pin(async move { self.known().await?.undo(&worker_id).await })
+        Box::pin(async move { DelegateApi::undo(self.known().await?, worker_id).await })
     }
 }
 
@@ -391,39 +433,51 @@ mod tests {
     use super::*;
     use std::sync::Mutex;
 
-    use jev_router::delegate::{FileStat, Landing, ReviewReason};
+    use jev_router::delegate::{DelegateResult, FileStat, Landing, ReviewReason};
+
+    /// The arguments of one `wait` call: task ids and timeout.
+    type WaitCall = (Option<Vec<String>>, Option<Duration>);
 
     /// Records every call; its worker report is canned.
     #[derive(Default)]
     struct FakeApi {
         delegated: Mutex<Vec<DelegateRequest>>,
+        waited: Mutex<Vec<WaitCall>>,
         merged: Mutex<Vec<(String, Option<Vec<String>>)>>,
         shown: Mutex<Vec<(String, Option<String>, usize)>>,
         discarded: Mutex<Vec<String>>,
         undone: Mutex<Vec<String>>,
     }
 
+    /// The canned result of task t1: a worker waiting for review.
+    fn canned_result() -> DelegateResult {
+        DelegateResult {
+            worker_id: "w1".into(),
+            provider: Some(jev_router::backend::ProviderId::Codex),
+            model: Some("gpt-6.1-terra".into()),
+            summary: "added the retry".into(),
+            stats: vec![
+                FileStat { path: "src/net.rs".into(), added: 3, removed: 1, binary: false },
+                FileStat { path: "src/big.rs".into(), added: 900, removed: 0, binary: false },
+            ],
+            diff: "diff --git a/src/net.rs b/src/net.rs".into(),
+            shown: vec!["src/net.rs".into()],
+            ok: true,
+            error: None,
+            retries: vec![],
+            landing: Landing::Review(ReviewReason::NoTestCommand),
+        }
+    }
+
     impl DelegateApi for FakeApi {
-        fn delegate(&self, req: DelegateRequest) -> BoxFut<'_, DelegateResult> {
+        fn start(&self, req: DelegateRequest) -> BoxFut<'_, Result<String, String>> {
+            let unavailable = req.brief == "unavailable";
             self.delegated.lock().unwrap().push(req);
-            Box::pin(async {
-                DelegateResult {
-                    worker_id: "w1".into(),
-                    provider: Some(jev_router::backend::ProviderId::Codex),
-                    model: Some("gpt-6.1-terra".into()),
-                    summary: "added the retry".into(),
-                    stats: vec![
-                        FileStat { path: "src/net.rs".into(), added: 3, removed: 1, binary: false },
-                        FileStat { path: "src/big.rs".into(), added: 900, removed: 0, binary: false },
-                    ],
-                    diff: "diff --git a/src/net.rs b/src/net.rs".into(),
-                    shown: vec!["src/net.rs".into()],
-                    ok: true,
-                    error: None,
-                    retries: vec![],
-                    landing: Landing::Review(ReviewReason::NoTestCommand),
-                }
-            })
+            Box::pin(async move { if unavailable { Err("delegation is not available: no Jev key".into()) } else { Ok("t1".into()) } })
+        }
+        fn wait(&self, ids: Option<Vec<String>>, timeout: Option<Duration>) -> BoxFut<'_, Result<String, String>> {
+            self.waited.lock().unwrap().push((ids, timeout));
+            Box::pin(async { Ok(format!("task t1: {}", canned_result().render())) })
         }
         fn show_diff(&self, id: String, file: Option<String>, offset: usize) -> BoxFut<'_, Result<String, String>> {
             self.shown.lock().unwrap().push((id.clone(), file, offset));
@@ -485,22 +539,29 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn tools_list_has_five_tools_and_delegate_has_no_model_field() {
+    async fn tools_list_has_six_tools_and_delegate_has_no_model_field() {
         let (s, _) = rig();
         let r = send(&s, json!({ "jsonrpc": "2.0", "id": 3, "method": "tools/list" })).await;
         let tools = r["result"]["tools"].as_array().unwrap();
         let names: Vec<_> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
-        assert_eq!(names, ["delegate", "show_diff", "merge", "discard", "undo"]);
+        assert_eq!(names, ["delegate", "wait", "show_diff", "merge", "discard", "undo"]);
         for t in tools {
             assert_eq!(t["inputSchema"]["type"], "object");
             assert!(t["inputSchema"]["required"].is_array());
         }
+        // Starting a task changes nothing in the caller's tree; collecting it may merge.
         assert_eq!(tools[0]["annotations"], json!({ "readOnlyHint": true, "destructiveHint": false, "openWorldHint": true }));
-        assert_eq!(tools[1]["annotations"], json!({ "readOnlyHint": true }));
-        assert_eq!(tools[2]["annotations"], json!({ "readOnlyHint": false, "destructiveHint": false }));
-        assert_eq!(tools[3]["annotations"], json!({ "readOnlyHint": false, "destructiveHint": true }));
-        assert_eq!(tools[4]["annotations"], json!({ "readOnlyHint": false, "destructiveHint": true }), "undo changes the working tree");
-        assert_eq!(tools[4]["inputSchema"]["required"], json!(["worker_id"]));
+        assert_eq!(tools[1]["annotations"], json!({ "readOnlyHint": false, "destructiveHint": false }));
+        assert_eq!(tools[2]["annotations"], json!({ "readOnlyHint": true }));
+        assert_eq!(tools[3]["annotations"], json!({ "readOnlyHint": false, "destructiveHint": false }));
+        assert_eq!(tools[4]["annotations"], json!({ "readOnlyHint": false, "destructiveHint": true }));
+        assert_eq!(tools[5]["annotations"], json!({ "readOnlyHint": false, "destructiveHint": true }), "undo changes the working tree");
+        assert_eq!(tools[5]["inputSchema"]["required"], json!(["worker_id"]));
+        let wait = &tools[1];
+        assert_eq!(wait["inputSchema"]["required"], json!([]), "everything is optional");
+        assert_eq!(wait["inputSchema"]["properties"]["timeout_seconds"]["type"], "integer");
+        let w = wait["description"].as_str().unwrap();
+        assert!(w.contains("every task not yet collected") && w.contains("auto-merge") && w.contains("never while you work"), "{w}");
         let delegate = &tools[0];
         let props = delegate["inputSchema"]["properties"].as_object().unwrap();
         assert_eq!(props.keys().map(String::as_str).collect::<Vec<_>>(), ["brief", "files", "read_only", "review"]);
@@ -512,13 +573,14 @@ mod tests {
         assert!(d.contains("independent") && d.contains("self-contained") && d.contains("review the diff yourself") && d.contains("merge only what you verified"));
         assert!(d.contains("EVERY file") && d.contains("show_diff"));
         assert!(d.contains("AUTO-MERGED") && d.contains("undo(worker_id)") && d.contains("plan mode") && d.contains("uncommitted edits"));
-        let show = &tools[1];
+        assert!(d.contains("task id AT ONCE") && d.contains("background") && d.contains("call wait"));
+        let show = &tools[2];
         assert_eq!(show["inputSchema"]["required"], json!(["worker_id"]));
         let props = show["inputSchema"]["properties"].as_object().unwrap();
         assert_eq!(props.keys().map(String::as_str).collect::<Vec<_>>(), ["file", "offset", "worker_id"]);
         assert_eq!(props["offset"]["type"], "integer");
         assert!(show["description"].as_str().unwrap().contains("pages"));
-        let merge = &tools[2];
+        let merge = &tools[3];
         assert_eq!(merge["inputSchema"]["required"], json!(["worker_id"]), "files is optional");
         assert_eq!(merge["inputSchema"]["properties"]["files"]["type"], "array");
         let m = merge["description"].as_str().unwrap();
@@ -527,18 +589,45 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn delegate_runs_through_the_delegator_and_returns_the_report() {
+    async fn delegate_starts_a_task_and_wait_returns_its_report() {
         let (s, api) = rig();
         let r = send(&s, call(4, "delegate", json!({ "brief": "add a retry", "files": ["src/net.rs"], "read_only": false, "review": true }))).await;
         assert_eq!(r["result"]["isError"], false);
+        let started = r["result"]["content"][0]["text"].as_str().unwrap();
+        assert!(started.starts_with("started task t1") && started.contains("call wait") && started.contains("Nothing lands"), "{started}");
+        assert_eq!(*api.delegated.lock().unwrap(), vec![DelegateRequest { brief: "add a retry".into(), files: vec!["src/net.rs".into()], read_only: false, review: true }]);
+        let r = send(&s, call(40, "wait", json!({}))).await;
+        assert_eq!(r["result"]["isError"], false);
         let text = r["result"]["content"][0]["text"].as_str().unwrap();
-        assert!(text.contains("worker w1") && text.contains("added the retry") && text.contains("diff"));
+        assert!(text.starts_with("task t1: worker w1") && text.contains("added the retry") && text.contains("diff"), "{text}");
         assert!(text.contains("merge(w1"));
         // Every changed file is listed with its counts, and the one not shown says how to read it.
         assert!(text.contains("src/net.rs +3 -1") && text.contains("src/big.rs +900 -0"), "{text}");
         assert!(text.contains("NOT SHOWN") && text.contains("src/big.rs") && text.contains("show_diff(w1, file)"), "{text}");
         assert!(text.contains("Not auto-merged"), "{text}");
-        assert_eq!(*api.delegated.lock().unwrap(), vec![DelegateRequest { brief: "add a retry".into(), files: vec!["src/net.rs".into()], read_only: false, review: true }]);
+    }
+
+    #[tokio::test]
+    async fn wait_passes_task_ids_and_timeout_and_rejects_bad_ones() {
+        let (s, api) = rig();
+        send(&s, call(41, "wait", json!({ "task_ids": ["t1", "t2"], "timeout_seconds": 30 }))).await;
+        send(&s, call(42, "wait", json!({ "timeout_seconds": 0 }))).await;
+        assert_eq!(
+            *api.waited.lock().unwrap(),
+            [(Some(vec!["t1".to_string(), "t2".to_string()]), Some(Duration::from_secs(30))), (None, Some(Duration::ZERO))]
+        );
+        for args in [json!({ "task_ids": "t1" }), json!({ "task_ids": [1] }), json!({ "timeout_seconds": -1 }), json!({ "timeout_seconds": "5" })] {
+            assert_eq!(send(&s, call(43, "wait", args.clone())).await["error"]["code"], -32602, "{args}");
+        }
+        assert_eq!(api.waited.lock().unwrap().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn a_delegation_that_cannot_start_is_an_error_the_model_sees() {
+        let (s, _) = rig();
+        let r = send(&s, call(44, "delegate", json!({ "brief": "unavailable" }))).await;
+        assert_eq!(r["result"]["isError"], true);
+        assert!(r["result"]["content"][0]["text"].as_str().unwrap().contains("not available"));
     }
 
     #[tokio::test]

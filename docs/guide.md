@@ -70,7 +70,7 @@ without being routed, at most `JEV_GATEWAY_MAX_INFLIGHT` (32) requests run at on
 non-loopback `JEV_GATEWAY_ADDR` is refused unless `JEV_GATEWAY_ALLOW_REMOTE=1`.
 
 **Delegate tool.** When `jev-delegate-mcp` is installed, `jev-claude` also attaches it to Claude
-Code as the MCP server `jev` (`mcp__jev__delegate`, `show_diff`, `merge`, `discard`, `undo`): Claude can
+Code as the MCP server `jev` (`mcp__jev__delegate`, `wait`, `show_diff`, `merge`, `discard`, `undo`): Claude can
 hand a self-contained piece of work to a worker on your other subscriptions (Codex, Antigravity,
 ...); edits run in their own git worktree and are auto-merged when the project's tests pass
 (otherwise Claude reads the diff and merges it), exactly as in `jev-code`
@@ -634,13 +634,16 @@ what you set is kept for the next `jev-code`, like `/mode` and `/provider`; `JEV
 is the start-up default when nothing was set, and a one-shot `-p` stays off unless it says on). A request that Jev scores multi-part (`multi_part` at `ORCH_TRIGGER_P`, 0.70) AND
 that normal routing would send to a Top-tier model runs on a PLANNER, which gets a
 `delegate` tool (an MCP server, `delegate_mcp`). The planner hands independent pieces to
-cheaper WORKERS. A piece the planner marks `read_only` runs in the project folder in plan
+cheaper WORKERS. `delegate` returns a task id at once and the worker runs in the background,
+so the planner keeps working; `wait` (optional `task_ids`, `timeout_seconds`; `0` only checks)
+collects the results, and anything that lands in the working tree lands there, never while
+the planner may be editing. A piece the planner marks `read_only` runs in the project folder in plan
 mode and returns only a report (on Gemini and Grok, whose CLIs do not enforce plan mode, it
 runs in a throwaway worktree instead). An editing worker runs in its own git worktree
 (`<state dir>/worktrees/<id>`, detached at `HEAD`, so the planner's uncommitted edits are not
 visible to it). When it finishes, jev runs the project's test command in that worktree
 (`cargo test`, `npm test`, `go test ./...` or pytest; every kind the folder is, 15-minute
-limit). If the tests pass and the changes apply cleanly, they are **auto-merged** into the
+limit). If the tests passed and the changes apply cleanly, `wait` **auto-merges** them into the
 working tree and the planner gets the report and the file list with +/- counts, not the diff;
 `undo` (worker_id) takes exactly those changes back out while the delegate server runs. Set
 `JEV_AUTO_MERGE=0` to turn this off. With no test command, failing tests (their output's tail

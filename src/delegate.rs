@@ -31,6 +31,11 @@
 //! list, not the diff, and `undo` takes them back out. When there is no test command, the
 //! tests fail, the patch conflicts, or the planner asked to review, it falls back to review.
 //!
+//! **Delegations run in the background.** [`Delegator::start`] returns a task id at once and
+//! runs the worker (and its tests) on its own task; [`Delegator::wait`] collects it and only
+//! then lands it ([`Delegator::settle`]), so nothing reaches the main tree while the planner
+//! may be editing it. [`Delegator::delegate`] does both in one blocking call.
+//!
 //! **In review, the planner merges only what it saw.** The delegate result lists every changed file
 //! with its +/- counts and carries whole-file diffs up to a size budget; `show_diff` pages
 //! the rest. The registry records which files were shown in full and `merge` refuses any
@@ -42,8 +47,9 @@
 //! **Servers share the state directory.** Every record carries its owner (pid plus process
 //! start time, [`Liveness`]); `recover` never touches a record whose owner is alive, and
 //! adopts or ages out only a dead server's. Worker ids carry a per-server tag, so two
-//! servers never produce the same id. A `delegate` call that is dropped mid-flight removes
-//! its placeholder, record and worktree ([`Reservation`]). A path read from a record is
+//! servers never produce the same id. A delegation dropped mid-flight (a blocking call
+//! cancelled, or a background task dropped when the server shuts down) removes its
+//! placeholder, record and worktree ([`Reservation`]). A path read from a record is
 //! deleted only if it proves to be inside the worktrees root ([`checked_inside`]).
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
@@ -1256,7 +1262,10 @@ impl DelegateResult {
 
 /// What the MCP server calls. Implemented by [`Delegator`]; tests use a fake.
 pub trait DelegateApi: Send + Sync {
-    fn delegate(&self, req: DelegateRequest) -> BoxFut<'_, DelegateResult>;
+    /// Start a delegation in the background; its task id, or why delegation is unavailable.
+    fn start(&self, req: DelegateRequest) -> BoxFut<'_, Result<String, String>>;
+    /// Collect background tasks (`task_ids`, or all), waiting at most `timeout` when given.
+    fn wait(&self, task_ids: Option<Vec<String>>, timeout: Option<Duration>) -> BoxFut<'_, Result<String, String>>;
     /// One page of a worker's diff, a single file's when `file` is given, from character
     /// `offset`. What it shows in full counts as seen for `merge`.
     fn show_diff(&self, worker_id: String, file: Option<String>, offset: usize) -> BoxFut<'_, Result<String, String>>;
@@ -1412,6 +1421,44 @@ pub struct Delegator {
     /// What each auto-merged worker applied, so `undo` can take exactly that back out.
     /// Kept for this server's life only.
     merged: Arc<Mutex<HashMap<String, Applied>>>,
+    /// Delegations started in the background and not yet collected by `wait`, by number.
+    tasks: Mutex<BTreeMap<u64, Task>>,
+    next_task: AtomicU64,
+}
+
+/// A delegation running in the background ([`Delegator::start`]).
+struct Task {
+    started_ms: u64,
+    /// Turns `true` once `outcome` is set. A sender dropped before that means the task died.
+    done: tokio::sync::watch::Receiver<bool>,
+    outcome: Arc<Mutex<Option<Finished>>>,
+}
+
+impl Task {
+    fn ended(&self) -> bool {
+        *self.done.borrow() || self.done.has_changed().is_err()
+    }
+
+    /// The outcome of an ended task; a task that died without one is a failure.
+    fn into_finished(self) -> Finished {
+        lock(&self.outcome).take().unwrap_or_else(|| Finished::done(DelegateResult::failed("the delegated task stopped unexpectedly".into(), vec![])))
+    }
+}
+
+/// What `wait` found for one task it was asked about.
+enum Collected {
+    Ended(Task),
+    Running { started_ms: u64 },
+    /// Another `wait` collected it meanwhile.
+    Gone,
+}
+
+fn task_id(n: u64) -> String {
+    format!("t{n}")
+}
+
+fn task_number(id: &str) -> Option<u64> {
+    id.strip_prefix('t')?.parse().ok()
 }
 
 /// An auto-merge, as `undo` needs it.
@@ -1455,6 +1502,8 @@ impl Delegator {
             auto_merge: true,
             main_tree: tokio::sync::Mutex::new(()),
             merged: Arc::default(),
+            tasks: Mutex::new(BTreeMap::new()),
+            next_task: AtomicU64::new(1),
         }
     }
 
@@ -1693,7 +1742,7 @@ impl Delegator {
             o.insert("duration_ms".into(), json!(a.wall_ms));
             o.insert("read_only".into(), json!(a.read_only));
             o.insert("files_changed".into(), json!(a.files));
-            o.insert("landing".into(), json!(a.landing.map(Landing::tag)));
+            o.insert("landing".into(), json!(a.landing));
             o.insert("in_place".into(), json!(a.in_place));
             o.insert("tool_calls".into(), json!(a.tools));
             o.insert("repo".into(), json!(handoff_key(&self.worktrees.repo())));
@@ -1711,7 +1760,7 @@ impl Delegator {
         jev: &Value,
         excluded: &HashSet<(ProviderId, String)>,
         attempt: u32,
-    ) -> Result<DelegateResult, AttemptOutcome> {
+    ) -> Result<Finished, AttemptOutcome> {
         let id = self.next_id();
         let spec = self.reserve(signals, excluded, req.brief.len(), &id).map_err(|e| AttemptOutcome::Stop(e.to_string()))?;
         let reservation = Reservation::new(self, &id);
@@ -1730,7 +1779,7 @@ impl Delegator {
         id: String,
         reservation: &Reservation<'_>,
         attempt: u32,
-    ) -> Result<DelegateResult, AttemptOutcome> {
+    ) -> Result<Finished, AttemptOutcome> {
         // A read-only worker on a CLI that enforces plan mode reads the user's own folder (and
         // so sees uncommitted edits); every other worker gets a worktree.
         let in_place = req.read_only && plan_mode_enforced(spec.provider);
@@ -1761,7 +1810,7 @@ impl Delegator {
         self.update(&id, |w| w.running = false).await;
         let wall_ms = started.elapsed().as_millis() as u64;
         let task = worker_task(signals);
-        let log = |result: &Result<TurnOutcome, TurnError>, files: &[String], landing: Option<&Landing>| {
+        let log = |result: &Result<TurnOutcome, TurnError>, files: &[String], landing: Option<&'static str>| {
             self.log_attempt(&AttemptLog { spec, id: &id, task, attempt, read_only: req.read_only, jev, result, wall_ms, started_ms, files, tools: &tools, landing, in_place })
         };
         let out = match result {
@@ -1794,8 +1843,8 @@ impl Delegator {
         if in_place {
             self.take(&id).await;
             let landing = Landing::Report { discarded: vec![] };
-            log(&Ok(out), &[], Some(&landing));
-            return Ok(done(landing, vec![], String::new(), vec![]));
+            log(&Ok(out), &[], Some(landing.tag()));
+            return Ok(Finished::done(done(landing, vec![], String::new(), vec![])));
         }
         let read = self.blocking({
             let path = path.clone();
@@ -1816,29 +1865,23 @@ impl Delegator {
         if req.read_only || parts.is_empty() {
             let _ = self.forget(&id).await;
             let landing = if req.read_only { Landing::Report { discarded: files.clone() } } else { Landing::NoChanges };
-            log(&Ok(out), &files, Some(&landing));
-            return Ok(done(landing, vec![], String::new(), vec![]));
+            log(&Ok(out), &files, Some(landing.tag()));
+            return Ok(Finished::done(done(landing, vec![], String::new(), vec![])));
         }
-        let landing = self.land(&id, &path, &diff, &files, req.review, reservation.slot()).await;
-        log(&Ok(out), &files, Some(&landing));
-        if matches!(landing, Landing::AutoMerged { .. }) {
-            // A worktree that will not go is reported by `forget` and cleaned by recovery later.
-            let _ = self.forget(&id).await;
-            return Ok(done(landing, stats, String::new(), vec![]));
-        }
-        let (shown_text, shown) = first_page(&parts, MAX_DIFF_CHARS);
-        self.update(&id, |w| w.shown.extend(shown.iter().cloned())).await;
-        Ok(done(landing, stats, shown_text, shown))
+        let verdict = self.verify(&path, req.review, reservation.slot()).await;
+        log(&Ok(out), &files, Some(verdict.tag()));
+        // The landing is decided by `settle`, when nobody is editing the main tree.
+        Ok(Finished::Pending(Box::new(Pending { result: done(Landing::NoChanges, stats, String::new(), vec![]), patch: diff, verdict })))
     }
 
-    /// Decide how a finished editing worker's `patch` lands: run the project's tests in its
-    /// worktree, then apply the patch to the main tree. Anything short of both is a review.
-    async fn land(&self, id: &str, worktree: &Path, patch: &str, files: &[String], review: bool, slot: Arc<Mutex<CreateSlot>>) -> Landing {
+    /// Whether a finished editing worker's work may merge on its own: the project's tests,
+    /// run in its worktree, must pass. Touches nothing outside the worktree.
+    async fn verify(&self, worktree: &Path, review: bool, slot: Arc<Mutex<CreateSlot>>) -> Verdict {
         if review {
-            return Landing::Review(ReviewReason::Asked);
+            return Verdict::Review(ReviewReason::Asked);
         }
         if !self.auto_merge {
-            return Landing::Review(ReviewReason::Off);
+            return Verdict::Review(ReviewReason::Off);
         }
         let (checks, dir) = (self.checks.clone(), worktree.to_path_buf());
         // The run stops early if the delegation is cancelled: its worktree is going away.
@@ -1849,35 +1892,168 @@ impl Delegator {
         });
         let (command, run) = match ran.await {
             Ok(Some(found)) => found,
-            Ok(None) => return Landing::Review(ReviewReason::NoTestCommand),
-            Err(e) => return Landing::Review(ReviewReason::TestsNotRun { command: "the tests".into(), error: format!("{e:#}") }),
+            Ok(None) => return Verdict::Review(ReviewReason::NoTestCommand),
+            Err(e) => return Verdict::Review(ReviewReason::TestsNotRun { command: "the tests".into(), error: format!("{e:#}") }),
         };
-        match run {
-            CheckRun::Passed => {}
-            CheckRun::Failed { output } => return Landing::Review(ReviewReason::TestsFailed { command, output }),
-            CheckRun::TimedOut { after } => return Landing::Review(ReviewReason::TestsTimedOut { command, after }),
-            CheckRun::Stopped => return Landing::Review(ReviewReason::TestsNotRun { command, error: "the delegation was cancelled".into() }),
-            CheckRun::CouldNotStart { error } => return Landing::Review(ReviewReason::TestsNotRun { command, error }),
-        }
+        Verdict::Review(match run {
+            CheckRun::Passed => return Verdict::Passed { command },
+            CheckRun::Failed { output } => ReviewReason::TestsFailed { command, output },
+            CheckRun::TimedOut { after } => ReviewReason::TestsTimedOut { command, after },
+            CheckRun::Stopped => ReviewReason::TestsNotRun { command, error: "the delegation was cancelled".into() },
+            CheckRun::CouldNotStart { error } => ReviewReason::TestsNotRun { command, error },
+        })
+    }
+
+    /// Land a finished delegation in the main tree: a worker whose tests passed is applied
+    /// (or goes to review when its patch conflicts); one under review gets its first diff
+    /// page. Called when the planner is not editing: inside `delegate` or `wait`.
+    async fn settle(&self, finished: Finished) -> DelegateResult {
+        let pending = match finished {
+            Finished::Done(result) => return *result,
+            Finished::Pending(pending) => *pending,
+        };
+        let Pending { mut result, patch, verdict } = pending;
+        let reason = match verdict {
+            Verdict::Review(reason) => reason,
+            Verdict::Passed { command } => match self.auto_apply(&result.worker_id, &patch, result.files_changed()).await {
+                Ok(()) => {
+                    // A worktree that will not go is reported by `forget` and cleaned by recovery later.
+                    let _ = self.forget(&result.worker_id).await;
+                    result.landing = Landing::AutoMerged { command };
+                    return result;
+                }
+                Err(why) => ReviewReason::Conflict(why),
+            },
+        };
+        let (diff, shown) = first_page(&split_patch(&patch), MAX_DIFF_CHARS);
+        self.update(&result.worker_id, |w| w.shown.extend(shown.iter().cloned())).await;
+        result.diff = diff;
+        result.shown = shown;
+        result.landing = Landing::Review(reason);
+        result
+    }
+
+    /// Apply a tested worker's patch to the main tree, one change at a time. Recorded for
+    /// `undo` in the same blocking step as the apply, so a call cancelled meanwhile still
+    /// leaves its changes undoable.
+    async fn auto_apply(&self, id: &str, patch: &str, files: Vec<String>) -> Result<(), String> {
         let _turn = self.main_tree.lock().await;
-        // Recorded in the same blocking step as the apply, so a call cancelled meanwhile
-        // still leaves its changes undoable.
-        let applied = self.blocking({
-            let (merged, id, applied) = (self.merged.clone(), id.to_string(), Applied { patch: patch.to_string(), files: files.to_vec() });
-            move |w| {
-                w.apply(&applied.patch)?;
-                lock(&merged).insert(id, applied);
-                Ok(())
-            }
+        let (merged, id, applied) = (self.merged.clone(), id.to_string(), Applied { patch: patch.to_string(), files });
+        self.blocking(move |w| {
+            w.apply(&applied.patch)?;
+            lock(&merged).insert(id, applied);
+            Ok(())
+        })
+        .await
+        .map_err(|e| format!("{e:#}"))
+    }
+
+    /// Run a delegation to the end and land it: what a blocking call returns.
+    pub async fn delegate(&self, req: DelegateRequest) -> DelegateResult {
+        let finished = self.run(req).await;
+        self.settle(finished).await
+    }
+
+    /// Start a delegation in the background and return its task id at once, so the planner
+    /// keeps working meanwhile. The worker runs and is tested; nothing lands in the main tree
+    /// until [`Delegator::wait`] collects it.
+    pub fn start(self: &Arc<Self>, req: DelegateRequest) -> String {
+        let n = self.next_task.fetch_add(1, Ordering::SeqCst);
+        let (tx, done) = tokio::sync::watch::channel(false);
+        let outcome = Arc::new(Mutex::new(None));
+        lock(&self.tasks).insert(n, Task { started_ms: (self.now)(), done, outcome: outcome.clone() });
+        let me = Arc::clone(self);
+        tokio::spawn(async move {
+            let finished = me.run(req).await;
+            *lock(&outcome) = Some(finished);
+            let _ = tx.send(true);
         });
-        match applied.await {
-            Ok(()) => Landing::AutoMerged { command },
-            Err(e) => Landing::Review(ReviewReason::Conflict(format!("{e:#}"))),
+        task_id(n)
+    }
+
+    /// Wait for background tasks (`ids`, or every one not yet collected) to end, at most
+    /// `timeout` when given, then land and report each that ended. Each task is collected
+    /// once; the ones still running are listed.
+    pub async fn wait(&self, ids: Option<Vec<String>>, timeout: Option<Duration>) -> Result<String, String> {
+        let wanted = self.wanted_tasks(ids)?;
+        if wanted.is_empty() {
+            return Ok("no delegated tasks to wait for: every task has been collected".into());
         }
+        let receivers: Vec<_> = {
+            let tasks = lock(&self.tasks);
+            wanted.iter().filter_map(|n| tasks.get(n)).map(|t| t.done.clone()).collect()
+        };
+        let deadline = timeout.map(|t| tokio::time::Instant::now() + t);
+        for mut rx in receivers {
+            // An error means the task died: it counts as ended and is reported below.
+            let ended = async move {
+                let _ = rx.wait_for(|done| *done).await;
+            };
+            let in_time = match deadline {
+                Some(at) => tokio::time::timeout_at(at, ended).await.is_ok(),
+                None => {
+                    ended.await;
+                    true
+                }
+            };
+            if !in_time {
+                break;
+            }
+        }
+        let mut blocks: Vec<String> = Vec::new();
+        let mut running: Vec<String> = Vec::new();
+        for n in wanted {
+            let collected = {
+                let mut tasks = lock(&self.tasks);
+                match tasks.get(&n) {
+                    None => Collected::Gone,
+                    Some(t) if t.ended() => tasks.remove(&n).map_or(Collected::Gone, Collected::Ended),
+                    Some(t) => Collected::Running { started_ms: t.started_ms },
+                }
+            };
+            match collected {
+                Collected::Ended(task) => {
+                    let result = self.settle(task.into_finished()).await;
+                    blocks.push(format!("task {}: {}", task_id(n), result.render()));
+                }
+                Collected::Running { started_ms } => {
+                    let took = crate::uifmt::human_duration((self.now)().saturating_sub(started_ms));
+                    running.push(format!("{} (running for {took})", task_id(n)));
+                }
+                Collected::Gone => blocks.push(format!("task {}: already collected by another wait", task_id(n))),
+            }
+        }
+        if !running.is_empty() {
+            let waited = timeout.map_or(String::new(), |t| format!(" after {}", crate::uifmt::human_duration(t.as_millis() as u64)));
+            blocks.push(format!("Still running{waited}: {}. Call wait again to collect them.", running.join(", ")));
+        }
+        Ok(blocks.join("\n\n"))
+    }
+
+    /// The task numbers `ids` names, each once, or every uncollected task when `None`.
+    fn wanted_tasks(&self, ids: Option<Vec<String>>) -> Result<Vec<u64>, String> {
+        let tasks = lock(&self.tasks);
+        let Some(ids) = ids else { return Ok(tasks.keys().copied().collect()) };
+        if ids.is_empty() {
+            return Err("`task_ids` is empty: name the tasks, or leave it out to wait for every task".into());
+        }
+        let mut wanted: Vec<u64> = Vec::new();
+        for id in &ids {
+            let n = task_number(id).filter(|n| tasks.contains_key(n)).ok_or_else(|| {
+                let open: Vec<String> = tasks.keys().map(|n| task_id(*n)).collect();
+                let open = if open.is_empty() { "none".to_string() } else { open.join(", ") };
+                format!("unknown task `{id}` (already collected?); uncollected tasks: {open}")
+            })?;
+            if !wanted.contains(&n) {
+                wanted.push(n);
+            }
+        }
+        Ok(wanted)
     }
 
     /// Judge the brief, then run workers until one succeeds or the attempts are used up.
-    pub async fn delegate(&self, req: DelegateRequest) -> DelegateResult {
+    /// Nothing reaches the main tree here: that is [`Delegator::settle`]'s.
+    async fn run(&self, req: DelegateRequest) -> Finished {
         // The brief is a prompt like any other: the privacy policy decides which providers may
         // have it, and Jev (a cloud service) is asked only when some cloud provider may.
         let repo = self.worktrees.repo();
@@ -1888,7 +2064,7 @@ impl Delegator {
             excluded.extend(crate::catalog::models().iter().filter(|m| m.provider == p).map(|m| (m.provider, m.id.to_string())));
         }
         if crate::providers::ALL_PROVIDERS.into_iter().all(|p| !verdict.permits(p)) {
-            return DelegateResult::failed(format!("not delegated: {}", verdict.refusal_line()), Vec::new());
+            return Finished::done(DelegateResult::failed(format!("not delegated: {}", verdict.refusal_line()), Vec::new()));
         }
         let want = if self.guards.may_leave(&repo, &outgoing, &[]) {
             (self.judge)(crate::privacy::prepare(&self.guards.privacy, &req.brief).prompt).await
@@ -1900,11 +2076,8 @@ impl Delegator {
         let mut retries: Vec<String> = Vec::new();
         for attempt in 1..=MAX_WORKER_ATTEMPTS {
             match self.attempt(&req, &signals, &jev, &excluded, attempt).await {
-                Ok(mut done) => {
-                    done.retries = retries;
-                    return done;
-                }
-                Err(AttemptOutcome::Stop(message)) => return DelegateResult::failed(message, retries),
+                Ok(finished) => return finished.with_retries(retries),
+                Err(AttemptOutcome::Stop(message)) => return Finished::done(DelegateResult::failed(message, retries)),
                 Err(AttemptOutcome::Failed(f)) => {
                     let react = lock(&self.runtime).react(f.spec.provider, f.spec.id, &f.err, &mut excluded, (self.now)());
                     match react {
@@ -1914,13 +2087,13 @@ impl Delegator {
                             failed.worker_id = f.id;
                             failed.provider = Some(f.spec.provider);
                             failed.model = Some(f.spec.id.to_string());
-                            return failed;
+                            return Finished::done(failed);
                         }
                     }
                 }
             }
         }
-        DelegateResult::failed("no worker succeeded".into(), retries)
+        Finished::done(DelegateResult::failed("no worker succeeded".into(), retries))
     }
 
     // ---- reviewing and merging
@@ -2069,9 +2242,13 @@ impl Delegator {
     }
 }
 
-impl DelegateApi for Delegator {
-    fn delegate(&self, req: DelegateRequest) -> BoxFut<'_, DelegateResult> {
-        Box::pin(Delegator::delegate(self, req))
+impl DelegateApi for Arc<Delegator> {
+    fn start(&self, req: DelegateRequest) -> BoxFut<'_, Result<String, String>> {
+        Box::pin(async move { Ok(Delegator::start(self, req)) })
+    }
+
+    fn wait(&self, task_ids: Option<Vec<String>>, timeout: Option<Duration>) -> BoxFut<'_, Result<String, String>> {
+        Box::pin(async move { Delegator::wait(self, task_ids, timeout).await })
     }
 
     fn show_diff(&self, worker_id: String, file: Option<String>, offset: usize) -> BoxFut<'_, Result<String, String>> {
@@ -2089,6 +2266,53 @@ impl DelegateApi for Delegator {
     fn undo(&self, worker_id: String) -> BoxFut<'_, Result<String, String>> {
         Box::pin(async move { Delegator::undo(self, &worker_id).await })
     }
+}
+
+/// What the tests said about an editing worker's work, before it lands.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Verdict {
+    /// The tests passed: it may merge on its own if it applies cleanly.
+    Passed { command: String },
+    Review(ReviewReason),
+}
+
+impl Verdict {
+    fn tag(&self) -> &'static str {
+        match self {
+            Self::Passed { .. } => "tests_passed",
+            Self::Review(r) => r.tag(),
+        }
+    }
+}
+
+/// A delegation that ran to its end. Nothing of it has touched the main tree yet.
+enum Finished {
+    /// Nothing to land: a failure, a read-only report, or no changes.
+    Done(Box<DelegateResult>),
+    /// An editing worker's changes, waiting for [`Delegator::settle`].
+    Pending(Box<Pending>),
+}
+
+impl Finished {
+    fn done(result: DelegateResult) -> Self {
+        Self::Done(Box::new(result))
+    }
+
+    fn with_retries(mut self, retries: Vec<String>) -> Self {
+        match &mut self {
+            Self::Done(result) => result.retries = retries,
+            Self::Pending(pending) => pending.result.retries = retries,
+        }
+        self
+    }
+}
+
+/// An editing worker's finished work. `result` is complete except for how it lands
+/// (`landing`, and for review the diff page), which [`Delegator::settle`] fills in.
+struct Pending {
+    result: DelegateResult,
+    patch: String,
+    verdict: Verdict,
 }
 
 /// How one attempt ended without a result.
@@ -2113,8 +2337,9 @@ struct AttemptLog<'a> {
     started_ms: u64,
     files: &'a [String],
     tools: &'a [String],
-    /// Where the work went; `None` for a failed attempt.
-    landing: Option<&'a Landing>,
+    /// Where the work went ([`Landing::tag`], or [`Verdict::tag`] before it lands); `None`
+    /// for a failed attempt.
+    landing: Option<&'static str>,
     /// A read-only worker that ran in the user's folder instead of a worktree.
     in_place: bool,
 }
@@ -2755,6 +2980,84 @@ mod tests {
         assert_eq!(r.wt.removed.lock().unwrap().len(), 1);
         assert!(lock(&r.d.live).is_empty());
         assert!(res.render().contains("files changed: none"));
+    }
+
+    // ---------------------------------------------------------------- background tasks
+
+    const SLOW: &str = "sleep 0.4; printf 'FIN:did the piece\\n'";
+
+    /// Until task `id` has ended, without collecting it.
+    async fn ended(d: &Delegator, id: &str) {
+        let mut rx = lock(&d.tasks)[&task_number(id).unwrap()].done.clone();
+        let _ = rx.wait_for(|done| *done).await;
+    }
+
+    #[tokio::test]
+    async fn start_returns_at_once_and_the_work_lands_only_when_waited_for() {
+        let (r, _) = tested(rig(&[Claude], TaskType::Feature), CheckRun::Passed);
+        r.scripts.lock().unwrap().insert(Claude, SLOW);
+        let (d, wt) = (Arc::new(r.d), r.wt);
+        let begun = Instant::now();
+        let id = d.start(brief("add a retry"));
+        assert_eq!(id, "t1");
+        assert!(begun.elapsed() < Duration::from_millis(200), "start does not wait for the worker");
+        ended(&d, &id).await;
+        assert!(wt.applied.lock().unwrap().is_empty(), "tested, but nothing lands while the planner may be editing");
+        let text = d.wait(None, None).await.unwrap();
+        assert!(text.starts_with("task t1: worker ") && text.contains("done, auto-merged"), "{text}");
+        assert_eq!(wt.applied.lock().unwrap().len(), 1, "landed by wait");
+        assert!(d.wait(None, None).await.unwrap().contains("every task has been collected"), "each task is collected once");
+        assert!(d.wait(Some(vec!["t1".into()]), None).await.unwrap_err().contains("unknown task `t1`"));
+    }
+
+    #[tokio::test]
+    async fn parallel_tasks_fan_out_and_one_wait_collects_them_all() {
+        let r = rig_on(FakeWorktrees::slow(Duration::from_millis(100)), &[Claude, Codex], TaskType::Feature);
+        let d = Arc::new(r.d);
+        let (a, b) = (d.start(brief("one")), d.start(brief("two")));
+        assert_ne!(a, b);
+        let text = d.wait(None, None).await.unwrap();
+        assert!(text.contains("task t1: worker") && text.contains("task t2: worker"), "{text}");
+        let providers: HashSet<_> = r.started.lock().unwrap().iter().map(|s| s.0).collect();
+        assert_eq!(providers.len(), 2, "the second pick saw the first as running");
+    }
+
+    #[tokio::test]
+    async fn a_timed_wait_reports_what_ended_and_lists_the_rest() {
+        let r = rig(&[Claude, Codex], TaskType::Feature);
+        r.scripts.lock().unwrap().insert(Codex, SLOW);
+        let d = Arc::new(r.d);
+        // Spread across providers, the first goes to Claude (fast), the second to Codex (slow).
+        let (fast, slow) = (d.start(brief("one")), d.start(brief("two")));
+        ended(&d, &fast).await;
+        let text = d.wait(None, Some(Duration::ZERO)).await.unwrap();
+        assert!(text.contains(&format!("task {fast}: worker")), "{text}");
+        assert!(text.contains(&format!("Still running after 0ms: {slow} (running for ")) && text.contains("Call wait again"), "{text}");
+        let text = d.wait(Some(vec![slow.clone(), slow.clone()]), None).await.unwrap();
+        assert!(text.starts_with(&format!("task {slow}: worker")) && !text.contains("Still running"), "named once, collected once: {text}");
+    }
+
+    #[tokio::test]
+    async fn wait_names_unknown_tasks_and_refuses_an_empty_list() {
+        let d = Arc::new(rig(&[Claude], TaskType::Feature).d);
+        assert!(d.wait(None, None).await.unwrap().contains("every task has been collected"));
+        let open = d.start(brief("x"));
+        let err = d.wait(Some(vec!["t99".into()]), None).await.unwrap_err();
+        assert!(err.contains("unknown task `t99`") && err.contains(&format!("uncollected tasks: {open}")), "{err}");
+        assert!(d.wait(Some(vec!["nonsense".into()]), None).await.is_err());
+        assert!(d.wait(Some(vec![]), None).await.unwrap_err().contains("`task_ids` is empty"));
+        assert!(d.wait(None, None).await.unwrap().contains("task t1"));
+    }
+
+    #[tokio::test]
+    async fn a_task_that_dies_is_reported_as_failed() {
+        let d = Arc::new(rig(&[Claude], TaskType::Feature).d);
+        // A sender dropped without an outcome is how a panicked task looks.
+        let (tx, done) = tokio::sync::watch::channel(false);
+        lock(&d.tasks).insert(7, Task { started_ms: NOW, done, outcome: Arc::default() });
+        drop(tx);
+        let text = d.wait(None, None).await.unwrap();
+        assert!(text.starts_with("task t7: ") && text.contains("(no worker): FAILED") && text.contains("stopped unexpectedly"), "{text}");
     }
 
     // ---------------------------------------------------------------- read-only workers

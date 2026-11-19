@@ -207,10 +207,11 @@ pub fn write_mcp_config(mcp: &McpAttachment) -> std::io::Result<()> {
 /// Put in front of the prompt of an orchestrated turn so the planner uses the tool
 /// instead of doing every piece itself. It says nothing about models: Jev picks them.
 pub const PLANNER_NOTE: &str = "[orchestration] This task splits into separate pieces. You have a `delegate` tool (MCP server \
-`jev`) that runs a piece in a cheaper worker model. Delegate the independent pieces (call it several times in parallel), each \
-with a complete, self-contained brief (a worker does not see this conversation). Mark research and lookups `read_only`: they \
+`jev`) that runs a piece in a cheaper worker model. It returns a task id at once and the worker runs in the background: start \
+every independent piece first, keep working on your own part, then call `wait` to collect the results. Give each a complete, \
+self-contained brief (a worker does not see this conversation). Mark research and lookups `read_only`: they \
 read your folder and return a report. An editing worker runs in its own git worktree from the last commit (it does not see your \
-uncommitted edits); when its tests pass and its changes apply cleanly they are auto-merged into your tree and you get its report \
+uncommitted edits); when its tests pass and its changes apply cleanly, `wait` auto-merges them into your tree and you get its report \
 and file list (`undo` takes them back out). Otherwise you get the diff with the reason: files listed as not shown need \
 `show_diff`, `merge` only what you verified (pass `files` for a subset), and `discard` the rest. Pass `review: true` for risky \
 changes you want to read first. Do the integration work yourself. You cannot choose the worker's model.";
