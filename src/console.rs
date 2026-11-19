@@ -563,7 +563,7 @@ impl Console {
     pub fn turn_end(&self, summary: &SummaryFacts, files: &[FileChange]) {
         let mut g = self.lock();
         let (style, width) = (g.cfg.err_style, g.width());
-        let lines_first = if g.front.is_some() { format!("\n  {}", uifmt::turn_summary_brief(summary, style)) } else { format!("  {}", uifmt::turn_summary(summary, style)) };
+        let lines_first = if g.front.is_some() { format!("\n{}", uifmt::turn_rule(&uifmt::turn_summary_brief(summary, style), style, width)) } else { format!("  {}", uifmt::turn_summary(summary, style)) };
         let mut lines = vec![lines_first];
         if !files.is_empty() {
             lines.push(uifmt::changes_block(files, style, width));

@@ -10,6 +10,7 @@ See [docs/changelog-guide.md](docs/changelog-guide.md) for changelog formatting,
 - **Your messages stand out.** A message you send is a full-width shaded band with a `❯` marker, and a blank line separates turns. With `NO_COLOR` or `JEV_THEME=mono` it is a plain `❯ text` under a rule.
 - **Light and dark terminals.** The band shade and accent colour follow the terminal background: `JEV_THEME=light|dark`, else `COLORFGBG`, else the terminal is asked (not inside tmux or screen). Dark when none of these answer.
 - **btop-style side panel.** On terminals of 100+ columns the side panel is a stack of rounded boxes with titles in the border. Plan use and context fill are colour-graded meters (`▰▰▰▱▱▱▱▱`, green, yellow, then red); a new Context box shows how full the window is.
+- **Turns close with a rule.** The end-of-turn summary is set into a dim rule (`── ✓ claude · 14s ─────`), so where one turn ends and the next prompt begins is plain to see.
 - **Live workers.** With orchestration on, the planner's open workers are listed in a titled box above the input box (`▶ running 0:42`, `✓ ready to review`), refreshed about once a second.
 
 ### Fixes

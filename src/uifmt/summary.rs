@@ -69,6 +69,15 @@ pub fn turn_summary(f: &SummaryFacts, style: Style) -> String {
 /// The line after a turn on the interactive screen, with only what a person looks for:
 /// `✓ codex · 14s · 3 files +12 −4`. The model is on the route row that led the turn; token
 /// counts live in `/cost`; the plan window shows only once it is 80% used or more.
+/// The turn's closing row: its summary set into a dim rule that runs to the edge,
+/// `── ✓ codex · 14s ────────────`, so the end of one turn and the start of the next
+/// (the shaded prompt) are plain to see. Without colour the rule is just dashes.
+pub fn turn_rule(summary: &str, style: Style, width: usize) -> String {
+    let width = super::width::clamp_width(width);
+    let fill = width.saturating_sub(1).saturating_sub(super::width::display_width(&super::ansi::strip_ansi(summary)) + 6);
+    format!("  {} {summary} {}", style.dim("──"), style.dim(&"─".repeat(fill)))
+}
+
 pub fn turn_summary_brief(f: &SummaryFacts, style: Style) -> String {
     let plan = f.plan.clone().filter(|(_, used)| *used >= 0.8);
     turn_summary(&SummaryFacts { in_tokens: 0, cached_tokens: 0, out_tokens: 0, plan, model: String::new(), ..f.clone() }, style)
@@ -115,6 +124,14 @@ mod tests {
         assert_eq!(turn_summary(&nothing, OFF), "✗ failed · 2s");
         let no_model = SummaryFacts { model: String::new(), ..facts() };
         assert!(turn_summary(&no_model, OFF).starts_with("✓ codex · 14s"));
+    }
+
+    #[test]
+    fn the_turn_rule_runs_to_the_edge_around_the_summary() {
+        let row = turn_rule("✓ codex · 14s", OFF, 40);
+        assert!(row.starts_with("  ── ✓ codex · 14s ─"), "{row}");
+        assert_eq!(crate::uifmt::display_width(&row), 39);
+        assert!(crate::uifmt::display_width(&turn_rule(&"x".repeat(80), OFF, 40)) <= 90);
     }
 
     #[test]

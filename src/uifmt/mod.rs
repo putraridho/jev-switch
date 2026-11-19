@@ -63,7 +63,7 @@ pub use screens::{doctor_report, doctor_summary, help_text, status_text, DoctorI
 pub use session::{config_text, context_text, cost_text, mcp_text, terminal_setup_text, why_text, ConfigRow, ContextFacts, CostRow, TerminalSetupFacts, COMPACT_SUGGEST_AT};
 pub use status::{input_row, status_line, Spinner, SPINNER_FRAMES, SPINNER_FRAME_MS};
 pub use style::{background_from_env, light_background, set_light_background, stderr_is_tty, stdout_is_tty, Style, Theme};
-pub use summary::{turn_summary, turn_summary_brief, SummaryFacts};
+pub use summary::{turn_rule, turn_summary, turn_summary_brief, SummaryFacts};
 pub use text::{human_count, human_duration};
 pub use width::{char_width, display_width, terminal_width, truncate_to_width, width_from_env, DEFAULT_WIDTH, MIN_WIDTH};
 pub use wrap::wrap_to_width;
