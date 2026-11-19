@@ -261,7 +261,9 @@ fn cancelled(id: &Value) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
     use crate::backend::gemini::{Flavor, GeminiBackend};
+    #[cfg(unix)]
     use crate::backend::{self, Approver, Backend};
 
     fn request(mode: Mode, session: Option<&str>) -> TurnRequest {

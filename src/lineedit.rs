@@ -344,6 +344,7 @@ pub fn read(editor: &mut LineEditor, plain: &str, styled: &str, ctx: CompleteCtx
 pub fn describe(e: &ReadlineError) -> String {
     match e {
         ReadlineError::Io(io) => format!("the terminal failed: {io}"),
+        #[cfg(unix)]
         ReadlineError::Errno(errno) => format!("the terminal failed: {errno}"),
         other => format!("the terminal failed: {other}"),
     }

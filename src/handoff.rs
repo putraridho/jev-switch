@@ -1082,7 +1082,7 @@ mod tests {
         let (state, project) = (TempState::new("rt-state"), TempState::new("rt-proj"));
         let saved = saved_for(&project.0, NOW - 1000);
         store(&state.0, &project.0, &saved);
-        let (file, back) = load_latest(&state.0, &project.0, NOW, None).unwrap();
+        let (_file, back) = load_latest(&state.0, &project.0, NOW, None).unwrap();
         assert_eq!((back.saved_ms, back.project.as_str()), (NOW - 1000, saved.project.as_str()));
         assert_eq!(back.current, Some((ProviderId::Claude, "m1".into())));
         assert_eq!(back.sessions.session_id(ProviderId::Claude), Some("s1"));
@@ -1094,7 +1094,7 @@ mod tests {
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            let mode = std::fs::metadata(&file).unwrap().permissions().mode();
+            let mode = std::fs::metadata(&_file).unwrap().permissions().mode();
             assert_eq!(mode & 0o077, 0);
         }
     }

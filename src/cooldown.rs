@@ -620,6 +620,7 @@ mod tests {
         assert_eq!(cooldown_in(Some("5pm"), NOW, &two_hours), 2 * HOUR_MS);
     }
 
+    #[cfg(unix)]
     #[test]
     fn a_zone_must_be_a_tzif_file_inside_the_zone_directory() {
         let dir = temp_dir("zones");

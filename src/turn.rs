@@ -2522,6 +2522,7 @@ mod tests {
         assert!(r.factory_calls.lock().unwrap().is_empty());
     }
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn a_cancelled_turn_takes_the_cli_and_its_helpers_with_it() {
         let dir = std::env::temp_dir().join(format!("jev-cancel-kids-{}", std::process::id()));

@@ -1170,6 +1170,7 @@ mod tests {
     use super::*;
     use std::sync::Arc;
 
+    #[cfg(unix)]
     use super::process_alive as alive;
 
     /// A backend whose "CLI" is a shell script printing canned lines, so the runner
@@ -1272,6 +1273,7 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
     async fn read_pid(path: &Path) -> i32 {
         for _ in 0..200 {
             if let Some(pid) = std::fs::read_to_string(path).ok().and_then(|s| s.trim().parse().ok()) {
@@ -1282,6 +1284,7 @@ mod tests {
         panic!("{path:?} never written");
     }
 
+    #[cfg(unix)]
     async fn all_dead(pids: &[i32]) -> bool {
         for _ in 0..200 {
             if pids.iter().all(|p| !alive(*p)) {
@@ -1293,6 +1296,7 @@ mod tests {
     }
 
     /// A shell that starts a sleeping grandchild and waits for it; both pids go to files.
+    #[cfg(unix)]
     fn shell_with_grandchild(dir: &Path) -> (String, PathBuf, PathBuf) {
         std::fs::create_dir_all(dir).unwrap();
         let (shell, child) = (dir.join("shell.pid"), dir.join("child.pid"));
@@ -1300,6 +1304,7 @@ mod tests {
         (script, shell, child)
     }
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn dropping_the_turn_kills_the_cli_and_its_children() {
         let dir = scratch_dir("group-drop");
@@ -1318,6 +1323,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn a_stalled_cli_takes_its_children_with_it() {
         let dir = scratch_dir("group-stall");
@@ -1330,6 +1336,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn a_failing_cli_takes_its_children_with_it() {
         let dir = scratch_dir("group-fail");
@@ -1361,6 +1368,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn a_clean_finish_leaves_background_work_the_agent_started_alone() {
         let dir = scratch_dir("group-clean");
@@ -1387,6 +1395,7 @@ mod tests {
         assert!(started.elapsed() < Duration::from_secs(10), "took {:?}", started.elapsed());
     }
 
+    #[cfg(unix)]
     #[test]
     fn process_alive_tells_running_from_zombie_from_gone() {
         let mut child = std::process::Command::new("sleep").arg("30").spawn().unwrap();
@@ -2136,6 +2145,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn a_turn_dropped_while_a_question_waits_kills_the_cli() {
         let dir = scratch_dir("interactive-drop");
