@@ -464,6 +464,7 @@ impl Repl {
             usage: report.usage,
             elapsed_ms: elapsed.as_millis() as u64,
             ended_ms: self.now(),
+            tool_calls: report.tool_calls,
         };
         self.audit_turn(&record);
         self.log.push(record);
@@ -816,7 +817,8 @@ mod tests {
         }
         fn command(&self, req: &TurnRequest) -> TokioCommand {
             let mut c = TokioCommand::new("sh");
-            c.args(["-c", &self.script]).current_dir(&req.dir).env("FAKE_PROMPT", &req.prompt);
+            c.args(["-c", &self.script]).current_dir(&req.dir).env("FAKE_PROMPT", &req.prompt)
+                .env("FAKE_SESSION_ID", req.session_id.as_deref().unwrap_or(""));
             c
         }
         fn parse_line(&self, line: &str) -> Vec<Event> {

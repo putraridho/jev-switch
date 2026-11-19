@@ -127,6 +127,7 @@ mod tests {
             model: Some("claude-sonnet-5-5".into()),
             usage: Some(Usage { input_tokens: 10, cached_input_tokens: 4, output_tokens: 2, context_tokens: None }),
             attempts: 1,
+            tool_calls: 0,
             changes: None,
         }
     }

@@ -20,6 +20,8 @@ pub struct TurnRecord {
     pub elapsed_ms: u64,
     /// When the turn ended, in ms since 1970 (the cache window counts from it).
     pub ended_ms: u64,
+    /// Tool calls the model made in the attempt that ended the turn.
+    pub tool_calls: u32,
 }
 
 /// Tokens and time of one model over the session.
@@ -152,6 +154,7 @@ mod tests {
             usage: Some(Usage { input_tokens: tokens.0, cached_input_tokens: tokens.1, output_tokens: tokens.2, context_tokens: None }),
             elapsed_ms: 1000,
             ended_ms: 0,
+            tool_calls: 0,
         }
     }
 

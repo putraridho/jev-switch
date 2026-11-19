@@ -46,7 +46,23 @@ impl From<TurnStatus> for Outcome {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "event", rename_all = "snake_case")]
 pub enum Event {
-    Turn { model: String, outcome: Outcome, elapsed_ms: u64, in_tokens: u64, out_tokens: u64, prompt: String },
+    Turn {
+        model: String,
+        outcome: Outcome,
+        elapsed_ms: u64,
+        in_tokens: u64,
+        out_tokens: u64,
+        prompt: String,
+        /// The cached share of `in_tokens`. Older lines and providers that do not say: 0.
+        #[serde(default)]
+        cached_tokens: u64,
+        /// The size of the turn's last request, when the CLI reports it: 0 when it does not.
+        #[serde(default)]
+        context_tokens: u64,
+        /// Tool calls of the attempt that ended the turn. Older lines: 0.
+        #[serde(default)]
+        tool_calls: u32,
+    },
     Export { path: String },
     Profile { name: String },
 }
@@ -83,6 +99,9 @@ pub fn turn_entry(ts_ms: u64, project: &str, t: &TurnRecord) -> Entry {
             in_tokens: usage.input_tokens,
             out_tokens: usage.output_tokens,
             prompt: preview(&t.prompt),
+            cached_tokens: usage.cached_input_tokens,
+            context_tokens: usage.context_tokens.unwrap_or(0),
+            tool_calls: t.tool_calls,
         },
     }
 }
@@ -185,6 +204,7 @@ mod tests {
             usage: Some(Usage { input_tokens: 10, cached_input_tokens: 0, output_tokens: 4, context_tokens: None }),
             elapsed_ms: 2500,
             ended_ms: 0,
+            tool_calls: 0,
         }
     }
 
@@ -200,6 +220,20 @@ mod tests {
         let line = serde_json::to_string(&e).unwrap();
         assert!(line.contains(r#""event":"turn""#) && line.contains("[REDACTED]"), "{line}");
         assert!(!line.contains("hunter2") && !line.contains("SECRET answer") && !line.contains("second line"), "{line}");
+    }
+
+    #[test]
+    fn a_turn_entry_records_cache_context_and_tool_calls_and_old_lines_still_read() {
+        let mut r = record("x", "claude · s", TurnStatus::Answered);
+        r.usage = Some(Usage { input_tokens: 900, cached_input_tokens: 800, output_tokens: 5, context_tokens: Some(70_000) });
+        r.tool_calls = 12;
+        let line = serde_json::to_string(&turn_entry(1, "/p", &r)).unwrap();
+        let Event::Turn { cached_tokens, context_tokens, tool_calls, .. } = serde_json::from_str::<Entry>(&line).unwrap().event else { panic!("{line}") };
+        assert_eq!((cached_tokens, context_tokens, tool_calls), (800, 70_000, 12));
+
+        let old = r#"{"ts_ms":1,"project":"/p","event":"turn","model":"m","outcome":"answered","elapsed_ms":5,"in_tokens":1,"out_tokens":2,"prompt":"p"}"#;
+        let Event::Turn { cached_tokens, context_tokens, tool_calls, .. } = serde_json::from_str::<Entry>(old).unwrap().event else { panic!() };
+        assert_eq!((cached_tokens, context_tokens, tool_calls), (0, 0, 0));
     }
 
     #[test]

@@ -410,6 +410,7 @@ mod tests {
             model: Some("claude-sonnet-5-5".into()),
             usage: Some(Usage { input_tokens: 45_000, cached_input_tokens: 40_000, output_tokens: 189, context_tokens: None }),
             attempts: 1,
+            tool_calls: 0,
             changes: Some(ChangeSummary {
                 files: vec![GitChange { path: "a.rs".into(), status: ChangeStatus::Modified, added: 12, removed: 4, old_path: None }],
                 before: "b".into(),

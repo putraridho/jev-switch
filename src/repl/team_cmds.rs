@@ -204,6 +204,7 @@ impl Repl {
             usage: None,
             elapsed_ms: elapsed.as_millis() as u64,
             ended_ms: self.now(),
+            tool_calls: 0,
         };
         self.audit_turn(&record);
     }
@@ -294,7 +295,7 @@ mod tests {
         let entry = |project: &str, prompt: &str| crate::audit::Entry {
             ts_ms: 1000,
             project: project.into(),
-            event: crate::audit::Event::Turn { model: "m".into(), outcome: crate::audit::Outcome::Answered, elapsed_ms: 1, in_tokens: 1, out_tokens: 1, prompt: prompt.into() },
+            event: crate::audit::Event::Turn { model: "m".into(), outcome: crate::audit::Outcome::Answered, elapsed_ms: 1, in_tokens: 1, out_tokens: 1, prompt: prompt.into(), cached_tokens: 0, context_tokens: 0, tool_calls: 0 },
         };
         let path = crate::audit::path_in(&state);
         crate::audit::append(&path, &entry("/somewhere/else", "other project prompt"));

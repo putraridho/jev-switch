@@ -327,6 +327,8 @@ pub struct TurnReport {
     pub usage: Option<Usage>,
     /// Models started for this turn.
     pub attempts: u32,
+    /// Tool calls the model made in the attempt that ended the turn.
+    pub tool_calls: u32,
     /// What the turn changed in the working tree. `None` when the folder is not a git
     /// repository, git is missing or failed, no model was started, or the turn changed
     /// nothing (a summary kept here always lists at least one file).
@@ -335,7 +337,7 @@ pub struct TurnReport {
 
 impl TurnReport {
     fn ended(status: TurnStatus, message: String, attempts: u32) -> Self {
-        Self { status, text: String::new(), message, provider: None, model: None, usage: None, attempts, changes: None }
+        Self { status, text: String::new(), message, provider: None, model: None, usage: None, attempts, tool_calls: 0, changes: None }
     }
 }
 
@@ -497,7 +499,54 @@ pub struct Engine {
     hooks: Arc<Hooks>,
 }
 
+pub(crate) struct SummaryContext<'a> {
+    pub engine: &'a mut Engine,
+    sessions: Sessions,
+    routing: RoutingState,
+    sticky: Sticky,
+    previous: Option<(String, String)>,
+    last_context_tokens: u64,
+    last_changes: Option<ChangeSummary>,
+    images: Vec<PathBuf>,
+    persist: Option<PathBuf>,
+    mode: Mode,
+    track_changes: bool,
+}
+
+impl Drop for SummaryContext<'_> {
+    fn drop(&mut self) {
+        self.engine.sessions = std::mem::take(&mut self.sessions);
+        self.engine.routing = std::mem::take(&mut self.routing);
+        self.engine.sticky = std::mem::take(&mut self.sticky);
+        self.engine.previous = self.previous.take();
+        self.engine.last_context_tokens = self.last_context_tokens;
+        self.engine.last_changes = self.last_changes.take();
+        self.engine.images = std::mem::take(&mut self.images);
+        self.engine.persist = self.persist.take();
+        self.engine.mode = self.mode;
+        self.engine.track_changes = self.track_changes;
+    }
+}
+
 impl Engine {
+    /// Borrow a fresh, read-only CLI context without changing the saved conversation,
+    /// even if the summary fails or its future is dropped. Usage is still metered.
+    pub(crate) fn summary_context(&mut self) -> SummaryContext<'_> {
+        SummaryContext {
+            sessions: std::mem::take(&mut self.sessions),
+            routing: std::mem::take(&mut self.routing),
+            sticky: std::mem::take(&mut self.sticky),
+            previous: self.previous.take(),
+            last_context_tokens: std::mem::take(&mut self.last_context_tokens),
+            last_changes: self.last_changes.take(),
+            images: std::mem::take(&mut self.images),
+            persist: self.persist.take(),
+            mode: std::mem::replace(&mut self.mode, Mode::Plan),
+            track_changes: std::mem::replace(&mut self.track_changes, false),
+            engine: self,
+        }
+    }
+
     /// Real backends, the real clock and git, and the turn log from `JEV_CODE_LOG`.
     /// Routing is on.
     pub fn new(runtime: Runtime, router: Router, dir: PathBuf) -> Self {
@@ -1127,6 +1176,7 @@ impl Engine {
                     return TurnReport {
                         provider: Some(spec.provider),
                         model: Some(spec.id.to_string()),
+                        tool_calls: attempt.tools.len() as u32,
                         ..TurnReport::ended(TurnStatus::Failed, message, attempts)
                     };
                 }
@@ -1453,6 +1503,7 @@ impl Engine {
 
     fn finish(&mut self, prompt: &str, attempt: Attempt, out: TurnOutcome, attempts: u32) -> TurnReport {
         let Attempt { chosen, tools, .. } = attempt;
+        let tool_calls = tools.len() as u32;
         let spec = chosen.spec;
         if let Some(id) = out.session_id.clone() {
             self.sessions.set_session_id(spec.provider, id);
@@ -1482,6 +1533,7 @@ impl Engine {
             model: Some(spec.id.to_string()),
             usage: Some(out.usage),
             attempts,
+            tool_calls,
             changes: None,
         }
     }
@@ -1500,6 +1552,7 @@ impl Engine {
         TurnReport {
             provider: Some(spec.provider),
             model: Some(spec.id.to_string()),
+            tool_calls: attempt.tools.len() as u32,
             ..TurnReport::ended(TurnStatus::Cancelled, message, attempts)
         }
     }

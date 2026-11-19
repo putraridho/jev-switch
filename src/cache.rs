@@ -305,6 +305,7 @@ mod tests {
             usage: Some(usage(input, cached)),
             elapsed_ms: 1000,
             ended_ms,
+            tool_calls: 0,
         }
     }
 

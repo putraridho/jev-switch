@@ -4,6 +4,9 @@ See [docs/changelog-guide.md](docs/changelog-guide.md) for changelog formatting,
 
 ## Unreleased
 
+### Development
+- **Audit log shows what a long turn did.** Each `turn` line in `audit.jsonl` now also records `cached_tokens` (the cached share of `in_tokens`), `context_tokens` (the size of the last request, when the CLI reports it) and `tool_calls`, so a slow turn can be told apart: many tool calls over a growing context, or a cold cache. Older lines still read, with these as 0.
+
 ### Fixes
 - **Bounded test concurrency.** Tests default to eight harness threads instead of 24, and the 30-round Git regression uses four workers instead of spawning all 30 at once, reducing open-file pressure that could fail Git-backed tests.
 
