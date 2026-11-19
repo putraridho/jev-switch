@@ -366,6 +366,7 @@ pub fn git_status_short(dir: &Path) -> String {
     std::process::Command::new("git")
         .arg("-C")
         .arg(dir)
+        .args(crate::gitflow::NO_REPO_PROGRAMS)
         .args(["status", "--short"])
         .output()
         .ok()
@@ -892,16 +893,33 @@ impl Engine {
 
     /// Ask Jev. The only network call of a turn before the CLI starts.
     async fn judge(&self, prompt: &str, ui: &mut dyn Ui) -> Judged {
-        let recent = self.sessions.recent_context(3, 300);
+        let recent_raw = self.sessions.recent_context(3, 300);
+        let previous_raw = self.previous.as_ref().map(|(p, r)| format!("{p}\n{r}")).unwrap_or_default();
+        // Jev is a cloud service: when the privacy policy lets this text go to no cloud
+        // provider (local-only, a rule blocking it from all), Jev is not asked either.
+        let everything = format!("{prompt}\n{recent_raw}\n{previous_raw}");
+        if !self.guards.may_leave(&self.dir, &everything, &self.images) {
+            ui.note("[jev] not asked: the privacy policy keeps this prompt on this machine");
+            return if self.enabled {
+                Judged::Providers(None)
+            } else {
+                let tier = self.sticky.tier.unwrap_or(1);
+                Judged::Legacy(CodeWant { tier, confident: false, reason: "jev not asked (privacy policy)".into(), signals: Value::Null })
+            };
+        }
+        // What does go to Jev has its secrets blanked, as for any provider.
+        let blank = |text: &str| crate::privacy::prepare(&self.guards.privacy, text).prompt;
+        let (prompt, recent) = (blank(prompt), blank(&recent_raw));
+        let previous_pair = self.previous.as_ref().map(|(p, r)| (blank(p), blank(r)));
         if !self.enabled {
-            let want = self.router.code_want(prompt, &recent, self.sticky.tier.unwrap_or(1)).await;
+            let want = self.router.code_want(&prompt, &recent, self.sticky.tier.unwrap_or(1)).await;
             if want.reason.starts_with("jev unavailable") {
                 ui.note(&format!("[jev] {}; keeping current model", want.reason));
             }
             return Judged::Legacy(want);
         }
-        let previous = self.previous.as_ref().map(|(p, r)| (p.as_str(), r.as_str()));
-        let want = self.router.provider_want(prompt, &recent, previous, self.orchestrate).await;
+        let previous = previous_pair.as_ref().map(|(p, r)| (p.as_str(), r.as_str()));
+        let want = self.router.provider_want(&prompt, &recent, previous, self.orchestrate).await;
         if want.is_none() {
             ui.note("[jev] unavailable (timeout or error); routing without its judgment");
         }
@@ -1083,21 +1101,24 @@ impl Engine {
         // Cleared first, so no path out of here leaves an earlier attempt's snapshot behind.
         self.git_snapshot = None;
         if let Judged::Legacy(want) = judged {
+            // Routing off still answers to the privacy policy (local-only, block rules): the
+            // turn goes to Claude, so Claude must be allowed to have it.
+            let claude_only = catalog::Usable::all_of([ProviderId::Claude]);
+            let catch_ups = self.privacy_catch_ups(&claude_only);
+            let turn = TurnFacts {
+                root: &self.dir,
+                prompt,
+                catch_ups: &catch_ups,
+                task: None,
+                attached: &self.images,
+                pinned: true,
+                attempts,
+            };
+            self.guards.privacy_allows(ProviderId::Claude, &turn, now).map_err(|why| NoRoute::Refused { why })?;
             return Ok(self.legacy_choice(want, base));
         }
         let usable = self.runtime.usable(now).without(excluded);
-        // What each provider that is behind would be caught up with (the same text prompt_for
-        // sends, git status included); only worth building when a rule could match it.
-        let mut catch_ups = Vec::new();
-        if self.guards.privacy.rule_count() > 0 {
-            let behind: Vec<ProviderId> =
-                crate::providers::ALL_PROVIDERS.into_iter().filter(|p| self.sessions.missed_turns(*p) > 0 && usable.has_provider(*p)).collect();
-            if !behind.is_empty() {
-                let git = (self.git_status)(&self.dir);
-                catch_ups = behind.into_iter().filter_map(|p| self.sessions.catch_up(p, &git, CATCH_UP_TOKENS).map(|t| (p, t))).collect();
-                self.git_snapshot = Some(git);
-            }
-        }
+        let catch_ups = self.privacy_catch_ups(&usable);
         let turn = TurnFacts {
             root: &self.dir,
             prompt,
@@ -1159,9 +1180,12 @@ impl Engine {
         base: &RoutingState,
     ) -> Outcome {
         let tool_ready = self.orch_setup.as_ref().is_some_and(|s| s.bin.is_some());
-        let mcp = if self.orchestrate { self.mcp_providers() } else { Vec::new() };
+        // Plan mode changes nothing, and the planner's `merge` would change the working
+        // tree: no planner then (`/review`, `/compact` and a team limit of plan rely on it).
+        let enabled = self.orchestrate && self.mode != Mode::Plan;
+        let mcp = if enabled { self.mcp_providers() } else { Vec::new() };
         orchestrate::choose_planner(
-            self.orchestrate,
+            enabled,
             signals.map(|s| &s.orchestration),
             normal.spec,
             tool_ready,
@@ -1190,6 +1214,25 @@ impl Engine {
                 (spec, reason, mcp)
             }
         }
+    }
+
+    /// What each usable provider that is behind would be caught up with (the same text
+    /// prompt_for sends, git status included), for the privacy check; only worth building
+    /// when a rule could match it. The git status it read is kept, so what was checked is
+    /// what is sent.
+    fn privacy_catch_ups(&mut self, usable: &catalog::Usable) -> Vec<(ProviderId, String)> {
+        if self.guards.privacy.rule_count() == 0 {
+            return Vec::new();
+        }
+        let behind: Vec<ProviderId> =
+            crate::providers::ALL_PROVIDERS.into_iter().filter(|p| self.sessions.missed_turns(*p) > 0 && usable.has_provider(*p)).collect();
+        if behind.is_empty() {
+            return Vec::new();
+        }
+        let git = (self.git_status)(&self.dir);
+        let catch_ups = behind.into_iter().filter_map(|p| self.sessions.catch_up(p, &git, CATCH_UP_TOKENS).map(|t| (p, t))).collect();
+        self.git_snapshot = Some(git);
+        catch_ups
     }
 
     /// Routing off: Claude only, a `/model` pin of a Claude model or else the

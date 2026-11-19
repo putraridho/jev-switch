@@ -81,11 +81,7 @@ impl Guards {
     /// user's routing rules. `Err` is a plain sentence when a step that started with models
     /// left none.
     pub fn restrict(&self, usable: &Usable, turn: &TurnFacts) -> Result<Restricted, String> {
-        let mut verdict = self.privacy.check(turn.root, turn.prompt, turn.attached);
-        for (provider, text) in turn.catch_ups {
-            let theirs = self.privacy.check(turn.root, &format!("{text}\n{}", turn.prompt), turn.attached);
-            verdict.take_denial(*provider, &theirs);
-        }
+        let verdict = self.verdict(turn);
         let blocked: Vec<(ProviderId, String)> =
             crate::providers::ALL_PROVIDERS.into_iter().filter(|p| usable.has_provider(*p)).filter_map(|p| verdict.denial(p).map(|why| (p, why))).collect();
         let mut current = usable.filter(|p, _| verdict.permits(p));
@@ -109,6 +105,40 @@ impl Guards {
             notes = applied.notes;
         }
         Ok(Restricted { usable: current, notes, blocked })
+    }
+
+    /// The privacy policy's verdict on this turn: the prompt, and for each provider that is
+    /// behind, the catch-up it would get with it.
+    pub fn verdict(&self, turn: &TurnFacts) -> crate::privacy::Verdict {
+        let mut verdict = self.privacy.check(turn.root, turn.prompt, turn.attached);
+        for (provider, text) in turn.catch_ups {
+            let theirs = self.privacy.check(turn.root, &format!("{text}\n{}", turn.prompt), turn.attached);
+            verdict.take_denial(*provider, &theirs);
+        }
+        verdict
+    }
+
+    /// The privacy policy alone, for a turn that goes to `provider` whatever routing says
+    /// (routing off: Claude only). `Err` is the refusal sentence; the refusal is audited.
+    pub fn privacy_allows(&self, provider: ProviderId, turn: &TurnFacts, now_ms: u64) -> Result<(), String> {
+        let verdict = self.verdict(turn);
+        match verdict.denial(provider) {
+            None => Ok(()),
+            Some(why) => {
+                if turn.attempts == 0 {
+                    self.audit_blocked(&[(provider, why)], now_ms);
+                }
+                Err(verdict.refusal_line())
+            }
+        }
+    }
+
+    /// Whether the policy lets this text leave the machine at all (some cloud provider may
+    /// have it). The Jev classifier is a cloud service too, so it is not asked otherwise.
+    pub fn may_leave(&self, root: &Path, text: &str, attached: &[std::path::PathBuf]) -> bool {
+        use crate::privacy::{locality, Locality};
+        let verdict = self.privacy.check(root, text, attached);
+        crate::providers::ALL_PROVIDERS.into_iter().filter(|p| locality(*p) == Locality::Cloud).any(|p| verdict.permits(p))
     }
 
     /// The prompt as it may leave for `provider`, after the secret scan; the audit log

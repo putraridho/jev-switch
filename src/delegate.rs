@@ -387,6 +387,7 @@ fn git(dir: &Path, args: &[&str], stdin: Option<&str>) -> Result<String> {
     let mut child = Command::new("git")
         .arg("-C")
         .arg(dir)
+        .args(crate::gitflow::NO_REPO_PROGRAMS)
         .args(args)
         .stdin(if stdin.is_some() { Stdio::piped() } else { Stdio::null() })
         .stdout(Stdio::piped())
@@ -1202,6 +1203,8 @@ pub struct Delegator {
     idle_timeout: Duration,
     log_path: Option<String>,
     planner: String,
+    /// The privacy policy (and audit log) briefs answer to, as the planner's own turns do.
+    guards: crate::guard::Guards,
 }
 
 /// One worker attempt that failed, in the words the planner and the log need.
@@ -1233,7 +1236,15 @@ impl Delegator {
             idle_timeout: idle_timeout_from_env(),
             log_path: None,
             planner: String::new(),
+            guards: crate::guard::Guards::default(),
         }
+    }
+
+    /// The privacy policy, secret scan and audit log of the user's settings
+    /// ([`crate::guard::Guards::load`]). Without it briefs still get the default secret scan.
+    pub fn with_guards(mut self, guards: crate::guard::Guards) -> Self {
+        self.guards = guards;
+        self
     }
 
     pub fn with_backend_factory(mut self, f: BackendFactory) -> Self {
@@ -1490,7 +1501,9 @@ impl Delegator {
         };
         self.update(&id, |w| w.path = Some(path.clone())).await;
         let started = Instant::now();
-        let (result, tools) = self.run_worker(spec, &path, worker_prompt(&req.brief, &req.files)).await;
+        // Secrets are blanked as for any provider, and the audit log notes what was sent.
+        let prompt = self.guards.outgoing(&worker_prompt(&req.brief, &req.files), spec.provider, spec.id, (self.now)()).prompt;
+        let (result, tools) = self.run_worker(spec, &path, prompt).await;
         self.update(&id, |w| w.running = false).await;
         let wall_ms = started.elapsed().as_millis() as u64;
         let task = worker_task(signals);
@@ -1542,10 +1555,25 @@ impl Delegator {
 
     /// Judge the brief, then run workers until one succeeds or the attempts are used up.
     pub async fn delegate(&self, req: DelegateRequest) -> DelegateResult {
-        let want = (self.judge)(req.brief.clone()).await;
+        // The brief is a prompt like any other: the privacy policy decides which providers may
+        // have it, and Jev (a cloud service) is asked only when some cloud provider may.
+        let repo = self.worktrees.repo();
+        let outgoing = worker_prompt(&req.brief, &req.files);
+        let verdict = self.guards.privacy.check(&repo, &outgoing, &[]);
+        let mut excluded: HashSet<(ProviderId, String)> = HashSet::new();
+        for p in crate::providers::ALL_PROVIDERS.into_iter().filter(|p| !verdict.permits(*p)) {
+            excluded.extend(crate::catalog::models().iter().filter(|m| m.provider == p).map(|m| (m.provider, m.id.to_string())));
+        }
+        if crate::providers::ALL_PROVIDERS.into_iter().all(|p| !verdict.permits(p)) {
+            return DelegateResult::failed(format!("not delegated: {}", verdict.refusal_line()), Vec::new());
+        }
+        let want = if self.guards.may_leave(&repo, &outgoing, &[]) {
+            (self.judge)(crate::privacy::prepare(&self.guards.privacy, &req.brief).prompt).await
+        } else {
+            None
+        };
         let signals = want.as_ref().map_or_else(BriefSignals::unjudged, |w| BriefSignals::from_want(w, req.read_only));
         let jev = want.map_or(Value::Null, |w| w.signals);
-        let mut excluded: HashSet<(ProviderId, String)> = HashSet::new();
         let mut retries: Vec<String> = Vec::new();
         for attempt in 1..=MAX_WORKER_ATTEMPTS {
             match self.attempt(&req, &signals, &jev, &excluded, attempt).await {

@@ -69,12 +69,28 @@ fn escape_len(s: &str) -> usize {
     }
 }
 
-/// `s` without ANSI escape sequences.
+/// `s` without ANSI escape sequences, and without the 8-bit C1 controls (U+0080..U+009F:
+/// U+009B is a CSI and U+009D an OSC to some terminals).
 pub fn strip_ansi(s: &str) -> String {
     segs(s)
         .filter_map(|seg| match seg {
+            Seg::Ch(c) if ('\u{80}'..='\u{9f}').contains(&c) => None,
             Seg::Ch(c) => Some(c),
             Seg::Esc(_) => None,
+        })
+        .collect()
+}
+
+/// Untrusted text (model reasoning, command output, file lines) made safe to print: escape
+/// sequences and every control character removed, a tab turned into spaces. Clean text
+/// BEFORE styling it, so only our own colour codes reach the terminal.
+pub fn clean_text(s: &str) -> String {
+    strip_ansi(s)
+        .chars()
+        .flat_map(|c| match c {
+            '\t' => "    ".chars().collect::<Vec<_>>(),
+            c if c.is_control() && c != '\n' => Vec::new(),
+            c => vec![c],
         })
         .collect()
 }
@@ -120,5 +136,11 @@ mod tests {
         // they take no columns
         assert_eq!(display_width(&format!("{}x{}", save_cursor(), restore_cursor())), 1);
         assert_eq!(display_width(&format!("{}x{}", hide_cursor(), show_cursor())), 1);
+    }
+
+    #[test]
+    fn strip_ansi_drops_c1_controls_and_clean_text_drops_all_controls() {
+        assert_eq!(strip_ansi("a\u{9b}2Jb\u{9d}x"), "a2Jbx");
+        assert_eq!(clean_text("a\x1b]52;c;AAAA\x07b\x1b]8;;http://x\x1b\\c\x1b[2Jd\re\x08f\u{9b}g\th\nz"), "abcdefg    h\nz");
     }
 }

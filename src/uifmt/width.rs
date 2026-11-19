@@ -78,25 +78,27 @@ pub fn display_width(s: &str) -> usize {
 /// sequences are kept (they take no columns) and a reset is appended after a cut so a
 /// style never leaks past it. Width 0 gives an empty string.
 pub fn truncate_to_width(s: &str, width: usize) -> String {
-    if display_width(s) <= width {
-        return s.to_string();
-    }
-    if width == 0 {
+    let fits = display_width(s) <= width;
+    if width == 0 && !fits {
         return String::new();
     }
-    let budget = width - 1;
+    // Text that fits is still passed through the filter below, only without a cut.
+    let budget = if fits { usize::MAX } else { width - 1 };
     let (mut out, mut run, mut styled) = (String::new(), Run::new(), false);
     for seg in segs(s) {
         match seg {
+            // Only a whole colour/style sequence (`ESC [ ... m`) is kept; any other escape is
+            // dropped, so this never carries a terminal-driving sequence through.
             Seg::Esc(e) => {
-                styled = true;
-                run.flush();
-                out.push_str(e);
+                let sgr = e.strip_prefix("\x1b[").and_then(|r| r.strip_suffix('m'));
+                if sgr.is_some_and(|p| p.bytes().all(|b| b.is_ascii_digit() || b == b';' || b == b':')) {
+                    styled = true;
+                    run.flush();
+                    out.push_str(e);
+                }
             }
-            Seg::Ch(c) if c.is_control() => {
-                run.flush();
-                out.push(c);
-            }
+            // Control characters are dropped, never passed on.
+            Seg::Ch(c) if c.is_control() => run.flush(),
             Seg::Ch(c) => {
                 run.text.push(c);
                 if run.width() > budget {
@@ -105,6 +107,9 @@ pub fn truncate_to_width(s: &str, width: usize) -> String {
                 out.push(c);
             }
         }
+    }
+    if fits {
+        return out;
     }
     out.push('…');
     if styled {
@@ -144,6 +149,17 @@ pub(super) fn pad_to_width(s: &str, width: usize) -> String {
 mod tests {
     use super::*;
     use crate::uifmt::strip_ansi;
+
+    #[test]
+    fn truncating_keeps_colours_but_drops_other_escapes_and_controls() {
+        let s = "\x1b[31mred\x1b]52;c;QUFB\x07\x1b]8;;u\x1b\\\x1b[2J\u{9b}\r\x08 ok\x1b[0m";
+        assert_eq!(truncate_to_width(s, 80), "\x1b[31mred ok\x1b[0m", "short text is cleaned too");
+        let cut = truncate_to_width(&format!("{s}{}", "x".repeat(100)), 20);
+        assert!(cut.starts_with("\x1b[31mred") && cut.ends_with("…\x1b[0m"), "{cut:?}");
+        for bad in ["]52", "]8;", "[2J", "\r", "\x08", "\x07", "\u{9b}"] {
+            assert!(!cut.contains(bad), "{bad:?} in {cut:?}");
+        }
+    }
 
     #[test]
     fn display_width_table() {

@@ -256,12 +256,24 @@ pub fn mark(state_dir: &Path, session: &Path, mark: &Mark) -> std::io::Result<()
 // ----------------------------------------------------------- export / import
 
 /// The session as a file anyone can carry to another machine: the saved-session format
-/// itself, which `import` reads back.
+/// itself, which `import` reads back. Secrets are masked in the exported copy.
 pub fn export_to(entry: &LibraryEntry, dest: &Path) -> std::io::Result<()> {
     if dest.exists() {
         return Err(std::io::Error::new(std::io::ErrorKind::AlreadyExists, format!("{} exists already", dest.display())));
     }
-    handoff::write_atomic(dest, &entry.saved.render())
+    let mut value = entry.saved.to_json();
+    redact_export(&mut value);
+    handoff::write_atomic(dest, &value.to_string())
+}
+
+/// Mask strings before serializing, so escaping cannot hide secrets or break JSON.
+fn redact_export(value: &mut serde_json::Value) {
+    match value {
+        serde_json::Value::String(text) => *text = crate::redact::redact(text),
+        serde_json::Value::Array(values) => values.iter_mut().for_each(redact_export),
+        serde_json::Value::Object(values) => values.values_mut().for_each(redact_export),
+        _ => {}
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -550,6 +562,35 @@ mod tests {
         assert!(matches!(import_file(&state, &other, &state.join("nope.json"), NOW), Err(ImportError::Unreadable(_))));
         std::fs::write(state.join("junk.json"), "{}").unwrap();
         assert!(matches!(import_file(&state, &other, &state.join("junk.json"), NOW), Err(ImportError::NotASession(_))));
+    }
+
+    #[test]
+    fn export_masks_secrets_without_changing_the_stored_session() {
+        let state = temp("export-secrets");
+        let project = state.join("project");
+        std::fs::create_dir_all(&project).unwrap();
+        let original_path = put(&state, &project, 1, vec![turn(
+            ProviderId::Claude,
+            r#"use {"password": "hunter2hunter2"}"#,
+            "SECRET = replysecret",
+            &["Bash curl https://alice:toolpassword@example.com", "Read xai-abcdefghijklmnopqrstuvwx"],
+        )]);
+        let original = std::fs::read_to_string(&original_path).unwrap();
+        let entry = scan_all(&state).into_iter().next().unwrap();
+        let output = state.join("export.json");
+        export_to(&entry, &output).unwrap();
+        let exported = std::fs::read_to_string(&output).unwrap();
+        for secret in ["hunter2", "replysecret", "toolpassword", "xai-abcdefghijklmnopqrstuvwx"] {
+            assert!(!exported.contains(secret), "{exported}");
+            assert!(original.contains(secret));
+        }
+        let saved = SavedSession::parse(&exported).unwrap();
+        let turn = &saved.sessions.log()[0];
+        assert!(turn.prompt.contains("[REDACTED]"));
+        assert!(turn.reply.contains("[REDACTED]"));
+        assert!(turn.tools.iter().all(|tool| tool.contains("[REDACTED]")));
+        assert_eq!(std::fs::read_to_string(original_path).unwrap(), original);
+        assert!(entry.saved.sessions.log()[0].prompt.contains("hunter2"));
     }
 
     #[test]

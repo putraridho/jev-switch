@@ -167,17 +167,21 @@ struct Root {
     origin: Origin,
 }
 
+/// Where definitions are looked for, first one holding a name wins: the person's own, then
+/// the extensions they installed, then the project's. A repository cannot take over a name
+/// the person already uses (`/deploy` doing something else than they expect).
 fn roots(places: &Places, kind: Kind) -> Vec<Root> {
-    let mut roots = vec![Root { dir: places.project.join(".jev").join(kind.dir()), origin: Origin::Project }];
-    if kind == Kind::Command {
-        roots.push(Root { dir: places.project.join(".claude").join("commands"), origin: Origin::Project });
-    }
+    let mut roots = Vec::new();
     if let Some(user) = &places.user {
         roots.push(Root { dir: user.join(kind.dir()), origin: Origin::User });
         for ext in super::market::installed_dirs(user) {
             let name = ext.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
             roots.push(Root { dir: ext.join(kind.dir()), origin: Origin::Extension(name) });
         }
+    }
+    roots.push(Root { dir: places.project.join(".jev").join(kind.dir()), origin: Origin::Project });
+    if kind == Kind::Command {
+        roots.push(Root { dir: places.project.join(".claude").join("commands"), origin: Origin::Project });
     }
     roots
 }
@@ -229,8 +233,12 @@ impl Library {
             self.problems.push(format!("{shown}: /{name} is a built-in command and cannot be replaced"));
             return;
         }
-        if self.entries.iter().any(|e| e.name == name) {
-            return; // a nearer definition already holds the name
+        if let Some(held) = self.entries.iter().find(|e| e.name == name) {
+            // An earlier root already holds the name; say so when the project's is the one hidden.
+            if *origin == Origin::Project && held.origin != Origin::Project {
+                self.problems.push(format!("{shown}: /{name} is already defined in your own files, which win"));
+            }
+            return;
         }
         let text = match std::fs::read_to_string(path) {
             Ok(t) => t,
@@ -300,7 +308,7 @@ mod tests {
     }
 
     #[test]
-    fn discovery_prefers_the_project_and_reports_what_it_skipped() {
+    fn discovery_prefers_the_persons_own_and_reports_what_it_skipped() {
         let root = temp("discover");
         let (project, user) = (root.join("proj"), root.join("cfg"));
         write(&project.join(".jev/commands/ship.md"), "---\ndescription: Ship it\nhint: [tag]\n---\nTag $1 and push.");
@@ -312,8 +320,10 @@ mod tests {
         write(&user.join("skills/db/SKILL.md"), "---\ndescription: Query the db\n---\nUse psql.");
         write(&user.join("recipes/fix-tests.md"), "---\nmode: edit\n---\n## Run\nrun tests\n## Fix\nfix them");
         let lib = Library::discover(&Places { project, user: Some(user) });
+        // The repository cannot take over a name the person already uses.
         let ship = lib.find("ship").unwrap();
-        assert_eq!((ship.origin.clone(), ship.meta.description.as_str(), ship.usage().as_str()), (Origin::Project, "Ship it", "/ship [tag]"));
+        assert_eq!((ship.origin.clone(), ship.usage().as_str()), (Origin::User, "/ship"));
+        assert!(lib.problems.iter().any(|p| p.contains("/ship is already defined in your own files")), "{:?}", lib.problems);
         assert_eq!(lib.find("legacy").unwrap().kind, Kind::Command);
         assert_eq!(lib.find("db").unwrap().kind, Kind::Skill);
         let recipe = lib.find("fix-tests").unwrap();

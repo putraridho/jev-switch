@@ -80,7 +80,7 @@ impl CodexBackend {
     /// New turn: `-C` and `-s` are only accepted by plain `exec`.
     fn fresh_args(&self, cmd: &mut Command, req: &TurnRequest) {
         cmd.args(["exec", "--json", "-C"]).arg(&req.dir).args(["-s", self.sandbox_for(req), "-m", &req.model]);
-        cmd.args(self.mcp_overrides()).args(self.effort_overrides());
+        cmd.args(self.mcp_overrides(req.mode)).args(self.effort_overrides());
         // `--image=<path>` in one argument, so the flag can never take the next one as a value.
         for image in req.images.iter().filter(|p| takes_image_flag(p)) {
             cmd.arg(format!("--image={}", image.display()));
@@ -104,25 +104,27 @@ impl CodexBackend {
     /// `default_tools_approval_mode="approve"` a headless `codex exec` refuses every MCP
     /// call ("MCP tool call requires approval, but approval policy is never"); with it
     /// the tool runs. The approval applies to this one server only.
-    fn mcp_overrides(&self) -> Vec<String> {
+    fn mcp_overrides(&self, mode: crate::mode::Mode) -> Vec<String> {
         let Some(m) = &self.mcp else { return vec![] };
         let quote = |s: &str| serde_json::to_string(s).unwrap_or_default();
         let args: Vec<String> = m.args.iter().map(|a| quote(a)).collect();
         let key = format!("mcp_servers.{}", m.name);
         let command = quote(&m.command.to_string_lossy());
-        vec![
+        let mut overrides = vec![
             "-c".into(),
             format!("{key}.command={command}"),
             "-c".into(),
             format!("{key}.args=[{}]", args.join(",")),
-            "-c".into(),
-            format!("{key}.default_tools_approval_mode=\"approve\""),
             // A `delegate` call runs a whole worker turn, so codex's default per-call
             // timeout (60 s) would cancel it mid-run. The field name was checked with
             // `codex exec --strict-config` (an invented field is rejected, this one is not).
             "-c".into(),
             format!("{key}.tool_timeout_sec={MCP_TOOL_TIMEOUT_SECS}"),
-        ]
+        ];
+        if matches!(mode, crate::mode::Mode::Edit | crate::mode::Mode::Auto) {
+            overrides.extend(["-c".into(), format!("{key}.default_tools_approval_mode=\"approve\"")]);
+        }
+        overrides
     }
 
     /// Continued turn: `exec resume` has neither `-C` nor `-s`, so the directory comes
@@ -131,7 +133,7 @@ impl CodexBackend {
     fn resume_args(&self, cmd: &mut Command, req: &TurnRequest, thread_id: &str) {
         let sandbox = format!("sandbox_mode=\"{}\"", self.sandbox_for(req));
         cmd.args(["exec", "resume", "--json", "-m", &req.model, "-c", &sandbox]);
-        cmd.args(self.mcp_overrides()).args(self.effort_overrides());
+        cmd.args(self.mcp_overrides(req.mode)).args(self.effort_overrides());
         // No `--image` here: a resumed turn names its images in the prompt (see
         // `stdin_payload`), so the thread id is never taken for an image path.
         cmd.args([thread_id, "-"]);
@@ -520,6 +522,12 @@ mod tests {
         let resumed = args(&b.command(&req(Some("t1"))));
         assert_eq!(&resumed[resumed.len() - 2..], ["t1", "-"], "overrides stay before the positionals");
         assert!(resumed.iter().any(|a| a.starts_with("mcp_servers.jev.command")));
+        for mode in [crate::mode::Mode::Ask, crate::mode::Mode::Edit, crate::mode::Mode::Plan, crate::mode::Mode::Auto] {
+            for session in [None, Some("t1")] {
+                let a = args(&b.command(&TurnRequest { mode, ..req(session) }));
+                assert_eq!(a.iter().any(|arg| arg.contains("default_tools_approval_mode")), matches!(mode, crate::mode::Mode::Edit | crate::mode::Mode::Auto), "{mode}: {a:?}");
+            }
+        }
     }
 
     #[test]

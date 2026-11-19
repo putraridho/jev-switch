@@ -1,8 +1,9 @@
 //! The wording of `/extensions`, `/recipe`, `/hooks` and `jev-code ext list`.
 
-use super::hooks::Hooks;
+use super::hooks::{HookDef, Hooks};
 use super::library::{Entry, Kind, Library};
 use super::market::{Listing, State};
+use crate::permissions::visible;
 use crate::uifmt::Style;
 
 fn entry_row(e: &Entry, style: Style) -> String {
@@ -60,17 +61,32 @@ pub fn hooks_text(hooks: &Hooks, style: Style) -> String {
     let mut lines: Vec<String> = hooks
         .defs()
         .iter()
-        .map(|d| format!("  {} {}  {}", style.cyan(d.event.as_str()), d.tool.as_deref().unwrap_or("*"), style.dim(&d.run)))
+        .map(|d| format!("  {} {}  {}", style.cyan(d.event.as_str()), visible(d.tool.as_deref().unwrap_or("*")), style.dim(&visible(&d.run))))
         .collect();
     if lines.is_empty() {
         lines.push(style.dim("  no hooks (.jev/hooks.json or the config folder's hooks.json)"));
     }
     if hooks.skipped_untrusted > 0 {
         lines.push(format!("{} {} hook(s) in this project are off until you trust it: /hooks trust", style.yellow("⚠"), hooks.skipped_untrusted));
+        lines.extend(hooks.untrusted_defs().iter().map(|d| {
+            format!("  {} {}  {}", style.cyan(d.event.as_str()), visible(d.tool.as_deref().unwrap_or("*")), visible(&d.run))
+        }));
     }
     for problem in &hooks.problems {
         lines.push(format!("{} {problem}", style.yellow("⚠")));
     }
+    lines.join("\n")
+}
+
+/// The project commands approved by `/hooks trust`.
+pub fn approved_hooks_text(defs: &[HookDef], style: Style) -> String {
+    let mut lines = vec!["  project hooks approved:".to_string()];
+    if defs.is_empty() {
+        lines.push(style.dim("  none"));
+    }
+    lines.extend(defs.iter().map(|d| {
+        format!("  {} {}  {}", style.cyan(d.event.as_str()), visible(d.tool.as_deref().unwrap_or("*")), visible(&d.run))
+    }));
     lines.join("\n")
 }
 
@@ -106,5 +122,22 @@ mod tests {
     fn hooks_text_lists_and_warns() {
         let text = hooks_text(&Hooks::none(std::path::Path::new("/p")), Style::off());
         assert!(text.contains("no hooks"));
+    }
+
+    #[test]
+    fn untrusted_and_approved_commands_show_controls_visibly() {
+        use crate::ext::Places;
+        let dir = std::env::temp_dir().join(format!("jev-hooks-preview-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join(".jev")).unwrap();
+        std::fs::write(dir.join(".jev/hooks.json"), r#"{"hooks":[{"event":"turn_start","run":"echo first\n\u001bsecond"}]}"#).unwrap();
+        let places = Places { project: dir.clone(), user: Some(dir.join("cfg")) };
+        let loaded = Hooks::load(&places);
+        let text = hooks_text(&loaded, Style::off());
+        assert!(text.contains("turn_start") && text.contains("echo first␊␛second"), "{text}");
+        let (_, defs) = crate::ext::hooks::trust_project_with_preview(places.user.as_deref().unwrap(), &dir).unwrap();
+        let approved = approved_hooks_text(&defs, Style::off());
+        assert!(approved.contains("turn_start") && approved.contains("echo first␊␛second"), "{approved}");
+        std::fs::remove_dir_all(dir).unwrap();
     }
 }

@@ -20,21 +20,23 @@
 //! (usage.jsonl), JEV_TURNS_LOG (turns.jsonl). WORKER_CHEAP_P (unset: workers never get Haiku), ORCH_REQUIRE_OPUS (on). Fable tier: JEV_FABLE (on; "off" disables),
 //! FABLE_THRESHOLD (0.90). Orchestrate mode (README): JEV_ORCH
 //! (on; "off" disables), ORCH_TRIGGER_P (0.70), ORCH_PLANNER (claude-opus-5-5),
-//! JEV_ORCH_LOG (orch.jsonl).
+//! JEV_ORCH_LOG (orch.jsonl). JEV_GATEWAY_MAX_INFLIGHT (32),
+//! JEV_GATEWAY_ALLOW_REMOTE (1 to allow non-loopback binding).
 
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
 
 use anyhow::{Context, Result};
-use axum::body::{to_bytes, Body};
+use axum::body::{to_bytes, Body, Bytes};
 use axum::extract::{Json, Request, State};
 use axum::http::{HeaderMap, HeaderName, Method, Response, StatusCode};
+use axum::middleware::{self, Next};
 use axum::routing::{any, get, post};
 use axum::Router as Http;
 use futures_util::StreamExt as _;
 use serde_json::{json, Value};
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, OwnedSemaphorePermit, Semaphore};
 
 use jev_router::anthropic::{MODEL_CHEAP, MODEL_MID, MODEL_STRONG, MODEL_TOP};
 use jev_router::log;
@@ -50,12 +52,14 @@ const ALIAS: &str = "jev-code";
 const ORCH_MARKER: &str = "<jev-orchestrate>";
 const TIERS: [&str; 4] = [MODEL_CHEAP, MODEL_MID, MODEL_STRONG, MODEL_TOP];
 const MAX_BODY: usize = 64 * 1024 * 1024;
+const MAX_SESSIONS: usize = 1024;
 /// Hop-by-hop and recomputed headers that must not be copied across the proxy.
 const SKIP_HEADERS: &[&str] =
     &["host", "content-length", "connection", "keep-alive", "transfer-encoding", "upgrade", "te", "trailer"];
 
-#[derive(Default)]
 struct SessionState {
+    touched: Instant,
+    tracking: Arc<SessionTracking>,
     sticky: Sticky,
     prompt_id: Option<String>,
     model: Option<&'static str>,
@@ -70,16 +74,51 @@ struct SessionState {
     orch_planner: Option<&'static str>,
 }
 
+struct SessionTracking {
+    turns: Arc<Turns>,
+    prefix: PrefixWatch,
+}
+
+#[derive(Default)]
+struct Sessions(HashMap<String, SessionState>);
+
+impl Sessions {
+    fn entry(&mut self, id: &str, turns_path: &Option<String>) -> &mut SessionState {
+        if !self.0.contains_key(id) && self.0.len() >= MAX_SESSIONS {
+            if let Some(oldest) = self.0.iter().min_by_key(|(_, state)| state.touched).map(|(key, _)| key.clone()) {
+                self.0.remove(&oldest);
+            }
+        }
+        let state = self.0.entry(id.to_string()).or_insert_with(|| SessionState {
+            touched: Instant::now(),
+            tracking: Arc::new(SessionTracking { turns: Turns::new(turns_path.clone()), prefix: PrefixWatch::new() }),
+            sticky: Sticky::default(),
+            prompt_id: None,
+            model: None,
+            decision: None,
+            orch_check: None,
+            orch_planner: None,
+        });
+        state.touched = Instant::now();
+        state
+    }
+
+    fn get(&mut self, id: &str) -> Option<&SessionState> {
+        let state = self.0.get_mut(id)?;
+        state.touched = Instant::now();
+        Some(state)
+    }
+}
+
 struct App {
     router: Router,
     http: reqwest::Client,
     upstream: String,
     downgrade_after: u32,
-    sessions: Mutex<HashMap<String, SessionState>>,
+    sessions: Mutex<Sessions>,
     log_path: Option<String>,
     usage_path: Option<String>,
-    turns: Arc<Turns>,
-    prefix: PrefixWatch,
+    turns_path: Option<String>,
     orch: Orch,
 }
 
@@ -123,7 +162,18 @@ async fn main() -> Result<()> {
     let addr = std::env::var("JEV_GATEWAY_ADDR").unwrap_or_else(|_| "127.0.0.1:18780".into());
     let log_path = log::path_from_env("JEV_GATEWAY_LOG", "gateway.jsonl");
     let usage_path = log::path_from_env("JEV_USAGE_LOG", "usage.jsonl");
-    let turns = Turns::new(log::path_from_env("JEV_TURNS_LOG", "turns.jsonl"));
+    let addresses: Vec<_> = tokio::net::lookup_host(&addr).await.with_context(|| format!("resolve {addr}"))?.collect();
+    anyhow::ensure!(!addresses.is_empty(), "no addresses found for {addr}");
+    let allow_remote = std::env::var("JEV_GATEWAY_ALLOW_REMOTE").is_ok_and(|value| value == "1");
+    validate_bind_addresses(&addresses, allow_remote)?;
+    let listener = tokio::net::TcpListener::bind(addresses.as_slice()).await.with_context(|| format!("bind {addr}"))?;
+    let loopback = listener.local_addr()?.ip().is_loopback();
+    let max_inflight = match std::env::var("JEV_GATEWAY_MAX_INFLIGHT") {
+        Ok(value) => value.parse::<usize>().context("JEV_GATEWAY_MAX_INFLIGHT must be a positive integer")?,
+        Err(std::env::VarError::NotPresent) => 32,
+        Err(error) => return Err(error.into()),
+    };
+    anyhow::ensure!(max_inflight > 0 && max_inflight <= Semaphore::MAX_PERMITS, "JEV_GATEWAY_MAX_INFLIGHT is out of range");
     let app = Arc::new(App {
         router: Router::new(TypeSafe::from_env()?, 1.0).with_strong_threshold(env_f64("CODE_STRONG_THRESHOLD", CODE_STRONG_THRESHOLD))
             // Fable for the hardest Opus-bound turns; JEV_FABLE=off keeps tiers 0-2.
@@ -137,11 +187,10 @@ async fn main() -> Result<()> {
             .trim_end_matches('/')
             .to_string(),
         downgrade_after: env_f64("DOWNGRADE_AFTER", 2.0) as u32,
-        sessions: Mutex::new(HashMap::new()),
+        sessions: Mutex::new(Sessions::default()),
         log_path,
         usage_path,
-        turns,
-        prefix: PrefixWatch::new(),
+        turns_path: log::path_from_env("JEV_TURNS_LOG", "turns.jsonl"),
         orch: Orch {
             enabled: std::env::var("JEV_ORCH").map_or(true, |v| v != "off"),
             cutoff: env_f64("ORCH_TRIGGER_P", ORCH_TRIGGER_P),
@@ -157,11 +206,70 @@ async fn main() -> Result<()> {
         .route("/jev/orchestrate", post(orchestrate_check))
         .route("/jev/worker", post(worker_check))
         .fallback(any(proxy))
+        .layer(middleware::from_fn_with_state(GatewayGuard { loopback, permits: Arc::new(Semaphore::new(max_inflight)) }, guard_request))
         .with_state(app);
-    let listener = tokio::net::TcpListener::bind(&addr).await.with_context(|| format!("bind {addr}"))?;
     eprintln!("jev-gateway {} listening on http://{addr}", env!("CARGO_PKG_VERSION"));
     axum::serve(listener, http).await?;
     Ok(())
+}
+
+#[derive(Clone)]
+struct GatewayGuard {
+    loopback: bool,
+    permits: Arc<Semaphore>,
+}
+
+fn validate_bind_addresses(addresses: &[std::net::SocketAddr], allow_remote: bool) -> Result<()> {
+    anyhow::ensure!(!addresses.is_empty(), "JEV_GATEWAY_ADDR resolved to no addresses");
+    anyhow::ensure!(allow_remote || addresses.iter().all(|address| address.ip().is_loopback()),
+        "JEV_GATEWAY_ADDR resolves to a non-loopback address; set JEV_GATEWAY_ALLOW_REMOTE=1 to allow remote access");
+    Ok(())
+}
+
+fn allowed_headers(headers: &HeaderMap, loopback: bool) -> bool {
+    if headers.contains_key("origin") {
+        return false;
+    }
+    if !loopback {
+        return true;
+    }
+    let mut hosts = headers.get_all("host").iter();
+    let Some(host) = hosts.next() else { return false };
+    if hosts.next().is_some() {
+        return false;
+    }
+    host.to_str().ok().and_then(|value| value.parse::<axum::http::uri::Authority>().ok())
+        .is_some_and(|authority| {
+            let hostname = authority.host();
+            let suffix = authority.as_str().strip_prefix(hostname).unwrap_or("invalid");
+            matches!(hostname.to_ascii_lowercase().as_str(), "localhost" | "127.0.0.1" | "[::1]")
+                && (suffix.is_empty() || suffix.strip_prefix(':').is_some_and(|port| port.parse::<u16>().is_ok()))
+        })
+}
+
+impl GatewayGuard {
+    fn acquire(&self, headers: &HeaderMap) -> std::result::Result<OwnedSemaphorePermit, StatusCode> {
+        if !allowed_headers(headers, self.loopback) {
+            return Err(StatusCode::FORBIDDEN);
+        }
+        self.permits.clone().try_acquire_owned().map_err(|_| StatusCode::SERVICE_UNAVAILABLE)
+    }
+}
+
+fn limit_response(response: Response<Body>, permit: OwnedSemaphorePermit) -> Response<Body> {
+    let (parts, body) = response.into_parts();
+    let stream = futures_util::stream::unfold((body.into_data_stream(), permit), |(mut stream, permit)| async move {
+        stream.next().await.map(|chunk| (chunk, (stream, permit)))
+    });
+    Response::from_parts(parts, Body::from_stream(stream))
+}
+
+async fn guard_request(State(guard): State<GatewayGuard>, request: Request, next: Next) -> Response<Body> {
+    let permit = match guard.acquire(request.headers()) {
+        Ok(permit) => permit,
+        Err(status) => return Response::builder().status(status).body(Body::empty()).unwrap(),
+    };
+    limit_response(next.run(request).await, permit)
 }
 
 #[derive(serde::Deserialize)]
@@ -223,7 +331,7 @@ async fn orchestrate_check(State(app): State<Arc<App>>, Json(c): Json<OrchCheck>
         json!({ "trigger": trigger, "cutoff": app.orch.cutoff, "planner": planner, "hard_p": hard_p, "route_tier": route_tier, "skipped": skipped }),
     );
     if !c.session.is_empty() {
-        app.sessions.lock().await.entry(c.session.clone()).or_default().orch_check = Some(record.clone());
+        app.sessions.lock().await.entry(&c.session, &app.turns_path).orch_check = Some(record.clone());
     }
     if let Some(path) = &app.orch.log_path {
         let mut line = record.clone();
@@ -268,7 +376,7 @@ async fn worker_check(State(app): State<Arc<App>>, Json(c): Json<WorkerCheck>) -
     }
     // Opus may work under a Fable planner only; the gateway knows which planner this turn has.
     let (planner, prompt_id) = {
-        let sessions = app.sessions.lock().await;
+        let mut sessions = app.sessions.lock().await;
         let st = sessions.get(&c.session);
         (st.and_then(|s| s.orch_planner), st.and_then(|s| s.prompt_id.clone()))
     };
@@ -306,7 +414,7 @@ async fn proxy(State(app): State<Arc<App>>, req: Request) -> Response<Body> {
 async fn forward(app: &Arc<App>, req: Request) -> Result<Response<Body>> {
     let (parts, body) = req.into_parts();
     let path_q = parts.uri.path_and_query().map(|p| p.as_str().to_string()).unwrap_or_else(|| "/".into());
-    let mut bytes = to_bytes(body, MAX_BODY).await.context("read request body")?.to_vec();
+    let mut bytes = to_bytes(body, MAX_BODY).await.context("read request body")?;
     let started = Instant::now();
     let ts_ms = log::now_ms();
 
@@ -314,17 +422,18 @@ async fn forward(app: &Arc<App>, req: Request) -> Result<Response<Body>> {
     let mut tap = None;
     let mut for_haiku = false;
     // The request as sent by the client, on the main model: retried if Haiku rejects it.
-    let mut fallback: Option<Vec<u8>> = None;
-    if parts.method == Method::POST && parts.uri.path() == "/v1/messages" {
+    let mut fallback: Option<Bytes> = None;
+    if should_route_messages(&parts.method, parts.uri.path(), &parts.headers) {
         let meta = Meta::from_headers(&parts.headers);
+        let tracking = app.sessions.lock().await.entry(&meta.session, &app.turns_path).tracking.clone();
         let json: Option<Value> = serde_json::from_slice(&bytes).ok();
         let requested = json.as_ref().and_then(|j| j.get("model")).and_then(Value::as_str).unwrap_or("").to_string();
         if let Some(j) = &json {
             let prompt = last_user_prompt(j);
-            let new_turn = app.turns.observe(&meta.session, meta.prompt_id.as_deref(), &meta.class, j, &requested, prompt.as_deref(), ts_ms);
+            let new_turn = tracking.turns.observe(&meta.session, meta.prompt_id.as_deref(), &meta.class, j, &requested, prompt.as_deref(), ts_ms);
             if let (true, Some(prev), Some(pid), Some(prompt)) = (correction_check_enabled(), new_turn.and_then(|n| n.prev_prompt), &meta.prompt_id, prompt) {
-                app.turns.begin_check(&meta.session, pid);
-                spawn_outcome_check(app, meta.session.clone(), pid.clone(), prompt, prev, recent_context(j));
+                tracking.turns.begin_check(&meta.session, pid);
+                spawn_outcome_check(app, tracking.turns.clone(), meta.session.clone(), pid.clone(), prompt, prev, recent_context(j));
             }
         }
         let picked = match &json {
@@ -333,7 +442,7 @@ async fn forward(app: &Arc<App>, req: Request) -> Result<Response<Body>> {
         };
         if let (Some(p), Some(pid)) = (&picked, &meta.prompt_id) {
             if let (true, Some(d)) = (p.new_turn, &p.decision) {
-                app.turns.set_decision(&meta.session, pid, d.clone());
+                tracking.turns.set_decision(&meta.session, pid, d.clone());
             }
         }
         let model = picked.as_ref().map(|p| p.model.to_string()).unwrap_or_else(|| requested.clone());
@@ -349,13 +458,13 @@ async fn forward(app: &Arc<App>, req: Request) -> Result<Response<Body>> {
                 let mut adapted = j.clone();
                 adapted["model"] = Value::String(MODEL_CHEAP.into());
                 adapt_for_haiku(&mut adapted);
-                bytes = serde_json::to_vec(&adapted).unwrap_or(bytes);
+                bytes = serde_json::to_vec(&adapted).map(Bytes::from).unwrap_or(bytes);
                 for_haiku = true;
             }
         }
         tap = app.usage_path.clone().map(|path| {
             let j = json.as_ref();
-            let cwd = app.turns.cwd(&meta.session).or_else(|| j.and_then(find_cwd));
+            let cwd = tracking.turns.cwd(&meta.session).or_else(|| j.and_then(find_cwd));
             UsageTap::new(
                 path,
                 started,
@@ -372,9 +481,9 @@ async fn forward(app: &Arc<App>, req: Request) -> Result<Response<Body>> {
                     "messages": j.and_then(|j| j.get("messages")).and_then(Value::as_array).map(Vec::len),
                     "tools": j.and_then(|j| j.get("tools")).and_then(Value::as_array).map(Vec::len),
                     "req_bytes": bytes.len(),
-                    "prefix": j.map(|j| app.prefix.observe(&meta.session, &meta.class, j)),
+                    "prefix": j.map(|j| tracking.prefix.observe(&meta.session, match meta.class.as_str() { "main" | "auxiliary" | "subagent" => &meta.class, _ => "other" }, j)),
                 }),
-                app.turns.clone(),
+                tracking.turns.clone(),
                 meta.session.clone(),
                 meta.prompt_id.clone(),
                 meta.class.clone(),
@@ -459,13 +568,13 @@ async fn send_upstream(
     app: &App,
     parts: &axum::http::request::Parts,
     path_q: &str,
-    body: &[u8],
+    body: &Bytes,
     for_haiku: bool,
     logged: bool,
 ) -> (Result<reqwest::Response, reqwest::Error>, u32) {
     let mut retries = 0;
     loop {
-        match upstream_request(app, parts, path_q, body.to_vec(), for_haiku, logged).send().await {
+        match upstream_request(app, parts, path_q, body.clone(), for_haiku, logged).send().await {
             Err(e) if e.is_connect() && (retries as usize) < CONNECT_RETRY_DELAYS_MS.len() => {
                 tokio::time::sleep(std::time::Duration::from_millis(CONNECT_RETRY_DELAYS_MS[retries as usize])).await;
                 retries += 1;
@@ -499,7 +608,7 @@ fn haiku_declined(status: u16) -> bool {
 /// The upstream request: the client's headers, minus hop-by-hop ones. A logged request
 /// asks for an uncompressed response so the tap can read it; a Haiku request loses the
 /// long-context beta.
-fn upstream_request(app: &App, parts: &axum::http::request::Parts, path_q: &str, body: Vec<u8>, for_haiku: bool, logged: bool) -> reqwest::RequestBuilder {
+fn upstream_request(app: &App, parts: &axum::http::request::Parts, path_q: &str, body: Bytes, for_haiku: bool, logged: bool) -> reqwest::RequestBuilder {
     let mut up = app.http.request(parts.method.clone(), format!("{}{}", app.upstream, path_q));
     for (k, v) in parts.headers.iter() {
         if SKIP_HEADERS.contains(&k.as_str()) || (logged && k == "accept-encoding") {
@@ -528,13 +637,21 @@ fn correction_check_enabled() -> bool {
 /// Background: ask Jev whether the user's new prompt reacts to the last answer as
 /// wrong or incomplete. The result lands in the turn's `followup.correction_p`; the
 /// turn row waits for it. Never delays or affects routing.
-fn spawn_outcome_check(app: &Arc<App>, session: String, prompt_id: String, prompt: String, prev_prompt: String, prev_answer: String) {
+fn spawn_outcome_check(app: &Arc<App>, turns: Arc<Turns>, session: String, prompt_id: String, prompt: String, prev_prompt: String, prev_answer: String) {
     let app = app.clone();
     tokio::spawn(async move {
         let check = app.router.is_correction(&prompt, &prev_prompt, &prev_answer);
         let p = tokio::time::timeout(std::time::Duration::from_secs(20), check).await.ok().and_then(Result::ok);
-        app.turns.finish_check(&session, &prompt_id, "correction_p", p.map(|p| json!(p)));
+        turns.finish_check(&session, &prompt_id, "correction_p", p.map(|p| json!(p)));
     });
+}
+
+fn has_credentials(headers: &HeaderMap) -> bool {
+    headers.contains_key("x-api-key") || headers.contains_key("authorization")
+}
+
+fn should_route_messages(method: &Method, path: &str, headers: &HeaderMap) -> bool {
+    *method == Method::POST && path == "/v1/messages" && has_credentials(headers)
 }
 
 fn header<'a>(h: &'a HeaderMap, name: &str) -> Option<&'a str> {
@@ -572,7 +689,7 @@ async fn choose_model(app: &App, meta: &Meta, req: &Value) -> Option<Picked> {
     }
     let (class, session_id, prompt_id) = (meta.class.as_str(), meta.session.clone(), meta.prompt_id.clone());
     let mut sessions = app.sessions.lock().await;
-    let st = sessions.entry(session_id.clone()).or_default();
+    let st = sessions.entry(&session_id, &app.turns_path);
     let same_turn = |st: &SessionState| Picked {
         model: st.model.unwrap_or(MODEL_MID),
         new_turn: false,
@@ -648,7 +765,7 @@ async fn choose_model(app: &App, meta: &Meta, req: &Value) -> Option<Picked> {
 
     let want = app.router.code_want(&words, &context, fallback).await;
     let mut sessions = app.sessions.lock().await;
-    let st = sessions.entry(session_id.clone()).or_default();
+    let st = sessions.entry(&session_id, &app.turns_path);
     let (tier, reason) = st.sticky.decide(&want, app.downgrade_after);
     st.sticky.tier = Some(tier);
     st.prompt_id = prompt_id.clone();
@@ -850,7 +967,7 @@ fn without_long_context(beta: &str) -> String {
 }
 
 /// Replace the model value, leaving every other byte of the body as sent.
-fn set_model(body: &[u8], model: &str) -> Vec<u8> {
+fn set_model(body: &Bytes, model: &str) -> Bytes {
     let needle = format!("\"model\":\"{ALIAS}\"");
     let text = String::from_utf8_lossy(body);
     if let Some(i) = text.find(&needle) {
@@ -858,15 +975,15 @@ fn set_model(body: &[u8], model: &str) -> Vec<u8> {
         out.push_str(&text[..i]);
         out.push_str(&format!("\"model\":\"{model}\""));
         out.push_str(&text[i + needle.len()..]);
-        return out.into_bytes();
+        return Bytes::from(out);
     }
     // Unusual spacing: fall back to a JSON round-trip (same content, new whitespace).
     match serde_json::from_slice::<Value>(body) {
         Ok(mut v) => {
             v["model"] = Value::String(model.into());
-            serde_json::to_vec(&v).unwrap_or_else(|_| body.to_vec())
+            serde_json::to_vec(&v).map(Bytes::from).unwrap_or_else(|_| body.clone())
         }
-        Err(_) => body.to_vec(),
+        Err(_) => body.clone(),
     }
 }
 
@@ -886,6 +1003,86 @@ fn log_decision(app: &App, session: &str, prompt_id: Option<&str>, model: &str, 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_loopback_hosts_without_origin_are_allowed() {
+        let mut headers = HeaderMap::new();
+        assert!(!allowed_headers(&headers, true));
+        for host in ["127.0.0.1", "127.0.0.1:18780", "localhost:443", "LOCALHOST", "[::1]:18780", "[::1]"] {
+            headers.insert("host", host.parse().unwrap());
+            assert!(allowed_headers(&headers, true), "{host}");
+        }
+        for host in ["evil.example", "localhost.evil.example", "127.0.0.1.evil.example", "localhost@evil.example", "evil.example@localhost", "127.0.0.2", "localhost:bad", "localhost:"] {
+            headers.insert("host", host.parse().unwrap());
+            assert!(!allowed_headers(&headers, true), "{host}");
+        }
+        headers.insert("host", "localhost".parse().unwrap());
+        headers.append("host", "localhost".parse().unwrap());
+        assert!(!allowed_headers(&headers, true));
+        headers.remove("host");
+        assert!(allowed_headers(&headers, false));
+        headers.insert("origin", "null".parse().unwrap());
+        assert!(!allowed_headers(&headers, true));
+        assert!(!allowed_headers(&headers, false));
+    }
+
+    #[test]
+    fn remote_binding_requires_explicit_permission() {
+        let local = "127.0.0.1:18780".parse().unwrap();
+        let ipv6 = "[::1]:18780".parse().unwrap();
+        let remote = "0.0.0.0:18780".parse().unwrap();
+        assert!(validate_bind_addresses(&[local, ipv6], false).is_ok());
+        assert!(validate_bind_addresses(&[local, remote], false).is_err());
+        assert!(validate_bind_addresses(&[remote], true).is_ok());
+        assert!(validate_bind_addresses(&[], true).is_err());
+    }
+
+    #[test]
+    fn unauthenticated_messages_skip_routing_and_tracking() {
+        let mut headers = HeaderMap::new();
+        assert!(!should_route_messages(&Method::POST, "/v1/messages", &headers));
+        headers.insert("x-api-key", "key".parse().unwrap());
+        assert!(should_route_messages(&Method::POST, "/v1/messages", &headers));
+        assert!(!should_route_messages(&Method::GET, "/v1/messages", &headers));
+        assert!(!should_route_messages(&Method::POST, "/jev/worker", &headers));
+        headers.remove("x-api-key");
+        headers.insert("authorization", "Bearer token".parse().unwrap());
+        assert!(should_route_messages(&Method::POST, "/v1/messages", &headers));
+    }
+
+    #[tokio::test]
+    async fn request_limit_covers_the_response_body_and_releases_on_drop() {
+        let guard = GatewayGuard { loopback: true, permits: Arc::new(Semaphore::new(1)) };
+        let mut headers = HeaderMap::new();
+        headers.insert("host", "localhost".parse().unwrap());
+        let permit = guard.acquire(&headers).unwrap();
+        assert_eq!(guard.acquire(&headers).unwrap_err(), StatusCode::SERVICE_UNAVAILABLE);
+        headers.insert("origin", "null".parse().unwrap());
+        assert_eq!(guard.acquire(&headers).unwrap_err(), StatusCode::FORBIDDEN);
+        headers.remove("origin");
+        let response = limit_response(Response::new(Body::from("stream")), permit);
+        assert_eq!(guard.acquire(&headers).unwrap_err(), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(to_bytes(response.into_body(), 100).await.unwrap(), "stream");
+        let permit = guard.acquire(&headers).unwrap();
+        let response = limit_response(Response::new(Body::from("stream")), permit);
+        drop(response);
+        assert!(guard.acquire(&headers).is_ok());
+    }
+
+    #[test]
+    fn sessions_evict_the_oldest_tracking_with_their_routing_state() {
+        let mut sessions = Sessions::default();
+        let evicted = Arc::downgrade(&sessions.entry("oldest", &None).tracking);
+        sessions.entry("oldest", &None).touched = Instant::now() - std::time::Duration::from_secs(10);
+        for index in 0..MAX_SESSIONS - 1 {
+            sessions.entry(&format!("session-{index}"), &None);
+        }
+        sessions.entry("new", &None);
+        assert_eq!(sessions.0.len(), MAX_SESSIONS);
+        assert!(sessions.get("oldest").is_none());
+        assert!(evicted.upgrade().is_none());
+        assert!(sessions.get("new").is_some());
+    }
 
     #[test]
     fn haiku_request_loses_what_haiku_rejects() {

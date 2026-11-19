@@ -17,6 +17,18 @@ use serde_json::{json, Map, Value};
 /// Where the project's own rules live, relative to the project folder.
 pub const LOCAL_SETTINGS: &str = ".claude/settings.local.json";
 
+/// Whether the project's local settings were committed to the repository.
+pub(crate) fn local_settings_tracked(project: &Path) -> bool {
+    std::process::Command::new("git")
+        .arg("-C")
+        .arg(project)
+        .args(["ls-files", "--error-unmatch", "--", LOCAL_SETTINGS])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .is_ok_and(|status| status.success())
+}
+
 /// A run of this many spaces or more is shown as a count, so spaces cannot push the rest of
 /// a line out of sight; shorter runs are shown as they are.
 const SPACE_RUN: usize = 8;
@@ -435,7 +447,7 @@ const SYSTEM_BIN_DIRS: &[&str] = &["/bin", "/usr/bin", "/usr/local/bin", "/sbin"
 /// program is (`git diff --output=f`, `git grep --open-files-in-pager=sh`). Matched as the
 /// whole word, `flag=value`, and any abbreviation of either (`--outp=f`): option parsers
 /// such as git's accept an unambiguous prefix of a long option.
-const DANGEROUS_FLAGS: &[&str] = &["--output", "--exec", "--open-files-in-pager", "--upload-pack", "--receive-pack"];
+const DANGEROUS_FLAGS: &[&str] = &["--output", "--exec", "--open-files-in-pager", "--upload-pack", "--receive-pack", "--kubeconfig"];
 
 /// Whether `word` is one of [`DANGEROUS_FLAGS`], `flag=value`, or an abbreviation of one.
 fn is_dangerous_flag(word: &str) -> bool {
@@ -609,7 +621,16 @@ fn bash_rule(command: &str) -> Result<String, Refusal> {
         return Err(Refusal::ProjectProgram);
     }
     let rest: Vec<&str> = words.collect();
-    if rest.iter().any(|w| is_dangerous_flag(w)) {
+    let go_exec_flag = |word: &str| {
+        let flag = word.split('=').next().unwrap_or(word);
+        name == "go" && ["-toolexec", "-vettool", "-exec", "--toolexec", "--vettool", "--exec"].contains(&flag)
+    };
+    let has_dangerous_flag = if command.contains(['\'', '"']) {
+        split_chain(command)?.iter().flat_map(|segment| segment.iter().skip(1)).any(|word| is_dangerous_flag(&word.text) || go_exec_flag(&word.text))
+    } else {
+        all.iter().skip(1).any(|word| is_dangerous_flag(word) || go_exec_flag(word))
+    };
+    if has_dangerous_flag {
         return Err(Refusal::TooBroad);
     }
     let sub = rest.first().copied().filter(|w| is_subcommand(w));
@@ -1112,11 +1133,19 @@ pub fn rules_for(tool: &str, input: &Value, blocked_path: Option<&str>, places: 
 /// in front, a chain), so a call it still asks about is checked here. A call asked about
 /// because of a path outside the allowed folders is never answered from rules alone.
 pub fn remembered(tool: &str, input: &Value, blocked_path: Option<&str>, places: &Places) -> Option<Vec<String>> {
+    remembered_with_local_trust(tool, input, blocked_path, places, !local_settings_tracked(&places.project))
+}
+
+fn remembered_with_local_trust(tool: &str, input: &Value, blocked_path: Option<&str>, places: &Places, local_trusted: bool) -> Option<Vec<String>> {
     if blocked_path.is_some() {
         return None;
     }
     let rules = rules_for(tool, input, None, places).ok()?;
-    let mut allowed = load(&local_settings_path(&places.project)).map(|s| s.list(List::Allow)).unwrap_or_default();
+    let mut allowed = if local_trusted {
+        load(&local_settings_path(&places.project)).map(|s| s.list(List::Allow)).unwrap_or_default()
+    } else {
+        Vec::new()
+    };
     if let Some(home) = &places.home {
         allowed.extend(load(&user_settings_path(home)).map(|s| s.list(List::Allow)).unwrap_or_default());
     }
@@ -1753,6 +1782,30 @@ mod tests {
     }
 
     #[test]
+    fn execution_flags_are_never_remembered() {
+        for command in [
+            "kubectl get pods --kubeconfig=./k.yaml",
+            "kubectl get pods --kubeconfig ./k.yaml",
+            "kubectl get pods --kubec=./k.yaml",
+            "kubectl get pods '--kubeconfig=./k.yaml'",
+            "kubectl get pods '--kube'config=./k.yaml",
+            "helm list --kubeconfig=./k.yaml",
+            "go test -toolexec=./evil ./...",
+            "go test -vettool ./evil",
+            "go test -exec=./evil",
+            "go test '-tool'exec=./evil",
+            "go test --toolexec=./evil",
+            "echo ok | go test -exec=./evil",
+        ] {
+            assert!(rules(command).is_err(), "{command}");
+            assert_eq!(remembered("Bash", &bash(command), None, &places()), None, "{command}");
+            assert!(always_plan("Bash", &bash(command), None, &places()).is_err(), "{command}");
+        }
+        assert!(rules("kubectl get pods --context=dev").is_ok());
+        assert!(rules("go test ./...").is_ok());
+    }
+
+    #[test]
     fn only_path_fields_are_shortened_and_commands_and_contents_are_shown_byte_for_byte() {
         let project = Some(project());
         let review_in = |tool: &str, input: Value| review(tool, &input, project).lines;
@@ -2092,6 +2145,12 @@ mod tests {
         assert_eq!(remembered("Bash", &input, None, &ps), None, "tail is not saved yet");
         add_allow_rule(&dir, "Bash(tail:*)").unwrap();
         assert_eq!(remembered("Bash", &input, None, &ps), Some(vec!["Bash(cargo build:*)".to_string(), "Bash(tail:*)".to_string()]));
+        assert_eq!(remembered_with_local_trust("Bash", &input, None, &ps, false), None);
+        let home = dir.join("home");
+        std::fs::create_dir_all(home.join(".claude")).unwrap();
+        std::fs::write(user_settings_path(&home), r#"{"permissions":{"allow":["Bash(cargo build:*)","Bash(tail:*)"]}}"#).unwrap();
+        let user_rules = Places { home: Some(home), ..ps.clone() };
+        assert_eq!(remembered_with_local_trust("Bash", &input, None, &user_rules, false), Some(vec!["Bash(cargo build:*)".to_string(), "Bash(tail:*)".to_string()]));
         assert_eq!(remembered("Bash", &input, Some("/etc/x"), &ps), None, "a blocked path is never answered from rules");
         assert_eq!(remembered("Bash", &bash("cargo build && rm x"), None, &ps), None);
         let plan = always_plan("Bash", &bash("cargo test | head"), None, &ps).unwrap();

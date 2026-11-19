@@ -237,7 +237,7 @@ ENVIRONMENT (each may also be a KEY=VALUE line in ~/.jev-router.env):
   JEV_TIMEOUT_MS             longest wait for Jev before routing without it (default 3000)
   CODE_IDLE_TIMEOUT_SECS     stop a turn when the CLI prints nothing for this long (default 900)
   JEV_CODE_LOG               turn log file (default <state dir>/code-turns.jsonl)
-  CODE_PERMISSION_MODE       Claude Code permission mode (default acceptEdits)
+  CODE_PERMISSION_MODE       starting mode: ask|edit|plan|auto, or default|acceptEdits (default edit)
   CODE_ALLOWED_TOOLS         extra tools Claude Code may use, e.g. \"Bash(cargo test) Bash(git status)\"
   CLAUDE_BIN, CODEX_BIN, GROK_BIN, CODEX_SANDBOX   binary paths and the Codex sandbox
   CODE_STRONG_THRESHOLD      with routing off: Jev reasoning confidence for Opus (default 0.85)

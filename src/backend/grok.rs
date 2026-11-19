@@ -15,6 +15,8 @@ use std::path::Path;
 use serde_json::Value;
 use tokio::process::Command;
 
+use crate::mode::Mode;
+
 use super::claude::tool_summary;
 use super::{
     classify_common, has_any, Backend, ErrorKind, Event, Finish, PromptArg, PromptFiles, ProviderId, TurnRequest, Usage,
@@ -23,8 +25,8 @@ use super::{
 /// Permission mode for headless turns. Never `bypassPermissions` or
 /// `--always-approve`: a routed turn must not get blanket tool access.
 const PERMISSION_MODE: &str = "default";
-/// Tools allowed without a prompt. In `-p` nobody can answer a prompt, so file
-/// edits need an explicit rule (`Write` is an alias of `Edit`, listed for clarity).
+/// Tools allowed without a prompt in Edit and Auto only. `Write` is an alias of
+/// `Edit`; Ask and Plan receive no allow rules.
 const ALLOWED_TOOLS: [&str; 2] = ["Edit", "Write"];
 
 pub struct GrokBackend {
@@ -153,8 +155,10 @@ impl Backend for GrokBackend {
         cmd.args(["--model", &req.model, "--output-format", "streaming-messages-json"])
             .args(["--no-auto-update", "--no-alt-screen", "--permission-mode", PERMISSION_MODE])
             .current_dir(&req.dir);
-        for tool in ALLOWED_TOOLS {
-            cmd.args(["--allow", tool]);
+        if matches!(req.mode, Mode::Edit | Mode::Auto) {
+            for tool in ALLOWED_TOOLS {
+                cmd.args(["--allow", tool]);
+            }
         }
         if let Some(id) = &req.session_id {
             cmd.args(["--resume", id]);
@@ -297,13 +301,15 @@ mod tests {
 
     #[test]
     fn command_is_headless_with_scoped_permissions() {
-        assert_eq!(
-            args(&backend().command(&req(None))),
-            ["--single=hi", "--model", "grok-4.6", "--output-format", "streaming-messages-json", "--no-auto-update",
-             "--no-alt-screen", "--permission-mode", "default", "--allow", "Edit", "--allow", "Write"]
-        );
-        let resumed = args(&backend().command(&req(Some("abc"))));
-        assert_eq!(&resumed[resumed.len() - 2..], ["--resume", "abc"]);
+        for mode in Mode::ALL {
+            let mut expected = vec!["--single=hi", "--model", "grok-4.6", "--output-format", "streaming-messages-json", "--no-auto-update", "--no-alt-screen", "--permission-mode", "default"];
+            if matches!(mode, Mode::Edit | Mode::Auto) {
+                expected.extend(["--allow", "Edit", "--allow", "Write"]);
+            }
+            assert_eq!(args(&backend().command(&TurnRequest { mode, ..req(None) })), expected);
+            expected.extend(["--resume", "abc"]);
+            assert_eq!(args(&backend().command(&TurnRequest { mode, ..req(Some("abc")) })), expected);
+        }
     }
 
     #[test]

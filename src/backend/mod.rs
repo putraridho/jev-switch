@@ -451,9 +451,38 @@ impl PromptArg {
     }
 }
 
-/// Where long prompts are written: `<state dir>/prompts`, else the OS temp dir.
-fn default_prompt_dir() -> PathBuf {
-    crate::log::state_dir().map_or_else(|| std::env::temp_dir().join("jev-prompts"), |d| d.join("prompts"))
+/// Create and verify the fallback directory without following a symlink.
+fn create_private_prompt_dir(dir: &Path) -> std::io::Result<()> {
+    let builder = std::fs::DirBuilder::new();
+    #[cfg(unix)]
+    let builder = {
+        let mut builder = builder;
+        std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
+        builder
+    };
+    match builder.create(dir) {
+        Ok(()) => (),
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => (),
+        Err(error) => return Err(error),
+    }
+    let metadata = std::fs::symlink_metadata(dir)?;
+    let private = metadata.file_type().is_dir();
+    #[cfg(unix)]
+    let private = {
+        use std::os::unix::fs::MetadataExt;
+        private && metadata.uid() == unsafe { libc::geteuid() } && metadata.mode() & 0o077 == 0
+    };
+    if !private {
+        return Err(std::io::Error::new(std::io::ErrorKind::PermissionDenied, "prompt directory is not private"));
+    }
+    Ok(())
+}
+
+fn prompt_arg_in_fallback(dir: &Path, prompt: &str) -> PromptArg {
+    if prompt.len() <= MAX_PROMPT_ARG_BYTES || create_private_prompt_dir(dir).is_err() {
+        return PromptArg::Inline(prompt.to_string());
+    }
+    prompt_arg_in(dir, prompt)
 }
 
 /// A new, uniquely named file in `dir` (created if missing), readable by the owner only.
@@ -494,9 +523,12 @@ pub fn prompt_arg_in(dir: &Path, prompt: &str) -> PromptArg {
     }
 }
 
-/// [`prompt_arg_in`] in the default directory.
+/// [`prompt_arg_in`] in the state directory, or a verified private temp directory.
 pub fn prompt_arg(prompt: &str) -> PromptArg {
-    prompt_arg_in(&default_prompt_dir(), prompt)
+    match crate::log::state_dir() {
+        Some(dir) => prompt_arg_in(&dir.join("prompts"), prompt),
+        None => prompt_arg_in_fallback(&std::env::temp_dir().join("jev-prompts"), prompt),
+    }
 }
 
 /// Owns the prompt files one backend instance wrote, so they are removed when the
@@ -1435,6 +1467,36 @@ mod tests {
         assert_eq!(arg.text(), prompt);
         assert!(arg.file().is_none());
         assert!(!dir.exists(), "no file, not even the directory, is made for a short prompt");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn fallback_prompt_directory_must_be_private_and_not_a_symlink() {
+        use std::os::unix::fs::{symlink, MetadataExt, PermissionsExt};
+
+        let dir = scratch_dir("fallback");
+        let prompt = "x".repeat(MAX_PROMPT_ARG_BYTES + 1);
+        let arg = prompt_arg_in_fallback(&dir, &prompt);
+        assert!(arg.file().is_some());
+        let metadata = std::fs::symlink_metadata(&dir).unwrap();
+        assert!(metadata.is_dir());
+        assert_eq!(metadata.uid(), unsafe { libc::geteuid() });
+        assert_eq!(metadata.mode() & 0o077, 0);
+
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert_eq!(prompt_arg_in_fallback(&dir, &prompt), PromptArg::Inline(prompt.clone()));
+        std::fs::remove_dir_all(&dir).unwrap();
+
+        let target = scratch_dir("fallback-target");
+        create_private_prompt_dir(&target).unwrap();
+        symlink(&target, &dir).unwrap();
+        assert_eq!(prompt_arg_in_fallback(&dir, &prompt), PromptArg::Inline(prompt.clone()));
+        std::fs::remove_file(&dir).unwrap();
+        std::fs::remove_dir(&target).unwrap();
+
+        std::fs::write(&dir, "not a directory").unwrap();
+        assert_eq!(prompt_arg_in_fallback(&dir, &prompt), PromptArg::Inline(prompt));
+        std::fs::remove_file(&dir).unwrap();
     }
 
     #[test]

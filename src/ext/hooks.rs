@@ -15,7 +15,9 @@
 //! A `pre_tool` hook can only refuse a call the CLI asks the host about (an edit or command
 //! that its own settings allow without asking never reaches jev-code). Hooks in a project
 //! run code that came with the repository, so they stay off until the person trusts the
-//! project once (`/hooks trust`).
+//! project's current hooks file (`/hooks trust`). Trust is bound to the file's contents:
+//! any change to it turns the project's hooks off again until it is trusted anew. The same
+//! trust (by path) also lets Claude Code load the project's own `.claude/settings.json`.
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -25,7 +27,7 @@ use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 
-use super::Places;
+use super::{sha256, Places};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -104,6 +106,9 @@ pub struct Outcome {
 pub struct Hooks {
     defs: Vec<HookDef>,
     dir: PathBuf,
+    project_start: usize,
+    project_hash: Option<String>,
+    untrusted_defs: Vec<HookDef>,
     /// Hooks in the project's own file exist but the project is not trusted, so they were not loaded.
     pub skipped_untrusted: usize,
     /// Problems reading the files, one line each.
@@ -115,23 +120,68 @@ fn trusted_file(user: &Path) -> PathBuf {
 }
 
 pub fn is_trusted(user: &Path, project: &Path) -> bool {
-    std::fs::read_to_string(trusted_file(user)).is_ok_and(|t| t.lines().any(|l| Path::new(l.trim()) == project))
+    std::fs::read_to_string(trusted_file(user)).is_ok_and(|t| t.lines().any(|line| trusted_path(line) == project))
 }
 
-/// Remember that the project's hooks may run. `Ok(false)`: it already was.
+fn trusted_path(line: &str) -> &Path {
+    Path::new(line.split_once('\t').map_or_else(|| line.trim(), |(path, _)| path))
+}
+
+fn has_hash(entries: &str, project: &Path, hash: &str) -> bool {
+    entries.lines().any(|line| line.split_once('\t').is_some_and(|(path, saved)| Path::new(path) == project && saved == hash))
+}
+
+/// Remember the current project's hooks. `Ok(false)`: they were already trusted.
 pub fn trust_project(user: &Path, project: &Path) -> std::io::Result<bool> {
-    if is_trusted(user, project) {
-        return Ok(false);
+    trust_project_with_preview(user, project).map(|(newly, _)| newly)
+}
+
+/// Remember the current hooks and return the commands that were approved.
+pub fn trust_project_with_preview(user: &Path, project: &Path) -> std::io::Result<(bool, Vec<HookDef>)> {
+    let path = project.to_str().filter(|path| !path.contains(['\t', '\n', '\r']))
+        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidInput, "project path cannot be stored"))?;
+    let hooks_path = project.join(".jev/hooks.json");
+    // No hooks file is fine: the project can still be trusted (for its Claude settings).
+    // The hash of nothing then matches no file a later change could add.
+    let bytes = match std::fs::read(&hooks_path) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+        Err(error) => return Err(error),
+    };
+    let hash = sha256::hex(&bytes);
+    let defs = parse_defs(&hooks_path, &bytes, &mut Vec::new());
+    let entries = match std::fs::read_to_string(trusted_file(user)) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(error) => return Err(error),
+    };
+    let matching: Vec<&str> = entries.lines().filter(|line| trusted_path(line) == project).collect();
+    if matching.len() == 1 && has_hash(matching[0], project, &hash) {
+        return Ok((false, defs));
     }
     std::fs::create_dir_all(user)?;
-    let mut file = std::fs::OpenOptions::new().create(true).append(true).open(trusted_file(user))?;
-    writeln!(file, "{}", project.display())?;
-    Ok(true)
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = options.open(trusted_file(user))?;
+    for line in entries.lines().filter(|line| trusted_path(line) != project) {
+        writeln!(file, "{line}")?;
+    }
+    writeln!(file, "{path}\t{hash}")?;
+    Ok((true, defs))
 }
 
 fn read_defs(path: &Path, problems: &mut Vec<String>) -> Vec<HookDef> {
-    let Ok(text) = std::fs::read_to_string(path) else { return Vec::new() };
-    match serde_json::from_str::<HooksFile>(&text) {
+    let Ok(bytes) = std::fs::read(path) else { return Vec::new() };
+    parse_defs(path, &bytes, problems)
+}
+
+fn parse_defs(path: &Path, bytes: &[u8], problems: &mut Vec<String>) -> Vec<HookDef> {
+    match serde_json::from_slice::<HooksFile>(bytes) {
         Ok(file) => file.hooks.into_iter().filter(|h| !h.run.trim().is_empty()).collect(),
         Err(e) => {
             problems.push(format!("{}: {e}", path.display()));
@@ -151,18 +201,33 @@ impl Hooks {
             let defs = read_defs(&user.join("hooks.json"), &mut hooks.problems);
             hooks.defs.extend(defs);
         }
-        let project_defs = read_defs(&places.project.join(".jev/hooks.json"), &mut hooks.problems);
-        let trusted = places.user.as_deref().is_some_and(|u| is_trusted(u, &places.project));
-        if trusted {
-            hooks.defs.extend(project_defs);
-        } else {
-            hooks.skipped_untrusted = project_defs.len();
+        hooks.project_start = hooks.defs.len();
+        let path = places.project.join(".jev/hooks.json");
+        if let Ok(bytes) = std::fs::read(&path) {
+            let project_defs = parse_defs(&path, &bytes, &mut hooks.problems);
+            let hash = sha256::hex(&bytes);
+            let trusted = places.user.as_deref().and_then(|user| std::fs::read_to_string(trusted_file(user)).ok())
+                .is_some_and(|entries| has_hash(&entries, &places.project, &hash));
+            if trusted {
+                hooks.project_hash = Some(hash);
+                hooks.defs.extend(project_defs);
+            } else {
+                hooks.skipped_untrusted = project_defs.len();
+                hooks.untrusted_defs = project_defs;
+                if places.user.as_deref().is_some_and(|user| is_trusted(user, &places.project)) {
+                    hooks.problems.push("project hooks changed since you trusted them; review with /hooks and run /hooks trust again".into());
+                }
+            }
         }
         hooks
     }
 
     pub fn defs(&self) -> &[HookDef] {
         &self.defs
+    }
+
+    pub fn untrusted_defs(&self) -> &[HookDef] {
+        &self.untrusted_defs
     }
 
     pub fn is_empty(&self) -> bool {
@@ -174,7 +239,13 @@ impl Hooks {
         let payload = Payload { event, tool, summary, project: &self.dir };
         let Ok(input) = serde_json::to_string(&payload) else { return Outcome::default() };
         let mut outcome = Outcome::default();
-        for def in self.defs.iter().filter(|d| d.matches(event, tool)) {
+        for (index, def) in self.defs.iter().enumerate().filter(|(_, d)| d.matches(event, tool)) {
+            if index >= self.project_start && !self.project_hash.as_ref().is_some_and(|hash| {
+                std::fs::read(self.dir.join(".jev/hooks.json")).is_ok_and(|bytes| sha256::hex(&bytes) == *hash)
+            }) {
+                outcome.warnings.push("project hooks changed since you trusted them; review with /hooks and run /hooks trust again".into());
+                break;
+            }
             let timeout = Duration::from_secs(def.timeout_secs.unwrap_or(DEFAULT_TIMEOUT_SECS));
             match run_command(&def.run, &self.dir, &input, event, tool, timeout) {
                 Ran::Exited { code: 0, .. } => {}
@@ -450,6 +521,67 @@ mod tests {
         assert!(!trust_project(&user, &project).unwrap(), "already trusted");
         let after = Hooks::load(&places);
         assert_eq!((after.defs().len(), after.skipped_untrusted), (1, 0));
+    }
+
+    #[test]
+    fn changed_hooks_wait_for_retrust_even_in_a_loaded_session() {
+        let dir = temp("changed-trust");
+        let (project, user) = (dir.join("proj"), dir.join("cfg"));
+        std::fs::create_dir_all(project.join(".jev")).unwrap();
+        let path = project.join(".jev/hooks.json");
+        std::fs::write(&path, r#"{"hooks":[{"event":"turn_end","run":"touch old"}]}"#).unwrap();
+        let places = Places { project: project.clone(), user: Some(user.clone()) };
+        assert!(trust_project(&user, &project).unwrap());
+        let loaded = Hooks::load(&places);
+        std::fs::write(&path, r#"{"hooks":[{"event":"turn_end","run":"touch new"}]}"#).unwrap();
+        assert!(is_trusted(&user, &project));
+        assert!(!loaded.run(Event::TurnEnd, None, None).warnings.is_empty());
+        assert!(!project.join("old").exists());
+        let changed = Hooks::load(&places);
+        assert_eq!((changed.defs().len(), changed.skipped_untrusted), (0, 1));
+        assert!(changed.problems.iter().any(|problem| problem.contains("changed since you trusted")));
+        assert_eq!(changed.untrusted_defs()[0].run, "touch new");
+        assert!(trust_project(&user, &project).unwrap());
+        let entries = std::fs::read_to_string(trusted_file(&user)).unwrap();
+        assert_eq!(entries.lines().count(), 1);
+        let retrusted = Hooks::load(&places);
+        assert_eq!((retrusted.defs().len(), retrusted.skipped_untrusted), (1, 0));
+        assert_eq!(retrusted.run(Event::TurnEnd, None, None), Outcome::default());
+        assert!(project.join("new").exists());
+    }
+
+    #[test]
+    fn legacy_trust_only_trusts_the_path_until_renewed() {
+        let dir = temp("legacy-trust");
+        let (project, other, user) = (dir.join("proj"), dir.join("other"), dir.join("cfg"));
+        std::fs::create_dir_all(project.join(".jev")).unwrap();
+        std::fs::create_dir_all(&user).unwrap();
+        std::fs::write(project.join(".jev/hooks.json"), r#"{"hooks":[{"event":"turn_start","run":"true"}]}"#).unwrap();
+        std::fs::write(trusted_file(&user), format!("{}\n{}\n", project.display(), other.display())).unwrap();
+        let places = Places { project: project.clone(), user: Some(user.clone()) };
+        assert!(is_trusted(&user, &project));
+        assert!(is_trusted(&user, &other));
+        assert!(!is_trusted(&user, &dir));
+        let before = Hooks::load(&places);
+        assert_eq!((before.defs().len(), before.skipped_untrusted), (0, 1));
+        assert!(before.problems.iter().any(|problem| problem.contains("run /hooks trust again")));
+        assert!(trust_project(&user, &project).unwrap());
+        assert!(is_trusted(&user, &other));
+        assert!(is_trusted(&user, &project));
+        assert_eq!(Hooks::load(&places).defs().len(), 1);
+        assert_eq!(std::fs::read_to_string(trusted_file(&user)).unwrap().lines().count(), 2);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_new_trust_file_is_private() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = temp("private-trust");
+        let (project, user) = (dir.join("proj"), dir.join("cfg"));
+        std::fs::create_dir_all(project.join(".jev")).unwrap();
+        std::fs::write(project.join(".jev/hooks.json"), "{}").unwrap();
+        trust_project(&user, &project).unwrap();
+        assert_eq!(std::fs::metadata(trusted_file(&user)).unwrap().permissions().mode() & 0o777, 0o600);
     }
 
     #[test]

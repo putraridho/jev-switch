@@ -45,7 +45,6 @@ pub struct ClaudeBackend {
     pub provider: ProviderId,
     /// Extra environment for the child, e.g. `ANTHROPIC_BASE_URL` for DeepSeek.
     pub env: Vec<(String, String)>,
-    pub permission_mode: String,
     pub allowed_tools: Option<String>,
     /// MCP config file passed with `--mcp-config` (the orchestration planner's delegate tool).
     pub mcp_config: Option<PathBuf>,
@@ -69,7 +68,6 @@ impl ClaudeBackend {
             bin: crate::envfile::lookup("CLAUDE_BIN").unwrap_or_else(|| "claude".into()),
             provider,
             env,
-            permission_mode: crate::envfile::lookup("CODE_PERMISSION_MODE").unwrap_or_else(|| "acceptEdits".into()),
             allowed_tools: crate::envfile::lookup("CODE_ALLOWED_TOOLS"),
             mcp_config: None,
             mcp_name: None,
@@ -84,16 +82,24 @@ impl ClaudeBackend {
         self
     }
 
-    /// The `--allowedTools` value: the user's list plus, with an MCP server attached,
-    /// that whole server (`mcp__<name>`). Headless `claude -p` cannot ask, so an MCP
-    /// tool that is not allowed would simply be denied and the planner could never delegate.
-    fn allowed_tools_arg(&self) -> Option<String> {
-        let server = self.mcp_name.as_ref().filter(|_| self.mcp_config.is_some()).map(|n| format!("mcp__{n}"));
+    /// The user's tools plus the attached server when the mode permits auto-approval.
+    fn allowed_tools_arg(&self, mode: crate::mode::Mode) -> Option<String> {
+        let server = self.mcp_name.as_ref().filter(|_| self.mcp_config.is_some() && matches!(mode, crate::mode::Mode::Edit | crate::mode::Mode::Auto)).map(|n| format!("mcp__{n}"));
         match (&self.allowed_tools, server) {
             (Some(a), Some(s)) => Some(format!("{a} {s}")),
             (Some(a), None) => Some(a.clone()),
             (None, s) => s,
         }
+    }
+}
+
+/// Claude settings sources permitted for this project.
+fn setting_sources(local_trusted: bool, project_trusted: bool) -> &'static str {
+    match (local_trusted, project_trusted) {
+        (false, false) => "user",
+        (true, false) => "user,local",
+        (false, true) => "user,project",
+        (true, true) => "user,project,local",
     }
 }
 
@@ -391,11 +397,10 @@ impl Backend for ClaudeBackend {
         if let Some(id) = &req.session_id {
             cmd.args(["--resume", id]);
         }
-        // A session follows the mode the person set (Shift-Tab, `/mode`); a run nobody can
-        // answer keeps `CODE_PERMISSION_MODE` as given.
-        // Plan mode is read-only everywhere (`/review`, `/compact` rely on it), asked or not.
-        let mode = if self.interactive || req.mode == crate::mode::Mode::Plan { req.mode.claude_flag() } else { self.permission_mode.as_str() };
-        cmd.args(["--permission-mode", mode]);
+        let places = crate::ext::Places::from_env(&req.dir);
+        let project_trusted = places.user.as_deref().is_some_and(|user| crate::ext::hooks::is_trusted(user, &req.dir));
+        let sources = setting_sources(!permissions::local_settings_tracked(&req.dir), project_trusted);
+        cmd.args(["--setting-sources", sources, "--permission-mode", req.mode.claude_flag()]);
         if self.interactive || sends_image_blocks(self.provider, req) {
             cmd.args(["--input-format", "stream-json"]);
         }
@@ -404,10 +409,12 @@ impl Backend for ClaudeBackend {
             // raw JSON to approve, with no way to answer it.
             cmd.args(["--permission-prompt-tool", "stdio", "--disallowedTools", "AskUserQuestion", "--append-system-prompt", SESSION_NOTE]);
         }
-        if let Some(config) = &self.mcp_config {
-            cmd.arg("--mcp-config").arg(config);
+        if req.mode != crate::mode::Mode::Plan {
+            if let Some(config) = &self.mcp_config {
+                cmd.arg("--mcp-config").arg(config);
+            }
         }
-        if let Some(allowed) = self.allowed_tools_arg() {
+        if let Some(allowed) = self.allowed_tools_arg(req.mode) {
             cmd.args(["--allowedTools", &allowed]);
         }
         cmd
@@ -501,7 +508,6 @@ mod tests {
             bin: "claude".into(),
             provider: ProviderId::Claude,
             env: vec![],
-            permission_mode: "acceptEdits".into(),
             allowed_tools: None,
             mcp_config: None,
             mcp_name: None,
@@ -667,30 +673,35 @@ mod tests {
     fn command_matches_the_old_inline_invocation() {
         assert_eq!(
             args(&backend().command(&req(None))),
-            ["-p", "--model", "sonnet-x", "--output-format", "stream-json", "--verbose", "--permission-mode", "acceptEdits"]
+            ["-p", "--model", "sonnet-x", "--output-format", "stream-json", "--verbose", "--setting-sources", "user,local", "--permission-mode", "acceptEdits"]
         );
         let b = ClaudeBackend { allowed_tools: Some("Bash(cargo *)".into()), ..backend() };
         assert_eq!(
             args(&b.command(&req(Some("abc")))),
             ["-p", "--model", "sonnet-x", "--output-format", "stream-json", "--verbose", "--resume", "abc",
-             "--permission-mode", "acceptEdits", "--allowedTools", "Bash(cargo *)"]
+             "--setting-sources", "user,local", "--permission-mode", "acceptEdits", "--allowedTools", "Bash(cargo *)"]
         );
     }
 
     #[test]
-    fn a_session_follows_the_mode_but_a_headless_run_keeps_the_environment() {
+    fn every_run_follows_the_requested_mode() {
         use crate::mode::Mode;
         let session = backend().in_session();
         for (mode, flag) in [(Mode::Ask, "default"), (Mode::Edit, "acceptEdits"), (Mode::Plan, "plan"), (Mode::Auto, "acceptEdits")] {
-            let a = args(&session.command(&TurnRequest { mode, ..req(None) }));
-            let at = a.iter().position(|x| x == "--permission-mode").unwrap();
-            assert_eq!(a[at + 1], flag, "{mode}");
+            for b in [&session, &backend()] {
+                let a = args(&b.command(&TurnRequest { mode, ..req(None) }));
+                let at = a.iter().position(|x| x == "--permission-mode").unwrap();
+                assert_eq!(a[at + 1], flag, "{mode}");
+            }
         }
-        // Plan is the exception (read-only even headless); every other mode keeps the environment's.
-        for mode in [Mode::Ask, Mode::Edit, Mode::Auto] {
-            let headless = args(&backend().command(&TurnRequest { mode, ..req(None) }));
-            assert!(headless.windows(2).any(|w| w == ["--permission-mode", "acceptEdits"]), "{mode}: {headless:?}");
-        }
+    }
+
+    #[test]
+    fn setting_sources_respect_project_and_local_trust() {
+        assert_eq!(setting_sources(false, false), "user");
+        assert_eq!(setting_sources(true, false), "user,local");
+        assert_eq!(setting_sources(false, true), "user,project");
+        assert_eq!(setting_sources(true, true), "user,project,local");
     }
 
     fn attachment() -> McpAttachment {
@@ -715,6 +726,13 @@ mod tests {
         let mut b = ClaudeBackend { allowed_tools: Some("Bash(cargo *)".into()), ..backend() };
         b.attach_mcp(&attachment());
         let a = args(&b.command(&req(None)));
+        assert_eq!(a[a.iter().position(|x| x == "--allowedTools").unwrap() + 1], "Bash(cargo *) mcp__jev");
+        for mode in [crate::mode::Mode::Ask, crate::mode::Mode::Plan] {
+            let a = args(&b.command(&TurnRequest { mode, ..req(None) }));
+            assert_eq!(a[a.iter().position(|x| x == "--allowedTools").unwrap() + 1], "Bash(cargo *)");
+            assert_eq!(a.iter().any(|x| x == "--mcp-config"), mode == crate::mode::Mode::Ask);
+        }
+        let a = args(&b.command(&TurnRequest { mode: crate::mode::Mode::Auto, ..req(None) }));
         assert_eq!(a[a.iter().position(|x| x == "--allowedTools").unwrap() + 1], "Bash(cargo *) mcp__jev");
         // Without an attachment the command is the one it always was.
         assert!(!args(&backend().command(&req(None))).iter().any(|x| x.contains("mcp")));
@@ -860,7 +878,7 @@ mod tests {
         let a = args(&session().command(&req(None)));
         assert_eq!(
             a,
-            ["-p", "--model", "sonnet-x", "--output-format", "stream-json", "--verbose", "--permission-mode", "acceptEdits",
+            ["-p", "--model", "sonnet-x", "--output-format", "stream-json", "--verbose", "--setting-sources", "user,local", "--permission-mode", "acceptEdits",
              "--input-format", "stream-json", "--permission-prompt-tool", "stdio", "--disallowedTools", "AskUserQuestion",
              "--append-system-prompt", SESSION_NOTE]
         );

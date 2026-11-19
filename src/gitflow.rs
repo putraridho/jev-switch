@@ -5,6 +5,11 @@
 use std::path::Path;
 use std::process::{Command, Stdio};
 
+/// Put before the subcommand of every git call jev-code makes by itself: a repository's
+/// `core.fsmonitor` names a program git runs on `status`/`diff`, and an agent that may
+/// edit files could set it in `.git/config`. An empty value turns it off in every git version.
+pub const NO_REPO_PROGRAMS: [&str; 2] = ["-c", "core.fsmonitor="];
+
 /// The branches a pull request is never opened from.
 const TRUNKS: [&str; 3] = ["main", "master", "trunk"];
 

@@ -12,6 +12,7 @@
 
 use std::path::Path;
 
+use super::ansi::clean_text;
 use super::changes::relativize_paths;
 use super::route::{short_reason, RouteFacts};
 use super::style::{Style, Theme};
@@ -164,7 +165,7 @@ pub const FOLD_KEEP: usize = 4;
 /// first [`FOLD_KEEP`] lines under the `⎿` row with a note counting the rest. `None` for
 /// output that went well or is one line (the `⎿` row already says it).
 pub fn tool_output_fold(tool: &str, ok: bool, text: &str, style: Style, width: usize) -> Option<String> {
-    let lines: Vec<String> = text.lines().filter(|l| !l.trim().is_empty()).map(|l| l.trim_end().to_string()).collect();
+    let lines: Vec<String> = clean_text(text).lines().filter(|l| !l.trim().is_empty()).map(|l| l.trim_end().to_string()).collect();
     let tool_lc = tool.to_ascii_lowercase();
     let refs: Vec<&str> = lines.iter().map(String::as_str).collect();
     let shell = matches!(tool_lc.as_str(), "bash" | "shell");
@@ -201,8 +202,8 @@ pub fn edit_preview(removed: &[String], added: &[String], style: Style, width: u
     }
     let shown: Vec<String> = removed
         .iter()
-        .map(|l| style.red(&format!("- {l}")))
-        .chain(added.iter().map(|l| style.green(&format!("+ {l}"))))
+        .map(|l| style.red(&format!("- {}", clean_text(l))))
+        .chain(added.iter().map(|l| style.green(&format!("+ {}", clean_text(l)))))
         .collect();
     let total = shown.len();
     for line in shown.into_iter().take(EDIT_PREVIEW_LINES) {
@@ -218,7 +219,7 @@ pub fn edit_preview(removed: &[String], added: &[String], style: Style, width: u
 pub fn narration(text: &str, style: Style, width: usize) -> String {
     let width = clamp_width(width);
     let mut rows = Vec::new();
-    for line in text.trim().lines() {
+    for line in clean_text(text).trim().lines() {
         for part in wrap_to_width(line, width.saturating_sub(4)) {
             rows.push(format!("  {}", style.dim(&style.italic(&part))));
         }
@@ -233,7 +234,7 @@ pub const THINKING_LINES: usize = 3;
 pub fn thinking_block(text: &str, style: Style, width: usize) -> String {
     let width = clamp_width(width);
     let mut lines: Vec<String> = Vec::new();
-    for line in text.trim().lines().filter(|l| !l.trim().is_empty()) {
+    for line in clean_text(text).trim().lines().filter(|l| !l.trim().is_empty()) {
         lines.extend(wrap_to_width(line.trim(), width.saturating_sub(6)));
     }
     let total = lines.len();
@@ -310,6 +311,30 @@ mod tests {
         let row = tool_result_row("mcp__jev__delegate", true, failed, ON, 80).unwrap_or_default();
         assert!(row.contains("\x1b[31mFAILED"), "{row:?}");
         assert_eq!(display_tool("mcp__jev__show_diff"), "Show diff");
+    }
+
+    const EVIL: &str = "a\x1b]52;c;QUFB\x07b\x1b]8;;http://x\x1b\\c\x1b[2Jd\u{9b}2Je\rf";
+
+    fn assert_safe(out: &str) {
+        let plain = strip_ansi(out);
+        for bad in ['\x07', '\r', '\u{9b}', '\u{9d}', '\x08'] {
+            assert!(!out.contains(bad), "{bad:?} in {out:?}");
+        }
+        assert!(!out.contains("]52") && !out.contains("]8;") && !out.contains("[2J"), "{out:?}");
+        assert!(plain.contains("abcd"), "{plain:?}");
+    }
+
+    #[test]
+    fn untrusted_text_in_output_edits_and_reasoning_is_neutralised() {
+        let out = tool_output_fold("Bash", false, &format!("{EVIL}\nsecond"), ON, 80).unwrap_or_default();
+        assert_safe(&out);
+        assert!(out.contains("\x1b[2m"), "our colour stays: {out:?}");
+        let edit = edit_preview(&[EVIL.to_string()], &[EVIL.to_string()], ON, 80);
+        assert_safe(&edit);
+        assert!(edit.contains("\x1b[31m") && edit.contains("\x1b[32m"));
+        assert_safe(&thinking_block(EVIL, ON, 80));
+        assert!(thinking_block(EVIL, ON, 80).contains("\x1b[3m"));
+        assert_safe(&narration(EVIL, ON, 80));
     }
 
     #[test]

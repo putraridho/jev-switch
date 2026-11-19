@@ -96,10 +96,8 @@ pub fn save(path: &Path, now_ms: u64, fingerprint: u64, avail: &[Availability]) 
         .map(|a| Entry { provider: a.provider.as_str().to_string(), state: a.state, plan: a.plan.clone(), models: a.models.clone(), detail: a.detail.clone(), verified: a.verified })
         .collect();
     let Ok(text) = serde_json::to_string(&CacheFile { saved_ms: now_ms, fingerprint, entries }) else { return };
-    let tmp = path.with_extension(format!("tmp{}", std::process::id()));
-    if std::fs::write(&tmp, text).is_ok() && std::fs::rename(&tmp, path).is_err() {
-        let _ = std::fs::remove_file(&tmp);
-    }
+    // Owner-only, like every other file in the state folder.
+    let _ = crate::handoff::write_atomic(path, &text);
 }
 
 #[cfg(test)]

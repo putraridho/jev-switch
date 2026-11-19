@@ -247,6 +247,7 @@ impl Lazy {
         let delegator = Delegator::new(runtime, router_judge(router), Box::new(worktrees))
             .with_log(log::path_from_env("JEV_DELEGATE_LOG", "orchestration.jsonl"))
             .with_planner(self.planner.clone())
+            .with_guards(jev_router::guard::Guards::load(Some(&state), &self.dir))
             .with_store(&state);
         // Workers an earlier run left: reload the mergeable ones, remove the abandoned ones.
         delegator.recover().await;

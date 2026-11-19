@@ -14,8 +14,28 @@ pub fn state_dir() -> Option<PathBuf> {
         None => PathBuf::from(std::env::var_os("HOME")?).join(".local/state"),
     };
     let dir = base.join("jev-router");
-    std::fs::create_dir_all(&dir).ok()?;
+    make_private_dir(&dir).ok()?;
     Some(dir)
+}
+
+/// Create `dir` (and missing parents) readable by the owner only. The folder holds prompts,
+/// sessions and the audit log, so other local users may not even list it; one an earlier
+/// version made with the default umask is tightened.
+fn make_private_dir(dir: &std::path::Path) -> std::io::Result<()> {
+    let mut builder = std::fs::DirBuilder::new();
+    builder.recursive(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
+        builder.mode(0o700).create(dir)?;
+        let meta = std::fs::symlink_metadata(dir)?;
+        if meta.is_dir() && meta.permissions().mode() & 0o077 != 0 {
+            std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))?;
+        }
+        Ok(())
+    }
+    #[cfg(not(unix))]
+    builder.create(dir)
 }
 
 /// `env_var` if set, else `file` inside [`state_dir`].

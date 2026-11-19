@@ -15,6 +15,8 @@ use std::sync::{Mutex, MutexGuard, PoisonError};
 use serde_json::Value;
 use tokio::process::Command;
 
+use crate::mode::Mode;
+
 use super::claude::tool_summary;
 use super::{
     classify_common, Backend, Decision, ErrorKind, Event, Finish, PermissionRequest, ProviderId, TurnRequest, Usage,
@@ -27,9 +29,8 @@ pub enum Flavor {
     Antigravity,
 }
 
-/// Each CLI's own "approve file edits, ask for the rest" mode. Never the
-/// approve-everything modes (`--yolo`, `--dangerously-skip-permissions`): a router
-/// that runs on the user's behalf must not widen what they allowed.
+/// Gemini CLI's edit-approval mode, used only for Edit and Auto turns. Ask and
+/// Plan use `default`; no turn uses an approve-everything mode such as `--yolo`.
 const GEMINI_APPROVAL_MODE: &str = "auto_edit";
 
 /// What a blank answer is called, so [`classify_text`] can map it to `Empty`.
@@ -117,7 +118,11 @@ fn bin_from_env(var: &str, default: &str) -> String {
 /// The prompt travels on stdin (see `stdin_payload`): a piped stdin already makes
 /// Gemini CLI headless, and stdin has no size limit where one argv entry does.
 fn gemini_args(req: &TurnRequest) -> Vec<String> {
-    let mut args: Vec<String> = ["-m", &req.model, "--output-format", "stream-json", "--approval-mode", GEMINI_APPROVAL_MODE]
+    let approval_mode = match req.mode {
+        Mode::Edit | Mode::Auto => GEMINI_APPROVAL_MODE,
+        Mode::Ask | Mode::Plan => "default",
+    };
+    let mut args: Vec<String> = ["-m", &req.model, "--output-format", "stream-json", "--approval-mode", approval_mode]
         .map(String::from)
         .into();
     if let Some(id) = &req.session_id {
@@ -573,16 +578,14 @@ mod tests {
     }
 
     #[test]
-    fn gemini_command_pipes_the_prompt_and_uses_auto_edit() {
+    fn gemini_command_pipes_the_prompt_and_respects_mode() {
         let b = gemini();
-        assert_eq!(
-            args(&b.command(&req(None))),
-            ["-m", "m-1", "--output-format", "stream-json", "--approval-mode", "auto_edit"]
-        );
-        assert_eq!(
-            args(&b.command(&req(Some("sid")))),
-            ["-m", "m-1", "--output-format", "stream-json", "--approval-mode", "auto_edit", "--resume", "sid"]
-        );
+        for (mode, approval) in [(Mode::Ask, "default"), (Mode::Plan, "default"), (Mode::Edit, "auto_edit"), (Mode::Auto, "auto_edit")] {
+            let request = TurnRequest { mode, ..req(None) };
+            assert_eq!(args(&b.command(&request)), ["-m", "m-1", "--output-format", "stream-json", "--approval-mode", approval]);
+            let resumed = TurnRequest { mode, ..req(Some("sid")) };
+            assert_eq!(args(&b.command(&resumed)), ["-m", "m-1", "--output-format", "stream-json", "--approval-mode", approval, "--resume", "sid"]);
+        }
         assert_eq!(b.stdin_payload(&req(None)).as_deref(), Some("do the thing"));
     }
 

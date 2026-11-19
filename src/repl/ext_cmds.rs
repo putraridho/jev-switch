@@ -52,10 +52,15 @@ impl Repl {
             self.console.out(&format!("{} no config folder to remember the trust in (HOME is not set)", style.yellow("⚠")));
             return;
         };
-        match hooks::trust_project(user, &places.project) {
-            Ok(newly) => {
-                self.engine.set_hooks(Arc::new(Hooks::load(places)));
-                let said = if newly { "this project's hooks may run now" } else { "this project was already trusted" };
+        match hooks::trust_project_with_preview(user, &places.project) {
+            Ok((newly, approved)) => {
+                let loaded = Hooks::load(places);
+                self.page_out(&view::approved_hooks_text(&approved, style));
+                if loaded.skipped_untrusted > 0 || !loaded.problems.is_empty() {
+                    self.page_out(&view::hooks_text(&loaded, style));
+                }
+                self.engine.set_hooks(Arc::new(loaded));
+                let said = if newly { "saved trust for this project's hooks" } else { "this project's current hooks were already trusted" };
                 self.console.out(&format!("{} {said}", style.green("✓")));
             }
             Err(e) => self.console.out(&format!("{} could not save the trust: {e}", style.yellow("⚠"))),

@@ -23,6 +23,14 @@ use crate::ext::Places;
 /// The only names a project's `.jev/config.env` may set.
 pub const PROJECT_KEYS: [&str; 5] = ["JEV_PROVIDERS", "JEV_ORCHESTRATE", "JEV_BELL", "DOWNGRADE_AFTER", "CODE_STRONG_THRESHOLD"];
 
+/// Switches a project may only turn off: turning on routing across providers or
+/// orchestration sends the person's prompts further than their own `config.env` chose.
+const PROJECT_OFF_ONLY: [&str; 2] = ["JEV_PROVIDERS", "JEV_ORCHESTRATE"];
+
+fn is_off(value: &str) -> bool {
+    matches!(value.trim().to_ascii_lowercase().as_str(), "off" | "0" | "false" | "no")
+}
+
 /// Where a setting's value came from, lowest layer first.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Source {
@@ -103,6 +111,8 @@ impl Layered {
                     problems.push(format!("{source}: {key} is a secret and stays in ~/.jev-router.env"));
                 } else if *source == Source::Project && !PROJECT_KEYS.contains(&key.as_str()) {
                     problems.push(format!("{source}: {key} may not be set by a project (allowed: {})", PROJECT_KEYS.join(", ")));
+                } else if *source == Source::Project && PROJECT_OFF_ONLY.contains(&key.as_str()) && !is_off(&value) {
+                    problems.push(format!("{source}: a project may only turn {key} off"));
                 } else if !value.is_empty() {
                     winners.insert(key.clone(), Setting { key, value, source: source.clone() });
                 }
@@ -240,6 +250,16 @@ mod tests {
         for needle in ["JEV_API_KEY is a secret", "SOME_TOKEN is a secret", "CODE_PERMISSION_MODE may not be set by a project", "JEV_DELEGATE_BIN may not", "not KEY=VALUE: broken line", "`1X`"] {
             assert!(all.contains(needle), "{needle} in {all}");
         }
+    }
+
+    #[test]
+    fn a_project_may_turn_routing_and_orchestration_off_but_not_on() {
+        let l = Layered::merge(&[(Source::User, "JEV_PROVIDERS=off\nJEV_ORCHESTRATE=off\n"), (Source::Project, "JEV_PROVIDERS=on\nJEV_ORCHESTRATE=1\n")]);
+        assert_eq!(get(&l, "JEV_PROVIDERS"), Some(("off", &Source::User)));
+        assert_eq!(get(&l, "JEV_ORCHESTRATE"), Some(("off", &Source::User)));
+        assert!(l.problems.iter().any(|p| p.contains("may only turn JEV_PROVIDERS off")), "{:?}", l.problems);
+        let l = Layered::merge(&[(Source::User, "JEV_PROVIDERS=on\n"), (Source::Project, "JEV_PROVIDERS=off\n")]);
+        assert_eq!(get(&l, "JEV_PROVIDERS"), Some(("off", &Source::Project)));
     }
 
     #[test]

@@ -58,7 +58,11 @@ cd ~/some-project && jev-claude     # normal Claude Code, with "Jev Code" select
 `jev-claude` starts `jev-gateway` (a local Anthropic-format gateway on
 127.0.0.1:18780) if needed, then runs `claude` with `ANTHROPIC_BASE_URL` pointing at
 it and a custom `/model` entry, **Jev Code** (`ANTHROPIC_CUSTOM_MODEL_OPTION`). Your
-claude.ai / Max login passes through unchanged; plain `claude` is unaffected.
+claude.ai / Max login passes through unchanged; plain `claude` is unaffected. The gateway
+answers only local callers: a request with an `Origin` header (any web page) or a `Host` that
+is not `localhost`/`127.0.0.1`/`[::1]` gets 403, a request without credentials is passed on
+without being routed, at most `JEV_GATEWAY_MAX_INFLIGHT` (32) requests run at once, and a
+non-loopback `JEV_GATEWAY_ADDR` is refused unless `JEV_GATEWAY_ALLOW_REMOTE=1`.
 
 - The gateway forwards every request to Anthropic byte-for-byte and streams the
   response back. It changes only the `model` field, and only when it is `jev-code`.
@@ -383,11 +387,18 @@ not stop the loop.
 `.jev/skills/` and `.jev/recipes/` (or the same folders in `~/.config/jev-code`): `$ARGUMENTS`
 and `$1` fill in, a `## step` heading per turn in a recipe. `/extensions`, `/recipe`, `/hooks`
 list them; hooks (`hooks.json`) run shell commands before and after tool calls and at turn end,
-and a project's own hooks stay off until `/hooks trust`. `jev-code ext list|install|update|remove|pack`
+and a project's own hooks stay off until `/hooks trust`, which shows the exact commands it
+approves. The trust is for the file as it is then: any change to `.jev/hooks.json` (a pull, a
+branch switch, an agent's edit) turns the project's hooks off again until you trust it anew.
+Trusting a project also lets Claude Code load its committed `.claude/settings.json`; until then
+only your own settings and an untracked `.claude/settings.local.json` are read. Your own commands
+and extensions win over a project's command of the same name (`/extensions` says which one is
+hidden). `jev-code ext list|install|update|remove|pack`
 manages extension folders with a SHA-256 for every file (`jev-extension.json`).
 
 **Settings and profiles.** `~/.config/jev-code/config.env`, `profiles/<name>.env` (chosen with
-`--profile <name>` or `JEV_PROFILE`) and `.jev/config.env` (a few harmless names only) hold
+`--profile <name>` or `JEV_PROFILE`) and `.jev/config.env` (a few harmless names only; a project
+may turn `JEV_PROVIDERS` and `JEV_ORCHESTRATE` off but never on) hold
 `KEY=VALUE` settings; the environment wins, keys and tokens are refused there. `/settings` shows
 each value and which file it came from.
 
@@ -466,8 +477,11 @@ request and does not save permission rules. No mode uses
 `~/.local/state/jev-router/mode` and the next `jev-code` starts in it; `--mode` wins for its own
 session without replacing it, and a one-shot `-p` never reads it. Without a kept mode,
 `CODE_PERMISSION_MODE` (`ask|edit|plan|auto`, or Claude Code's `default` and `acceptEdits`) sets
-the starting mode. Modes apply on Claude and DeepSeek (both run through
-Claude Code); the other providers keep their own fixed sandbox.
+the starting mode; any other value (`bypassPermissions` included) is ignored. Modes apply in full
+on Claude and DeepSeek (both run through Claude Code), in one-shot `-p` runs too. Gemini CLI and
+Grok auto-accept edits only in `edit` and `auto`; in `ask` and `plan` they make no edits (they
+cannot ask). Codex is read-only in `plan` and keeps its workspace sandbox otherwise. Orchestration
+never runs in `plan`, and its `merge` tool is approved without asking only in `edit` and `auto`.
 
 **Permissions.** Edits are auto-accepted on Claude in the default `edit` mode.
 In `ask` and `edit` modes, anything else that needs approval (a command, a read outside the project, a write to
@@ -508,7 +522,7 @@ user-level `~/.claude/settings.json` ones, read only); `/permissions allow <rule
 how reads outside the project are allowed) edit the project file, keeping every other key,
 refusing a file that is not valid JSON, writing it atomically with mode 0600. Where no one
 can be asked (`-p`, piped input) Claude Code runs as plain `claude -p` with your
-`CODE_ALLOWED_TOOLS="Bash(cargo test) Bash(git status)"` and `CODE_PERMISSION_MODE`, and
+`CODE_ALLOWED_TOOLS="Bash(cargo test) Bash(git status)"` and the session's mode, and
 denies what they do not allow itself; the denial hint goes to stderr, never into the answer.
 In an interactive session the model is told (a fixed `--append-system-prompt`) that it runs
 inside jev-code, that approvals are asked automatically, and not to suggest Claude Code UI keys.
@@ -601,10 +615,15 @@ beat any guess. Re-run `tune` when prompts, models, or request mix change.
 - `/commit [hint]` and `/pr [base]` have the agent commit or prepare a pull request in your
   repository's own style (never pushing or amending; `gh` only when signed in).
 - `.jev/team.json` (commit it) gives a repo shared routing rules and a `max_profile`; `/team`
-  shows it. See `docs/migrating-0.2.md`.
+  shows it. A shared rule that pins a provider your own routing rules avoid is skipped. See
+  `docs/migrating-0.2.md`.
+- The privacy policy (`/privacy`: `local-only`, `block <glob> from <providers>`) holds with
+  routing off and for orchestration workers too, and secrets are masked in every brief. Jev's
+  classifier gets prompts with secrets masked, and is not asked at all when the policy keeps a
+  prompt on this machine. A `privacy.rules` file that cannot be read turns local-only on.
 - `/audit`, `/history`, `/bench` and `/replay` read the audit log and saved sessions;
-  `/export file.html` or `.md` shares a session. Secrets are masked in all of them, and a turn
-  that was cut short by a crash is reported at the next start.
+  `/export file.html` or `.md` and `/sessions export` share a session. Secrets are masked in all
+  of them, and a turn that was cut short by a crash is reported at the next start.
 - More: `CHANGELOG.md`, `docs/shortcuts.md`, `docs/platforms.md`, `docs/bridge.md`.
 
 ## Files
