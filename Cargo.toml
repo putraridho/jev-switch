@@ -1,6 +1,6 @@
 [package]
 name = "jev-router"
-version = "1.5.0"
+version = "1.5.1"
 edition = "2021"
 description = "A Jev-gated router for Claude Code: a gateway for jev-claude that routes between Claude models, and jev-code, a terminal agent that routes across Claude, Codex, Gemini, Grok and DeepSeek with failover and orchestration."
 

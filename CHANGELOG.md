@@ -4,6 +4,10 @@ See [docs/changelog-guide.md](docs/changelog-guide.md) for changelog formatting,
 
 ## Unreleased
 
+## 1.5.1
+
+A fix for `/compact` on a full session, bounded test concurrency, and an audit log that shows what a long turn did.
+
 ### Fixes
 - **`/compact` works when the old session is full.** The summary is now requested in a fresh, read-only CLI session from a size-limited copy of the recorded conversation (tool summaries included), so it no longer depends on the old session having room left. A history over the limit keeps its beginning and its most recent part, with the omitted middle marked. If no summary comes back, the original conversation and its saved session are left intact.
 - **Bounded test concurrency.** Tests default to eight harness threads instead of 24, and the 30-round Git regression uses four workers instead of spawning all 30 at once, reducing open-file pressure that could fail Git-backed tests.
