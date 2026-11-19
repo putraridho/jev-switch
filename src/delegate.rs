@@ -22,7 +22,16 @@
 //! door ([`GitWorktrees`] real, tests fake it); [`Delegator`] sequences judge, pick,
 //! worktree, run, retry, log; [`DelegateApi`] is what the MCP server sees.
 //!
-//! **The planner merges only what it saw.** The delegate result lists every changed file
+//! **Where a worker runs and how its work lands** ([`Landing`]). A read-only worker runs in
+//! the user's own folder in plan mode, when its provider enforces plan mode
+//! ([`plan_mode_enforced`]), and returns only a report; on a provider that does not, it runs
+//! in a worktree that is thrown away after. An editing worker gets its own worktree; when it
+//! finishes, jev runs the project's tests there ([`crate::workercheck`]) and, if they pass and
+//! the changes apply cleanly, merges them itself: the planner gets the report and the file
+//! list, not the diff, and `undo` takes them back out. When there is no test command, the
+//! tests fail, the patch conflicts, or the planner asked to review, it falls back to review.
+//!
+//! **In review, the planner merges only what it saw.** The delegate result lists every changed file
 //! with its +/- counts and carries whole-file diffs up to a size budget; `show_diff` pages
 //! the rest. The registry records which files were shown in full and `merge` refuses any
 //! other. The registry is saved to `<state>/workers` so a restarted server still knows
@@ -56,10 +65,12 @@ use crate::catalog::{
     allowed_for, chain_with, models, pick, Allowances, ModelSpec, Overrides, TaskType, Tier, Usable,
 };
 use crate::log;
+use crate::mode::Mode;
 use crate::providers::Runtime;
 use crate::router::{ProviderWant, Router, CODE_EDIT_P, CODE_SECURITY_P};
 use crate::turn::{idle_timeout_from_env, BackendFactory};
 use crate::turnlog::turn_row;
+use crate::workercheck::{CheckRun, Checks, ProjectChecks};
 
 /// A worker that fails in a way another provider can fix is retried this many times in
 /// all (so: once more), on the next worker pick.
@@ -346,18 +357,35 @@ pub fn truncate_with_note(text: &str, max: usize, what: &str) -> String {
 }
 
 /// What a worker is told before the brief: where it may work and how to report.
-pub fn worker_prompt(brief: &str, files: &[String]) -> String {
+pub fn worker_prompt(brief: &str, files: &[String], read_only: bool) -> String {
     let hints = if files.is_empty() {
         String::new()
     } else {
         format!("\n\nFiles that are probably involved (hints, not limits): {}", files.join(", "))
     };
-    format!(
+    let rules = if read_only {
+        "You are a worker on one READ-ONLY piece of a larger task. Rules: read and investigate inside the current \
+         directory only; do not create, change or delete any file, and do not run commands that change the project; do \
+         not use the network. When you are done, reply with a report of what you found, with file paths and line \
+         numbers where they help."
+    } else {
         "You are a worker on one piece of a larger task. Rules: work only inside the current directory (your own git \
          worktree) and do not read or write outside it; do not use the network; do not commit or touch git branches. \
-         When you are done, reply with a short report: what you changed, and anything you could not do.\n\n\
-         Task:\n{brief}{hints}"
-    )
+         Run the project's tests before you finish: your work is merged only if they pass. When you are done, reply \
+         with a short report: what you changed, and anything you could not do."
+    };
+    format!("{rules}\n\nTask:\n{brief}{hints}")
+}
+
+/// Whether the provider's CLI is held to plan mode by the CLI itself, so a read-only worker
+/// can run in the user's own folder. Claude Code (and DeepSeek, which runs on it) has a real
+/// plan mode and Codex a read-only sandbox; Gemini and Grok only fall back to their default
+/// approval mode, which is not a guarantee, so their read-only workers get a worktree.
+pub fn plan_mode_enforced(provider: ProviderId) -> bool {
+    match provider {
+        ProviderId::Claude | ProviderId::Codex | ProviderId::DeepSeek => true,
+        ProviderId::Gemini | ProviderId::Grok => false,
+    }
 }
 
 // --------------------------------------------------------------- worktrees
@@ -375,6 +403,8 @@ pub trait Worktrees: Send + Sync {
     fn diff(&self, path: &Path) -> Result<String>;
     /// Apply `patch` to the MAIN working tree. On failure the tree is left as it was.
     fn apply(&self, patch: &str) -> Result<()>;
+    /// Take an applied `patch` back out of the MAIN working tree. On failure nothing changes.
+    fn unapply(&self, patch: &str) -> Result<()>;
     /// Delete a worktree checkout.
     fn remove(&self, path: &Path) -> Result<()>;
     /// Forget the bookkeeping of worktrees whose directory is gone (`git worktree prune`).
@@ -510,6 +540,42 @@ impl GitWorktrees {
         let rel = git(&self.repo, &["rev-parse", "--git-path", "index"], None).ok()?;
         Some(self.repo.join(rel.trim()))
     }
+
+    /// A plain `git apply` first: it works on the working tree whatever is unstaged, as
+    /// long as the hunks fit. Only when it does not fit, `--3way`, which also merges into
+    /// text the planner changed but needs the index to match the files. On failure the
+    /// files and index are put back exactly.
+    fn apply_patch(&self, patch: &str, direction: Direction) -> Result<()> {
+        let run = |extra: &[&str]| {
+            let args: Vec<&str> = ["apply"].into_iter().chain(direction.flag()).chain(extra.iter().copied()).chain(["-"]).collect();
+            git(&self.repo, &args, Some(patch))
+        };
+        let snapshot = Snapshot::take(&self.repo, self.index_path(), &patch_paths(patch));
+        let Err(plain) = run(&["--check"]).and_then(|_| run(&[])) else { return Ok(()) };
+        match run(&["--3way"]) {
+            Ok(_) => Ok(()),
+            Err(three_way) => {
+                snapshot.restore();
+                Err(anyhow!("{}", explain_apply_failure(&format!("{plain:#}."), &format!("{three_way:#}"))))
+            }
+        }
+    }
+}
+
+/// Which way a patch goes onto the main tree: a merge, or the undo of one.
+#[derive(Debug, Clone, Copy)]
+enum Direction {
+    Forward,
+    Reverse,
+}
+
+impl Direction {
+    fn flag(self) -> Option<&'static str> {
+        match self {
+            Self::Forward => None,
+            Self::Reverse => Some("-R"),
+        }
+    }
 }
 
 impl Worktrees for GitWorktrees {
@@ -535,20 +601,14 @@ impl Worktrees for GitWorktrees {
         git(path, &["diff", "--cached", "--binary", "--no-ext-diff", "--no-textconv", "HEAD"], None)
     }
 
-    /// A plain `git apply` first: it works on the working tree whatever is unstaged, as
-    /// long as the hunks fit. Only when it does not fit, `--3way`, which also merges into
-    /// text the planner changed but needs the index to match the files.
     fn apply(&self, patch: &str) -> Result<()> {
-        let snapshot = Snapshot::take(&self.repo, self.index_path(), &patch_paths(patch));
-        let plain = git(&self.repo, &["apply", "--check", "-"], Some(patch)).and_then(|_| git(&self.repo, &["apply", "-"], Some(patch)));
-        let Err(plain) = plain else { return Ok(()) };
-        match git(&self.repo, &["apply", "--3way", "-"], Some(patch)) {
-            Ok(_) => Ok(()),
-            Err(three_way) => {
-                snapshot.restore();
-                Err(anyhow!("{}", explain_apply_failure(&format!("{plain:#}."), &format!("{three_way:#}"))))
-            }
-        }
+        self.apply_patch(patch, Direction::Forward)
+    }
+
+    /// The same as a merge, in reverse: a 3-way merge's hunks carry the planner's text as
+    /// context, so taking them back out needs the 3-way step too.
+    fn unapply(&self, patch: &str) -> Result<()> {
+        self.apply_patch(patch, Direction::Reverse).context("the merged changes cannot be taken back out cleanly")
     }
 
     /// `git worktree remove`, and when git will not (the checkout belongs to another
@@ -1011,6 +1071,77 @@ pub struct DelegateRequest {
     /// Hints about where the work is; not limits.
     pub files: Vec<String>,
     pub read_only: bool,
+    /// The planner wants to review the diff itself even if the tests pass.
+    pub review: bool,
+}
+
+/// Why a worker's changes were not merged on their own and wait for the planner's review.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ReviewReason {
+    /// The planner asked to review.
+    Asked,
+    /// Auto-merge is switched off (`JEV_AUTO_MERGE=0`).
+    Off,
+    /// The project has no test command jev knows, so nothing proved the work.
+    NoTestCommand,
+    TestsFailed { command: String, output: String },
+    TestsTimedOut { command: String, after: Duration },
+    TestsNotRun { command: String, error: String },
+    /// The tests passed but the patch does not apply cleanly to the user's tree.
+    Conflict(String),
+}
+
+impl ReviewReason {
+    fn tag(&self) -> &'static str {
+        match self {
+            Self::Asked => "review_asked",
+            Self::Off => "review_off",
+            Self::NoTestCommand => "review_no_tests",
+            Self::TestsFailed { .. } => "review_tests_failed",
+            Self::TestsTimedOut { .. } => "review_tests_timed_out",
+            Self::TestsNotRun { .. } => "review_tests_not_run",
+            Self::Conflict(_) => "review_conflict",
+        }
+    }
+}
+
+impl std::fmt::Display for ReviewReason {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Asked => f.write_str("you asked to review it"),
+            Self::Off => f.write_str("auto-merge is off (JEV_AUTO_MERGE=0)"),
+            Self::NoTestCommand => f.write_str("this project has no test command jev knows (Cargo, npm, Python or Go), so nothing proved the work"),
+            Self::TestsFailed { command, output } => write!(f, "`{command}` failed in the worker's worktree. The end of its output:\n{output}"),
+            Self::TestsTimedOut { command, after } => write!(f, "`{command}` ran longer than {} minutes in the worker's worktree and was stopped", after.as_secs() / 60),
+            Self::TestsNotRun { command, error } => write!(f, "`{command}` could not be run: {error}"),
+            Self::Conflict(why) => write!(f, "the tests passed, but the changes do not apply cleanly to your working tree: {why}"),
+        }
+    }
+}
+
+/// How a successful worker's work reached the planner.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Landing {
+    /// A read-only worker: a report and nothing to merge. `discarded` lists files it changed
+    /// anyway in its throwaway worktree (empty when it ran in place or kept its word).
+    Report { discarded: Vec<String> },
+    /// It finished without changing any file.
+    NoChanges,
+    /// Its tests passed and its changes are in the user's working tree; `undo` reverses them.
+    AutoMerged { command: String },
+    /// Its worktree is kept for the planner to review, then merge or discard.
+    Review(ReviewReason),
+}
+
+impl Landing {
+    fn tag(&self) -> &'static str {
+        match self {
+            Self::Report { .. } => "report",
+            Self::NoChanges => "no_changes",
+            Self::AutoMerged { .. } => "auto_merged",
+            Self::Review(r) => r.tag(),
+        }
+    }
 }
 
 /// What comes back to the planner.
@@ -1031,6 +1162,8 @@ pub struct DelegateResult {
     pub error: Option<String>,
     /// What happened to earlier attempts (a limit hit, a refused model).
     pub retries: Vec<String>,
+    /// Where the work went. Only meaningful when `ok`.
+    pub landing: Landing,
 }
 
 impl DelegateResult {
@@ -1046,6 +1179,7 @@ impl DelegateResult {
             ok: false,
             error: Some(error),
             retries,
+            landing: Landing::NoChanges,
         }
     }
 
@@ -1059,32 +1193,64 @@ impl DelegateResult {
             (Some(p), Some(m)) => format!("{p} {m}"),
             _ => "no worker".to_string(),
         };
-        let mut out = vec![format!("worker {} ({who}): {}", self.worker_id, if self.ok { "done" } else { "FAILED" })];
+        let status = match (self.ok, &self.landing) {
+            (false, _) => "FAILED",
+            (true, Landing::Report { .. }) => "done (read-only)",
+            (true, Landing::AutoMerged { .. }) => "done, auto-merged",
+            (true, Landing::NoChanges) => "done, no changes",
+            (true, Landing::Review(_)) => "done, waiting for your review",
+        };
+        let mut out = vec![format!("worker {} ({who}): {status}", self.worker_id)];
         out.extend(self.retries.iter().map(|r| format!("retry: {r}")));
         if let Some(e) = &self.error {
             out.push(format!("error: {e}"));
         }
-        if self.ok {
-            let id = &self.worker_id;
-            if self.stats.is_empty() {
-                out.push("files changed: none".into());
-            } else {
-                out.push(format!("files changed ({}):", self.stats.len()));
-                out.extend(self.stats.iter().map(|s| format!("  {}", s.render())));
-            }
-            out.push(format!("worker report:\n{}", self.summary));
-            let shown = if self.shown.is_empty() { "no file".to_string() } else { self.shown.join(", ") };
-            out.push(format!("diff (full diffs of: {shown}):\n{}", if self.diff.is_empty() { "(empty)" } else { &self.diff }));
-            let unseen: Vec<&str> = self.stats.iter().map(|s| s.path.as_str()).filter(|p| !self.shown.iter().any(|s| s == p)).collect();
-            if !unseen.is_empty() {
-                out.push(format!(
-                    "NOT SHOWN here (too long): {}. Call show_diff({id}, file) for each to read it; merge refuses files you have not seen in full.",
-                    unseen.join(", ")
-                ));
-            }
-            out.push(format!("Review the diff, then merge({id}) to apply it (or merge({id}, files) for some files) or discard({id}) to drop it."));
+        if !self.ok {
+            return out.join("\n");
         }
+        let id = &self.worker_id;
+        let reason = match &self.landing {
+            Landing::Report { discarded } => {
+                out.push(format!("worker report:\n{}", self.summary));
+                if !discarded.is_empty() {
+                    out.push(format!("It changed files although the piece was read-only; they were thrown away: {}.", discarded.join(", ")));
+                }
+                return out.join("\n");
+            }
+            Landing::NoChanges => {
+                out.push("files changed: none".into());
+                out.push(format!("worker report:\n{}", self.summary));
+                return out.join("\n");
+            }
+            Landing::AutoMerged { command } => {
+                self.push_files_and_report(&mut out);
+                out.push(format!(
+                    "Auto-merged into your working tree: `{command}` passed in the worker's worktree and the changes applied cleanly. \
+                     undo({id}) takes exactly these changes back out."
+                ));
+                return out.join("\n");
+            }
+            Landing::Review(reason) => reason,
+        };
+        self.push_files_and_report(&mut out);
+        out.push(format!("Not auto-merged: {reason}"));
+        let shown = if self.shown.is_empty() { "no file".to_string() } else { self.shown.join(", ") };
+        out.push(format!("diff (full diffs of: {shown}):\n{}", if self.diff.is_empty() { "(empty)" } else { &self.diff }));
+        let unseen: Vec<&str> = self.stats.iter().map(|s| s.path.as_str()).filter(|p| !self.shown.iter().any(|s| s == p)).collect();
+        if !unseen.is_empty() {
+            out.push(format!(
+                "NOT SHOWN here (too long): {}. Call show_diff({id}, file) for each to read it; merge refuses files you have not seen in full.",
+                unseen.join(", ")
+            ));
+        }
+        out.push(format!("Review the diff, then merge({id}) to apply it (or merge({id}, files) for some files) or discard({id}) to drop it."));
         out.join("\n")
+    }
+
+    fn push_files_and_report(&self, out: &mut Vec<String>) {
+        out.push(format!("files changed ({}):", self.stats.len()));
+        out.extend(self.stats.iter().map(|s| format!("  {}", s.render())));
+        out.push(format!("worker report:\n{}", self.summary));
     }
 }
 
@@ -1099,6 +1265,8 @@ pub trait DelegateApi: Send + Sync {
     fn merge(&self, worker_id: String, files: Option<Vec<String>>) -> BoxFut<'_, Result<String, String>>;
     /// Remove the worker's worktree without applying anything.
     fn discard(&self, worker_id: String) -> BoxFut<'_, Result<String, String>>;
+    /// Take an auto-merged worker's changes back out of the main tree.
+    fn undo(&self, worker_id: String) -> BoxFut<'_, Result<String, String>>;
 }
 
 // --------------------------------------------------------------- the delegator
@@ -1234,6 +1402,23 @@ pub struct Delegator {
     planner: String,
     /// The privacy policy (and audit log) briefs answer to, as the planner's own turns do.
     guards: crate::guard::Guards,
+    /// Runs a finished worker's tests before its work may merge on its own.
+    checks: Arc<dyn Checks>,
+    /// Work whose tests pass merges without the planner's review (`JEV_AUTO_MERGE=0` turns it off).
+    auto_merge: bool,
+    /// One change to the main tree at a time: applies and undos share its index and the
+    /// snapshot a failed apply restores, so two at once could undo each other's rollback.
+    main_tree: tokio::sync::Mutex<()>,
+    /// What each auto-merged worker applied, so `undo` can take exactly that back out.
+    /// Kept for this server's life only.
+    merged: Arc<Mutex<HashMap<String, Applied>>>,
+}
+
+/// An auto-merge, as `undo` needs it.
+#[derive(Debug, Clone)]
+struct Applied {
+    patch: String,
+    files: Vec<String>,
 }
 
 /// One worker attempt that failed, in the words the planner and the log need.
@@ -1266,7 +1451,23 @@ impl Delegator {
             log_path: None,
             planner: String::new(),
             guards: crate::guard::Guards::default(),
+            checks: Arc::new(ProjectChecks::default()),
+            auto_merge: true,
+            main_tree: tokio::sync::Mutex::new(()),
+            merged: Arc::default(),
         }
+    }
+
+    /// How a finished worker's tests are found and run.
+    pub fn with_checks(mut self, checks: Box<dyn Checks>) -> Self {
+        self.checks = Arc::from(checks);
+        self
+    }
+
+    /// `false` sends every editing worker's diff to the planner for review.
+    pub fn with_auto_merge(mut self, on: bool) -> Self {
+        self.auto_merge = on;
+        self
     }
 
     /// The privacy policy, secret scan and audit log of the user's settings
@@ -1456,9 +1657,9 @@ impl Delegator {
     // ---- delegating
 
     /// Run the worker CLI in its worktree. Plan usage it reports feeds the spreading.
-    async fn run_worker(&self, id: &str, spec: &'static ModelSpec, dir: &Path, prompt: String) -> (Result<TurnOutcome, TurnError>, Vec<String>) {
+    async fn run_worker(&self, id: &str, spec: &'static ModelSpec, dir: &Path, prompt: String, mode: Mode) -> (Result<TurnOutcome, TurnError>, Vec<String>) {
         let backend = (self.backend_factory)(spec.provider);
-        let req = TurnRequest { dir: dir.to_path_buf(), model: spec.id.to_string(), prompt, images: vec![], session_id: None, mode: Default::default() };
+        let req = TurnRequest { dir: dir.to_path_buf(), model: spec.id.to_string(), prompt, images: vec![], session_id: None, mode };
         let mut tools: Vec<String> = Vec::new();
         let mut on_event = |e: &Event| match e {
             Event::Tool(summary) => {
@@ -1492,6 +1693,8 @@ impl Delegator {
             o.insert("duration_ms".into(), json!(a.wall_ms));
             o.insert("read_only".into(), json!(a.read_only));
             o.insert("files_changed".into(), json!(a.files));
+            o.insert("landing".into(), json!(a.landing.map(Landing::tag)));
+            o.insert("in_place".into(), json!(a.in_place));
             o.insert("tool_calls".into(), json!(a.tools));
             o.insert("repo".into(), json!(handoff_key(&self.worktrees.repo())));
         }
@@ -1528,69 +1731,148 @@ impl Delegator {
         reservation: &Reservation<'_>,
         attempt: u32,
     ) -> Result<DelegateResult, AttemptOutcome> {
-        let made = self.blocking({
-            let (id, slot) = (id.clone(), reservation.slot());
-            move |w| create_unless_cancelled(w, &id, &slot)
-        });
-        let path = match made.await {
-            Ok(path) => path,
-            Err(e) => {
-                self.take(&id).await;
-                return Err(AttemptOutcome::Stop(format!("could not create a worktree: {e:#}")));
+        // A read-only worker on a CLI that enforces plan mode reads the user's own folder (and
+        // so sees uncommitted edits); every other worker gets a worktree.
+        let in_place = req.read_only && plan_mode_enforced(spec.provider);
+        let path = if in_place {
+            self.worktrees.repo()
+        } else {
+            let made = self.blocking({
+                let (id, slot) = (id.clone(), reservation.slot());
+                move |w| create_unless_cancelled(w, &id, &slot)
+            });
+            match made.await {
+                Ok(path) => path,
+                Err(e) => {
+                    self.take(&id).await;
+                    return Err(AttemptOutcome::Stop(format!("could not create a worktree: {e:#}")));
+                }
             }
         };
-        self.update(&id, |w| w.path = Some(path.clone())).await;
+        if !in_place {
+            self.update(&id, |w| w.path = Some(path.clone())).await;
+        }
         let started = Instant::now();
         let started_ms = (self.now)();
         // Secrets are blanked as for any provider, and the audit log notes what was sent.
-        let prompt = self.guards.outgoing(&worker_prompt(&req.brief, &req.files), spec.provider, spec.id, (self.now)()).prompt;
-        let (result, tools) = self.run_worker(&id, spec, &path, prompt).await;
+        let prompt = self.guards.outgoing(&worker_prompt(&req.brief, &req.files, req.read_only), spec.provider, spec.id, (self.now)()).prompt;
+        let mode = if req.read_only { Mode::Plan } else { Mode::default() };
+        let (result, tools) = self.run_worker(&id, spec, &path, prompt, mode).await;
         self.update(&id, |w| w.running = false).await;
         let wall_ms = started.elapsed().as_millis() as u64;
         let task = worker_task(signals);
-        let log = |result: &Result<TurnOutcome, TurnError>, files: &[String]| {
-            self.log_attempt(&AttemptLog { spec, id: &id, task, attempt, read_only: req.read_only, jev, result, wall_ms, started_ms, files, tools: &tools })
+        let log = |result: &Result<TurnOutcome, TurnError>, files: &[String], landing: Option<&Landing>| {
+            self.log_attempt(&AttemptLog { spec, id: &id, task, attempt, read_only: req.read_only, jev, result, wall_ms, started_ms, files, tools: &tools, landing, in_place })
         };
-        match result {
+        let out = match result {
             Err(err) => {
-                log(&Err(err.clone()), &[]);
+                log(&Err(err.clone()), &[], None);
                 // A failed worker's partial work is never offered; its worktree goes.
-                let _ = self.forget(&id).await;
-                Err(AttemptOutcome::Failed(AttemptFailure { id, spec, err }))
-            }
-            Ok(out) => {
-                let read = self.blocking({
-                    let path = path.clone();
-                    move |w| w.diff(&path)
-                });
-                match read.await {
-                    Err(e) => {
-                        log(&Ok(out), &[]);
-                        let _ = self.forget(&id).await;
-                        Err(AttemptOutcome::Stop(format!("worker {id} finished but its changes could not be read: {e:#}")))
-                    }
-                    Ok(diff) => {
-                        let parts = split_patch(&diff);
-                        let stats: Vec<FileStat> = parts.iter().map(FileDiff::stat).collect();
-                        let (shown_text, shown) = first_page(&parts, MAX_DIFF_CHARS);
-                        self.update(&id, |w| w.shown.extend(shown.iter().cloned())).await;
-                        let files: Vec<String> = stats.iter().map(|s| s.path.clone()).collect();
-                        log(&Ok(out.clone()), &files);
-                        Ok(DelegateResult {
-                            worker_id: id,
-                            provider: Some(spec.provider),
-                            model: Some(spec.id.to_string()),
-                            summary: truncate_with_note(out.text.trim(), MAX_SUMMARY_CHARS, "report"),
-                            stats,
-                            diff: shown_text,
-                            shown,
-                            ok: true,
-                            error: None,
-                            retries: vec![],
-                        })
-                    }
+                if in_place {
+                    self.take(&id).await;
+                } else {
+                    let _ = self.forget(&id).await;
                 }
+                return Err(AttemptOutcome::Failed(AttemptFailure { id, spec, err }));
             }
+            Ok(out) => out,
+        };
+        let summary = truncate_with_note(out.text.trim(), MAX_SUMMARY_CHARS, "report");
+        let done = |landing: Landing, stats: Vec<FileStat>, diff: String, shown: Vec<String>| DelegateResult {
+            worker_id: id.clone(),
+            provider: Some(spec.provider),
+            model: Some(spec.id.to_string()),
+            summary: summary.clone(),
+            stats,
+            diff,
+            shown,
+            ok: true,
+            error: None,
+            retries: vec![],
+            landing,
+        };
+        if in_place {
+            self.take(&id).await;
+            let landing = Landing::Report { discarded: vec![] };
+            log(&Ok(out), &[], Some(&landing));
+            return Ok(done(landing, vec![], String::new(), vec![]));
+        }
+        let read = self.blocking({
+            let path = path.clone();
+            move |w| w.diff(&path)
+        });
+        let diff = match read.await {
+            Ok(diff) => diff,
+            Err(e) => {
+                log(&Ok(out), &[], None);
+                let _ = self.forget(&id).await;
+                return Err(AttemptOutcome::Stop(format!("worker {id} finished but its changes could not be read: {e:#}")));
+            }
+        };
+        let parts = split_patch(&diff);
+        let stats: Vec<FileStat> = parts.iter().map(FileDiff::stat).collect();
+        let files: Vec<String> = stats.iter().map(|s| s.path.clone()).collect();
+        // A read-only worker's worktree, and an editor's that changed nothing, only held a report.
+        if req.read_only || parts.is_empty() {
+            let _ = self.forget(&id).await;
+            let landing = if req.read_only { Landing::Report { discarded: files.clone() } } else { Landing::NoChanges };
+            log(&Ok(out), &files, Some(&landing));
+            return Ok(done(landing, vec![], String::new(), vec![]));
+        }
+        let landing = self.land(&id, &path, &diff, &files, req.review, reservation.slot()).await;
+        log(&Ok(out), &files, Some(&landing));
+        if matches!(landing, Landing::AutoMerged { .. }) {
+            // A worktree that will not go is reported by `forget` and cleaned by recovery later.
+            let _ = self.forget(&id).await;
+            return Ok(done(landing, stats, String::new(), vec![]));
+        }
+        let (shown_text, shown) = first_page(&parts, MAX_DIFF_CHARS);
+        self.update(&id, |w| w.shown.extend(shown.iter().cloned())).await;
+        Ok(done(landing, stats, shown_text, shown))
+    }
+
+    /// Decide how a finished editing worker's `patch` lands: run the project's tests in its
+    /// worktree, then apply the patch to the main tree. Anything short of both is a review.
+    async fn land(&self, id: &str, worktree: &Path, patch: &str, files: &[String], review: bool, slot: Arc<Mutex<CreateSlot>>) -> Landing {
+        if review {
+            return Landing::Review(ReviewReason::Asked);
+        }
+        if !self.auto_merge {
+            return Landing::Review(ReviewReason::Off);
+        }
+        let (checks, dir) = (self.checks.clone(), worktree.to_path_buf());
+        // The run stops early if the delegation is cancelled: its worktree is going away.
+        let ran = Self::off_thread(move || {
+            let command = checks.test_command(&dir)?;
+            let run = checks.run(&dir, &command, &|| lock(&slot).cancelled);
+            Some((command, run))
+        });
+        let (command, run) = match ran.await {
+            Ok(Some(found)) => found,
+            Ok(None) => return Landing::Review(ReviewReason::NoTestCommand),
+            Err(e) => return Landing::Review(ReviewReason::TestsNotRun { command: "the tests".into(), error: format!("{e:#}") }),
+        };
+        match run {
+            CheckRun::Passed => {}
+            CheckRun::Failed { output } => return Landing::Review(ReviewReason::TestsFailed { command, output }),
+            CheckRun::TimedOut { after } => return Landing::Review(ReviewReason::TestsTimedOut { command, after }),
+            CheckRun::Stopped => return Landing::Review(ReviewReason::TestsNotRun { command, error: "the delegation was cancelled".into() }),
+            CheckRun::CouldNotStart { error } => return Landing::Review(ReviewReason::TestsNotRun { command, error }),
+        }
+        let _turn = self.main_tree.lock().await;
+        // Recorded in the same blocking step as the apply, so a call cancelled meanwhile
+        // still leaves its changes undoable.
+        let applied = self.blocking({
+            let (merged, id, applied) = (self.merged.clone(), id.to_string(), Applied { patch: patch.to_string(), files: files.to_vec() });
+            move |w| {
+                w.apply(&applied.patch)?;
+                lock(&merged).insert(id, applied);
+                Ok(())
+            }
+        });
+        match applied.await {
+            Ok(()) => Landing::AutoMerged { command },
+            Err(e) => Landing::Review(ReviewReason::Conflict(format!("{e:#}"))),
         }
     }
 
@@ -1599,7 +1881,7 @@ impl Delegator {
         // The brief is a prompt like any other: the privacy policy decides which providers may
         // have it, and Jev (a cloud service) is asked only when some cloud provider may.
         let repo = self.worktrees.repo();
-        let outgoing = worker_prompt(&req.brief, &req.files);
+        let outgoing = worker_prompt(&req.brief, &req.files, req.read_only);
         let verdict = self.guards.privacy.check(&repo, &outgoing, &[]);
         let mut excluded: HashSet<(ProviderId, String)> = HashSet::new();
         for p in crate::providers::ALL_PROVIDERS.into_iter().filter(|p| !verdict.permits(*p)) {
@@ -1752,7 +2034,10 @@ impl Delegator {
         }
         let patch = join_diffs(chosen.iter().copied());
         let done: Vec<String> = chosen.iter().map(|p| p.path.clone()).collect();
-        self.blocking(move |w| w.apply(&patch)).await.map_err(|e| format!("{e:#}\nWorker {id}'s worktree is kept; discard({id}) it or merge by hand."))?;
+        let turn = self.main_tree.lock().await;
+        let applied = self.blocking(move |w| w.apply(&patch)).await;
+        drop(turn);
+        applied.map_err(|e| format!("{e:#}\nWorker {id}'s worktree is kept; discard({id}) it or merge by hand."))?;
         self.update(id, |w| w.merged.extend(done.iter().cloned())).await;
         let left: Vec<&str> = parts.iter().map(|p| p.path.as_str()).filter(|p| !done.iter().any(|d| d == p)).collect();
         if !left.is_empty() {
@@ -1768,6 +2053,19 @@ impl Delegator {
 
     pub async fn discard(&self, id: &str) -> Result<String, String> {
         self.forget(id).await.map(|()| format!("discarded worker {id}"))
+    }
+
+    /// Take an auto-merged worker's changes back out of the main tree, if those files have
+    /// not changed since in a way that stops the reverse patch.
+    pub async fn undo(&self, id: &str) -> Result<String, String> {
+        let applied = lock(&self.merged).get(id).cloned().ok_or_else(|| {
+            format!("no auto-merged worker `{id}` to undo (undo works for workers auto-merged since this delegate server started)")
+        })?;
+        let _turn = self.main_tree.lock().await;
+        let patch = applied.patch.clone();
+        self.blocking(move |w| w.unapply(&patch)).await.map_err(|e| format!("could not undo worker {id}: {e:#}"))?;
+        lock(&self.merged).remove(id);
+        Ok(format!("undid worker {id}: {} are back to how they were before it merged", applied.files.join(", ")))
     }
 }
 
@@ -1786,6 +2084,10 @@ impl DelegateApi for Delegator {
 
     fn discard(&self, worker_id: String) -> BoxFut<'_, Result<String, String>> {
         Box::pin(async move { Delegator::discard(self, &worker_id).await })
+    }
+
+    fn undo(&self, worker_id: String) -> BoxFut<'_, Result<String, String>> {
+        Box::pin(async move { Delegator::undo(self, &worker_id).await })
     }
 }
 
@@ -1811,6 +2113,10 @@ struct AttemptLog<'a> {
     started_ms: u64,
     files: &'a [String],
     tools: &'a [String],
+    /// Where the work went; `None` for a failed attempt.
+    landing: Option<&'a Landing>,
+    /// A read-only worker that ran in the user's folder instead of a worktree.
+    in_place: bool,
 }
 
 #[cfg(test)]
@@ -1985,10 +2291,21 @@ mod tests {
 
     #[test]
     fn the_worker_prompt_confines_the_worker_and_asks_for_a_short_report() {
-        let p = worker_prompt("add a retry", &["src/net.rs".into()]);
+        let p = worker_prompt("add a retry", &["src/net.rs".into()], false);
         assert!(p.contains("only inside the current directory") && p.contains("do not use the network"));
         assert!(p.contains("short report") && p.contains("add a retry") && p.contains("src/net.rs"));
-        assert!(!worker_prompt("x", &[]).contains("Files that are probably involved"));
+        assert!(p.contains("Run the project's tests") && p.contains("merged only if they pass"));
+        assert!(!worker_prompt("x", &[], false).contains("Files that are probably involved"));
+        // A read-only worker is told to change nothing, and nothing about merging.
+        let r = worker_prompt("find the callers", &[], true);
+        assert!(r.contains("READ-ONLY") && r.contains("do not create, change or delete any file") && r.contains("find the callers"));
+        assert!(!r.contains("merged") && !r.contains("worktree"));
+    }
+
+    #[test]
+    fn only_clis_with_a_real_plan_mode_read_in_place() {
+        let in_place: Vec<ProviderId> = PROVIDERS.into_iter().filter(|p| plan_mode_enforced(*p)).collect();
+        assert_eq!(in_place, [Claude, DeepSeek, Codex]);
     }
 
     // ---------------------------------------------------------------- the Delegator
@@ -1998,7 +2315,11 @@ mod tests {
         provider: ProviderId,
         script: &'static str,
         started: Arc<Mutex<Vec<(ProviderId, String, PathBuf, String)>>>,
+        /// The permission mode of every turn started, in order.
+        modes: Modes,
     }
+
+    type Modes = Arc<Mutex<Vec<Mode>>>;
 
     impl Backend for Fake {
         fn provider(&self) -> ProviderId {
@@ -2006,6 +2327,7 @@ mod tests {
         }
         fn command(&self, req: &TurnRequest) -> TokioCommand {
             self.started.lock().unwrap().push((self.provider, req.model.clone(), req.dir.clone(), req.prompt.clone()));
+            self.modes.lock().unwrap().push(req.mode);
             let mut c = TokioCommand::new("sh");
             c.arg("-c").arg(self.script).current_dir(&req.dir);
             c
@@ -2038,8 +2360,10 @@ mod tests {
         created: Mutex<Vec<PathBuf>>,
         removed: Mutex<Vec<PathBuf>>,
         applied: Mutex<Vec<String>>,
+        unapplied: Mutex<Vec<String>>,
         pruned: Mutex<Vec<PathBuf>>,
         apply_fails: bool,
+        unapply_fails: bool,
         create_fails: bool,
         /// Every `create` and `apply` takes this long, like a big checkout would.
         delay: Duration,
@@ -2058,7 +2382,10 @@ mod tests {
 
     impl FakeWorktrees {
         fn new() -> Arc<Self> {
-            Arc::new(Self { base: temp_dir("fake"), ..Self::default() })
+            let base = temp_dir("fake");
+            // The "main tree", where a read-only worker runs in place.
+            std::fs::create_dir_all(base.join("repo")).unwrap();
+            Arc::new(Self { base, ..Self::default() })
         }
 
         fn slow(delay: Duration) -> Arc<Self> {
@@ -2103,6 +2430,13 @@ mod tests {
             self.applied.lock().unwrap().push(patch.to_string());
             Ok(())
         }
+        fn unapply(&self, patch: &str) -> Result<()> {
+            if self.unapply_fails {
+                bail!("those files changed since");
+            }
+            self.unapplied.lock().unwrap().push(patch.to_string());
+            Ok(())
+        }
         fn remove(&self, path: &Path) -> Result<()> {
             self.removed.lock().unwrap().push(path.to_path_buf());
             let _ = std::fs::remove_dir_all(path);
@@ -2112,6 +2446,31 @@ mod tests {
             self.pruned.lock().unwrap().push(repo.to_path_buf());
             Ok(())
         }
+    }
+
+    /// A project whose test command is `command` (none: no tests known), and whose every run
+    /// ends as `outcome`. Records where it ran.
+    struct FakeChecks {
+        command: Option<&'static str>,
+        outcome: CheckRun,
+        ran: Arc<Mutex<Vec<PathBuf>>>,
+    }
+
+    impl Checks for FakeChecks {
+        fn test_command(&self, _dir: &Path) -> Option<String> {
+            self.command.map(String::from)
+        }
+        fn run(&self, dir: &Path, _command: &str, _stop: &dyn Fn() -> bool) -> CheckRun {
+            self.ran.lock().unwrap().push(dir.to_path_buf());
+            self.outcome.clone()
+        }
+    }
+
+    /// `rig`'s delegator with a project whose `cargo test` ends as `outcome`; where it ran.
+    fn tested(mut r: Rig, outcome: CheckRun) -> (Rig, Arc<Mutex<Vec<PathBuf>>>) {
+        let ran = Arc::new(Mutex::new(Vec::new()));
+        r.d = r.d.with_checks(Box::new(FakeChecks { command: Some("cargo test"), outcome, ran: ran.clone() }));
+        (r, ran)
     }
 
     /// A one-file patch: `old` replaced by `new` lines.
@@ -2154,28 +2513,32 @@ mod tests {
         wt: Arc<FakeWorktrees>,
         started: Started,
         scripts: Scripts,
+        modes: Modes,
     }
 
     /// A delegator on `wt` whose fake CLIs all succeed unless `scripts` says otherwise.
-    fn delegator_on(wt: &Arc<FakeWorktrees>, ready: &[ProviderId], task: TaskType, started: &Started, scripts: &Scripts) -> Delegator {
+    fn delegator_on(wt: &Arc<FakeWorktrees>, ready: &[ProviderId], task: TaskType, started: &Started, scripts: &Scripts, modes: &Modes) -> Delegator {
         let avail = PROVIDERS.iter().map(|p| availability(*p, ready.contains(p))).collect();
-        let (st, sc) = (started.clone(), scripts.clone());
+        let (st, sc, md) = (started.clone(), scripts.clone(), modes.clone());
         let judge: Judge = Box::new(move |_| Box::pin(async move { Some(want(task)) }));
         Delegator::new(Runtime::for_tests(avail), judge, Box::new(wt.clone()))
             .with_backend_factory(Box::new(move |p| {
                 let script = sc.lock().unwrap()[&p];
-                Box::new(Fake { provider: p, script, started: st.clone() })
+                Box::new(Fake { provider: p, script, started: st.clone(), modes: md.clone() })
             }))
             .with_clock(Box::new(|| NOW))
             .with_idle_timeout(Duration::from_millis(500))
             .with_planner("claude:claude-opus-5-5".into())
+            // No test command known: work goes to review unless a test says otherwise.
+            .with_checks(Box::new(FakeChecks { command: None, outcome: CheckRun::Passed, ran: Arc::default() }))
     }
 
     fn rig_on(wt: Arc<FakeWorktrees>, ready: &[ProviderId], task: TaskType) -> Rig {
         let started: Started = Arc::new(Mutex::new(Vec::new()));
         let scripts: Scripts = Arc::new(Mutex::new(PROVIDERS.iter().map(|p| (*p, OK)).collect()));
-        let d = delegator_on(&wt, ready, task, &started, &scripts);
-        Rig { d, wt, started, scripts }
+        let modes = Modes::default();
+        let d = delegator_on(&wt, ready, task, &started, &scripts, &modes);
+        Rig { d, wt, started, scripts, modes }
     }
 
     fn rig(ready: &[ProviderId], task: TaskType) -> Rig {
@@ -2287,7 +2650,7 @@ mod tests {
         let judge: Judge = Box::new(|_| Box::pin(async { Some(want(TaskType::Feature)) }));
         let st = Arc::new(Mutex::new(Vec::new()));
         let d = Delegator::new(Runtime::for_tests(avail), judge, Box::new(wt.clone()))
-            .with_backend_factory(Box::new(move |p| Box::new(Fake { provider: p, script: OK, started: st.clone() })))
+            .with_backend_factory(Box::new(move |p| Box::new(Fake { provider: p, script: OK, started: st.clone(), modes: Modes::default() })))
             .with_idle_timeout(Duration::from_millis(500));
         let res = d.delegate(brief("x")).await;
         let err = d.merge(&res.worker_id, None).await.unwrap_err();
@@ -2296,6 +2659,140 @@ mod tests {
         assert!(d.discard(&res.worker_id).await.unwrap().contains("discarded"));
         assert_eq!(wt.removed.lock().unwrap().len(), 1);
         assert!(d.discard(&res.worker_id).await.is_err());
+    }
+
+    // ---------------------------------------------------------------- auto-merge
+
+    #[tokio::test]
+    async fn work_whose_tests_pass_merges_itself_and_the_planner_gets_no_diff() {
+        let (r, ran) = tested(rig(&[Claude], TaskType::Feature), CheckRun::Passed);
+        let res = r.d.delegate(brief("add a retry")).await;
+        assert!(res.ok, "{:?}", res.error);
+        assert_eq!(res.landing, Landing::AutoMerged { command: "cargo test".into() });
+        assert_eq!(*ran.lock().unwrap(), [r.wt.base.join(&res.worker_id)], "the tests ran in the worker's worktree");
+        assert_eq!(r.wt.applied.lock().unwrap().len(), 1, "applied to the main tree");
+        assert_eq!(*r.wt.removed.lock().unwrap(), [r.wt.base.join(&res.worker_id)], "its worktree is gone");
+        assert!(lock(&r.d.live).is_empty(), "nothing is left to merge or discard");
+        assert!(res.diff.is_empty() && res.shown.is_empty());
+        let text = res.render();
+        assert!(text.contains("done, auto-merged") && text.contains(&format!("undo({})", res.worker_id)) && text.contains("`cargo test` passed"), "{text}");
+        assert!(text.contains(&format!("{}.rs +1 -1", res.worker_id)) && text.contains("did the piece"), "the file list and report still come back: {text}");
+        assert!(!text.contains("diff (full diffs") && !text.contains("merge("), "{text}");
+    }
+
+    #[tokio::test]
+    async fn undo_takes_exactly_the_merged_patch_back_out_once() {
+        let (r, _) = tested(rig(&[Claude], TaskType::Feature), CheckRun::Passed);
+        let res = r.d.delegate(brief("x")).await;
+        let msg = r.d.undo(&res.worker_id).await.unwrap();
+        assert!(msg.contains(&format!("{}.rs", res.worker_id)) && msg.contains("back to how they were"), "{msg}");
+        assert_eq!(*r.wt.unapplied.lock().unwrap(), *r.wt.applied.lock().unwrap(), "the same patch, reversed");
+        assert!(r.d.undo(&res.worker_id).await.unwrap_err().contains("no auto-merged worker"), "an undo happens once");
+        assert!(r.d.undo("w-never").await.is_err());
+    }
+
+    #[tokio::test]
+    async fn an_undo_that_does_not_apply_keeps_the_record_to_try_again() {
+        let wt = Arc::new(FakeWorktrees { base: temp_dir("noundo"), unapply_fails: true, ..FakeWorktrees::default() });
+        let (r, _) = tested(rig_on(wt, &[Claude], TaskType::Feature), CheckRun::Passed);
+        let id = r.d.delegate(brief("x")).await.worker_id;
+        let err = r.d.undo(&id).await.unwrap_err();
+        assert!(err.contains("could not undo") && err.contains("changed since"), "{err}");
+        assert!(lock(&r.d.merged).contains_key(&id));
+    }
+
+    #[tokio::test]
+    async fn failing_tests_send_the_work_to_review_with_their_output() {
+        let (r, _) = tested(rig(&[Claude], TaskType::Feature), CheckRun::Failed { output: "test net::retry ... FAILED".into() });
+        let res = r.d.delegate(brief("x")).await;
+        assert!(matches!(&res.landing, Landing::Review(ReviewReason::TestsFailed { command, .. }) if command == "cargo test"), "{:?}", res.landing);
+        assert!(r.wt.applied.lock().unwrap().is_empty() && r.wt.removed.lock().unwrap().is_empty(), "nothing applied, worktree kept");
+        let text = res.render();
+        assert!(text.contains("waiting for your review") && text.contains("Not auto-merged: `cargo test` failed") && text.contains("net::retry ... FAILED"), "{text}");
+        assert!(text.contains("diff (full diffs") && text.contains(&format!("merge({})", res.worker_id)), "the review flow as before: {text}");
+        assert!(r.d.merge(&res.worker_id, None).await.is_ok(), "the planner can still merge it");
+    }
+
+    #[tokio::test]
+    async fn every_other_reason_falls_back_to_review_without_touching_the_main_tree() {
+        // No test command known (the rig's default).
+        let r = rig(&[Claude], TaskType::Feature);
+        assert_eq!(r.d.delegate(brief("x")).await.landing, Landing::Review(ReviewReason::NoTestCommand));
+        // The planner asked to review: the tests do not even run.
+        let (r, ran) = tested(rig(&[Claude], TaskType::Feature), CheckRun::Passed);
+        assert_eq!(r.d.delegate(DelegateRequest { review: true, ..brief("x") }).await.landing, Landing::Review(ReviewReason::Asked));
+        assert!(ran.lock().unwrap().is_empty());
+        // Auto-merge switched off.
+        let (mut r, _) = tested(rig(&[Claude], TaskType::Feature), CheckRun::Passed);
+        r.d = r.d.with_auto_merge(false);
+        assert_eq!(r.d.delegate(brief("x")).await.landing, Landing::Review(ReviewReason::Off));
+        // Tests too slow, or not runnable.
+        let (r, _) = tested(rig(&[Claude], TaskType::Feature), CheckRun::TimedOut { after: Duration::from_secs(900) });
+        let res = r.d.delegate(brief("x")).await;
+        assert!(res.render().contains("ran longer than 15 minutes"), "{}", res.render());
+        let (r, _) = tested(rig(&[Claude], TaskType::Feature), CheckRun::CouldNotStart { error: "no sh".into() });
+        assert!(matches!(r.d.delegate(brief("x")).await.landing, Landing::Review(ReviewReason::TestsNotRun { .. })));
+        assert!(r.wt.applied.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn tests_that_pass_on_a_patch_that_conflicts_go_to_review() {
+        let wt = Arc::new(FakeWorktrees { base: temp_dir("conflict-auto"), apply_fails: true, ..FakeWorktrees::default() });
+        let (r, _) = tested(rig_on(wt, &[Claude], TaskType::Feature), CheckRun::Passed);
+        let res = r.d.delegate(brief("x")).await;
+        assert!(matches!(&res.landing, Landing::Review(ReviewReason::Conflict(why)) if why.contains("conflict")), "{:?}", res.landing);
+        assert!(r.wt.removed.lock().unwrap().is_empty(), "the worktree is kept for review");
+        assert!(lock(&r.d.merged).is_empty(), "nothing to undo");
+        assert!(res.render().contains("the tests passed, but the changes do not apply cleanly"));
+    }
+
+    #[tokio::test]
+    async fn a_worker_that_changed_nothing_leaves_nothing_behind() {
+        let (r, ran) = tested(rig_on(FakeWorktrees::new().with_patch(String::new()), &[Claude], TaskType::Feature), CheckRun::Passed);
+        let res = r.d.delegate(brief("x")).await;
+        assert_eq!(res.landing, Landing::NoChanges);
+        assert!(ran.lock().unwrap().is_empty() && r.wt.applied.lock().unwrap().is_empty());
+        assert_eq!(r.wt.removed.lock().unwrap().len(), 1);
+        assert!(lock(&r.d.live).is_empty());
+        assert!(res.render().contains("files changed: none"));
+    }
+
+    // ---------------------------------------------------------------- read-only workers
+
+    #[tokio::test]
+    async fn a_read_only_worker_reads_the_main_tree_in_plan_mode_with_no_worktree() {
+        let (r, ran) = tested(rig(&[Claude], TaskType::Feature), CheckRun::Passed);
+        let res = r.d.delegate(DelegateRequest { read_only: true, ..brief("find the callers of retry") }).await;
+        assert!(res.ok, "{:?}", res.error);
+        assert_eq!(res.landing, Landing::Report { discarded: vec![] });
+        let started = r.started.lock().unwrap().clone();
+        assert_eq!(started[0].2, r.wt.repo(), "it ran in the user's folder");
+        assert!(started[0].3.contains("READ-ONLY"));
+        assert_eq!(*r.modes.lock().unwrap(), [Mode::Plan]);
+        assert!(r.wt.created.lock().unwrap().is_empty() && r.wt.removed.lock().unwrap().is_empty(), "no worktree");
+        assert!(ran.lock().unwrap().is_empty() && r.wt.applied.lock().unwrap().is_empty());
+        assert!(lock(&r.d.live).is_empty(), "nothing to merge or discard");
+        let text = res.render();
+        assert!(text.contains("done (read-only)") && text.contains("did the piece") && !text.contains("merge(") && !text.contains("files changed"), "{text}");
+        // An editing worker still runs in the default mode.
+        r.d.delegate(brief("x")).await;
+        assert_eq!(r.modes.lock().unwrap()[1], Mode::default());
+    }
+
+    #[tokio::test]
+    async fn a_read_only_worker_on_a_cli_without_real_plan_mode_gets_a_throwaway_worktree() {
+        let r = rig(&[Gemini], TaskType::Feature);
+        let res = r.d.delegate(DelegateRequest { read_only: true, ..brief("find the callers") }).await;
+        assert!(res.ok, "{:?}", res.error);
+        assert_eq!(res.provider, Some(Gemini));
+        let id = &res.worker_id;
+        assert_eq!(r.started.lock().unwrap()[0].2, r.wt.base.join(id), "not the user's folder");
+        assert_eq!(*r.modes.lock().unwrap(), [Mode::Plan], "asked for plan mode anyway");
+        // The fake worker "changed" a file: it is reported and thrown away, never merged.
+        assert_eq!(res.landing, Landing::Report { discarded: vec![format!("{id}.rs")] });
+        assert_eq!(*r.wt.removed.lock().unwrap(), [r.wt.base.join(id)]);
+        assert!(r.wt.applied.lock().unwrap().is_empty() && lock(&r.d.live).is_empty());
+        assert!(res.render().contains("they were thrown away"), "{}", res.render());
     }
 
     #[tokio::test]
@@ -2325,7 +2822,9 @@ mod tests {
             let (start, end) = (row["started_at"].as_u64().unwrap(), row["finished_at"].as_u64().unwrap());
             assert!(end >= start && start > 0);
             assert_eq!(row["duration_ms"], row["wall_ms"]);
+            assert_eq!(row["in_place"], false);
         }
+        assert_eq!((rows[0]["landing"].clone(), rows[1]["landing"].clone()), (Value::Null, json!("review_no_tests")), "how the work landed");
     }
 
     // ---------------------------------------------------------------- real git
@@ -2375,6 +2874,37 @@ mod tests {
         wt.apply(&wt.diff(&w).unwrap()).unwrap();
         assert_eq!(std::fs::read_to_string(repo.join("f.txt")).unwrap(), "a\nB-from-worker\nc\nd\nE-from-planner\n");
         assert_eq!(std::fs::read_to_string(repo.join("new.txt")).unwrap(), "hello\n");
+    }
+
+    #[test]
+    fn real_undo_takes_a_merge_back_out_plain_or_three_way() {
+        let repo = temp_repo();
+        let wt = GitWorktrees::new(&repo, temp_dir("wt-root")).unwrap();
+        // A plain merge: the working tree changes, the index does not.
+        let w = wt.create("w1").unwrap();
+        std::fs::write(w.join("f.txt"), "a\nB-from-worker\nc\nd\ne\n").unwrap();
+        std::fs::write(w.join("new.txt"), "hello\n").unwrap();
+        let patch = wt.diff(&w).unwrap();
+        wt.apply(&patch).unwrap();
+        wt.unapply(&patch).unwrap();
+        assert_eq!(std::fs::read_to_string(repo.join("f.txt")).unwrap(), "a\nb\nc\nd\ne\n");
+        assert!(!repo.join("new.txt").exists(), "a file the worker created is gone again");
+        assert_eq!(run_git(&repo, &["status", "--porcelain"]), "", "the tree is clean again");
+        // A 3-way merge (the planner staged an edit to the same file) stages the result; undo puts the index back too.
+        std::fs::write(repo.join("f.txt"), "a\nb\nc\nd\nE-from-planner\n").unwrap();
+        run_git(&repo, &["add", "f.txt"]);
+        let w2 = wt.create("w2").unwrap();
+        std::fs::write(w2.join("f.txt"), "a\nB-from-worker\nc\nd\ne\n").unwrap();
+        let patch = wt.diff(&w2).unwrap();
+        wt.apply(&patch).unwrap();
+        wt.unapply(&patch).unwrap();
+        assert_eq!(std::fs::read_to_string(repo.join("f.txt")).unwrap(), "a\nb\nc\nd\nE-from-planner\n", "the planner's edit stays");
+        assert_eq!(run_git(&repo, &["status", "--porcelain"]), "M  f.txt\n", "staged as the planner left it, nothing unstaged");
+        // After the files moved on, undo refuses and changes nothing.
+        wt.apply(&patch).unwrap();
+        std::fs::write(repo.join("f.txt"), "rewritten\n").unwrap();
+        assert!(format!("{:#}", wt.unapply(&patch).unwrap_err()).contains("nothing was changed"));
+        assert_eq!(std::fs::read_to_string(repo.join("f.txt")).unwrap(), "rewritten\n");
     }
 
     #[test]
@@ -2541,11 +3071,12 @@ mod tests {
         assert!(a.ok && b.ok);
         let took = started.elapsed();
         assert!(took < Duration::from_millis(350), "two 200 ms checkouts took {took:?}: they ran one after the other");
+        // Merges touch the one main tree, its index and the rollback snapshot: one at a time.
         let started = Instant::now();
         let (x, y) = tokio::join!(r.d.merge(&a.worker_id, None), r.d.merge(&b.worker_id, None));
         assert!(x.is_ok() && y.is_ok());
         let took = started.elapsed();
-        assert!(took < Duration::from_millis(350), "two 200 ms merges took {took:?}");
+        assert!(took >= Duration::from_millis(400), "two 200 ms merges took {took:?}: they overlapped on the main tree");
     }
 
     // ---------------------------------------------------------------- the saved registry
@@ -2581,7 +3112,7 @@ mod tests {
         let c = clock.clone();
         let pid = NEXT_PID.fetch_add(1, Ordering::SeqCst) as u32;
         procs.alive.lock().unwrap().insert(pid);
-        delegator_on(wt, &[Claude], TaskType::Feature, &started, &scripts)
+        delegator_on(wt, &[Claude], TaskType::Feature, &started, &scripts, &Modes::default())
             .with_clock(Box::new(move || c.load(Ordering::SeqCst)))
             .with_liveness(Arc::new(FakeLiveness { pid, procs: procs.clone() }))
             .with_store(state)

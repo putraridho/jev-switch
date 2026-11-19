@@ -4,6 +4,8 @@ See [docs/changelog-guide.md](docs/changelog-guide.md) for changelog formatting,
 
 ## Unreleased
 
+- Delegated work merges itself when it is proven: when an editing worker finishes, jev runs the project's tests in its worktree, and if they pass and the changes apply cleanly they go straight into your working tree. The planner gets the report and the file list instead of reading the whole diff, which saves tokens on every worker. A new `undo` tool takes one worker's changes back out. With no test command, failing tests, a conflict, or `review: true`, the planner reviews the diff as before. `JEV_AUTO_MERGE=0` turns auto-merge off.
+- Read-only delegated pieces (research, finding code) now run in your project folder in plan mode with no worktree, so they see your uncommitted edits and leave nothing to merge. On Gemini and Grok, whose CLIs do not enforce plan mode, they still get a throwaway worktree.
 - Parallel `delegate` calls now actually run at the same time. The tool is marked read-only for the client, because a worker only changes its own worktree; merging stays a separate, approved step. Worker log records carry `started_at`, `finished_at` and `duration_ms`, so overlap is visible.
 - The router row and `/status` show how much plan is left from the start, not only after a Claude turn. The last reading per provider is saved across restarts and dropped once its window resets. Codex usage is read from Codex's own session files, and DeepSeek shows its remaining balance (`deepseek $4.20 left`).
 - Grok works with an `XAI_API_KEY` instead of `grok login`. Set the key in your shell or in `~/.jev-router.env`: Grok shows as ready, jev-code passes the key to `grok`, and `doctor` offers it as a fix.

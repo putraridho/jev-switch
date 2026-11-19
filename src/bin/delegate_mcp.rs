@@ -1,5 +1,5 @@
 //! delegate_mcp: the MCP server that gives an orchestration PLANNER its `delegate`,
-//! `show_diff`, `merge` and `discard` tools. A planner CLI (Claude Code, Codex) starts it as a stdio
+//! `show_diff`, `merge`, `discard` and `undo` tools. A planner CLI (Claude Code, Codex) starts it as a stdio
 //! child: newline-delimited JSON-RPC 2.0, one message per line.
 //!
 //! The tool has NO model parameter. Which worker model runs a piece is Jev's decision
@@ -31,13 +31,17 @@ use jev_router::typesafe::TypeSafe;
 /// echoed when it is one of these, else the newest is offered (the client then decides).
 const PROTOCOL_VERSIONS: [&str; 3] = ["2025-06-18", "2025-03-26", "2024-11-05"];
 
-const DELEGATE_DESCRIPTION: &str = "Hand ONE self-contained piece of a larger task to a worker model, which runs in its own \
-private git worktree and returns a short report, the list of EVERY file it changed (with +/- counts) and the diffs of as many \
-files as fit. Use it for independent pieces (you may call it several times in parallel; each worker gets its own directory). \
-Give each call a COMPLETE, self-contained brief: the worker sees only the brief and the last commit, not your conversation and \
-not your uncommitted edits, so commit what a worker needs first or put it in the brief. There is no model parameter: the worker \
-model is chosen for you. Review the returned diff yourself before merging; merge only what you verified. A file whose diff is \
-not shown in the result must be read with show_diff before it can be merged.";
+const DELEGATE_DESCRIPTION: &str = "Hand ONE self-contained piece of a larger task to a worker model. Use it for independent \
+pieces (you may call it several times in parallel). Give each call a COMPLETE, self-contained brief: the worker sees only the brief, \
+not your conversation. There is no model parameter: the worker model is chosen for you.\n\
+READ-ONLY pieces (read_only: true; research, finding code, explaining) run in your folder in plan mode, see your uncommitted edits, \
+change nothing and return a report.\n\
+EDITING pieces run in their own private git worktree cut from the last commit, so they do NOT see your uncommitted edits: commit what \
+a worker needs first or put it in the brief. When the worker finishes, jev runs the project's tests in its worktree. If they pass and \
+the changes apply cleanly, they are AUTO-MERGED into your working tree and you get the report and the list of EVERY file changed (with \
++/- counts); undo(worker_id) takes them back out. Otherwise (no test command, failing tests, a conflict, or review: true) you get the \
+reason and the diffs of as many files as fit: review the diff yourself and merge only what you verified. A file whose diff is not \
+shown must be read with show_diff before it can be merged.";
 const SHOW_DIFF_DESCRIPTION: &str = "Read a worker's diff in pages (about 20,000 characters each). Without `file` it pages the \
 whole diff; with `file` (a path from the delegate result's file list) it pages that one file, which is how to read a file the \
 delegate result did not show. Pass `offset` (characters) to continue where the previous page ended. A file counts as seen once \
@@ -49,9 +53,16 @@ the worker's worktree for a later merge or discard). If it cannot apply, nothing
 you can discard it or merge by hand.";
 const DISCARD_DESCRIPTION: &str = "Throw away a worker's worktree and diff (by worker_id) without applying anything. Use it for \
 work you rejected.";
+const UNDO_DESCRIPTION: &str = "Take an AUTO-MERGED worker's changes (by worker_id) back out of your working tree, exactly as they \
+were applied. It refuses, changing nothing, when those files have since changed so the changes no longer come out cleanly.";
 
 fn worker_id_schema() -> Value {
     json!({ "type": "string", "description": "The worker_id a delegate call returned." })
+}
+
+/// The input of a tool that takes only a worker id.
+fn worker_id_only() -> Value {
+    json!({ "type": "object", "properties": { "worker_id": worker_id_schema() }, "required": ["worker_id"] })
 }
 
 fn tools_list() -> Value {
@@ -60,16 +71,17 @@ fn tools_list() -> Value {
             "name": "delegate",
             "description": DELEGATE_DESCRIPTION,
             // Claude Code runs MCP calls concurrently only for tools marked readOnlyHint, and
-            // serializes the rest. A worker changes only its own private git worktree, never the
-            // caller's working tree, so it is safe to claim; this is what lets parallel delegations
-            // fan out. Merging is a separate tool and is not read-only.
+            // serializes the rest; this is what lets parallel delegations fan out. A worker edits
+            // only its own worktree, but work whose tests pass is auto-merged into the caller's
+            // tree, so the claim is not strictly true while `delegate` still blocks until then.
             "annotations": { "readOnlyHint": true, "destructiveHint": false, "openWorldHint": true },
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "brief": { "type": "string", "description": "The complete, self-contained task for the worker: goal, constraints, what done looks like. It sees nothing else." },
                     "files": { "type": "array", "items": { "type": "string" }, "description": "Optional paths the worker should look at first. Hints, not limits." },
-                    "read_only": { "type": "boolean", "description": "True when the piece only reads and reports (no files change)." }
+                    "read_only": { "type": "boolean", "description": "True when the piece only reads and reports (no files change). It then runs in your folder in plan mode." },
+                    "review": { "type": "boolean", "description": "True to review the diff yourself even if the tests pass (for risky changes). Default: auto-merge when tests pass." }
                 },
                 "required": ["brief"]
             }
@@ -105,23 +117,25 @@ fn tools_list() -> Value {
             "name": "discard",
             "description": DISCARD_DESCRIPTION,
             "annotations": { "readOnlyHint": false, "destructiveHint": true },
-            "inputSchema": {
-                "type": "object",
-                "properties": { "worker_id": worker_id_schema() },
-                "required": ["worker_id"]
-            }
+            "inputSchema": worker_id_only()
+        },
+        {
+            "name": "undo",
+            "description": UNDO_DESCRIPTION,
+            "annotations": { "readOnlyHint": false, "destructiveHint": true },
+            "inputSchema": worker_id_only()
         }
     ] })
 }
 
-/// The request the planner's `delegate` arguments mean. Reads `brief`, `files` and
-/// `read_only` and NOTHING else: a `model` (or any other) key is dropped here, so no
-/// model choice can pass through the tool.
+/// The request the planner's `delegate` arguments mean. Reads `brief`, `files`,
+/// `read_only` and `review` and NOTHING else: a `model` (or any other) key is dropped here,
+/// so no model choice can pass through the tool.
 fn parse_delegate(args: &Value) -> Result<DelegateRequest, String> {
     let brief = args["brief"].as_str().map(str::trim).filter(|b| !b.is_empty()).ok_or("`brief` is required: a non-empty string")?;
     let files = string_list(args, "files")?.unwrap_or_default();
-    let read_only = args.get("read_only").and_then(Value::as_bool).unwrap_or(false);
-    Ok(DelegateRequest { brief: brief.to_string(), files, read_only })
+    let flag = |key: &str| args.get(key).and_then(Value::as_bool).unwrap_or(false);
+    Ok(DelegateRequest { brief: brief.to_string(), files, read_only: flag("read_only"), review: flag("review") })
 }
 
 /// A `files` argument: absent (or null) is `None`, otherwise a list of strings.
@@ -199,7 +213,8 @@ async fn call_tool(server: &Server, params: &Value) -> Result<Value, String> {
             Ok(outcome(server.api.merge(worker_id_arg(args)?, files).await))
         }
         "discard" => Ok(outcome(server.api.discard(worker_id_arg(args)?).await)),
-        other => Err(format!("unknown tool `{other}` (delegate, show_diff, merge, discard)")),
+        "undo" => Ok(outcome(server.api.undo(worker_id_arg(args)?).await)),
+        other => Err(format!("unknown tool `{other}` (delegate, show_diff, merge, discard, undo)")),
     }
 }
 
@@ -256,6 +271,7 @@ impl Lazy {
             .with_log(log::path_from_env("JEV_DELEGATE_LOG", "orchestration.jsonl"))
             .with_planner(self.planner.clone())
             .with_guards(jev_router::guard::Guards::load(Some(&state), &self.dir))
+            .with_auto_merge(auto_merge_on(jev_router::envfile::lookup("JEV_AUTO_MERGE").as_deref()))
             .with_store(&state);
         // Workers an earlier run left: reload the mergeable ones, remove the abandoned ones.
         delegator.recover().await;
@@ -294,6 +310,15 @@ impl DelegateApi for Lazy {
     fn discard(&self, worker_id: String) -> BoxFut<'_, Result<String, String>> {
         Box::pin(async move { self.known().await?.discard(&worker_id).await })
     }
+
+    fn undo(&self, worker_id: String) -> BoxFut<'_, Result<String, String>> {
+        Box::pin(async move { self.known().await?.undo(&worker_id).await })
+    }
+}
+
+/// Auto-merge is on unless `JEV_AUTO_MERGE` says off (`0`, `off`, `false`, `no`).
+fn auto_merge_on(setting: Option<&str>) -> bool {
+    !setting.map(str::trim).is_some_and(|v| ["0", "off", "false", "no"].iter().any(|off| v.eq_ignore_ascii_case(off)))
 }
 
 /// `--dir` and `--planner` from the command line.
@@ -366,7 +391,7 @@ mod tests {
     use super::*;
     use std::sync::Mutex;
 
-    use jev_router::delegate::FileStat;
+    use jev_router::delegate::{FileStat, Landing, ReviewReason};
 
     /// Records every call; its worker report is canned.
     #[derive(Default)]
@@ -375,6 +400,7 @@ mod tests {
         merged: Mutex<Vec<(String, Option<Vec<String>>)>>,
         shown: Mutex<Vec<(String, Option<String>, usize)>>,
         discarded: Mutex<Vec<String>>,
+        undone: Mutex<Vec<String>>,
     }
 
     impl DelegateApi for FakeApi {
@@ -395,6 +421,7 @@ mod tests {
                     ok: true,
                     error: None,
                     retries: vec![],
+                    landing: Landing::Review(ReviewReason::NoTestCommand),
                 }
             })
         }
@@ -409,6 +436,10 @@ mod tests {
         fn discard(&self, id: String) -> BoxFut<'_, Result<String, String>> {
             self.discarded.lock().unwrap().push(id.clone());
             Box::pin(async move { Ok(format!("discarded {id}")) })
+        }
+        fn undo(&self, id: String) -> BoxFut<'_, Result<String, String>> {
+            self.undone.lock().unwrap().push(id.clone());
+            Box::pin(async move { if id == "moved-on" { Err("could not undo".into()) } else { Ok(format!("undid {id}")) } })
         }
     }
 
@@ -454,12 +485,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn tools_list_has_four_tools_and_delegate_has_no_model_field() {
+    async fn tools_list_has_five_tools_and_delegate_has_no_model_field() {
         let (s, _) = rig();
         let r = send(&s, json!({ "jsonrpc": "2.0", "id": 3, "method": "tools/list" })).await;
         let tools = r["result"]["tools"].as_array().unwrap();
         let names: Vec<_> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
-        assert_eq!(names, ["delegate", "show_diff", "merge", "discard"]);
+        assert_eq!(names, ["delegate", "show_diff", "merge", "discard", "undo"]);
         for t in tools {
             assert_eq!(t["inputSchema"]["type"], "object");
             assert!(t["inputSchema"]["required"].is_array());
@@ -468,16 +499,19 @@ mod tests {
         assert_eq!(tools[1]["annotations"], json!({ "readOnlyHint": true }));
         assert_eq!(tools[2]["annotations"], json!({ "readOnlyHint": false, "destructiveHint": false }));
         assert_eq!(tools[3]["annotations"], json!({ "readOnlyHint": false, "destructiveHint": true }));
+        assert_eq!(tools[4]["annotations"], json!({ "readOnlyHint": false, "destructiveHint": true }), "undo changes the working tree");
+        assert_eq!(tools[4]["inputSchema"]["required"], json!(["worker_id"]));
         let delegate = &tools[0];
         let props = delegate["inputSchema"]["properties"].as_object().unwrap();
-        assert_eq!(props.keys().map(String::as_str).collect::<Vec<_>>().len(), 3);
-        assert!(props.contains_key("brief") && props.contains_key("files") && props.contains_key("read_only"));
+        assert_eq!(props.keys().map(String::as_str).collect::<Vec<_>>(), ["brief", "files", "read_only", "review"]);
+        assert_eq!(props["review"]["type"], "boolean");
         assert!(!props.contains_key("model") && !delegate.to_string().contains("\"model\""));
         assert_eq!(delegate["inputSchema"]["required"], json!(["brief"]));
         // The descriptions carry the guidance the planner needs.
         let d = delegate["description"].as_str().unwrap();
-        assert!(d.contains("independent") && d.contains("self-contained") && d.contains("Review the returned diff") && d.contains("merge only what you verified"));
+        assert!(d.contains("independent") && d.contains("self-contained") && d.contains("review the diff yourself") && d.contains("merge only what you verified"));
         assert!(d.contains("EVERY file") && d.contains("show_diff"));
+        assert!(d.contains("AUTO-MERGED") && d.contains("undo(worker_id)") && d.contains("plan mode") && d.contains("uncommitted edits"));
         let show = &tools[1];
         assert_eq!(show["inputSchema"]["required"], json!(["worker_id"]));
         let props = show["inputSchema"]["properties"].as_object().unwrap();
@@ -495,7 +529,7 @@ mod tests {
     #[tokio::test]
     async fn delegate_runs_through_the_delegator_and_returns_the_report() {
         let (s, api) = rig();
-        let r = send(&s, call(4, "delegate", json!({ "brief": "add a retry", "files": ["src/net.rs"], "read_only": false }))).await;
+        let r = send(&s, call(4, "delegate", json!({ "brief": "add a retry", "files": ["src/net.rs"], "read_only": false, "review": true }))).await;
         assert_eq!(r["result"]["isError"], false);
         let text = r["result"]["content"][0]["text"].as_str().unwrap();
         assert!(text.contains("worker w1") && text.contains("added the retry") && text.contains("diff"));
@@ -503,7 +537,8 @@ mod tests {
         // Every changed file is listed with its counts, and the one not shown says how to read it.
         assert!(text.contains("src/net.rs +3 -1") && text.contains("src/big.rs +900 -0"), "{text}");
         assert!(text.contains("NOT SHOWN") && text.contains("src/big.rs") && text.contains("show_diff(w1, file)"), "{text}");
-        assert_eq!(*api.delegated.lock().unwrap(), vec![DelegateRequest { brief: "add a retry".into(), files: vec!["src/net.rs".into()], read_only: false }]);
+        assert!(text.contains("Not auto-merged"), "{text}");
+        assert_eq!(*api.delegated.lock().unwrap(), vec![DelegateRequest { brief: "add a retry".into(), files: vec!["src/net.rs".into()], read_only: false, review: true }]);
     }
 
     #[tokio::test]
@@ -519,7 +554,7 @@ mod tests {
         let r = send(&s, call(5, "delegate", json!({ "brief": "do it", "model": "claude-opus-5-5", "provider": "codex", "read_only": true }))).await;
         assert_eq!(r["result"]["isError"], false, "not rejected, just not heard");
         // The request the delegator received has only the three real fields; there is no place for a model.
-        assert_eq!(*api.delegated.lock().unwrap(), vec![DelegateRequest { brief: "do it".into(), files: vec![], read_only: true }]);
+        assert_eq!(*api.delegated.lock().unwrap(), vec![DelegateRequest { brief: "do it".into(), files: vec![], read_only: true, review: false }]);
         assert_eq!(parse_delegate(&json!({ "brief": "x", "model": "opus" })).unwrap(), parse_delegate(&json!({ "brief": "x" })).unwrap());
     }
 
@@ -547,6 +582,27 @@ mod tests {
         assert_eq!(*api.discarded.lock().unwrap(), ["w2"]);
         let r = send(&s, call(10, "merge", json!({}))).await;
         assert_eq!(r["error"]["code"], -32602);
+    }
+
+    #[tokio::test]
+    async fn undo_passes_the_worker_id_through_and_shows_a_refusal_to_the_model() {
+        let (s, api) = rig();
+        let r = send(&s, call(30, "undo", json!({ "worker_id": "w1", "model": "x" }))).await;
+        assert_eq!((r["result"]["isError"].clone(), r["result"]["content"][0]["text"].clone()), (json!(false), json!("undid w1")));
+        let r = send(&s, call(31, "undo", json!({ "worker_id": "moved-on" }))).await;
+        assert_eq!(r["result"]["isError"], true);
+        assert_eq!(send(&s, call(32, "undo", json!({}))).await["error"]["code"], -32602);
+        assert_eq!(*api.undone.lock().unwrap(), ["w1", "moved-on"]);
+    }
+
+    #[test]
+    fn auto_merge_is_on_unless_switched_off() {
+        for on in [None, Some("1"), Some("on"), Some(""), Some("yes")] {
+            assert!(auto_merge_on(on), "{on:?}");
+        }
+        for off in ["0", "off", "OFF", " false ", "no"] {
+            assert!(!auto_merge_on(Some(off)), "{off}");
+        }
     }
 
     #[tokio::test]

@@ -36,6 +36,17 @@ cargo build --all-targets && scripts/cached-test.sh
 git commit -am "Release X.Y.Z"      # tags are optional; the last one is v1.4.0
 ```
 
+## Code design: SOLID and DRY
+
+All code must follow SOLID and DRY.
+
+- **S, Single Responsibility:** a module, type or function has one reason to change. Example: `workercheck` runs tests; `delegate` decides what to do with the result.
+- **O, Open/Closed:** add behaviour by adding code (a new trait impl, a new enum variant handled in one `match`) rather than by editing working code in many places.
+- **L, Liskov Substitution:** every implementation of a trait keeps that trait's contract, including what the doc comment promises (for example, "on failure nothing changes"). A test fake must behave like the real implementation.
+- **I, Interface Segregation:** keep traits small and focused. A caller should not depend on methods it does not use. Split a growing trait rather than adding unrelated methods to it.
+- **D, Dependency Inversion:** core logic depends on traits, not on concrete IO. Git, processes, clocks, the network and disk come in through injected traits (`Worktrees`, `Checks`, `Records`, `Liveness`, `BackendFactory`), so tests can use fakes.
+- **DRY, Don't Repeat Yourself:** each piece of knowledge lives in one place. Before writing a helper, look for an existing one and reuse or extend it. When the same logic, constant or string appears twice, extract it. Two things that only look alike but would change for different reasons may stay separate.
+
 ## Conventions
 
 - Add a bullet under `## Unreleased` in `CHANGELOG.md` for every user-visible change, written for humans (no review-round labels). Format and release steps: `docs/changelog-guide.md`.

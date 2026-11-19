@@ -30,6 +30,7 @@ pub mod console;
 pub mod cooldown;
 pub mod ctxintel;
 pub mod delegate;
+pub mod workercheck;
 pub mod diffcmd;
 pub mod diffparse;
 pub mod doctor;
