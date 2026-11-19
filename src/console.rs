@@ -866,13 +866,12 @@ impl Inner {
                 }
             }
             Event::Hint(t) => {
-                let text = hint_line(t, style, width);
-                match self.run.last_mut() {
-                    Some(held) if is_allow_note(t) => held.rows.push(text),
-                    _ => {
-                        self.flush_run();
-                        self.emit_err(&text);
-                    }
+                // That a call went through unasked is what the mode in the footer already
+                // says; under every call it was only noise.
+                if !is_allow_note(t) {
+                    let text = hint_line(t, style, width);
+                    self.flush_run();
+                    self.emit_err(&text);
                 }
             }
             Event::Steered(text) => {

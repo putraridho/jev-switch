@@ -22,7 +22,8 @@ See [docs/changelog-guide.md](docs/changelog-guide.md) for changelog formatting,
 - **Reasoning no longer fills the scrollback.** The model's thinking is not printed between tool calls; its latest line shows on the working row (`Thinking · …`) and goes with the turn, leaving the tool rows and a short answer. `JEV_SHOW_THINKING=1` prints it as before.
 - **Long runs of tool calls fold.** The first five calls of a run print as they happen; any after that are held and printed as one row (`⏺ 7 more tool calls · Bash ×5 · Read ×2`) when the run ends, with the calls that failed shown in full. Edits and delegations always print on their own. `JEV_TOOL_ROWS=all` prints every call.
 - **No gap under the input box.** Beside the side panel, the router row and footer sit right under the box instead of at the bottom of the panel.
-- **Quieter auto-allow.** `✓ auto-allowed <command>` no longer repeats the command under the tool row that already shows it: a short dim `✓ auto-allowed` instead.
+- **No auto-allow row.** Calls allowed without asking no longer print `✓ auto-allowed` under them: the mode in the footer already says it.
+- **Antigravity tool rows say what runs.** A call whose first message names only the tool (`run_command`) gets its row when its command arrives (`Bash cargo test -q`); Antigravity's `CommandLine`, `TargetFile` and `AbsolutePath` inputs are read.
 
 ## 1.4.0
 

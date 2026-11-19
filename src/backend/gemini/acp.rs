@@ -6,7 +6,7 @@ use std::collections::HashMap;
 
 use serde_json::{json, Value};
 
-use super::{finish_or_empty, tool_summary, Event, TurnRequest, Usage};
+use super::{finish_or_empty, Event, TurnRequest, Usage};
 use crate::backend::{Decision, PermissionRequest};
 use crate::mode::Mode;
 
@@ -18,6 +18,8 @@ pub(super) struct Acp {
     usage: Usage,
     outbound: Vec<String>,
     calls: HashMap<String, Value>,
+    /// Calls whose tool row was sent: a call is announced once it says what it does.
+    announced: std::collections::HashSet<String>,
     permissions: HashMap<String, Value>,
     mode: String,
     active: bool,
@@ -150,18 +152,21 @@ impl Acp {
             }
             Some("tool_call" | "tool_call_update") => {
                 let Some(id) = update["toolCallId"].as_str() else { return vec![] };
-                let first = !self.calls.contains_key(id);
                 let call = self.calls.entry(id.into()).or_insert_with(|| json!({}));
                 if let Some(fields) = update.as_object() {
                     for (k, v) in fields {
                         call[k] = v.clone();
                     }
                 }
-                if first {
-                    return vec![Event::Tool(tool_summary(
-                        call["name"].as_str().or(call["title"].as_str()).unwrap_or("tool"),
-                        &call["rawInput"],
-                    ))];
+                // Antigravity's first message about a call often has only its name; what it
+                // runs comes in an update. The row waits for that, or for the call to end.
+                if !self.announced.contains(id) {
+                    let ended = matches!(call["status"].as_str(), Some("completed" | "failed"));
+                    let name = call["name"].as_str().or(call["title"].as_str()).unwrap_or("tool").to_string();
+                    if let Some(summary) = tool_row_summary(call).or_else(|| ended.then_some(name)) {
+                        self.announced.insert(id.into());
+                        return vec![Event::Tool(summary)];
+                    }
                 }
             }
             Some("usage_update") => {
@@ -230,6 +235,30 @@ impl Acp {
             None => cancelled(&ev["id"]),
         })
     }
+}
+
+/// How a call reads on its tool row: a shell command as `Bash <command>`, whichever field its
+/// raw input names it by (`command`, Antigravity's `CommandLine`), so it reads as any other
+/// provider's; else the tool's name and its most telling input. `None` while the call has
+/// said nothing beyond its name. Display only: approval never reads a command from here.
+fn tool_row_summary(call: &Value) -> Option<String> {
+    let raw = &call["rawInput"];
+    let short = |s: &str| s.chars().take(100).collect::<String>();
+    let name = call["name"].as_str().or(call["title"].as_str()).unwrap_or("tool");
+    if let Some(command) = raw["command"].as_str().or(raw["CommandLine"].as_str()).filter(|c| !c.trim().is_empty()) {
+        return Some(format!("Bash {}", short(command)));
+    }
+    let telling = ["TargetFile", "AbsolutePath", "SearchPath", "DirectoryPath", "Query", "Url", "file_path", "path", "pattern", "url", "query"]
+        .iter()
+        .find_map(|k| raw[*k].as_str())
+        .filter(|t| !t.trim().is_empty());
+    if let Some(t) = telling {
+        return Some(format!("{name} {}", short(t)));
+    }
+    if raw.as_object().is_some_and(|o| !o.is_empty()) {
+        return Some(name.to_string());
+    }
+    call["title"].as_str().filter(|t| !t.trim().is_empty() && Some(*t) != call["name"].as_str()).map(|t| format!("{name} {}", short(t)))
 }
 
 /// An Antigravity tool's name as the approval rules see it. A name like Claude Code's own
@@ -369,6 +398,24 @@ mod tests {
                 assert_eq!(reply["result"]["outcome"]["optionId"], "no");
             }
         }
+    }
+
+    #[test]
+    fn a_call_announced_by_name_alone_gets_its_row_when_its_command_arrives() {
+        let mut acp = Acp::default();
+        setup(&mut acp, Mode::Auto, None);
+        let first = acp.parse(&update(json!({"sessionUpdate":"tool_call","toolCallId":"c","name":"run_command","kind":"execute","status":"pending"})));
+        assert!(first.is_empty(), "no row from the name alone: {first:?}");
+        let later = acp.parse(&update(json!({"sessionUpdate":"tool_call_update","toolCallId":"c","rawInput":{"CommandLine":"cargo test -q"}})));
+        assert_eq!(later, vec![Event::Tool("Bash cargo test -q".into())]);
+        let again = acp.parse(&update(json!({"sessionUpdate":"tool_call_update","toolCallId":"c","status":"completed"})));
+        assert!(again.is_empty(), "one row per call");
+        // A call that ends without saying more still shows, by name.
+        acp.parse(&update(json!({"sessionUpdate":"tool_call","toolCallId":"d","name":"manage_task"})));
+        let ended = acp.parse(&update(json!({"sessionUpdate":"tool_call_update","toolCallId":"d","status":"completed"})));
+        assert_eq!(ended, vec![Event::Tool("manage_task".into())]);
+        let file = acp.parse(&update(json!({"sessionUpdate":"tool_call","toolCallId":"e","name":"view_file","rawInput":{"AbsolutePath":"/p/a.rs"}})));
+        assert_eq!(file, vec![Event::Tool("view_file /p/a.rs".into())]);
     }
 
     #[test]
