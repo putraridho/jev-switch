@@ -1882,22 +1882,20 @@ mod tests {
 
     #[test]
     fn a_same_size_edit_in_the_same_second_as_the_commit_is_never_missed() {
-        // The racy-git case behind a once-in-40-runs failure: rewrite a committed file
-        // with the same length immediately after the commit, many times over. Each round has
-        // its own repository, so the rounds run side by side (one after another they were
-        // the slowest test of the suite by far).
         std::thread::scope(|scope| {
-            for _ in 0..30 {
-                scope.spawn(|| {
-                    let s = repo();
-                    let before = snapshot(s.path()).unwrap();
-                    s.write("a.txt", "ONE\ntwo\nthree\n"); // same size as "one\ntwo\nthree\n"
-                    let after = snapshot(s.path()).unwrap();
-                    assert_ne!(before.tree, after.tree, "the edit must be seen");
-                    let sum = summarize(s.path(), &before, &after).unwrap();
-                    assert_eq!(sum.files.len(), 1);
-                    undo(s.path(), &sum).unwrap();
-                    assert_eq!(std::fs::read_to_string(s.path().join("a.txt")).unwrap(), "one\ntwo\nthree\n");
+            for worker in 0..4 {
+                scope.spawn(move || {
+                    for _ in (worker..30).step_by(4) {
+                        let s = repo();
+                        let before = snapshot(s.path()).unwrap();
+                        s.write("a.txt", "ONE\ntwo\nthree\n");
+                        let after = snapshot(s.path()).unwrap();
+                        assert_ne!(before.tree, after.tree, "the edit must be seen");
+                        let sum = summarize(s.path(), &before, &after).unwrap();
+                        assert_eq!(sum.files.len(), 1);
+                        undo(s.path(), &sum).unwrap();
+                        assert_eq!(std::fs::read_to_string(s.path().join("a.txt")).unwrap(), "one\ntwo\nthree\n");
+                    }
                 });
             }
         });

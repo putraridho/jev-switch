@@ -722,6 +722,9 @@ beat any guess. Re-run `tune` when prompts, models, or request mix change.
   `cargo test`), `changed` (only the library test modules of the files changed since `HEAD`, a quick
   check), `pty [names]` (PTY scenarios), `clear`. A run whose inputs (sources, manifests, cargo
   config; for PTY the built binary and the script) are unchanged since it passed is skipped.
+- Tests default to eight harness threads, and the 30-round Git regression uses at most four
+  workers, avoiding file-descriptor exhaustion on terminals with a low open-file limit.
+  Override the harness limit with `RUST_TEST_THREADS` or `cargo test -- --test-threads=N`.
 - `src/delegate.rs`, `src/orchestrate.rs`, `src/bin/delegate_mcp.rs` — cross-provider orchestration:
   worker choice and worktrees, planner choice and tool attachment, the MCP server.
 - `src/bin/orch_tune.rs` — scores logged prompts with `multi_part` to pick `ORCH_TRIGGER_P`.

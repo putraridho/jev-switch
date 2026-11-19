@@ -4,6 +4,13 @@ See [docs/changelog-guide.md](docs/changelog-guide.md) for changelog formatting,
 
 ## Unreleased
 
+### Fixes
+- **Bounded test concurrency.** Tests default to eight harness threads instead of 24, and the 30-round Git regression uses four workers instead of spawning all 30 at once, reducing open-file pressure that could fail Git-backed tests.
+
+## 1.5.0
+
+A terminal UI revamp (shaded prompts, light/dark themes, a btop-style side panel, live workers, quieter tool output), models that no longer promise updates they cannot give, and faster tests and reinstalls.
+
 ### Features
 - **Start on a clean screen.** `jev-code` and `jev-claude` clear the terminal (screen and scrollback) when an interactive session opens, so the session owns the display. Pipes, `--no-color` and `-p` runs never get escape bytes.
 - **↑ brings a queued message back.** While a turn runs, a message you sent is queued; with an empty box, ↑ takes the newest one out of the queue and puts it back in the box for editing instead of walking history first.
