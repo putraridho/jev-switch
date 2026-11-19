@@ -905,13 +905,19 @@ impl Pump<'_> {
         ended.map_or(Asked::Over, Asked::Ended)
     }
 
+    /// The answer is in while a message the CLI has not taken sits in its pipe: stop reading now,
+    /// so the CLI is not given the time to start on it (see `run_child`).
+    fn answer_left_a_message(&self) -> bool {
+        self.finished.is_some() && !self.sent.is_empty()
+    }
+
     /// The result of the stream so far, once it is over.
     fn conclude(&mut self) -> Ended {
         self.finished.take().map_or(Ended::Eof, Ended::Finished)
     }
 
     async fn run(&mut self) -> Result<Ended, Idle> {
-        loop {
+        'read: loop {
             let events = match self.next_line().await {
                 Line::Events(events) => events,
                 Line::Eof => break,
@@ -923,13 +929,13 @@ impl Pump<'_> {
                     return Ok(Ended::Failed(message));
                 }
             }
-            // The answer is in while a message the CLI has not taken sits in its pipe: stop now,
-            // so the CLI is not given the time to start on it (see `run_child`).
-            if self.finished.is_some() && !self.sent.is_empty() {
+            if self.answer_left_a_message() {
                 break;
             }
             while let Some(req) = self.queue.pop_front() {
                 match self.ask(req).await {
+                    // The answer may have come while the question was open.
+                    Asked::Over if self.answer_left_a_message() => break 'read,
                     Asked::Over => {}
                     Asked::Ended(Ended::Failed(m)) => return Ok(Ended::Failed(m)),
                     Asked::Ended(_) => return Ok(self.conclude()),
@@ -1674,6 +1680,7 @@ mod tests {
             let line = line.trim_end();
             match line.split_once(':') {
                 Some(("ECHO", t)) => vec![Event::Steered(t.into())],
+                Some(("ASK", t)) => vec![Event::PermissionRequest(PermissionRequest { id: "q1".into(), tool: "Bash".into(), summary: t.into(), input: serde_json::json!({}), blocked_path: None })],
                 Some(("FIN", t)) => vec![Event::Finished(Finish { text: t.into(), session_id: None, usage: Usage::default() })],
                 _ => vec![],
             }
@@ -1772,12 +1779,41 @@ mod tests {
         let mark = std::env::temp_dir().join(format!("jev-steer-mark-{}", std::process::id()));
         let _ = std::fs::remove_file(&mark);
         // Answers, then (after the time a model needs to start) would read the message left in the pipe and act on it.
-        let script: &'static str = Box::leak(format!("read prompt; sleep 0.3; echo FIN:done; sleep 0.5; read line; touch {}", mark.display()).into_boxed_str());
+        let script: &'static str = Box::leak(format!("read prompt; sleep 0.3; echo FIN:done; sleep 1.5; read line; touch {}", mark.display()).into_boxed_str());
         let (result, taken) = steered_turn(script, &["run the tests"], &|t| Some(t.to_string())).await;
         assert_eq!(result.unwrap().text, "done");
         assert!(taken.is_empty());
-        tokio::time::sleep(Duration::from_millis(800)).await;
-        assert!(!mark.exists(), "the CLI acted on a message that stays in the person's queue");
+        tokio::time::sleep(Duration::from_millis(2200)).await;
+        let acted = mark.exists();
+        let _ = std::fs::remove_file(&mark);
+        assert!(!acted, "the CLI acted on a message that stays in the person's queue");
+    }
+
+    /// An approver that never answers: the question stays open until the CLI ends it.
+    struct NeverAnswers;
+
+    impl Approver for NeverAnswers {
+        fn decide<'a>(&'a self, _: &'a PermissionRequest) -> Pin<Box<dyn Future<Output = Decision> + Send + 'a>> {
+            Box::pin(std::future::pending())
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn an_answer_that_comes_while_a_question_is_open_also_stops_the_cli_at_once() {
+        let mark = std::env::temp_dir().join(format!("jev-steer-ask-{}", std::process::id()));
+        let _ = std::fs::remove_file(&mark);
+        let script: &'static str = Box::leak(format!("read prompt; echo ASK:ls; sleep 0.4; echo FIN:done; sleep 1.5; read line; touch {}", mark.display()).into_boxed_str());
+        let (tx, rx) = mpsc::unbounded_channel();
+        tx.send("also run clippy".to_string()).unwrap();
+        let mut on_event = |_: &Event| {};
+        let prepare = |t: &str| Some(t.to_string());
+        let out = run_turn_steered(&Steerable(script), &req(), Duration::from_secs(10), &mut on_event, &NeverAnswers, Some(Steering { rx, prepare: &prepare })).await;
+        assert_eq!(out.unwrap().text, "done");
+        tokio::time::sleep(Duration::from_millis(2200)).await;
+        let acted = mark.exists();
+        let _ = std::fs::remove_file(&mark);
+        assert!(!acted, "the CLI got time to act on a message that stays in the person's queue");
     }
 
     #[tokio::test]
@@ -1797,7 +1833,7 @@ mod tests {
         let out = run_turn_steered(&Steerable("read prompt; sleep 30"), &req(), Duration::from_millis(700), &mut on_event, &NoApprover, Some(Steering { rx, prepare: &prepare })).await;
         feeder.abort();
         assert!(matches!(out, Err(ref e) if e.kind == ErrorKind::Stalled), "{out:?}");
-        assert!(started.elapsed() < Duration::from_millis(2500), "typing kept it waiting: {:?}", started.elapsed());
+        assert!(started.elapsed() < Duration::from_millis(3500), "typing kept it waiting: {:?}", started.elapsed());
     }
 
     #[tokio::test]

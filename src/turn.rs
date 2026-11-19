@@ -1047,7 +1047,12 @@ impl Engine {
             // What was added during an earlier attempt goes to the next model only if the policy
             // lets that model have it.
             let provider = chosen.spec.provider;
-            let allowed: Vec<String> = steered.iter().filter(|t| self.guards.text_permitted(&self.dir, t, provider)).cloned().collect();
+            let (allowed, kept_out): (Vec<String>, Vec<String>) = steered.iter().cloned().partition(|t| self.guards.text_permitted(&self.dir, t, provider));
+            // They left the queue when the first model took them: say what did not follow.
+            for text in &kept_out {
+                let shown = text.lines().next().unwrap_or_default();
+                ui.note(&format!("not passed on to {provider} (your privacy rules), so this model does not have what you added during the turn: {shown}"));
+            }
             let attempt = self.run_attempt(chosen, &with_steered(prompt, &allowed), ui, cancel).await;
             steered.extend(attempt.steered.iter().cloned());
             self.turn_activity.add_tools(&attempt.tools);
