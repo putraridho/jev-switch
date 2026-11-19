@@ -27,6 +27,14 @@ cargo run --bin code               # run jev-code from source
 - Python scripts are run with `python3 -I`. Tests default to 8 threads (`.cargo/config.toml`); many tests create temp git repos, so keep concurrency bounded.
 - `JEV_API_KEY` is needed for real runs (copy `.jev-router.env.example` to `~/.jev-router.env`); tests use fakes and need no accounts.
 
+## Release
+
+```bash
+# 1. Cargo.toml version (Cargo.lock updates on build); 2. move CHANGELOG `## Unreleased` under `## X.Y.Z`
+cargo build --all-targets && scripts/cached-test.sh
+git commit -am "Release X.Y.Z"      # tags are optional; the last one is v1.4.0
+```
+
 ## Conventions
 
 - Add a bullet under `## Unreleased` in `CHANGELOG.md` for every user-visible change, written for humans (no review-round labels). Format and release steps: `docs/changelog-guide.md`.
@@ -39,4 +47,6 @@ cargo run --bin code               # run jev-code from source
 
 - `scripts/install.sh` kills a running `jev-gateway` so it restarts on the new binary.
 - Git-backed tests need a git identity (`git config user.email/name`).
+- Turn records (`TurnRecord`, `TurnReport`, `audit::Event::Turn`) are built as struct literals in many tests; adding a field means fixing each. New audit fields need `#[serde(default)]` so old `audit.jsonl` lines still read.
+- Runtime state, including the audit log, is in `~/.local/state/jev-router/` (`audit.jsonl`: per-turn model, time and tokens; `/bench` reads it).
 - `NEXT.md` is a stale handoff note, not a spec; `.claude/` is gitignored.
