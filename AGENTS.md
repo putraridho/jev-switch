@@ -16,7 +16,8 @@ jev-router: a Rust crate (edition 2021, Rust 1.83+) with two products. `jev-code
 cargo build --all-targets
 scripts/cached-test.sh changed     # quick check: lib tests for files changed since HEAD
 scripts/cached-test.sh             # full cargo test (skipped if inputs unchanged since last pass)
-scripts/cached-test.sh pty [name]  # PTY UX scenarios against the real binary, fake model CLI
+scripts/cached-test.sh pty [name]  # PTY UX scenarios against the real binary, fake model CLI (4 in parallel, ~1 min;
+                                   # `JEV_PTY_JOBS=n` sets the width; scenarios that passed on this binary are skipped, `JEV_PTY_FRESH=1` reruns)
 cargo test <module>::              # one module
 ./scripts/install.sh               # builds the `local` profile and installs to ~/.local/bin
 cargo run --bin code               # run jev-code from source

@@ -115,6 +115,33 @@ fn choice_runs(command: &str, choice: &str) -> bool {
     !matches!((command, choice), ("/permissions", "allow" | "remove" | "dir") | ("/mcp", "login"))
 }
 
+/// `/skill `: its three words and every skill with its description; `/skill show `: the skills.
+fn skill_menu(before: &str, ctx: &CompleteCtx, from: usize) -> Option<Menu> {
+    let words: Vec<&str> = before.split_whitespace().collect();
+    let typing_next = before.ends_with(char::is_whitespace);
+    let index = if typing_next { words.len() } else { words.len() - 1 };
+    let prefix = if typing_next { "" } else { words[words.len() - 1] };
+    let skill_item = |s: &uifmt::SkillChoice, runs_now: bool| Item {
+        label: if s.hint.is_empty() || !runs_now { s.name.clone() } else { format!("{} {}", s.name, s.hint) },
+        detail: s.description.clone(),
+        replacement: s.name.clone(),
+        then: if runs_now && !s.hint.is_empty() { Then::Arguments } else { Then::Run },
+    };
+    let items: Vec<Item> = match (index, words.get(1).copied()) {
+        (1, _) => {
+            let word = |w: &str, about: &str, then| Item { label: w.to_string(), detail: about.to_string(), replacement: w.to_string(), then };
+            [word("list", "every skill, and how to use them", Then::Run), word("show", "read a skill before running it", Then::Arguments), word("new", "start a skill in this project", Then::Arguments)]
+                .into_iter()
+                .chain(ctx.skills.iter().map(|s| skill_item(s, true)))
+                .filter(|i| i.replacement.starts_with(&prefix.to_lowercase()))
+                .collect()
+        }
+        (2, Some("show")) => ctx.skills.iter().filter(|s| s.name.starts_with(&prefix.to_lowercase())).map(|s| skill_item(s, false)).collect(),
+        _ => Vec::new(),
+    };
+    (!items.is_empty()).then(|| Menu { items, selected: 0, from, title: "skills".into(), navigated: false })
+}
+
 /// The menu for the text before the cursor, or `None` when there is nothing to offer.
 /// `tracked` is the project's git-tracked files, for `@` paths.
 pub fn build(before: &str, ctx: &CompleteCtx, project: &Path, tracked: &[String]) -> Option<Menu> {
@@ -142,6 +169,9 @@ pub fn build(before: &str, ctx: &CompleteCtx, project: &Path, tracked: &[String]
         return (!items.is_empty()).then(|| Menu { items, selected: 0, from, title: "commands".into(), navigated: false });
     }
     let command = before.split_whitespace().next().unwrap_or_default();
+    if command == "/skill" {
+        return skill_menu(before, ctx, from);
+    }
     let items: Vec<Item> = uifmt::complete(before, ctx)
         .into_iter()
         .map(|c| {
@@ -157,7 +187,7 @@ mod tests {
     use super::*;
 
     fn menu(before: &str) -> Option<Menu> {
-        let ctx = CompleteCtx { ready_providers: vec!["claude".into(), "codex".into()], models: vec!["claude:claude-opus-5-5".into()], changed_files: vec!["src/a.rs".into()] };
+        let ctx = CompleteCtx { ready_providers: vec!["claude".into(), "codex".into()], models: vec!["claude:claude-opus-5-5".into()], changed_files: vec!["src/a.rs".into()], skills: vec![uifmt::SkillChoice { name: "db".into(), description: "Query the db".into(), hint: "[table]".into() }, uifmt::SkillChoice { name: "lint".into(), ..Default::default() }] };
         build(before, &ctx, Path::new("/nonexistent-project"), &["src/lib.rs".into(), "src/tui/menu.rs".into()])
     }
 
@@ -208,6 +238,21 @@ mod tests {
         assert_eq!(labels(&m), vec!["codex"]);
         let m = menu("/permissions ").expect("choices");
         assert_eq!(m.items[0].then, Then::Arguments, "`allow` needs a rule after it");
+    }
+
+    #[test]
+    fn skill_offers_its_words_then_the_skills_with_their_descriptions() {
+        let m = menu("/skill ").expect("choices");
+        assert_eq!(labels(&m), vec!["list", "show", "new", "db", "lint"]);
+        assert_eq!(m.title, "skills");
+        assert_eq!((m.items[3].label.as_str(), m.items[3].detail.as_str(), m.items[3].then), ("db [table]", "Query the db", Then::Arguments));
+        assert_eq!(m.items[4].then, Then::Run, "a skill with no arguments runs at once");
+        assert_eq!(labels(&menu("/skill l").unwrap()), vec!["list", "lint"]);
+        let m = menu("/skill show ").expect("skills only");
+        assert_eq!(labels(&m), vec!["db", "lint"]);
+        assert!(m.items.iter().all(|i| i.then == Then::Run));
+        assert_eq!(menu("/skill show d").unwrap().from, 12);
+        assert!(menu("/skill db ").is_none() && menu("/skill zzz").is_none());
     }
 
     #[test]

@@ -14,6 +14,11 @@ use crate::mode::Mode;
 use crate::workstation::panel::{compose, panel_rows, Section, PANEL_WIDTH, SPLIT_MIN_WIDTH};
 use crate::uifmt::{display_width,truncate_to_width, wrap_to_width, Spinner, Style};
 
+/// Below the side-by-side width, the panel stacks under the box down to this width; narrower
+/// than that, the one-row router summary is all that fits.
+const STACK_MIN_WIDTH: usize = 40;
+/// Full screen: a terminal shorter than this keeps the panel off (the chat needs the rows).
+const STACK_MIN_HEIGHT: usize = 30;
 /// The most rows of typed text the box shows; longer text scrolls with the cursor.
 pub const INPUT_ROWS: usize = 8;
 /// The most rows of a tool's input the approval card shows at once.
@@ -171,8 +176,23 @@ fn clock(ms: u64) -> String {
     format!("{}:{:02}", s / 60, s % 60)
 }
 
+/// Where the side panel goes relative to the live area.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Side {
+    /// Inline: beside the box when wide, under it when narrow.
+    Auto,
+    /// Full screen, wide: the panel is its own column, so the live area leaves it out.
+    Separate,
+    /// Too short a terminal to stack the panel: only the one-row router summary.
+    Compact,
+}
+
 /// Draw the live area for `width` terminal columns at time `now`.
 pub fn render(app: &App, width: usize, now: Instant, style: Style) -> Frame {
+    live(app, width, now, style, Side::Auto)
+}
+
+fn live(app: &App, width: usize, now: Instant, style: Style, place: Side) -> Frame {
     let th = Theme(style);
     // One column short of the terminal, so a full row never wraps.
     let w = width.saturating_sub(1).max(20);
@@ -210,7 +230,7 @@ pub fn render(app: &App, width: usize, now: Instant, style: Style) -> Frame {
         rows.extend(approval_card(a, w, &th));
     } else {
         // On a wide terminal the side panel (router, changed files) sits beside the box.
-        let side = if w >= SPLIT_MIN_WIDTH { panel_rows(&panel_sections(app, style), PANEL_WIDTH, style) } else { Vec::new() };
+        let side = if place == Side::Auto && w >= SPLIT_MIN_WIDTH { panel_rows(&panel_sections(app, style), PANEL_WIDTH, style) } else { Vec::new() };
         let main_w = if side.is_empty() { w } else { w - PANEL_WIDTH - 3 };
         let (box_rows, at) = input_box(app, main_w, &th);
         let top = rows.len();
@@ -221,7 +241,17 @@ pub fn render(app: &App, width: usize, now: Instant, style: Style) -> Frame {
         }
         if side.is_empty() {
             rows.extend(main);
-            rows.push(router_row(app, w, &th));
+            // Too narrow to sit beside the box, the panel moves under it, as wide as the
+            // box; it says what the router row would, so that row steps aside.
+            let stacked = if place == Side::Auto && w >= STACK_MIN_WIDTH { panel_rows(&[stacked_section(app, style)], w, style) } else { Vec::new() };
+            if stacked.is_empty() {
+                // Beside it in its own column, the panel says what this row would.
+                if place != Side::Separate {
+                    rows.push(router_row(app, w, &th));
+                }
+            } else {
+                rows.extend(stacked);
+            }
             rows.push(footer(app, w, now, &th));
         } else {
             // Beside the panel, the router row and footer sit right under the box: the panel is
@@ -232,6 +262,71 @@ pub fn render(app: &App, width: usize, now: Instant, style: Style) -> Frame {
         }
     }
     Frame { rows, cursor }
+}
+
+/// The panel's sections as one box, for under the input box: the router's rows, then the
+/// context meter and the branch on one row. Fewer rows than three boxes of their own.
+fn stacked_section(app: &App, style: Style) -> Section {
+    let mut sections = panel_sections(app, style).into_iter();
+    let mut rows = sections.next().map(|s| s.rows).unwrap_or_default();
+    let rest: Vec<String> = sections.flat_map(|s| s.rows).collect();
+    if !rest.is_empty() {
+        rows.push(rest.join(&style.dim("  ·  ")));
+    }
+    Section { title: "Router".into(), rows }
+}
+
+/// The sidebar at full height: its boxes from the top, the last one stretched down to the
+/// bottom row, so the column reads as one tall pane beside the chat. Exactly `height` rows.
+fn sidebar(app: &App, width: usize, height: usize, style: Style) -> Vec<String> {
+    let mut rows = panel_rows(&panel_sections(app, style), width, style);
+    if rows.is_empty() {
+        let empty = [Section { title: "jev-code".into(), rows: vec![String::new()] }];
+        rows = panel_rows(&empty, width, style);
+    }
+    rows.truncate(height);
+    // The last row of the last box is its bottom border: stretch it.
+    if rows.len() < height {
+        let bottom = rows.pop().unwrap_or_default();
+        let inner = width.saturating_sub(4);
+        let blank = format!("{} {} {}", style.dim("│"), " ".repeat(inner), style.dim("│"));
+        while rows.len() + 1 < height {
+            rows.push(blank.clone());
+        }
+        rows.push(bottom);
+    }
+    rows
+}
+
+/// The whole terminal, `cols` by `height`: the chat on top, the input box under it, and the
+/// side panel as a full-height column on the right. Below [`SPLIT_MIN_WIDTH`] columns the
+/// panel moves under the input box instead. Returns the frame (exactly `height` rows) and how
+/// many rows the chat pane has.
+pub fn render_full(app: &App, cols: usize, height: usize, now: Instant, style: Style) -> (Frame, usize) {
+    let w = cols.saturating_sub(1).max(20);
+    let wide = w >= SPLIT_MIN_WIDTH;
+    let main_w = if wide { w - PANEL_WIDTH - 3 } else { w };
+    let mut live = live(app, main_w, now, style, if wide { Side::Separate } else if height >= STACK_MIN_HEIGHT { Side::Auto } else { Side::Compact });
+    // A terminal too short for the live area keeps its bottom rows (the box and the footer).
+    if live.rows.len() > height {
+        let cut = live.rows.len() - height;
+        live.rows.drain(..cut);
+        live.cursor = live.cursor.and_then(|(r, c)| r.checked_sub(cut).map(|r| (r, c)));
+    }
+    let chat_h = height - live.rows.len();
+    let mut left: Vec<String> = app.transcript.window(chat_h).iter().map(|l| truncate_to_width(l, main_w)).collect();
+    left.extend(live.rows);
+    let cursor = live.cursor.map(|(r, c)| (r + chat_h, c));
+    let rows = if wide {
+        let side = sidebar(app, PANEL_WIDTH, height, style);
+        left.iter()
+            .zip(side.iter().chain(std::iter::repeat(&String::new())))
+            .map(|(l, r)| format!("{l}{}   {r}", " ".repeat(main_w.saturating_sub(display_width(l)))))
+            .collect()
+    } else {
+        left
+    };
+    (Frame { rows, cursor }, chat_h)
 }
 
 /// A usage meter, `▰▰▰▱▱▱▱▱`, filled in proportion to `pct` and coloured by how close to the
@@ -593,8 +688,88 @@ mod tests {
         assert!(wide.rows[0].contains("Router"), "{text}");
         assert!(text.contains("codex 71%") && text.contains("main ±3"), "{text}");
         assert!(wide.rows.iter().all(|r| display_width(r) < 140));
+        // Too narrow to sit beside the box, the panel stacks under it.
         let narrow = screen(&a, 80);
-        assert!(!narrow.contains("Router"), "{narrow}");
+        let (box_end, router) = (narrow.lines().position(|l| l.starts_with('╰')), narrow.lines().position(|l| l.contains("╭─ Router")));
+        assert!(box_end.is_some() && router > box_end, "{narrow}");
+        assert!(narrow.contains("codex    ▰▰▰▰▰▰▱▱  71%") && narrow.contains("main ±3"), "{narrow}");
+        assert!(!narrow.contains("⇄ auto"), "the panel replaces the router row: {narrow}");
+        // Narrower than that, the one-row router summary is what fits.
+        assert!(screen(&a, 30).contains("⇄ auto") && !screen(&a, 30).contains("Router"));
+    }
+
+    fn full_app() -> App {
+        let mut a = app();
+        a.fullscreen = true;
+        a.git = Some("main ±3".into());
+        a.providers = vec![crate::tui::app::ProviderChip { name: "codex".into(), used: Some(71), cooling: None }];
+        a.show("one\ntwo\nthree");
+        a
+    }
+
+    #[test]
+    fn full_screen_is_exactly_the_terminal_with_the_sidebar_at_full_height_beside_the_chat() {
+        let a = full_app();
+        let (f, pane) = render_full(&a, 140, 40, Instant::now(), OFF);
+        assert_eq!(f.rows.len(), 40);
+        assert!(f.rows.iter().all(|r| display_width(r) < 140), "no row reaches the last column");
+        // The chat's newest lines sit just above the box, the sidebar spans every row.
+        assert_eq!(f.rows[pane - 1].trim_end().split("   ").next().unwrap_or_default().trim_end(), "three");
+        assert!(f.rows[0].contains("╭─ Router") && f.rows[0].starts_with(' '), "{}", f.rows[0]);
+        assert!(f.rows[39].ends_with('╯'), "the sidebar's last box ends on the last row: {}", f.rows[39]);
+        // The cursor is in the box, under the chat.
+        let (row, col) = f.cursor.unwrap_or_default();
+        assert_eq!(row, pane + 1);
+        assert_eq!(col, 4);
+        assert!(f.rows[row].contains("Ask anything") || f.rows[row].contains('›'), "{}", f.rows[row]);
+    }
+
+    #[test]
+    fn full_screen_below_the_split_width_puts_the_panel_under_the_box_when_there_is_height() {
+        let a = full_app();
+        let (tall, pane_tall) = render_full(&a, 80, 40, Instant::now(), OFF);
+        let text = tall.rows.join("\n");
+        assert_eq!(tall.rows.len(), 40);
+        assert!(text.contains("╭─ Router") && !text.contains("⇄ auto"), "{text}");
+        let box_row = tall.rows.iter().position(|r| r.contains("Ask anything")).unwrap_or(0);
+        let router_row = tall.rows.iter().position(|r| r.contains("╭─ Router")).unwrap_or(0);
+        assert!(router_row > box_row && box_row >= pane_tall, "{text}");
+        // A short terminal keeps the rows for the chat: the one-row summary instead.
+        let (short, _) = render_full(&a, 80, 20, Instant::now(), OFF);
+        assert_eq!(short.rows.len(), 20);
+        let text = short.rows.join("\n");
+        assert!(text.contains("⇄ auto") && !text.contains("╭─ Router"), "{text}");
+    }
+
+    #[test]
+    fn full_screen_survives_a_terminal_shorter_than_the_live_area() {
+        let mut a = full_app();
+        a.on_front(FrontMsg::TurnStarted);
+        for height in [1, 3, 5, 8] {
+            let (f, _) = render_full(&a, 120, height, Instant::now(), OFF);
+            assert_eq!(f.rows.len(), height, "height {height}");
+            if let Some((r, _)) = f.cursor {
+                assert!(r < height);
+            }
+        }
+    }
+
+    #[test]
+    fn page_up_scrolls_the_chat_back_and_new_output_leaves_the_view_alone() {
+        let mut a = full_app();
+        a.show(&(0..60).map(|i| format!("line {i}")).collect::<Vec<_>>().join("\n"));
+        let (f, pane) = render_full(&a, 140, 30, Instant::now(), OFF);
+        a.pane_rows = pane;
+        assert!(f.rows[pane - 1].contains("line 59"));
+        a.on_key(KeyEvent::new(KeyCode::PageUp, KeyModifiers::NONE), Instant::now());
+        let (f, _) = render_full(&a, 140, 30, Instant::now(), OFF);
+        assert!(!f.rows[pane - 1].contains("line 59"), "{}", f.rows[pane - 1]);
+        a.show("a new line");
+        let (f, _) = render_full(&a, 140, 30, Instant::now(), OFF);
+        assert!(!f.rows.join("\n").contains("a new line"), "the view stays where it was");
+        a.on_key(KeyEvent::new(KeyCode::End, KeyModifiers::CONTROL), Instant::now());
+        let (f, _) = render_full(&a, 140, 30, Instant::now(), OFF);
+        assert!(f.rows[pane - 1].contains("a new line"));
     }
 
     #[test]

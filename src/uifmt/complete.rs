@@ -11,6 +11,17 @@ pub struct CompleteCtx {
     pub models: Vec<String>,
     /// Paths changed in this session, for `/diff`.
     pub changed_files: Vec<String>,
+    /// The skills `/skill` may name.
+    pub skills: Vec<SkillChoice>,
+}
+
+/// One skill as the menu shows it.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SkillChoice {
+    pub name: String,
+    pub description: String,
+    /// What it takes after its name (`[table]`); empty when nothing.
+    pub hint: String,
 }
 
 /// One completion. `replacement` replaces the word being completed (the text from
@@ -53,6 +64,7 @@ fn arg_choices(command: &str, ctx: &CompleteCtx) -> Vec<String> {
             .chain(ctx.models.iter().map(String::as_str))
             .chain(["sonnet", "opus", "haiku"])
             .collect(),
+        "/skill" => ["list", "show", "new"].into_iter().chain(ctx.skills.iter().map(|s| s.name.as_str())).collect(),
         "/diff" => ctx.changed_files.iter().map(String::as_str).filter(|f| !f.contains(char::is_whitespace)).collect(),
         _ => Vec::new(),
     };
@@ -129,11 +141,18 @@ mod tests {
             ready_providers: vec!["claude".into(), "codex".into()],
             models: vec!["claude:claude-sonnet-5-5".into(), "codex:gpt-6.1-sol".into(), "codex:gpt-6-luna".into()],
             changed_files: vec!["src/a.rs".into(), "src/b.rs".into(), "README.md".into(), "has space.txt".into()],
+            skills: vec![SkillChoice { name: "db".into(), ..Default::default() }],
         }
     }
 
     fn replacements(line: &str) -> Vec<String> {
         complete(line, &ctx()).into_iter().map(|c| c.replacement).collect()
+    }
+
+    #[test]
+    fn skill_completes_its_words_and_the_skills() {
+        assert_eq!(replacements("/skill "), ["list", "show", "new", "db"]);
+        assert_eq!(replacements("/skill d"), ["db"]);
     }
 
     #[test]

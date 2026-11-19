@@ -51,6 +51,14 @@ pub enum ExtCmd {
     Recipes,
     /// `/recipe <name> [arguments]`.
     RunRecipe { name: String, args: String },
+    /// `/skill`: the skills, with how to use them.
+    Skills,
+    /// `/skill <name> [arguments]`: run a skill.
+    RunSkill { name: String, args: String },
+    /// `/skill show <name>`: read a skill before running it.
+    ShowSkill(String),
+    /// `/skill new <name> [description]`: start a skill in this project.
+    NewSkill { name: String, description: String },
     /// `/hooks`.
     Hooks,
     /// `/settings`: the layered settings and profiles ([`crate::layers`]).
@@ -69,6 +77,23 @@ pub fn parse_command(head: &str, rest: Option<&str>) -> Option<Result<ExtCmd, St
         ("/recipe", Some(text)) => {
             let (name, args) = text.split_once(char::is_whitespace).unwrap_or((text, ""));
             Ok(ExtCmd::RunRecipe { name: name.to_string(), args: args.trim().to_string() })
+        }
+        ("/skill", None) | ("/skill", Some("list")) => Ok(ExtCmd::Skills),
+        ("/skill", Some(text)) => {
+            let (word, tail) = text.split_once(char::is_whitespace).map_or((text, ""), |(w, t)| (w, t.trim()));
+            match (word, tail) {
+                ("show", name) if library::valid_name(name) => Ok(ExtCmd::ShowSkill(name.to_string())),
+                ("show", _) => Err("usage: /skill show <name>".into()),
+                ("new", t) => {
+                    let (name, description) = t.split_once(char::is_whitespace).map_or((t, ""), |(n, d)| (n, d.trim()));
+                    if library::valid_name(name) && !library::SKILL_WORDS.contains(&name) {
+                        Ok(ExtCmd::NewSkill { name: name.to_string(), description: description.to_string() })
+                    } else {
+                        Err("usage: /skill new <name> [what it is for] (name: lowercase letters, digits, - and _; not list, show or new)".into())
+                    }
+                }
+                (name, args) => Ok(ExtCmd::RunSkill { name: name.to_string(), args: args.to_string() }),
+            }
         }
         ("/settings", None) => Ok(ExtCmd::Settings),
         ("/settings", Some(_)) => Err("usage: /settings".into()),
@@ -96,6 +121,20 @@ mod tests {
     fn commands_parse_with_their_arguments() {
         assert_eq!(parse_command("/extensions", None), Some(Ok(ExtCmd::List)));
         assert_eq!(parse_command("/recipe", None), Some(Ok(ExtCmd::Recipes)));
+        assert_eq!(parse_command("/skill", None), Some(Ok(ExtCmd::Skills)));
+        assert_eq!(parse_command("/skill", Some("list")), Some(Ok(ExtCmd::Skills)));
+        assert_eq!(parse_command("/skill", Some("show db")), Some(Ok(ExtCmd::ShowSkill("db".into()))));
+        assert!(matches!(parse_command("/skill", Some("show")), Some(Err(_))));
+        assert_eq!(
+            parse_command("/skill", Some("new db  query the db ")),
+            Some(Ok(ExtCmd::NewSkill { name: "db".into(), description: "query the db".into() }))
+        );
+        assert!(matches!(parse_command("/skill", Some("new")), Some(Err(_))));
+        assert!(matches!(parse_command("/skill", Some("new list")), Some(Err(_))));
+        assert_eq!(
+            parse_command("/skill", Some("db the users table")),
+            Some(Ok(ExtCmd::RunSkill { name: "db".into(), args: "the users table".into() }))
+        );
         assert_eq!(
             parse_command("/recipe", Some(" fix-tests  the parser ")),
             Some(Ok(ExtCmd::RunRecipe { name: "fix-tests".into(), args: "the parser".into() }))

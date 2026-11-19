@@ -5,11 +5,26 @@ use std::sync::Arc;
 
 use super::{Flow, Io, Repl};
 use crate::ext::hooks::{self, Hooks};
-use crate::ext::library::{Invocation, Library};
+use crate::ext::library::{self, Invocation, Kind, Library};
 use crate::ext::{market, view, ExtCmd, Places};
 use crate::layers;
 use crate::profile::Profile;
 use crate::turn::TurnStatus;
+
+/// The line for a skill name that is not one: the closest real name when there is one.
+fn no_skill(lib: &Library, name: &str, style: crate::uifmt::Style) -> String {
+    let near = lib
+        .of_kind(Kind::Skill)
+        .map(|e| (crate::commands::edit_distance(name, &e.name), e.name.as_str()))
+        .filter(|(d, n)| *d <= 2 || n.starts_with(name))
+        .min_by_key(|(d, _)| *d)
+        .map(|(_, n)| n);
+    let hint = match near {
+        Some(n) => format!(" Did you mean {}?", style.cyan(&format!("/skill {n}"))),
+        None => format!(" {}", style.dim("/skill lists them")),
+    };
+    format!("{} no skill named {name}.{hint}", style.yellow("⚠"))
+}
 
 impl Repl {
     fn ext_places(&self) -> Places {
@@ -32,6 +47,31 @@ impl Repl {
                 match lib.find(&name).filter(|e| e.kind == crate::ext::library::Kind::Recipe) {
                     Some(entry) => return self.run_invocation(entry.invoke(&args), io).await,
                     None => self.console.out(&format!("{} no recipe named {name}. {}", style.yellow("⚠"), style.dim("/recipe lists them"))),
+                }
+            }
+            ExtCmd::Skills => self.page_out(&view::skills_text(&Library::discover(&places), style)),
+            ExtCmd::RunSkill { name, args } => {
+                let lib = Library::discover(&places);
+                match lib.find(&name).filter(|e| e.kind == Kind::Skill) {
+                    Some(entry) => return self.run_invocation(entry.invoke(&args), io).await,
+                    None => self.console.out(&no_skill(&lib, &name, style)),
+                }
+            }
+            ExtCmd::ShowSkill(name) => {
+                let lib = Library::discover(&places);
+                match lib.find(&name).filter(|e| e.kind == Kind::Skill) {
+                    Some(entry) => self.page_out(&view::skill_text(entry, style)),
+                    None => self.console.out(&no_skill(&lib, &name, style)),
+                }
+            }
+            ExtCmd::NewSkill { name, description } => {
+                let taken = Library::discover(&places).find(&name).map(|e| format!("/{name} is already a {} ({})", e.kind.noun(), e.origin));
+                match taken.map_or_else(|| library::create_skill(&places, &name, &description), Err) {
+                    Ok(path) => {
+                        self.console.out(&format!("{} started skill {}", style.green("✓"), style.cyan(&format!("/{name}"))));
+                        self.console.out(&style.dim(&format!("  edit {} to say what it should do, then run /skill {name}", path.display())));
+                    }
+                    Err(e) => self.console.out(&format!("{} {e}", style.yellow("⚠"))),
                 }
             }
             ExtCmd::Settings => {

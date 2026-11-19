@@ -439,7 +439,10 @@ branch switch, an agent's edit) turns the project's hooks off again until you tr
 Trusting a project also lets Claude Code load its committed `.claude/settings.json`; until then
 only your own settings and an untracked `.claude/settings.local.json` are read. Your own commands
 and extensions win over a project's command of the same name (`/extensions` says which one is
-hidden). `jev-code ext list|install|update|remove|pack`
+hidden). `/skill` is the front door to skills: bare, it lists them; `/skill <name> [args]` runs one
+(as `/<name>` does); `/skill show <name>` prints it first; `/skill new <name> [what it is for]`
+writes a `.jev/skills/<name>/SKILL.md` to fill in. A project's `.claude/skills/` is read too.
+`jev-code ext list|install|update|remove|pack`
 manages extension folders with a SHA-256 for every file (`jev-extension.json`).
 
 #### Settings and profiles

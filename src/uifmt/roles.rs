@@ -82,8 +82,8 @@ fn is_delegate(tool: &str) -> bool {
 pub fn tool_row(summary: &str, project: &Path, style: Style, width: usize) -> String {
     let body = relativize_paths(&one_line(summary), project);
     let (verb, detail) = body.split_once(' ').unwrap_or((&body, ""));
-    let mark = if is_delegate(verb) { style.cyan("⇉") } else { style.dim("⏺") };
-    let verb = display_tool(verb);
+    let mark = if is_delegate(verb) { style.cyan("⇉") } else { style.accent("⏺") };
+    let verb = style.bold(&display_tool(verb));
     let line = if detail.is_empty() { format!("  {mark} {verb}") } else { format!("  {mark} {verb} {}", style.dim(detail)) };
     truncate_to_width(&line, clamp_width(width))
 }
@@ -169,7 +169,14 @@ pub fn tool_result_row(tool: &str, ok: bool, text: &str, style: Style, width: us
             }
         }
     };
-    Some(truncate_to_width(&format!("    {} {said}", style.dim("⎿")), clamp_width(width)))
+    let status = if !ok {
+        style.red("✗")
+    } else if matches!(tool_lc.as_str(), "bash" | "shell") && reports_failure(&lines) {
+        style.yellow("✗")
+    } else {
+        style.green("✓")
+    };
+    Some(truncate_to_width(&format!("    {} {status} {said}", style.dim("⎿")), clamp_width(width)))
 }
 
 /// How many lines of a failing command's output show before the fold.
@@ -187,7 +194,10 @@ pub fn tool_output_fold(tool: &str, ok: bool, text: &str, style: Style, width: u
         return None;
     }
     let width = clamp_width(width);
-    let folded = crate::workstation::collapse::fold(&lines, FOLD_KEEP, "output cut");
+    // The `⎿` row above already quotes one line (a command's last, an error's first): don't
+    // print it a second time under itself.
+    let rest: Vec<String> = if ok { lines[..lines.len() - 1].to_vec() } else { lines[1..].to_vec() };
+    let folded = crate::workstation::collapse::fold(&rest, FOLD_KEEP, "output cut");
     let rows: Vec<String> = folded
         .iter()
         .map(|l| truncate_to_width(&format!("      {}", style.dim(l)), width))
@@ -207,6 +217,13 @@ fn reports_failure(lines: &[&str]) -> bool {
 /// The lines an edit takes out (red, `-`) and puts in (green, `+`), at most
 /// [`EDIT_PREVIEW_LINES`], the rest counted; a whole new file says how long it is.
 pub fn edit_preview(removed: &[String], added: &[String], style: Style, width: usize) -> String {
+    edit_preview_at(removed, added, None, style, width)
+}
+
+/// [`edit_preview`] with the line the change starts at: each row then carries its line number
+/// in a gutter, and with colour the rows are tinted (a muted red and green band), so the
+/// change reads as a diff at a glance. The `-`/`+` stay, so it reads without colour too.
+pub fn edit_preview_at(removed: &[String], added: &[String], start: Option<usize>, style: Style, width: usize) -> String {
     let width = clamp_width(width);
     let mut rows = Vec::new();
     if removed.is_empty() {
@@ -214,14 +231,23 @@ pub fn edit_preview(removed: &[String], added: &[String], style: Style, width: u
     } else {
         rows.push(format!("    {} {}", style.dim("⎿"), style.dim(&format!("+{} −{}", added.len(), removed.len()))));
     }
-    let shown: Vec<String> = removed
+    let gutter_w = start.map_or(0, |s| (s + removed.len().max(added.len())).to_string().len());
+    let numbered = |n: usize| if gutter_w == 0 { String::new() } else { style.dim(&format!("{:>gutter_w$} ", n)) };
+    let shown: Vec<(bool, String, usize)> = removed
         .iter()
-        .map(|l| style.red(&format!("- {}", clean_text(l))))
-        .chain(added.iter().map(|l| style.green(&format!("+ {}", clean_text(l)))))
+        .enumerate()
+        .map(|(i, l)| (false, format!("- {}", clean_text(l)), i))
+        .chain(added.iter().enumerate().map(|(i, l)| (true, format!("+ {}", clean_text(l)), i)))
         .collect();
     let total = shown.len();
-    for line in shown.into_iter().take(EDIT_PREVIEW_LINES) {
-        rows.push(truncate_to_width(&format!("      {line}"), width));
+    for (is_added, text, i) in shown.into_iter().take(EDIT_PREVIEW_LINES) {
+        let n = numbered(start.unwrap_or(0) + i);
+        // The tint runs the width of the row, so the change is one band, not ragged text.
+        let body = truncate_to_width(&text, width.saturating_sub(6 + if gutter_w == 0 { 0 } else { gutter_w + 1 }));
+        let pad = if style.enabled { " ".repeat(width.saturating_sub(7 + if gutter_w == 0 { 0 } else { gutter_w + 1 }).saturating_sub(display_width(&body))) } else { String::new() };
+        let colored = if is_added { style.green(&body) } else { style.red(&body) };
+        let band = style.tint(is_added, &format!("{colored}{pad}"));
+        rows.push(format!("      {n}{band}"));
     }
     if total > EDIT_PREVIEW_LINES {
         rows.push(style.dim(&format!("      … {} more lines · /diff after the turn", total - EDIT_PREVIEW_LINES)));
@@ -263,6 +289,18 @@ pub fn thinking_block(text: &str, style: Style, width: usize) -> String {
         rows.push(format!("    {}", style.dim(&format!("… {} of thinking", plural(more, "more line", "more lines")))));
     }
     rows.join("\n")
+}
+
+/// The answer on the interactive screen: the same block, with a thin accent bar down its left
+/// edge so it reads as one piece, apart from the tool rows around it. Without colour it is
+/// the plain indented block (no bar to misread in a pipe or a log).
+pub fn answer_panel(laid_out: &str, style: Style) -> String {
+    if !style.enabled {
+        return answer_block(laid_out, 2);
+    }
+    let bar = style.dim(&style.accent("▎"));
+    let body: Vec<String> = laid_out.trim_end_matches('\n').split('\n').map(|l| if l.is_empty() { format!(" {bar}") } else { format!(" {bar} {l}") }).collect();
+    format!("\n{}", body.join("\n"))
 }
 
 /// The answer: laid out text, set apart by a blank line above it and indented `margin`
@@ -309,12 +347,12 @@ mod tests {
     #[test]
     fn results_say_what_the_person_wants_to_know() {
         let r = |tool: &str, ok: bool, text: &str| tool_result_row(tool, ok, text, OFF, 80);
-        assert_eq!(r("Read", true, "1→a\n2→b\n3→c").as_deref(), Some("    ⎿ read 3 lines"));
-        assert_eq!(r("Grep", true, "").as_deref(), Some("    ⎿ no matches"));
-        assert_eq!(r("Glob", true, "a\nb").as_deref(), Some("    ⎿ 2 paths"));
-        assert_eq!(r("Bash", true, "running 3 tests\n\ntest result: ok. 3 passed").as_deref(), Some("    ⎿ test result: ok. 3 passed  (+1 lines)"));
-        assert_eq!(r("shell", true, "").as_deref(), Some("    ⎿ done, no output"));
-        assert_eq!(r("Bash", false, "error: no such file\nmore").as_deref(), Some("    ⎿ error: no such file"));
+        assert_eq!(r("Read", true, "1→a\n2→b\n3→c").as_deref(), Some("    ⎿ ✓ read 3 lines"));
+        assert_eq!(r("Grep", true, "").as_deref(), Some("    ⎿ ✓ no matches"));
+        assert_eq!(r("Glob", true, "a\nb").as_deref(), Some("    ⎿ ✓ 2 paths"));
+        assert_eq!(r("Bash", true, "running 3 tests\n\ntest result: ok. 3 passed").as_deref(), Some("    ⎿ ✓ test result: ok. 3 passed  (+1 lines)"));
+        assert_eq!(r("shell", true, "").as_deref(), Some("    ⎿ ✓ done, no output"));
+        assert_eq!(r("Bash", false, "error: no such file\nmore").as_deref(), Some("    ⎿ ✗ error: no such file"));
         assert_eq!(r("Edit", true, "The file was updated"), None, "the diff above says it");
         let failing = tool_result_row("Bash", true, "test empty ... FAILED\ntest result: FAILED. 3 passed; 1 failed", ON, 80).unwrap_or_default();
         assert!(failing.contains("\x1b[33mtest result: FAILED"), "a failing test run is yellow, not a quiet dim line: {failing:?}");
@@ -334,7 +372,7 @@ mod tests {
         assert_eq!(row, "  ⇉ Delegate write the parser tests");
         assert_eq!(tool_row("mcp__github__create_issue x", Path::new("/p"), OFF, 80), "  ⏺ github·create_issue x");
         let done = "worker w1 (gemini gemini-4-argon): done\nfiles changed (2):\n  a.rs +3 −1\nworker report:\nok";
-        assert_eq!(tool_result_row("mcp__jev__delegate", true, done, OFF, 80).as_deref(), Some("    ⎿ worker w1 · gemini gemini-4-argon · done · 2 files"));
+        assert_eq!(tool_result_row("mcp__jev__delegate", true, done, OFF, 80).as_deref(), Some("    ⎿ ✓ worker w1 · gemini gemini-4-argon · done · 2 files"));
         let failed = "worker w2 (codex gpt-6): FAILED\nerror: limit";
         let row = tool_result_row("mcp__jev__delegate", true, failed, ON, 80).unwrap_or_default();
         assert!(row.contains("\x1b[31mFAILED"), "{row:?}");
@@ -354,7 +392,7 @@ mod tests {
 
     #[test]
     fn untrusted_text_in_output_edits_and_reasoning_is_neutralised() {
-        let out = tool_output_fold("Bash", false, &format!("{EVIL}\nsecond"), ON, 80).unwrap_or_default();
+        let out = tool_output_fold("Bash", false, &format!("first\n{EVIL}"), ON, 80).unwrap_or_default();
         assert_safe(&out);
         assert!(out.contains("\x1b[2m"), "our colour stays: {out:?}");
         let edit = edit_preview(&[EVIL.to_string()], &[EVIL.to_string()], ON, 80);
@@ -371,10 +409,23 @@ mod tests {
         let out = tool_output_fold("Bash", false, &long, OFF, 80).unwrap_or_default();
         let rows: Vec<&str> = out.lines().collect();
         assert_eq!(rows.len(), FOLD_KEEP + 1, "{out}");
-        assert_eq!(rows[0], "      error line 0");
-        assert_eq!(rows[FOLD_KEEP], "      … +5 lines (output cut)");
+        assert_eq!(rows[0], "      error line 1", "line 0 is on the result row above");
+        assert_eq!(rows[FOLD_KEEP], "      … +4 lines (output cut)");
         assert!(tool_output_fold("Bash", true, "a\nb\nc", OFF, 80).is_none());
         assert!(tool_output_fold("Bash", false, "one line", OFF, 80).is_none());
+    }
+
+    #[test]
+    fn an_edit_with_a_known_start_numbers_its_lines_and_tints_them_with_colour() {
+        let removed = vec!["let a = 1;".to_string()];
+        let added = vec!["let a = 2;".to_string(), "let b = 3;".to_string()];
+        assert_eq!(edit_preview_at(&removed, &added, Some(9), OFF, 80), "    ⎿ +2 −1\n       9 - let a = 1;\n       9 + let a = 2;\n      10 + let b = 3;");
+        let on = edit_preview_at(&removed, &added, Some(9), ON, 40);
+        assert!(on.contains("\x1b[48;5;52") && on.contains("\x1b[48;5;22"), "{on:?}");
+        for row in on.lines().skip(1) {
+            assert!(crate::uifmt::display_width(&strip_ansi(row)) <= 40, "{row:?}");
+        }
+        assert_eq!(edit_preview_at(&removed, &added, None, OFF, 80), edit_preview(&removed, &added, OFF, 80));
     }
 
     #[test]
