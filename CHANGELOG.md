@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.3.1
+
+- The README is now a short introduction: what jev-router is, requirements, installation and first
+  use. The full reference moved to `docs/guide.md`.
+
 ## 1.3.0
 
 Updating from inside jev-code.

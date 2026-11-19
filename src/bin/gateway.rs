@@ -10,7 +10,7 @@
 //! with the same upgrade-now / downgrade-slowly stickiness. Small background
 //! requests (titles, summaries) go to Haiku, adapted to what Haiku accepts; forks of
 //! the conversation and compaction stay on the turn's model; subagents run on Sonnet. Three JSON-lines logs: routing decisions, one usage
-//! record per /v1/messages request, and one record per user turn (see README).
+//! record per /v1/messages request, and one record per user turn (see docs/guide.md, "Usage log").
 //!
 //!   jev-gateway        (normally started by the `jev-claude` launcher)
 //!
@@ -18,7 +18,7 @@
 //! (https://api.anthropic.com), CODE_STRONG_THRESHOLD (0.85), DOWNGRADE_AFTER (2),
 //! JEV_GATEWAY_LOG (~/.local/state/jev-router/gateway.jsonl), JEV_USAGE_LOG
 //! (usage.jsonl), JEV_TURNS_LOG (turns.jsonl). WORKER_CHEAP_P (unset: workers never get Haiku), ORCH_REQUIRE_OPUS (on). Fable tier: JEV_FABLE (on; "off" disables),
-//! FABLE_THRESHOLD (0.90). Orchestrate mode (README): JEV_ORCH
+//! FABLE_THRESHOLD (0.90). Orchestrate mode (docs/guide.md): JEV_ORCH
 //! (on; "off" disables), ORCH_TRIGGER_P (0.70), ORCH_PLANNER (claude-opus-5-5),
 //! JEV_ORCH_LOG (orch.jsonl). JEV_GATEWAY_MAX_INFLIGHT (32),
 //! JEV_GATEWAY_ALLOW_REMOTE (1 to allow non-loopback binding).
@@ -122,7 +122,7 @@ struct App {
     orch: Orch,
 }
 
-/// Orchestrate mode settings (see README "Orchestrate mode").
+/// Orchestrate mode settings (see docs/guide.md, "Orchestrate mode").
 struct Orch {
     /// `JEV_ORCH=off` turns the trigger off for every session.
     enabled: bool,

@@ -1,7 +1,7 @@
 //! The router: Jev judges the *task* (not the model name), code maps it to one of
 //! three tiers, and confidence gates the cheap route:
 //!   simple (confident) → Haiku · reasoning (confident) → Opus · everything else → Sonnet.
-//! Both cutoffs are calibrated, not guessed (see README).
+//! Both cutoffs are calibrated, not guessed (see docs/guide.md).
 
 use anyhow::Result;
 use serde_json::{json, Value};

@@ -143,7 +143,7 @@ async fn main() -> Result<()> {
         .and_then(|s| s.parse().ok())
         .unwrap_or(0.50); // calibrated: `tune` + 1000-prompt run
 
-    // Sonnet matched Opus on every sampled prompt below this; see README.
+    // Sonnet matched Opus on every sampled prompt below this; see docs/guide.md.
     let strong: f64 = std::env::var("STRONG_THRESHOLD")
         .ok()
         .and_then(|s| s.parse().ok())
