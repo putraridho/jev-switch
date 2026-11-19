@@ -18,10 +18,10 @@ use serde_json::{json, Map, Value};
 pub const LOCAL_SETTINGS: &str = ".claude/settings.local.json";
 
 /// Whether the project's local settings must be treated as not the user's own: committed to
-/// the repository, or git could not say (a folder owned by someone else, "dubious
-/// ownership", is refused by git and is the likeliest place for a shipped settings file).
-/// Only a clean "not tracked" (exit 1), no git program, or a folder that is not under git at
-/// all leaves the file trusted as the user's own.
+/// the repository, or in a folder git refuses as owned by someone else ("dubious ownership",
+/// the likeliest place for a shipped settings file). Any other git failure (a locked index, a
+/// missing folder, no git program, not a repository) leaves the file as the user's own, so a
+/// passing error does not switch their rules off.
 pub(crate) fn local_settings_tracked(project: &Path) -> bool {
     let output = std::process::Command::new("git")
         .arg("-C")
@@ -41,7 +41,7 @@ fn tracked_from_git(code: Option<i32>, stderr: &str) -> bool {
     match code {
         Some(0) => true,
         Some(1) => false,
-        _ => !stderr.contains("not a git repository"),
+        _ => stderr.contains("dubious ownership"),
     }
 }
 
@@ -1547,7 +1547,10 @@ mod tests {
         assert!(!tracked_from_git(Some(1), "error: pathspec did not match"));
         assert!(!tracked_from_git(Some(128), "fatal: not a git repository (or any of the parent directories): .git"));
         assert!(tracked_from_git(Some(128), "fatal: detected dubious ownership in repository at '/x'"));
-        assert!(tracked_from_git(None, ""));
+        // A passing failure does not switch the person's own rules off.
+        assert!(!tracked_from_git(Some(128), "fatal: Unable to create '/x/.git/index.lock': File exists."));
+        assert!(!tracked_from_git(Some(128), "fatal: cannot change to '/gone': No such file or directory"));
+        assert!(!tracked_from_git(None, ""));
     }
 
     use super::*;

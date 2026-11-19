@@ -61,6 +61,9 @@ impl std::str::FromStr for Schedule {
     }
 }
 
+/// The longest `--every` interval: 365 days.
+const MAX_INTERVAL_SECS: u64 = 365 * 86_400;
+
 fn interval(text: &str) -> Result<Duration, ScheduleError> {
     let usage = || ScheduleError(format!("`{text}` is not a schedule: use an interval like 30s, 10m, 2h, 1d or a five-field cron expression"));
     let split = text.find(|c: char| !c.is_ascii_digit()).ok_or_else(usage)?;
@@ -77,7 +80,8 @@ fn interval(text: &str) -> Result<Duration, ScheduleError> {
     if n == 0 {
         return bad("an interval must be more than zero");
     }
-    n.checked_mul(seconds).map(Duration::from_secs).ok_or_else(too_long)
+    // A year is the longest interval: more is a typo, and a huge delay may overflow the clock.
+    n.checked_mul(seconds).filter(|s| *s <= MAX_INTERVAL_SECS).map(Duration::from_secs).ok_or_else(too_long)
 }
 
 /// One cron field as a bit set over `lo..=hi`.
@@ -214,7 +218,10 @@ mod tests {
     #[test]
     fn an_interval_too_large_to_hold_is_refused() {
         assert!("999999999999999999d".parse::<Schedule>().is_err());
-        assert!("18446744073709551615s".parse::<Schedule>().is_ok());
+        assert!("18446744073709551615s".parse::<Schedule>().is_err());
+        assert!("365d".parse::<Schedule>().is_ok());
+        assert!("366d".parse::<Schedule>().is_err());
+        assert!("99999999999999999999d".parse::<Schedule>().is_err());
     }
 
     #[test]

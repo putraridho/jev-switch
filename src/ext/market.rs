@@ -98,6 +98,19 @@ fn checked_path(rel: &str) -> Result<PathBuf, MarketError> {
     Ok(path.to_path_buf())
 }
 
+/// A file in a package must be a plain file in a plain folder: a link (to the file, or in
+/// front of it) could bring in a file from outside the package that has the listed checksum.
+fn reject_links(source: &Path, rel: &Path, shown: &str) -> Result<(), MarketError> {
+    let mut at = source.to_path_buf();
+    for part in rel.components() {
+        at.push(part);
+        if std::fs::symlink_metadata(&at).is_ok_and(|m| m.file_type().is_symlink()) {
+            return fail(format!("{shown} goes through a symbolic link; nothing was installed"));
+        }
+    }
+    Ok(())
+}
+
 fn read_manifest(dir: &Path) -> Result<Manifest, MarketError> {
     let file = dir.join(MANIFEST);
     let text = std::fs::read_to_string(&file).map_err(|e| MarketError(format!("{}: {e}", file.display())))?;
@@ -182,7 +195,9 @@ pub fn install(user: &Path, source: &Path) -> Result<Installed, MarketError> {
     // Verify everything before touching the installed copy.
     let mut bodies = Vec::new();
     for (rel, expected) in &manifest.files {
-        let path = source.join(checked_path(rel)?);
+        let rel_path = checked_path(rel)?;
+        reject_links(&source, &rel_path, rel)?;
+        let path = source.join(rel_path);
         let bytes = std::fs::read(&path).map_err(|e| MarketError(format!("{rel}: {e}")))?;
         if sha256::hex(&bytes) != expected.to_ascii_lowercase() {
             return fail(format!("checksum mismatch for {rel}: the file is not what {} {} was published with; nothing was installed", manifest.name, manifest.version));
@@ -338,6 +353,29 @@ mod tests {
         std::os::unix::fs::symlink(root.join("private"), src.join("commands/private")).unwrap();
         let manifest = pack(&src, "hello-kit", "1.0.0").unwrap();
         assert_eq!(manifest.files.keys().collect::<Vec<_>>(), ["commands/hello.md"]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn install_refuses_files_reached_through_links() {
+        let root = temp("links");
+        let (src, user) = (root.join("src"), root.join("cfg"));
+        package(&src, "1.0.0", "say hello");
+        // The manifest is genuine, then the file is swapped for a link to a file with the same text.
+        std::fs::write(root.join("outside.md"), "say hello").unwrap();
+        std::fs::remove_file(src.join("commands/hello.md")).unwrap();
+        std::os::unix::fs::symlink(root.join("outside.md"), src.join("commands/hello.md")).unwrap();
+        let done = install(&user, &src);
+        assert!(done.as_ref().is_err_and(|e| e.0.contains("symbolic link")), "{done:?}");
+        assert!(installed_dirs(&user).is_empty());
+        // A linked folder in front of the file is refused too.
+        std::fs::remove_file(src.join("commands/hello.md")).unwrap();
+        std::fs::remove_dir(src.join("commands")).unwrap();
+        std::fs::create_dir_all(root.join("elsewhere")).unwrap();
+        std::fs::write(root.join("elsewhere/hello.md"), "say hello").unwrap();
+        std::os::unix::fs::symlink(root.join("elsewhere"), src.join("commands")).unwrap();
+        let done = install(&user, &src);
+        assert!(done.as_ref().is_err_and(|e| e.0.contains("symbolic link")), "{done:?}");
     }
 
     #[test]
