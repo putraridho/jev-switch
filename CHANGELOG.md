@@ -4,44 +4,22 @@ See [docs/changelog-guide.md](docs/changelog-guide.md) for changelog formatting,
 
 ## Unreleased
 
-- The local settings check no longer switches your `settings.local.json` off for harmless git
-  failures (not under git, a locked index, a missing folder); a committed file, "dubious
-  ownership" or any other git failure still does.
-- `--every` takes at most 365 days.
-- `ext install` refuses a package file or manifest that is, or sits behind, a symbolic link.
-- **Messages typed during a turn reach the running turn (Claude).** As in Claude Code, a message you
-  queue while Claude works is taken into that turn at its next step instead of waiting for the
-  turn to finish: `↳ message (taken into the running turn)`. A turn that ends first, and the
-  other providers (Codex, Antigravity), keep the old behaviour: it runs as the next turn. The
-  privacy policy and the secret scan apply to it.
-- The yellow hints (`✓ auto-allowed …`, `✓ allowed (remembered) …`, denied calls) are one line, cut to
-  the terminal width with `…`. A long command no longer fills the screen; the tool row above
-  already shows it.
+## 1.4.0
 
-- **`jev-claude` attaches the delegate tool.** Claude Code gets the MCP server `jev`
-  (`delegate`, `show_diff`, `merge`, `discard`), so it can hand pieces of a task to workers on your
-  Codex and Antigravity subscriptions. `JEV_DELEGATE=off` leaves it out.
+Inline turn steering, delegate MCP server for Claude Code, trimmed tool hints, and security/reliability hardening.
 
-Fixes from code review round 4.
+### Features
+- **Messages typed during a turn reach the running turn (Claude).** As in Claude Code, a message you queue while Claude works is taken into that turn at its next step instead of waiting for the turn to finish: `↳ message (taken into the running turn)`. A turn that ends first, and the other providers (Codex, Antigravity), keep the old behaviour: it runs as the next turn. The privacy policy and secret scanning apply to it.
+- **`jev-claude` attaches the delegate tool.** Claude Code gets the MCP server `jev` (`delegate`, `show_diff`, `merge`, `discard`), allowing it to hand subtasks to background workers on your Codex and Antigravity subscriptions. Set `JEV_DELEGATE=off` to disable it.
+- **Trimmed tool hints.** In auto mode, the yellow hints (`✓ auto-allowed …`, `✓ allowed (remembered) …`, denied calls) are formatted as a single line truncated to the terminal width with `…`, preventing long commands and heredocs from filling the screen.
 
-- **Project Claude settings are trusted only as they were.** `/hooks trust` now also records
-  a hash of `.claude/settings.json`; the file (hooks, `env`, helper commands) is loaded only
-  while it still matches, so a later `git pull` that changes it waits for `/hooks trust`
-  again. Projects trusted by an earlier version load no project settings until `/hooks trust`
-  is run once more. `/hooks` shows everything in the file while it is not trusted (each hook command with the tools it fires for,
-  `env`, permissions, every other key and its value), also when it changed after you trusted it,
-  and `/hooks trust` lists what it approved. A project you trusted before whose settings
-  changed (or were trusted by an older version) says so when jev-code starts.
-- A project's `.claude/settings.local.json` is no longer trusted as your own when git cannot
-  say whether it is tracked (for instance "dubious ownership"). A folder that is not under git
-  is unchanged.
-- Custom commands and recipes keep `$1`..`$9` and `$ARGUMENTS` typed inside the arguments as
-  typed (`/note pay $5` no longer loses the `$5`).
-- `/cache` no longer lists turns that reported no token counts (Antigravity over ACP) as misses.
-- Updating an extension keeps the installed copy if the new one cannot be written; `ext pack`
-  does not pack symbolic links (they could loop or lead out of the extension); `/diff` reads
-  file names that git quotes (non-ASCII characters, quotes, backslashes); `--every` refuses an
-  interval too large to hold; `/export` writes a private (0600) file.
+### Hardening & Bug Fixes
+- **Project Claude settings hash validation.** `/hooks trust` now records a cryptographic hash of `.claude/settings.json`. The file (hooks, `env`, helper commands) is only loaded while it matches the trusted hash. If a `git pull` or edit changes it, settings are held until re-approved with `/hooks trust`.
+- **Local settings git resilience.** The local settings check no longer switches your `settings.local.json` off for harmless git failures (not under git, a locked index, or missing folders); committed files and "dubious ownership" still refuse untrusted settings automatically.
+- **Extension packaging & installation safety.** `ext install` and `ext pack` refuse packages or manifests that are or traverse symbolic links. Updating an extension preserves the existing installed copy if writing the new one fails.
+- **Argument preservation.** Custom commands and recipes preserve `$1`..`$9` and `$ARGUMENTS` inside arguments verbatim (e.g., `/note pay $5` no longer loses `$5`).
+- **Path quoting and limits.** `/diff` reads file names that git quotes (non-ASCII characters, quotes, backslashes); `--every` enforces a safe maximum interval of 365 days; `/export` writes private (0600) files.
+- **Cross-platform compilation.** Windows builds compile cleanly under `-D warnings` with proper platform gates and non-unix signal handling.
 
 ## 1.3.1
 

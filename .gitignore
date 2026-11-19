@@ -1,3 +1,4 @@
 target/
 *.bak
 __pycache__/
+.claude/
