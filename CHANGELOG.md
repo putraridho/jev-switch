@@ -5,8 +5,8 @@ See [docs/changelog-guide.md](docs/changelog-guide.md) for changelog formatting,
 ## Unreleased
 
 - Vim `dd` on the last line of a multi-line message no longer crashes jev-code.
-- A repo's `.jev/team.json` pin now respects your own `avoid` and `only` rules for the turn's task; when they exclude the pinned provider, the turn routes automatically.
-- jev-code's own git calls (status bar, doctor, completion, repo map, undo) no longer run programs a repo's git config names, such as `core.fsmonitor`.
+- A repo's `.jev/team.json` pin now respects your own `avoid` and `only` rules for the turn's task. When they exclude the pinned provider, or it cannot do that kind of work, the turn routes automatically and the route line says why. A pinned provider that is logged out or cooling down is still reported, not swapped.
+- jev-code's own git calls (status bar, doctor, completion, repo map, undo, delegate worktrees) no longer run programs the repo's own git config names: `core.fsmonitor`, hooks, and filter drivers. Their diffs skip `textconv` and external diff programs. Filter drivers in your global git config, such as git-lfs, still run.
 - Privacy rules catch files mentioned with `path:line:col`, `path:10-20` or `path#L4` suffixes.
 - Huge day counts in `/sessions clean <days>` and `since:Nd` no longer overflow; they can never delete recent sessions.
 - Installing an extension refuses to replace a hand-written folder of the same name.

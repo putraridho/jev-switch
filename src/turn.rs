@@ -376,7 +376,7 @@ pub fn git_status_short(dir: &Path) -> String {
     std::process::Command::new("git")
         .arg("-C")
         .arg(dir)
-        .args(crate::gitflow::NO_REPO_PROGRAMS)
+        .args(crate::gitflow::no_repo_programs(dir))
         .args(["status", "--short"])
         .output()
         .ok()
@@ -1226,6 +1226,12 @@ impl Engine {
             return Ok(self.legacy_choice(want, base));
         }
         let usable = self.runtime.usable(now).without(excluded);
+        // A team pin whose provider can take turns at all (logged in, not cooling down, not
+        // failed over); one that cannot is reported like any pin.
+        let team_pin_reachable = match (&self.pin, self.pin_origin) {
+            (Pin::Provider(p) | Pin::Model(p, _), PinOrigin::Team) => usable.has_provider(*p).then_some(*p),
+            _ => None,
+        };
         let catch_ups = self.privacy_catch_ups(&usable);
         let turn = TurnFacts {
             root: &self.dir,
@@ -1254,19 +1260,30 @@ impl Engine {
             plan_utilization: &plan,
             now_ms: now,
         };
-        // A team pin is a default: when the person's rules left no model of its provider
-        // for this turn, the turn routes automatically instead.
-        let team_pin_excluded = self.pin_origin == PinOrigin::Team
-            && match &self.pin {
-                Pin::Provider(p) | Pin::Model(p, _) => !usable.has_provider(*p),
-                Pin::Auto => false,
-            };
-        let input = if team_pin_excluded { RouteInput { pin: &Pin::Auto, ..input } } else { input };
+        // A team pin is the repository's default, not the person's choice: when their rules
+        // took its provider away, or it cannot serve this task, the turn routes automatically
+        // and the reason says why.
         let mut state = base.clone();
-        let decision = routing::decide(&mut state, &input)?;
+        let (decision, input, team_note) = match team_pin_reachable {
+            Some(p) if !usable.has_provider(p) => {
+                let note = format!("{} pin to {} skipped: your routing rules exclude {p}", crate::team::FILE, self.pin);
+                let auto = RouteInput { pin: &Pin::Auto, ..input };
+                (routing::decide(&mut state, &auto)?, auto, Some(note))
+            }
+            Some(_) => match routing::decide(&mut state, &input) {
+                Err(NoRoute::PinUnusable { what }) => {
+                    state = base.clone();
+                    let auto = RouteInput { pin: &Pin::Auto, ..input };
+                    (routing::decide(&mut state, &auto)?, auto, Some(format!("{} pin skipped: {what}", crate::team::FILE)))
+                }
+                decided => (decided?, input, Some(format!("pinned by {}", crate::team::FILE))),
+            },
+            None => (routing::decide(&mut state, &input)?, input, None),
+        };
         let outcome = self.plan_orchestration(signals, &decision, &input, base);
         let (spec, reason, mcp) = self.apply_orchestration(outcome, &decision);
-        let reason = if rule_notes.is_empty() { reason } else { format!("{reason}; {}", rule_notes.join("; ")) };
+        let notes: Vec<String> = team_note.into_iter().chain(rule_notes).collect();
+        let reason = if notes.is_empty() { reason } else { format!("{reason}; {}", notes.join("; ")) };
         let facts = RouteFacts {
             provider: spec.provider.to_string(),
             model: spec.id.to_string(),
@@ -1366,7 +1383,10 @@ impl Engine {
             _ => None,
         };
         let (spec, why) = match pinned {
-            Some(spec) => (spec, "pinned with /model".to_string()),
+            Some(spec) => match self.pin_origin {
+                PinOrigin::User => (spec, "pinned with /model".to_string()),
+                PinOrigin::Team => (spec, format!("pinned by {}", crate::team::FILE)),
+            },
             None => {
                 let (tier, why) = self.sticky.decide(want, self.downgrade_after);
                 (legacy_spec(tier), why)
@@ -2229,7 +2249,30 @@ mod tests {
             assert_eq!(report.status, TurnStatus::Answered, "{task}: {}", report.message);
             assert_eq!(report.provider, Some(Claude), "{task}");
             assert!(r.started().iter().all(|s| s.provider != DeepSeek), "{task}");
+            let route = r.ui.routes.last().cloned().unwrap_or_default();
+            assert!(route.contains(".jev/team.json pin to deepseek skipped: your routing rules exclude deepseek"), "{task}: {route}");
         }
+    }
+
+    #[tokio::test]
+    async fn a_team_pin_that_cannot_serve_the_task_routes_automatically_and_says_so() {
+        // No rules at all: deepseek is barred for security work by the catalog.
+        let mut r = rig(&[Claude, DeepSeek]);
+        r.engine.set_team_pin(Pin::Provider(DeepSeek));
+        let report = r.turn("harden the auth flow", want(TaskType::Security)).await;
+        assert_eq!(report.status, TurnStatus::Answered, "{}", report.message);
+        assert_eq!(report.provider, Some(Claude));
+        assert!(r.ui.routes[0].contains(".jev/team.json pin skipped: pinned provider deepseek"), "{:?}", r.ui.routes);
+    }
+
+    #[tokio::test]
+    async fn a_team_pin_to_a_cooling_provider_is_reported_not_swapped() {
+        let mut r = rig(&[Claude, DeepSeek]);
+        r.engine.runtime.cool_down(Claude, None, NOW);
+        r.engine.set_team_pin(Pin::Provider(Claude));
+        let report = r.turn("add a retry to the client", want(TaskType::Feature)).await;
+        assert_eq!(report.status, TurnStatus::NoRoute, "{}", report.message);
+        assert!(r.started().is_empty());
     }
 
     #[tokio::test]
@@ -2239,6 +2282,7 @@ mod tests {
         r.engine.set_team_pin(Pin::Provider(DeepSeek));
         let report = r.turn("add a retry to the client", want(TaskType::Feature)).await;
         assert_eq!(report.provider, Some(DeepSeek));
+        assert!(r.ui.routes[0].contains("pinned by .jev/team.json"), "{:?}", r.ui.routes);
 
         // The person's own pin keeps its behaviour: rules step aside.
         let mut r = rig(&[Claude, DeepSeek]);

@@ -5,17 +5,70 @@
 use std::path::Path;
 use std::process::{Command, Stdio};
 
-/// Put before the subcommand of every git call jev-code makes by itself: a repository's
-/// `core.fsmonitor` names a program git runs on `status`/`diff`, and an agent that may
-/// edit files could set it in `.git/config`. An empty value turns it off in every git version.
-pub const NO_REPO_PROGRAMS: [&str; 2] = ["-c", "core.fsmonitor="];
+/// The programs a repository's own config can name that git runs without being asked:
+/// `core.fsmonitor` (on `status`/`diff`) and hooks (`post-checkout` on `worktree add`,
+/// `post-merge`). An empty `core.fsmonitor` turns it off in every git version; a hooks path
+/// with no hooks in it turns hooks off.
+const NO_FIXED_PROGRAMS: [&str; 4] = ["-c", "core.fsmonitor=", "-c", "core.hooksPath=/dev/null"];
+
+/// Put before the subcommand of every git call jev-code makes by itself: an agent that may
+/// edit files could name a program in `.git/config` that git then runs. Besides
+/// [`NO_FIXED_PROGRAMS`], every filter driver the repository's own config defines (a
+/// `.gitattributes` line switches it on, and `status`, `add` and checkouts run its `clean`,
+/// `smudge` or `process` program) is emptied, which git treats as no filter. Drivers in the
+/// person's global or system config (git-lfs) are theirs and stay on. Diff drivers
+/// (`textconv`, external diff) only run when a diff call asks for them, and ours pass
+/// `--no-textconv --no-ext-diff`.
+pub fn no_repo_programs(dir: &Path) -> Vec<String> {
+    let mut args: Vec<String> = NO_FIXED_PROGRAMS.iter().map(|s| (*s).to_string()).collect();
+    for driver in repo_filter_drivers(dir) {
+        for (key, value) in [("clean", ""), ("smudge", ""), ("process", ""), ("required", "false")] {
+            args.push("-c".to_string());
+            args.push(format!("filter.{driver}.{key}={value}"));
+        }
+    }
+    args
+}
+
+/// The filter drivers named in the repository's own config files (`.git/config`, its
+/// `config.worktree`, and what they include). Reading config runs no program.
+fn repo_filter_drivers(dir: &Path) -> Vec<String> {
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args(NO_FIXED_PROGRAMS)
+        .args(["config", "--show-scope", "--includes", "--null", "--get-regexp", r"^filter\..+\.(clean|smudge|process)$"])
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .output();
+    out.map_or_else(|_| Vec::new(), |o| repo_driver_names(&String::from_utf8_lossy(&o.stdout)))
+}
+
+/// The driver names from the repository's own scopes (`local`, `worktree`) in
+/// `git config --show-scope --null --get-regexp` output: `scope\0key\nvalue\0` per entry,
+/// keys `filter.<driver>.<variable>` (the driver may itself contain dots).
+fn repo_driver_names(listing: &str) -> Vec<String> {
+    let mut fields = listing.split('\0');
+    let mut drivers: Vec<String> = Vec::new();
+    while let (Some(scope), Some(entry)) = (fields.next(), fields.next()) {
+        if !matches!(scope, "local" | "worktree") {
+            continue;
+        }
+        let key = entry.split('\n').next().unwrap_or_default();
+        let Some((driver, _)) = key.strip_prefix("filter.").and_then(|rest| rest.rsplit_once('.')) else { continue };
+        if !driver.is_empty() && !drivers.iter().any(|d| d == driver) {
+            drivers.push(driver.to_string());
+        }
+    }
+    drivers
+}
 
 /// The branches a pull request is never opened from.
 const TRUNKS: [&str; 3] = ["main", "master", "trunk"];
 
 /// The checked-out branch of `dir`; `None` outside a repository or on a detached head.
 pub fn current_branch(dir: &Path) -> Option<String> {
-    let out = Command::new("git").args(NO_REPO_PROGRAMS).args(["symbolic-ref", "--short", "-q", "HEAD"]).current_dir(dir).stderr(Stdio::null()).output().ok()?;
+    let out = Command::new("git").args(no_repo_programs(dir)).args(["symbolic-ref", "--short", "-q", "HEAD"]).current_dir(dir).stderr(Stdio::null()).output().ok()?;
     let name = String::from_utf8(out.stdout).ok()?.trim().to_string();
     (out.status.success() && !name.is_empty()).then_some(name)
 }
@@ -124,6 +177,109 @@ mod tests {
         if ok {
             assert_eq!(current_branch(&dir).as_deref(), Some("trunk"));
             assert!(is_trunk("trunk") && !is_trunk("feat/x"));
+        }
+    }
+
+    #[test]
+    fn driver_names_come_from_the_repos_own_scopes_only() {
+        let listing = "local\0filter.evil.clean\nsh -c x\0worktree\0filter.a.b.process\ny\0local\0filter.evil.smudge\nz\0\
+global\0filter.lfs.clean\ngit-lfs clean\0system\0filter.sys.clean\nq\0local\0diff.t.textconv\nz\0";
+        assert_eq!(repo_driver_names(listing), ["evil", "a.b"]);
+        assert!(repo_driver_names("").is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_repo_filter_driver_and_hooks_do_not_run() {
+        let repo = scratch::Repo::new("filter");
+        repo.git(&["commit", "-q", "--allow-empty", "-m", "init"]);
+        let marker = repo.marker();
+        repo.git(&["config", "filter.evil.clean", &format!("sh -c 'printf x > {}; cat'", marker.display())]);
+        repo.git(&["config", "filter.evil.required", "true"]);
+        std::fs::write(repo.path.join(".gitattributes"), "*.txt filter=evil\n").unwrap();
+        std::fs::write(repo.path.join("a.txt"), "two\n").unwrap();
+
+        let ours = no_repo_programs(&repo.path);
+        assert!(ours.contains(&"filter.evil.clean=".to_string()), "{ours:?}");
+        assert!(repo.runs(&ours, &["add", "a.txt"]), "an emptied filter is no filter, even when required");
+        assert!(!marker.exists(), "jev-code's git must not run the repo's filter");
+        std::fs::write(repo.path.join("a.txt"), "three\n").unwrap();
+        assert!(repo.runs(&[], &["add", "a.txt"]));
+        assert!(marker.exists(), "without the override the configured filter runs (the test is real)");
+        std::fs::remove_file(&marker).unwrap();
+
+        // A post-checkout hook does not run on `worktree add` either.
+        let hook = repo.path.join(".git/hooks/post-checkout");
+        std::fs::write(&hook, format!("#!/bin/sh\nprintf x > {}\n", marker.display())).unwrap();
+        std::fs::set_permissions(&hook, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+        let (ours_wt, plain_wt) = (repo.path.join("wt-ours"), repo.path.join("wt-plain"));
+        assert!(repo.runs(&no_repo_programs(&repo.path), &["worktree", "add", "-q", "--detach", &ours_wt.to_string_lossy()]));
+        assert!(!marker.exists(), "jev-code's git must not run the repo's hooks");
+        assert!(repo.runs(&[], &["worktree", "add", "-q", "--detach", &plain_wt.to_string_lossy()]));
+        assert!(marker.exists(), "without the override the hook runs (the test is real)");
+    }
+}
+
+/// A throwaway git repository for tests, removed when dropped. Its git calls drop the
+/// `GIT_DIR`, `GIT_WORK_TREE` and `GIT_INDEX_FILE` a test run can inherit (from a git hook),
+/// so they never touch another repository.
+#[cfg(test)]
+pub(crate) mod scratch {
+    use std::path::PathBuf;
+    use std::process::Command;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    pub(crate) struct Repo {
+        pub path: PathBuf,
+    }
+
+    impl Repo {
+        pub fn new(name: &str) -> Self {
+            static NEXT: AtomicUsize = AtomicUsize::new(0);
+            let n = NEXT.fetch_add(1, Ordering::Relaxed);
+            let path = std::env::temp_dir().join(format!("jev-scratch-{name}-{}-{n}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&path);
+            std::fs::create_dir_all(&path).unwrap();
+            let repo = Self { path };
+            repo.git(&["init", "-q"]);
+            repo
+        }
+
+        fn command(&self, prefix: &[String], args: &[&str]) -> Command {
+            let mut command = Command::new("git");
+            command
+                .args(prefix)
+                .args(["-c", "user.name=test", "-c", "user.email=test@example.com"])
+                .args(args)
+                .current_dir(&self.path)
+                .env_remove("GIT_DIR")
+                .env_remove("GIT_WORK_TREE")
+                .env_remove("GIT_INDEX_FILE");
+            command
+        }
+
+        /// Set the repository up: `git args`, panicking on failure.
+        pub fn git(&self, args: &[&str]) -> String {
+            let out = self.command(&[], args).output().unwrap();
+            assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+            String::from_utf8_lossy(&out.stdout).into_owned()
+        }
+
+        /// `git prefix... args...`; whether it succeeded.
+        pub fn runs(&self, prefix: &[String], args: &[&str]) -> bool {
+            self.command(prefix, args).output().is_ok_and(|o| o.status.success())
+        }
+
+        /// The file the test's hostile programs write when they run (outside the work tree,
+        /// so it never shows up in `git status`).
+        pub fn marker(&self) -> PathBuf {
+            self.path.join(".git/marker")
+        }
+    }
+
+    impl Drop for Repo {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.path);
         }
     }
 }

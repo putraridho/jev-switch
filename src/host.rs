@@ -33,7 +33,6 @@ pub struct ShellRun {
 /// Run `command` with `sh -c` in `dir`, stdin closed, stderr joined to stdout; each line
 /// goes to `on_line` as it is printed, and a bounded tail comes back in the result.
 pub fn run_shell(command: &str, dir: &Path, on_line: &mut dyn FnMut(&str)) -> ShellRun {
-    use std::io::BufRead;
     let script = format!("exec 2>&1\n{command}");
     let child = Command::new("sh").arg("-c").arg(script).current_dir(dir).stdin(Stdio::null()).stdout(Stdio::piped()).spawn();
     let mut child = match child {
@@ -43,15 +42,13 @@ pub fn run_shell(command: &str, dir: &Path, on_line: &mut dyn FnMut(&str)) -> Sh
     // The pipe is read on its own thread: a job the command left in the background (`npm run
     // dev &`) keeps it open after `sh` exits, and the session must not wait for that job.
     let (lines, received) = std::sync::mpsc::sync_channel::<String>(1);
-    if let Some(stdout) = child.stdout.take() {
+    if let Some(mut stdout) = child.stdout.take() {
         std::thread::spawn(move || {
-            let mut reader = std::io::BufReader::new(stdout);
-            let mut raw = Vec::new();
-            while reader.read_until(b'\n', &mut raw).is_ok_and(|n| n > 0) {
-                if lines.send(String::from_utf8_lossy(&raw).into_owned()).is_err() {
+            let mut pending = Vec::new();
+            while let Some(piece) = next_piece(&mut stdout, &mut pending, SHELL_KEEP_BYTES) {
+                if lines.send(String::from_utf8_lossy(&piece).into_owned()).is_err() {
                     return;
                 }
-                raw = Vec::new();
             }
         });
     }
@@ -88,6 +85,33 @@ pub fn run_shell(command: &str, dir: &Path, on_line: &mut dyn FnMut(&str)) -> Sh
     match status {
         Ok(status) => ShellRun { command: command.to_string(), output, truncated, code: status.code(), failed: None },
         Err(e) => ShellRun { command: command.to_string(), output, truncated, code: None, failed: Some(e.to_string()) },
+    }
+}
+
+/// The next line `reader` gives (with its `\n`), or, of a line longer than `cap` bytes (a
+/// progress bar redrawn with `\r`, binary output), the next piece of at most `cap` bytes, cut
+/// before a UTF-8 character that would not fit whole. `pending` holds what was read but not
+/// yet given, so memory stays near `cap` however long a line is. `None` at the end.
+fn next_piece(reader: &mut impl std::io::Read, pending: &mut Vec<u8>, cap: usize) -> Option<Vec<u8>> {
+    let mut buf = [0u8; 8192];
+    loop {
+        if let Some(end) = pending.iter().take(cap).position(|&b| b == b'\n') {
+            return Some(pending.drain(..=end).collect());
+        }
+        if pending.len() > cap {
+            // `pending[cut]` exists, so a character cut there is visible: back up to its start.
+            let mut cut = cap;
+            while cut > 0 && pending[cut] & 0xC0 == 0x80 {
+                cut -= 1;
+            }
+            return Some(pending.drain(..if cut == 0 { cap } else { cut }).collect());
+        }
+        match reader.read(&mut buf) {
+            Ok(0) => return (!pending.is_empty()).then(|| std::mem::take(pending)),
+            Ok(n) => pending.extend_from_slice(&buf[..n]),
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(_) => return (!pending.is_empty()).then(|| std::mem::take(pending)),
+        }
     }
 }
 
@@ -393,6 +417,30 @@ mod tests {
             assert!(tail.bytes <= SHELL_KEEP_BYTES);
             assert_eq!(tail.bytes, tail.lines.iter().map(String::len).sum::<usize>() + tail.lines.len().saturating_sub(1));
         }
+    }
+
+    #[test]
+    fn pieces_are_lines_or_bounded_cuts_on_character_starts() {
+        let pieces = |text: &[u8], cap: usize| {
+            let (mut reader, mut pending, mut out) = (text, Vec::new(), Vec::new());
+            while let Some(piece) = next_piece(&mut reader, &mut pending, cap) {
+                assert!(piece.len() <= cap.max(piece.iter().position(|&b| b == b'\n').map_or(0, |i| i + 1)));
+                out.push(String::from_utf8(piece).unwrap());
+            }
+            out
+        };
+        assert_eq!(pieces(b"a\nbc\nd", 10), ["a\n", "bc\n", "d"]);
+        assert_eq!(pieces(b"abcdefgh\n", 3), ["abc", "def", "gh\n"]);
+        // `é` is two bytes: a cut never splits it.
+        assert_eq!(pieces("aéé".as_bytes(), 2), ["a", "é", "é"]);
+        assert!(pieces(b"", 4).is_empty());
+    }
+
+    #[test]
+    fn output_without_line_breaks_stays_bounded() {
+        let run = run_shell("yes x | tr -d '\\n' | head -c 3000000", Path::new("."), &mut |line| assert!(line.len() <= SHELL_KEEP_BYTES));
+        assert_eq!(run.code, Some(0));
+        assert!(run.truncated && run.output.len() <= SHELL_KEEP_BYTES, "{}", run.output.len());
     }
 
     #[test]

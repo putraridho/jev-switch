@@ -211,7 +211,10 @@ pub fn install(user: &Path, source: &Path) -> Result<Installed, MarketError> {
     let target = extensions_dir(user).join(&manifest.name);
     let mut registry = load_registry(user);
     let replaced = registry.extensions.iter().find(|r| r.name == manifest.name).map(|r| r.version.clone());
-    if target.exists() && replaced.is_none() {
+    // A copy jev installed is listed in the registry, or carries the manifest every install
+    // writes into it, so a lost, unreadable or unsaved registry does not make it "hand-written".
+    let installed_by_jev = replaced.is_some() || read_manifest(&target).is_ok_and(|m| m.name == manifest.name);
+    if target.exists() && !installed_by_jev {
         return fail(format!("{} exists and was not installed from a package; remove or rename it first", target.display()));
     }
     // Write the new copy beside the installed one and swap them, so a failed write (disk full,
@@ -444,6 +447,24 @@ mod tests {
         assert_eq!(installed.version, "2.0.0");
         assert_eq!(std::fs::read_to_string(user.join("extensions/hello-kit/commands/hello.md")).unwrap(), "new");
         assert_eq!(list(&user)[0].state, State::Verified);
+    }
+
+    #[test]
+    fn a_lost_or_unreadable_registry_does_not_lock_out_jevs_own_copy() {
+        for broken in [None, Some("{ not json")] {
+            let root = temp(if broken.is_some() { "registry-corrupt" } else { "registry-lost" });
+            let (src, user) = (root.join("src"), root.join("cfg"));
+            package(&src, "1.0.0", "old");
+            install(&user, &src).unwrap();
+            match broken {
+                Some(text) => std::fs::write(user.join(REGISTRY), text).unwrap(),
+                None => std::fs::remove_file(user.join(REGISTRY)).unwrap(),
+            }
+            package(&src, "2.0.0", "new");
+            let installed = install(&user, &src).unwrap();
+            assert_eq!(installed.version, "2.0.0");
+            assert_eq!(std::fs::read_to_string(user.join("extensions/hello-kit/commands/hello.md")).unwrap(), "new");
+        }
     }
 
     #[test]

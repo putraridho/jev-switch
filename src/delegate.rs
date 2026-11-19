@@ -387,7 +387,7 @@ fn git(dir: &Path, args: &[&str], stdin: Option<&str>) -> Result<String> {
     let mut child = Command::new("git")
         .arg("-C")
         .arg(dir)
-        .args(crate::gitflow::NO_REPO_PROGRAMS)
+        .args(crate::gitflow::no_repo_programs(dir))
         .args(args)
         .stdin(if stdin.is_some() { Stdio::piped() } else { Stdio::null() })
         .stdout(Stdio::piped())
@@ -532,7 +532,7 @@ impl Worktrees for GitWorktrees {
     /// applies for binary files too.
     fn diff(&self, path: &Path) -> Result<String> {
         git(path, &["add", "-A"], None)?;
-        git(path, &["diff", "--cached", "--binary", "HEAD"], None)
+        git(path, &["diff", "--cached", "--binary", "--no-ext-diff", "--no-textconv", "HEAD"], None)
     }
 
     /// A plain `git apply` first: it works on the working tree whatever is unstaged, as

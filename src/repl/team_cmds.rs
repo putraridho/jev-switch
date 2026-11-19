@@ -135,8 +135,8 @@ impl Repl {
         let Some(pin) = team.pin_for(prompt).cloned() else { return false };
         // The rule comes with the repository; the person's own routing rules (`avoid`,
         // `only`) win over it. The engine applies them to a team pin once the turn's task is
-        // known, and routes automatically if they exclude the pinned provider.
-        self.console.err(&format!("  {}", self.console.err_style().dim(&format!("{}: routed to {pin}", team::FILE))));
+        // known and routes automatically if they exclude it; the route's reason says which.
+        self.console.err(&format!("  {}", self.console.err_style().dim(&format!("{}: asks for {pin} (your routing rules still apply)", team::FILE))));
         self.engine.set_team_pin(pin);
         true
     }

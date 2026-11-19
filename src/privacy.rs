@@ -361,8 +361,16 @@ pub fn mentioned_paths(root: &Path, prompt: &str) -> Vec<String> {
     prompt
         .split_whitespace()
         .flat_map(|raw| {
-            let unwrapped = raw.trim_start_matches(|c| wrapper(c) || c == '@').trim_end_matches(|c| wrapper(c) || c == '.');
-            let unwrapped = strip_location_suffixes(unwrapped);
+            // Quotes and locations nest either way (`` `a.env`:3 ``, `"a.env:3"`), so both are
+            // taken off until nothing changes.
+            let mut unwrapped = raw.trim_start_matches(|c| wrapper(c) || c == '@');
+            loop {
+                let next = strip_location_suffixes(unwrapped.trim_end_matches(|c| wrapper(c) || c == '.'));
+                if next == unwrapped {
+                    break;
+                }
+                unwrapped = next;
+            }
             [raw, unwrapped]
         })
         .filter(|w| !w.is_empty())
@@ -651,6 +659,9 @@ mod tests {
             ("x.pem#L1-L9", "x.pem"),
             ("@\"config/.env:4:2\",", "config/.env"),
             ("x.pem:1:2:3", "x.pem"),
+            ("`config/.env`:12", "config/.env"),
+            ("\".env\":3", ".env"),
+            ("(`server.pem`:1:2).", "server.pem"),
         ] {
             assert!(mentioned_paths(Path::new(ROOT), prompt).contains(&path.to_string()), "{prompt}");
             let verdict = check(&p, prompt);

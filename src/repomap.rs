@@ -101,7 +101,7 @@ pub fn symbols(text: &str, path: &Path) -> Vec<Symbol> {
 /// The project's files: tracked and untracked-but-not-ignored when `dir` is in a git work
 /// tree, else a walk.
 fn list_files(dir: &Path) -> Vec<PathBuf> {
-    let git = Command::new("git").arg("-C").arg(dir).args(crate::gitflow::NO_REPO_PROGRAMS).args(["ls-files", "-co", "--exclude-standard"]).stdin(Stdio::null()).stderr(Stdio::null()).output();
+    let git = Command::new("git").arg("-C").arg(dir).args(crate::gitflow::no_repo_programs(dir)).args(["ls-files", "-co", "--exclude-standard"]).stdin(Stdio::null()).stderr(Stdio::null()).output();
     if let Ok(out) = git {
         if out.status.success() {
             return String::from_utf8_lossy(&out.stdout).lines().map(PathBuf::from).take(MAX_FILES).collect();

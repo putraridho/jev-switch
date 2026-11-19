@@ -112,11 +112,12 @@ impl Query {
 
 /// `7d` or `2w` in milliseconds.
 fn parse_days(text: &str) -> Option<u64> {
-    let (n, unit) = text.split_at(text.len().checked_sub(1)?);
-    let n: u64 = n.parse().ok()?;
+    // Split before the last character, not the last byte: `7日` must be refused, not panic.
+    let (at, unit) = text.char_indices().last()?;
+    let n: u64 = text[..at].parse().ok()?;
     match unit {
-        "d" => Some(n.saturating_mul(DAY_MS)),
-        "w" => Some(n.saturating_mul(7 * DAY_MS)),
+        'd' => Some(n.saturating_mul(DAY_MS)),
+        'w' => Some(n.saturating_mul(7 * DAY_MS)),
         _ => None,
     }
 }
@@ -522,6 +523,9 @@ mod tests {
         assert_eq!(run("provider:codex since:1w parser"), ["parser bug"]);
         assert!(Query::parse("provider:nobody").is_err());
         assert!(Query::parse("since:soon").is_err());
+        for odd in ["since:7日", "since:3д", "since:é", "since:"] {
+            assert!(Query::parse(odd).is_err(), "{odd}");
+        }
     }
 
     #[test]

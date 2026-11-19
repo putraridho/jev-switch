@@ -155,6 +155,7 @@ impl RoutingState {
 }
 
 /// All inputs of one routing decision.
+#[derive(Clone, Copy)]
 pub struct RouteInput<'a> {
     /// `None` when Jev was unavailable.
     pub signals: Option<&'a Signals>,

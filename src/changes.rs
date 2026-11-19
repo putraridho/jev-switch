@@ -321,7 +321,7 @@ fn merge_untracked(tree_files: Vec<FileChange>, before: &Snapshot, after: &Snaps
 /// Run `git -C dir args...` (optionally on another index) and return stdout.
 fn git(dir: &Path, index: Option<&Path>, args: &[&str]) -> Option<Vec<u8>> {
     let mut cmd = Command::new("git");
-    cmd.arg("-C").arg(dir).args(crate::gitflow::NO_REPO_PROGRAMS).args(args).stdin(Stdio::null()).stderr(Stdio::null());
+    cmd.arg("-C").arg(dir).args(crate::gitflow::no_repo_programs(dir)).args(args).stdin(Stdio::null()).stderr(Stdio::null());
     cmd.env("GIT_OPTIONAL_LOCKS", "0").env_remove("GIT_DIR").env_remove("GIT_WORK_TREE");
     match index {
         Some(i) => cmd.env("GIT_INDEX_FILE", i),
@@ -406,7 +406,7 @@ fn git_with_input(root: &Path, index: &Path, args: &[&str], input: &[u8]) -> Opt
     let mut child = Command::new("git")
         .arg("-C")
         .arg(root)
-        .args(crate::gitflow::NO_REPO_PROGRAMS)
+        .args(crate::gitflow::no_repo_programs(root))
         .args(args)
         .env("GIT_OPTIONAL_LOCKS", "0")
         .env_remove("GIT_DIR")
@@ -506,7 +506,7 @@ pub fn summarize(dir: &Path, before: &Snapshot, after: &Snapshot) -> Option<Chan
     let tree_files = if before.tree == after.tree {
         Vec::new()
     } else {
-        let diff = |mode: &str| git_text(&root, None, &["diff", mode, "-z", "-M", "--no-ext-diff", &before.tree, &after.tree]);
+        let diff = |mode: &str| git_text(&root, None, &["diff", mode, "-z", "-M", "--no-ext-diff", "--no-textconv", &before.tree, &after.tree]);
         build_files(&diff("--name-status")?, &diff("--numstat")?)
     };
     let Merged { mut files, added } = merge_untracked(tree_files, before, after, |p| stamp_of(&root, p));
@@ -639,7 +639,7 @@ pub fn diff_text(dir: &Path, summary: &ChangeSummary, path: Option<&str>) -> Opt
     // From the repository root, so `path` means the same as in the summary whatever
     // folder the session was started in.
     let root = toplevel(dir)?;
-    let mut args = vec!["--literal-pathspecs", "-c", "core.quotepath=false", "diff", "--no-color", "--no-ext-diff", "-M", &summary.before, &summary.after];
+    let mut args = vec!["--literal-pathspecs", "-c", "core.quotepath=false", "diff", "--no-color", "--no-ext-diff", "--no-textconv", "-M", &summary.before, &summary.after];
     // Only what the turn is credited with: the trees also hold other processes' changes.
     let mut mine: Vec<&str> = summary.files.iter().flat_map(|f| std::iter::once(f.path.as_str()).chain(f.old_path.as_deref())).collect();
     mine.retain(|p| path.is_none_or(|want| want == *p));
@@ -980,7 +980,7 @@ pub fn undo(dir: &Path, summary: &ChangeSummary) -> Result<UndoReport, UndoError
         let m = RepoMove { from: summary.repo_after.clone(), to: now.repo.clone() };
         return Err(UndoError::RepoMoved(format!("the repository moved since the turn ({})", m.describe())));
     }
-    let differing = git_text(&root, None, &["diff", "--name-only", "-z", "--no-renames", &summary.after, &now.tree])
+    let differing = git_text(&root, None, &["diff", "--name-only", "-z", "--no-renames", "--no-ext-diff", "--no-textconv", &summary.after, &now.tree])
         .ok_or_else(|| UndoError::Failed("could not compare the working tree".into()))?;
     let differing: HashSet<&str> = differing.split('\0').filter(|s| !s.is_empty()).collect();
     let changed = changed_since(&steps, &summary.added_stamps, &differing, &now.untracked);
