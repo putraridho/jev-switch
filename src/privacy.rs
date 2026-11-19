@@ -362,15 +362,42 @@ pub fn mentioned_paths(root: &Path, prompt: &str) -> Vec<String> {
         .split_whitespace()
         .flat_map(|raw| {
             let unwrapped = raw.trim_start_matches(|c| wrapper(c) || c == '@').trim_end_matches(|c| wrapper(c) || c == '.');
-            let unwrapped = match unwrapped.rsplit_once(':') {
-                Some((path, line)) if !line.is_empty() && line.chars().all(|c| c.is_ascii_digit()) => path,
-                _ => unwrapped,
-            };
+            let unwrapped = strip_location_suffixes(unwrapped);
             [raw, unwrapped]
         })
         .filter(|w| !w.is_empty())
         .map(|w| relative(root, w))
         .collect()
+}
+
+fn strip_location_suffixes(mut path: &str) -> &str {
+    fn digits(text: &str) -> bool {
+        !text.is_empty() && text.bytes().all(|byte| byte.is_ascii_digit())
+    }
+
+    loop {
+        if let Some((base, location)) = path.rsplit_once(':') {
+            let is_location = match location.split_once('-') {
+                Some((start, end)) => digits(start) && digits(end),
+                None => digits(location),
+            };
+            if is_location {
+                path = base;
+                continue;
+            }
+        }
+        if let Some((base, location)) = path.rsplit_once("#L") {
+            let is_location = match location.split_once("-L") {
+                Some((start, end)) => digits(start) && digits(end),
+                None => digits(location),
+            };
+            if is_location {
+                path = base;
+                continue;
+            }
+        }
+        return path;
+    }
 }
 
 /// `path` as the policy sees it: `~` expanded, `.` and `..` resolved (so `a/../secrets/x`
@@ -611,6 +638,32 @@ mod tests {
         let raw = policy("block data! from all");
         assert!(!check(&raw, "data!").permits(ProviderId::Claude));
         assert!(check(&p, "environment").permits(ProviderId::Claude));
+    }
+
+    #[test]
+    fn location_suffixes_do_not_hide_paths() {
+        let p = policy("block .env from all\nblock *.pem from all\nblock src/*.rs from all");
+        for (prompt, path) in [
+            (".env:3:1", ".env"),
+            ("server.pem:12:5", "server.pem"),
+            ("src/a.rs:10-20", "src/a.rs"),
+            ("config/.env#L4", "config/.env"),
+            ("x.pem#L1-L9", "x.pem"),
+            ("@\"config/.env:4:2\",", "config/.env"),
+            ("x.pem:1:2:3", "x.pem"),
+        ] {
+            assert!(mentioned_paths(Path::new(ROOT), prompt).contains(&path.to_string()), "{prompt}");
+            let verdict = check(&p, prompt);
+            assert!(crate::providers::ALL_PROVIDERS.iter().all(|provider| !verdict.permits(*provider)), "{prompt}");
+        }
+    }
+
+    #[test]
+    fn non_location_suffixes_are_preserved() {
+        for prompt in ["x.pem:12-x", "x.pem:12-", "x.pem#L", "x.pem#L1-L", "x.pem#L1-extra", "C:\\work\\x.pem"] {
+            assert_eq!(mentioned_paths(Path::new(ROOT), prompt), vec![prompt, prompt]);
+        }
+        assert_eq!(mentioned_paths(Path::new(ROOT), "host:8080"), vec!["host:8080", "host"]);
     }
 
     #[test]

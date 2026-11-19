@@ -211,6 +211,9 @@ pub fn install(user: &Path, source: &Path) -> Result<Installed, MarketError> {
     let target = extensions_dir(user).join(&manifest.name);
     let mut registry = load_registry(user);
     let replaced = registry.extensions.iter().find(|r| r.name == manifest.name).map(|r| r.version.clone());
+    if target.exists() && replaced.is_none() {
+        return fail(format!("{} exists and was not installed from a package; remove or rename it first", target.display()));
+    }
     // Write the new copy beside the installed one and swap them, so a failed write (disk full,
     // permissions) leaves the installed extension as it was.
     let stage = extensions_dir(user).join(format!(".{}.new", manifest.name));
@@ -408,6 +411,39 @@ mod tests {
         assert!(done.is_err(), "{done:?}");
         assert_eq!(std::fs::read_to_string(user.join("extensions/hello-kit/commands/hello.md")).unwrap(), "say hello");
         assert_eq!(installed_dirs(&user), vec![user.join("extensions/hello-kit")]);
+    }
+
+    #[test]
+    fn install_refuses_to_replace_an_unmanaged_extension() {
+        let root = temp("unmanaged");
+        let (src, user) = (root.join("src"), root.join("cfg"));
+        package(&src, "1.0.0", "packaged");
+        let target = user.join("extensions/hello-kit");
+        std::fs::create_dir_all(target.join("commands")).unwrap();
+        std::fs::write(target.join("commands/hello.md"), "hand-written").unwrap();
+        std::fs::write(target.join("notes.txt"), "keep me").unwrap();
+
+        let error = install(&user, &src).unwrap_err();
+        assert!(error.0.contains("was not installed from a package"), "{error}");
+        assert!(error.0.contains("remove or rename"), "{error}");
+        assert_eq!(std::fs::read_to_string(target.join("commands/hello.md")).unwrap(), "hand-written");
+        assert_eq!(std::fs::read_to_string(target.join("notes.txt")).unwrap(), "keep me");
+        assert!(list(&user).is_empty());
+    }
+
+    #[test]
+    fn install_replaces_a_registry_managed_extension() {
+        let root = temp("managed-replace");
+        let (src, user) = (root.join("src"), root.join("cfg"));
+        package(&src, "1.0.0", "old");
+        install(&user, &src).unwrap();
+        package(&src, "2.0.0", "new");
+
+        let installed = install(&user, &src).unwrap();
+        assert_eq!(installed.replaced.as_deref(), Some("1.0.0"));
+        assert_eq!(installed.version, "2.0.0");
+        assert_eq!(std::fs::read_to_string(user.join("extensions/hello-kit/commands/hello.md")).unwrap(), "new");
+        assert_eq!(list(&user)[0].state, State::Verified);
     }
 
     #[test]

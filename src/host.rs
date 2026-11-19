@@ -3,6 +3,7 @@
 //! program, how output is cut, how a note for the model reads) are pure and tested; the
 //! process calls around them are thin.
 
+use std::collections::VecDeque;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -19,8 +20,10 @@ pub const SHELL_KEEP_BYTES: usize = 20_000;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ShellRun {
     pub command: String,
-    /// Stdout and stderr, as printed.
+    /// The retained tail of stdout and stderr, with line endings normalized.
     pub output: String,
+    /// Whether earlier output was omitted.
+    pub truncated: bool,
     /// The exit code; `None` when killed by a signal or it could not start.
     pub code: Option<i32>,
     /// It could not be started at all; the reason.
@@ -28,18 +31,18 @@ pub struct ShellRun {
 }
 
 /// Run `command` with `sh -c` in `dir`, stdin closed, stderr joined to stdout; each line
-/// goes to `on_line` as it is printed, and all of it comes back in the result.
+/// goes to `on_line` as it is printed, and a bounded tail comes back in the result.
 pub fn run_shell(command: &str, dir: &Path, on_line: &mut dyn FnMut(&str)) -> ShellRun {
     use std::io::BufRead;
     let script = format!("exec 2>&1\n{command}");
     let child = Command::new("sh").arg("-c").arg(script).current_dir(dir).stdin(Stdio::null()).stdout(Stdio::piped()).spawn();
     let mut child = match child {
         Ok(c) => c,
-        Err(e) => return ShellRun { command: command.to_string(), output: String::new(), code: None, failed: Some(e.to_string()) },
+        Err(e) => return ShellRun { command: command.to_string(), output: String::new(), truncated: false, code: None, failed: Some(e.to_string()) },
     };
     // The pipe is read on its own thread: a job the command left in the background (`npm run
     // dev &`) keeps it open after `sh` exits, and the session must not wait for that job.
-    let (lines, received) = std::sync::mpsc::channel::<String>();
+    let (lines, received) = std::sync::mpsc::sync_channel::<String>(1);
     if let Some(stdout) = child.stdout.take() {
         std::thread::spawn(move || {
             let mut reader = std::io::BufReader::new(stdout);
@@ -48,14 +51,14 @@ pub fn run_shell(command: &str, dir: &Path, on_line: &mut dyn FnMut(&str)) -> Sh
                 if lines.send(String::from_utf8_lossy(&raw).into_owned()).is_err() {
                     return;
                 }
-                raw.clear();
+                raw = Vec::new();
             }
         });
     }
-    let mut output = String::new();
-    let mut take = |line: String, output: &mut String| {
+    let mut output = ShellTail::default();
+    let mut take = |line: String, output: &mut ShellTail| {
         on_line(line.trim_end_matches(['\n', '\r']));
-        output.push_str(&line);
+        output.push(&line);
     };
     let status = loop {
         match received.recv_timeout(SHELL_POLL) {
@@ -80,9 +83,11 @@ pub fn run_shell(command: &str, dir: &Path, on_line: &mut dyn FnMut(&str)) -> Sh
             Err(e) => break Err(e),
         }
     };
+    let truncated = output.cut;
+    let output = output.into_text();
     match status {
-        Ok(status) => ShellRun { command: command.to_string(), output, code: status.code(), failed: None },
-        Err(e) => ShellRun { command: command.to_string(), output, code: None, failed: Some(e.to_string()) },
+        Ok(status) => ShellRun { command: command.to_string(), output, truncated, code: status.code(), failed: None },
+        Err(e) => ShellRun { command: command.to_string(), output, truncated, code: None, failed: Some(e.to_string()) },
     }
 }
 
@@ -91,6 +96,62 @@ const SHELL_POLL: std::time::Duration = std::time::Duration::from_millis(50);
 
 /// How long output is still taken after the command exited (its last lines in flight).
 const SHELL_DRAIN: std::time::Duration = std::time::Duration::from_millis(200);
+
+#[derive(Default)]
+struct ShellTail {
+    lines: VecDeque<String>,
+    bytes: usize,
+    cut: bool,
+}
+
+impl ShellTail {
+    fn push(&mut self, raw: &str) {
+        let line = match raw.strip_suffix('\n') {
+            Some(line) => line.strip_suffix('\r').unwrap_or(line),
+            None => raw,
+        };
+        if line.len() > SHELL_KEEP_BYTES {
+            let mut start = line.len() - SHELL_KEEP_BYTES;
+            while !line.is_char_boundary(start) {
+                start += 1;
+            }
+            self.lines.clear();
+            self.bytes = 0;
+            self.cut = true;
+            self.lines.push_back(line[start..].to_string());
+            self.bytes = line.len() - start;
+            return;
+        }
+        self.bytes += line.len() + usize::from(!self.lines.is_empty());
+        self.lines.push_back(line.to_string());
+        while self.lines.len() > SHELL_KEEP_LINES {
+            if let Some(first) = self.lines.pop_front() {
+                self.bytes -= first.len() + 1;
+                self.cut = true;
+            }
+        }
+        while self.bytes > SHELL_KEEP_BYTES {
+            let excess = self.bytes - SHELL_KEEP_BYTES;
+            let Some(first) = self.lines.front_mut() else { break };
+            if excess > first.len() {
+                self.bytes -= first.len() + 1;
+                self.lines.pop_front();
+            } else {
+                let mut start = excess;
+                while !first.is_char_boundary(start) {
+                    start += 1;
+                }
+                *first = first[start..].to_string();
+                self.bytes -= start;
+            }
+            self.cut = true;
+        }
+    }
+
+    fn into_text(self) -> String {
+        self.lines.into_iter().collect::<Vec<_>>().join("\n")
+    }
+}
 
 /// `text` cut to the last [`SHELL_KEEP_LINES`] lines and [`SHELL_KEEP_BYTES`] bytes (the
 /// end of a long output is usually what matters), and whether anything was cut.
@@ -115,14 +176,13 @@ pub fn shell_note(run: &ShellRun) -> String {
     if let Some(why) = &run.failed {
         return format!("I tried to run `{}` in the shell, but it could not start: {why}", run.command);
     }
-    let (kept, cut) = keep_tail(&run.output);
     let status = match run.code {
         Some(0) => "it exited 0".to_string(),
         Some(code) => format!("it exited {code}"),
         None => "it was stopped by a signal".to_string(),
     };
-    let cut_note = if cut { " (only the end is shown)" } else { "" };
-    format!("I ran `{}` in the shell; {status}. Its output{cut_note}:\n```\n{}\n```", run.command, kept.trim_end())
+    let cut_note = if run.truncated { " (only the end is shown)" } else { "" };
+    format!("I ran `{}` in the shell; {status}. Its output{cut_note}:\n```\n{}\n```", run.command, run.output.trim_end())
 }
 
 // --------------------------------------------------------------------- editor
@@ -269,13 +329,13 @@ mod tests {
         let dir = std::env::temp_dir();
         let mut seen = Vec::new();
         let ok = run_shell("echo out; echo err >&2", &dir, &mut |l| seen.push(l.to_string()));
-        assert_eq!((ok.output.as_str(), ok.code), ("out\nerr\n", Some(0)));
+        assert_eq!((ok.output.as_str(), ok.code), ("out\nerr", Some(0)));
         assert_eq!(seen, ["out", "err"], "each line is passed on as it comes");
         // A job left in the background holds the pipe open; the command still returns.
         let started = std::time::Instant::now();
         let bg = run_shell("sleep 30 & echo started", &dir, &mut |_| {});
         assert!(started.elapsed() < std::time::Duration::from_secs(5), "waited for a background job: {:?}", started.elapsed());
-        assert_eq!((bg.output.as_str(), bg.code), ("started\n", Some(0)));
+        assert_eq!((bg.output.as_str(), bg.code), ("started", Some(0)));
         let bad = run_shell("exit 3", &dir, &mut |_| {});
         assert_eq!(bad.code, Some(3));
         assert!(shell_note(&bad).contains("it exited 3"));
@@ -292,8 +352,61 @@ mod tests {
         let (kept, cut) = keep_tail(&wide);
         assert!(cut && kept.len() <= SHELL_KEEP_BYTES);
         assert_eq!(keep_tail("short"), ("short".to_string(), false));
-        let note = shell_note(&ShellRun { command: "x".into(), output: many, code: Some(0), failed: None });
+        let (output, truncated) = keep_tail(&many);
+        let note = shell_note(&ShellRun { command: "x".into(), output, truncated, code: Some(0), failed: None });
         assert!(note.contains("(only the end is shown)"));
+    }
+
+    #[test]
+    fn bounded_tail_matches_full_output_policy() {
+        let cases = [
+            "".to_string(),
+            "short\r\n\nlast\r".to_string(),
+            "double\r\r\nnext".to_string(),
+            (0..205).map(|index| format!("line {index}\n")).collect(),
+            format!("{}\n{}\n", "é".repeat(SHELL_KEEP_BYTES), "x".repeat(400)),
+            format!("{}\n{}", "a".repeat(SHELL_KEEP_BYTES - 1), "é"),
+            "\n".repeat(205),
+            format!("{}\n\n", "a".repeat(SHELL_KEEP_BYTES)),
+        ];
+        for text in cases {
+            let mut tail = ShellTail::default();
+            for line in text.split_inclusive('\n') {
+                tail.push(line);
+            }
+            let expected = keep_tail(&text);
+            let cut = tail.cut;
+            let output = tail.into_text();
+            assert_eq!((&output, cut), (&expected.0, expected.1));
+            let actual = shell_note(&ShellRun { command: "x".into(), output, truncated: cut, code: Some(0), failed: None });
+            let marker = if expected.1 { " (only the end is shown)" } else { "" };
+            assert_eq!(actual, format!("I ran `x` in the shell; it exited 0. Its output{marker}:\n```\n{}\n```", expected.0.trim_end()));
+        }
+    }
+
+    #[test]
+    fn bounded_tail_never_exceeds_its_caps() {
+        let mut tail = ShellTail::default();
+        for index in 0..100_000 {
+            tail.push(&format!("{index}: {}\n", "é".repeat(100)));
+            assert!(tail.lines.len() <= SHELL_KEEP_LINES);
+            assert!(tail.bytes <= SHELL_KEEP_BYTES);
+            assert_eq!(tail.bytes, tail.lines.iter().map(String::len).sum::<usize>() + tail.lines.len().saturating_sub(1));
+        }
+    }
+
+    #[test]
+    fn shell_streams_every_line_while_retaining_only_the_tail() {
+        let command = "i=0; while [ \"$i\" -lt 1000 ]; do printf 'line %s\\n' \"$i\"; i=$((i + 1)); done";
+        let mut seen = Vec::new();
+        let run = run_shell(command, Path::new("."), &mut |line| seen.push(line.to_string()));
+        assert_eq!(run.code, Some(0));
+        assert_eq!(seen.len(), 1000);
+        let full = seen.join("\n");
+        let (expected, truncated) = keep_tail(&full);
+        assert_eq!(run.output, expected);
+        assert_eq!(run.truncated, truncated);
+        assert!(shell_note(&run).contains("(only the end is shown)"));
     }
 
     #[test]

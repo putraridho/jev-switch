@@ -3,8 +3,9 @@
 //! An interval is a number with a unit (`30s`, `10m`, `2h`, `1d`). A cron expression has the
 //! usual five fields (minute hour day-of-month month day-of-week) with `*`, numbers, ranges
 //! `a-b`, lists `a,b` and steps `*/n` or `a-b/n`; day-of-week is 0-7 with 0 and 7 Sunday.
-//! Cron times are UTC (there is no time-zone data here). When both day fields are limited,
-//! either one matching is enough, as in cron.
+//! Cron times are UTC (there is no time-zone data here). A day field that starts with `*`
+//! (so `*` and `*/2`) is unrestricted; when both day fields are limited, either one matching
+//! is enough, as in cron.
 //!
 //! Pure over epoch seconds, so every rule is a unit test; the loop in the binary only sleeps.
 
@@ -130,8 +131,8 @@ impl Cron {
             days: field(day, "day-of-month", 1, 31)?,
             months: field(month, "month", 1, 12)?,
             weekdays,
-            day_limited: *day != "*",
-            weekday_limited: *weekday != "*",
+            day_limited: !day.starts_with('*'),
+            weekday_limited: !weekday.starts_with('*'),
         })
     }
 
@@ -143,9 +144,8 @@ impl Cron {
         let (d, w) = (Self::has(self.days, day), Self::has(self.weekdays, weekday));
         let day_ok = match (self.day_limited, self.weekday_limited) {
             (true, true) => d || w,
-            (true, false) => d,
-            (false, true) => w,
-            (false, false) => true,
+            // A `*`-leading field is unrestricted, but `*/n` still filters its own values.
+            _ => d && w,
         };
         day_ok && Self::has(self.months, month)
     }
@@ -262,6 +262,32 @@ mod tests {
         assert_eq!(cron("0 0 1 1 *").next_after(NOW), Some(1_798_761_600));
         // A date that never exists.
         assert_eq!(cron("0 0 31 2 *").next_after(NOW), None);
+    }
+
+    #[test]
+    fn a_star_step_day_field_is_not_limited() {
+        let start_of_day = NOW - NOW % 86_400;
+        // `*/2` is unrestricted like `*`, so it is ANDed with Monday: 2026-11-16 (a Monday
+        // with an even day) is out, and the next run is Monday 2026-11-23 at 09:00.
+        let every_other_day_and_monday = cron("0 9 */2 * 1");
+        assert!(!every_other_day_and_monday.day_matches(11, 16, 1));
+        // An odd day that is not a Monday is out too: Thursday 2026-11-19.
+        assert!(!every_other_day_and_monday.day_matches(11, 19, 4));
+        assert!(every_other_day_and_monday.day_matches(11, 23, 1));
+        assert_eq!(every_other_day_and_monday.next_after(NOW), Some(start_of_day + 5 * 86_400 + 9 * 3600));
+    }
+
+    #[test]
+    fn two_restricted_day_fields_are_ored_and_stars_stay_daily() {
+        // Both fields are limited, so either matches: Tuesday 2026-12-01 or Monday 2026-11-23.
+        let first_or_monday = cron("0 9 1 * 1");
+        assert!(first_or_monday.day_matches(12, 1, 2));
+        assert!(first_or_monday.day_matches(11, 23, 1));
+        assert!(!first_or_monday.day_matches(11, 19, 4));
+        // Two unrestricted fields: every day, as before.
+        let daily = cron("0 9 * * *");
+        assert!(daily.day_matches(11, 19, 4));
+        assert_eq!(daily.next_after(NOW), Some(NOW - NOW % 86_400 + 86_400 + 9 * 3600));
     }
 
     #[test]

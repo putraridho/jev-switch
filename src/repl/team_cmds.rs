@@ -134,25 +134,10 @@ impl Repl {
         let Ok(team) = self.team() else { return false };
         let Some(pin) = team.pin_for(prompt).cloned() else { return false };
         // The rule comes with the repository; the person's own routing rules (`avoid`,
-        // `only`) win over it. A pin skips those rules, so they are asked here first.
-        let provider = match &pin {
-            Pin::Provider(p) | Pin::Model(p, _) => Some(*p),
-            Pin::Auto => None,
-        };
-        if let Some(p) = provider {
-            let rules = &self.engine.guards.rules;
-            if !rules.is_empty() {
-                let all = crate::catalog::Usable::all_of(crate::providers::ALL_PROVIDERS);
-                let facts = crate::routing_rules::Facts::new(self.engine.dir(), prompt, None);
-                let allowed = rules.apply(&all, &facts).is_ok_and(|a| a.usable.has_provider(p));
-                if !allowed {
-                    self.console.err(&format!("  {}", self.console.err_style().dim(&format!("{}: route to {pin} skipped, your routing rules do not allow {p}", team::FILE))));
-                    return false;
-                }
-            }
-        }
+        // `only`) win over it. The engine applies them to a team pin once the turn's task is
+        // known, and routes automatically if they exclude the pinned provider.
         self.console.err(&format!("  {}", self.console.err_style().dim(&format!("{}: routed to {pin}", team::FILE))));
-        self.engine.set_pin(pin);
+        self.engine.set_team_pin(pin);
         true
     }
 

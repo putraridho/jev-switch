@@ -115,8 +115,8 @@ fn parse_days(text: &str) -> Option<u64> {
     let (n, unit) = text.split_at(text.len().checked_sub(1)?);
     let n: u64 = n.parse().ok()?;
     match unit {
-        "d" => Some(n * DAY_MS),
-        "w" => Some(n * 7 * DAY_MS),
+        "d" => Some(n.saturating_mul(DAY_MS)),
+        "w" => Some(n.saturating_mul(7 * DAY_MS)),
         _ => None,
     }
 }
@@ -371,6 +371,7 @@ pub fn human_bytes(bytes: u64) -> String {
 /// and how many bytes they were.
 pub fn clean(state_dir: &Path, older_than_days: u64, now_ms: u64) -> (usize, u64) {
     let mut meta = MetaStore::load(state_dir);
+    let max_age_ms = older_than_days.saturating_mul(DAY_MS);
     let readable: std::collections::HashSet<PathBuf> = scan_all(state_dir).into_iter().map(|e| e.path).collect();
     let mut removed = (0, 0);
     let all_files = session_dirs(state_dir).into_iter().flat_map(|p| {
@@ -385,7 +386,7 @@ pub fn clean(state_dir: &Path, older_than_days: u64, now_ms: u64) -> (usize, u64
             continue;
         }
         let old = SavedSession::parse(&std::fs::read_to_string(&path).unwrap_or_default())
-            .map_or(true, |s| now_ms.saturating_sub(s.saved_ms) > older_than_days * DAY_MS || s.sessions.turns() == 0);
+            .map_or(true, |s| now_ms.saturating_sub(s.saved_ms) > max_age_ms || s.sessions.turns() == 0);
         if old || !readable.contains(&path) {
             let bytes = std::fs::metadata(&path).map_or(0, |m| m.len());
             if std::fs::remove_file(&path).is_ok() {
@@ -524,6 +525,16 @@ mod tests {
     }
 
     #[test]
+    fn enormous_since_filters_include_all_sessions() {
+        let (state, ..) = library("huge-since");
+        for filter in ["since:99999999999999d", "since:18446744073709551615d", "since:99999999999999w", "since:18446744073709551615w"] {
+            let query = Query::parse(filter).unwrap();
+            assert_eq!(query.since_ms, Some(u64::MAX));
+            assert_eq!(search(scan_all(&state), &query, NOW).len(), 3);
+        }
+    }
+
+    #[test]
     fn pinned_come_first_archived_hide_and_tags_filter() {
         let (state, ..) = library("marks");
         let all = scan_all(&state);
@@ -608,6 +619,17 @@ mod tests {
         mark(&state, &old, &Mark::Pin(false)).unwrap();
         assert_eq!(clean(&state, 10, NOW).0, 1);
         assert_eq!(scan_all(&state).len(), 2);
+    }
+
+    #[test]
+    fn clean_with_enormous_age_keeps_readable_nonempty_sessions() {
+        let (state, ..) = library("huge-clean");
+        for days in [999_999_999_999, u64::MAX] {
+            assert_eq!(clean(&state, days, NOW), (0, 0));
+            assert_eq!(scan_all(&state).len(), 3);
+            assert_eq!(clean(&state, days, u64::MAX), (0, 0));
+            assert_eq!(scan_all(&state).len(), 3);
+        }
     }
 
     #[test]

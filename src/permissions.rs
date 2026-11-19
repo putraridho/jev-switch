@@ -26,6 +26,7 @@ pub(crate) fn local_settings_tracked(project: &Path) -> bool {
     let output = std::process::Command::new("git")
         .arg("-C")
         .arg(project)
+        .args(crate::gitflow::NO_REPO_PROGRAMS)
         .args(["ls-files", "--error-unmatch", "--", LOCAL_SETTINGS])
         .env("LC_ALL", "C")
         .stdout(std::process::Stdio::null())

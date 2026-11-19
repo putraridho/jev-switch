@@ -15,7 +15,7 @@ const TRUNKS: [&str; 3] = ["main", "master", "trunk"];
 
 /// The checked-out branch of `dir`; `None` outside a repository or on a detached head.
 pub fn current_branch(dir: &Path) -> Option<String> {
-    let out = Command::new("git").args(["symbolic-ref", "--short", "-q", "HEAD"]).current_dir(dir).stderr(Stdio::null()).output().ok()?;
+    let out = Command::new("git").args(NO_REPO_PROGRAMS).args(["symbolic-ref", "--short", "-q", "HEAD"]).current_dir(dir).stderr(Stdio::null()).output().ok()?;
     let name = String::from_utf8(out.stdout).ok()?.trim().to_string();
     (out.status.success() && !name.is_empty()).then_some(name)
 }

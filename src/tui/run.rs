@@ -191,14 +191,66 @@ fn show(screen: &mut Screen<std::io::Stdout>, app: &mut App, text: &str, style: 
     }
 }
 
+fn git_command(dir: &std::path::Path, args: &[&str]) -> std::process::Command {
+    let mut command = std::process::Command::new("git");
+    command.args(crate::gitflow::NO_REPO_PROGRAMS).args(args).current_dir(dir).stderr(std::process::Stdio::null());
+    command
+}
+
 /// The branch and how many files differ from it, `main ±3`; `None` outside a repository.
 fn git_line(dir: &std::path::Path) -> Option<String> {
     let git = |args: &[&str]| {
-        std::process::Command::new("git").args(args).current_dir(dir).stderr(std::process::Stdio::null()).output().ok().filter(|o| o.status.success()).map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+        git_command(dir, args).output().ok().filter(|o| o.status.success()).map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
     };
     let branch = git(&["rev-parse", "--abbrev-ref", "HEAD"])?.trim().to_string();
     let changed = git(&["status", "--porcelain"]).map_or(0, |s| s.lines().count());
     Some(if changed > 0 { format!("{branch} ±{changed}") } else { branch })
+}
+
+#[cfg(test)]
+mod git_tests {
+    use super::git_command;
+    #[cfg(unix)]
+    use super::git_line;
+
+    #[test]
+    fn status_bar_git_commands_disable_repo_programs() {
+        for args in [&["rev-parse", "--abbrev-ref", "HEAD"][..], &["status", "--porcelain"][..]] {
+            let command = git_command(std::path::Path::new("."), args);
+            let actual: Vec<_> = command.get_args().collect();
+            let expected: Vec<_> = crate::gitflow::NO_REPO_PROGRAMS.iter().chain(args.iter()).map(std::ffi::OsStr::new).collect();
+            assert_eq!(actual, expected);
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn status_bar_does_not_run_repo_fsmonitor() {
+        use std::os::unix::fs::PermissionsExt;
+        use std::process::Command;
+
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("target").join(format!("git-line-fsmonitor-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let run_git = |args: &[&str]| {
+            let output = Command::new("git").args(crate::gitflow::NO_REPO_PROGRAMS).args(args).current_dir(&dir).output().unwrap();
+            assert!(output.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&output.stderr));
+        };
+        run_git(&["init", "-q"]);
+        run_git(&["-c", "user.name=test", "-c", "user.email=test@example.com", "commit", "--allow-empty", "-qm", "init"]);
+        let script = dir.join(".git/fsmonitor-test.sh");
+        let marker = dir.join(".git/fsmonitor-marker");
+        std::fs::write(&script, "#!/bin/sh\nprintf x > .git/fsmonitor-marker\n").unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        run_git(&["config", "core.fsmonitor", "./.git/fsmonitor-test.sh"]);
+
+        let control = Command::new("git").args(["status", "--porcelain"]).current_dir(&dir).output().unwrap();
+        assert!(control.status.success());
+        assert!(marker.exists(), "the configured fsmonitor must run without the override");
+        std::fs::remove_file(&marker).unwrap();
+        assert!(git_line(&dir).is_some());
+        assert!(!marker.exists(), "the status bar must not run the configured fsmonitor");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 }
 
 /// What the router row shows: each subscription that can take a turn, with how much of its

@@ -54,6 +54,15 @@ pub enum Pin {
     Model(ProviderId, String),
 }
 
+/// Who set the pin. A person's own pin is never overridden; a pin that came from the repo's
+/// team file is a default that the person's routing rules (`avoid`, `only`) still bind.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum PinOrigin {
+    #[default]
+    User,
+    Team,
+}
+
 impl Pin {
     /// Read the argument of `/model`: `auto`, a provider (`codex`), one model
     /// (`codex:gpt-6.1-sol`), or the old Claude aliases `sonnet|opus|haiku`. The one

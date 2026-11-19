@@ -204,6 +204,9 @@ impl Editor {
             self.cursor = start;
         } else if start > 0 {
             self.text.replace_range(start - 1..end, "");
+            // The text now ends where the removed line's break was; `line_start` needs a cursor
+            // inside the text to look back from.
+            self.cursor = (start - 1).min(self.text.len());
             self.cursor = self.line_start();
         } else {
             self.text.clear();
@@ -379,6 +382,30 @@ mod tests {
         assert!(!e.up());
         assert!(e.down());
         assert_eq!(e.cursor(), 17);
+    }
+
+    #[test]
+    fn dd_leaves_a_valid_cursor_on_every_kind_of_line() {
+        // First line: the next line takes its place.
+        let mut e = ed("ab\ncd", 1);
+        e.delete_line();
+        assert_eq!((e.before_cursor(), e.text(), e.cursor()), ("", "cd", 0));
+
+        // Middle line.
+        let mut e = ed("ab\ncd\nef", 4);
+        e.delete_line();
+        assert_eq!((e.before_cursor(), e.text(), e.cursor()), ("ab\n", "ab\nef", 3));
+
+        // Last line: the cursor used to stay past the new end of the text, so `before_cursor`
+        // panicked.
+        let mut e = ed("ab\ncd", 5);
+        e.delete_line();
+        assert_eq!((e.before_cursor(), e.text(), e.cursor()), ("", "ab", 0));
+
+        // The only line.
+        let mut e = ed("only", 4);
+        e.delete_line();
+        assert_eq!((e.before_cursor(), e.text(), e.cursor()), ("", "", 0));
     }
 
     #[test]

@@ -38,7 +38,7 @@ use crate::orchestrate::{self, Outcome, Setup};
 use crate::permissions::{self, Offer, Places, Settled};
 use crate::providers::{self, Runtime};
 use crate::router::{CodeWant, ProviderWant, Router, Sticky};
-use crate::routing::{self, NoRoute, Pin, RouteDecision, RouteInput, RoutingState, Signals};
+use crate::routing::{self, NoRoute, Pin, PinOrigin, RouteDecision, RouteInput, RoutingState, Signals};
 use crate::turnlog::turn_row;
 use crate::uifmt::{self, RouteFacts};
 
@@ -444,6 +444,7 @@ pub struct Engine {
     pub guards: Guards,
     router: Router,
     pin: Pin,
+    pin_origin: PinOrigin,
     dir: PathBuf,
     enabled: bool,
     backend_factory: BackendFactory,
@@ -557,6 +558,7 @@ impl Engine {
             guards: Guards::default(),
             router,
             pin: Pin::Auto,
+            pin_origin: PinOrigin::User,
             hooks: Arc::new(Hooks::none(&dir)),
             dir,
             enabled: true,
@@ -713,8 +715,16 @@ impl Engine {
         self.enabled
     }
 
+    /// The person's own pin: routing rules step aside for it.
     pub fn set_pin(&mut self, pin: Pin) {
         self.pin = pin;
+        self.pin_origin = PinOrigin::User;
+    }
+
+    /// A pin that came from the repo's team file: the person's routing rules still apply.
+    pub fn set_team_pin(&mut self, pin: Pin) {
+        self.pin = pin;
+        self.pin_origin = PinOrigin::Team;
     }
 
     pub fn set_enabled(&mut self, on: bool) {
@@ -1223,7 +1233,7 @@ impl Engine {
             catch_ups: &catch_ups,
             task: signals.map(|s| s.task),
             attached: &self.images,
-            pinned: !matches!(self.pin, Pin::Auto),
+            pinned: !matches!(self.pin, Pin::Auto) && self.pin_origin == PinOrigin::User,
             attempts,
         };
         let restricted = self.guards.restrict(&usable, &turn).map_err(|why| NoRoute::Refused { why })?;
@@ -1244,6 +1254,14 @@ impl Engine {
             plan_utilization: &plan,
             now_ms: now,
         };
+        // A team pin is a default: when the person's rules left no model of its provider
+        // for this turn, the turn routes automatically instead.
+        let team_pin_excluded = self.pin_origin == PinOrigin::Team
+            && match &self.pin {
+                Pin::Provider(p) | Pin::Model(p, _) => !usable.has_provider(*p),
+                Pin::Auto => false,
+            };
+        let input = if team_pin_excluded { RouteInput { pin: &Pin::Auto, ..input } } else { input };
         let mut state = base.clone();
         let decision = routing::decide(&mut state, &input)?;
         let outcome = self.plan_orchestration(signals, &decision, &input, base);
@@ -2194,6 +2212,40 @@ mod tests {
         assert!(report.message.contains("/providers") && report.message.contains("feature"), "{}", report.message);
         assert_eq!(r.ui.notes.len(), 1);
         assert!(r.ui.routes.is_empty());
+    }
+
+    fn avoid_deepseek_when(task: &str) -> crate::routing_rules::Rules {
+        crate::routing_rules::Rules::parse(&format!("avoid deepseek when task is {task}")).0
+    }
+
+    #[tokio::test]
+    async fn a_team_pin_still_answers_to_the_persons_task_rules() {
+        // The repo pins deepseek; the person's rule forbids it for this turn's task.
+        for task in [TaskType::Security, TaskType::Feature] {
+            let mut r = rig(&[Claude, DeepSeek]);
+            r.engine.guards.rules = avoid_deepseek_when(&task.to_string());
+            r.engine.set_team_pin(Pin::Provider(DeepSeek));
+            let report = r.turn("harden the auth flow", want(task)).await;
+            assert_eq!(report.status, TurnStatus::Answered, "{task}: {}", report.message);
+            assert_eq!(report.provider, Some(Claude), "{task}");
+            assert!(r.started().iter().all(|s| s.provider != DeepSeek), "{task}");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_person_pin_ignores_task_rules_but_a_team_pin_without_conflict_applies() {
+        let mut r = rig(&[Claude, DeepSeek]);
+        r.engine.guards.rules = avoid_deepseek_when("security");
+        r.engine.set_team_pin(Pin::Provider(DeepSeek));
+        let report = r.turn("add a retry to the client", want(TaskType::Feature)).await;
+        assert_eq!(report.provider, Some(DeepSeek));
+
+        // The person's own pin keeps its behaviour: rules step aside.
+        let mut r = rig(&[Claude, DeepSeek]);
+        r.engine.guards.rules = avoid_deepseek_when("feature");
+        r.engine.set_pin(Pin::Provider(DeepSeek));
+        let report = r.turn("add a retry to the client", want(TaskType::Feature)).await;
+        assert_eq!(report.provider, Some(DeepSeek));
     }
 
     #[tokio::test]

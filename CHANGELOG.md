@@ -4,6 +4,15 @@ See [docs/changelog-guide.md](docs/changelog-guide.md) for changelog formatting,
 
 ## Unreleased
 
+- Vim `dd` on the last line of a multi-line message no longer crashes jev-code.
+- A repo's `.jev/team.json` pin now respects your own `avoid` and `only` rules for the turn's task; when they exclude the pinned provider, the turn routes automatically.
+- jev-code's own git calls (status bar, doctor, completion, repo map, undo) no longer run programs a repo's git config names, such as `core.fsmonitor`.
+- Privacy rules catch files mentioned with `path:line:col`, `path:10-20` or `path#L4` suffixes.
+- Huge day counts in `/sessions clean <days>` and `since:Nd` no longer overflow; they can never delete recent sessions.
+- Installing an extension refuses to replace a hand-written folder of the same name.
+- `!command` keeps only the output tail it sends to the model in memory, so long-running noisy commands no longer grow without bound.
+- Cron schedules treat `*/n` in the day fields as unrestricted, as standard cron does (`0 9 */2 * 1` means odd days that are Mondays).
+
 ## 1.7.1
 
 A quieter, more premium look for the terminal UI.
