@@ -17,7 +17,7 @@
 | Shift-Tab | Cycle the mode: ask, edit, plan, auto |
 | `!command` | Run in the shell; the output goes with your next message |
 
-## Commands added in 1.0.0-rc.1
+## Commands added in 1.0.0
 
 `/profile [name]`, `/commit [hint]`, `/pr [base]`, `/team`, `/audit [n]`, `/history`,
 `/bench`, `/replay [n]`.

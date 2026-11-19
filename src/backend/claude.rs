@@ -34,6 +34,9 @@ Never tell the user to use Claude Code interface features such as /config or plu
 Use the Read, Grep, Glob and Edit tools to look at and change files, not sed, python or heredocs, and keep shell commands plain: scripts and heredocs are asked about every time. \
 Ask the user questions in your reply, not with a tool.";
 
+/// Turns off Claude Code's background shells and monitors (see [`ClaudeBackend::command`]).
+const NO_BACKGROUND_ENV: &str = "CLAUDE_CODE_DISABLE_BACKGROUND_TASKS";
+
 /// The environment variable that sets Claude Code's thinking budget in tokens.
 const THINKING_ENV: &str = "MAX_THINKING_TOKENS";
 
@@ -380,6 +383,10 @@ impl Backend for ClaudeBackend {
         let mut cmd = Command::new(&self.bin);
         cmd.args(["-p", "--model", &req.model, "--output-format", "stream-json", "--verbose"])
             .current_dir(&req.dir)
+            // A turn is one process: background shells and monitors would outlive its result,
+            // get killed when the process is reaped, and start turns of their own after stdin
+            // is closed, where every tool approval fails with "Stream closed".
+            .env(NO_BACKGROUND_ENV, "1")
             .envs(self.env.iter().map(|(k, v)| (k, v)));
         if let Some(id) = &req.session_id {
             cmd.args(["--resume", id]);
@@ -711,6 +718,16 @@ mod tests {
         assert_eq!(a[a.iter().position(|x| x == "--allowedTools").unwrap() + 1], "Bash(cargo *) mcp__jev");
         // Without an attachment the command is the one it always was.
         assert!(!args(&backend().command(&req(None))).iter().any(|x| x.contains("mcp")));
+    }
+
+    #[test]
+    fn every_run_turns_off_background_tasks_that_would_outlive_the_turn() {
+        for b in [backend(), session()] {
+            let cmd = b.command(&req(None));
+            let set: Vec<_> = cmd.as_std().get_envs().filter(|(k, _)| *k == NO_BACKGROUND_ENV).collect();
+            assert_eq!(set.len(), 1);
+            assert_eq!(set[0].1.and_then(|v| v.to_str()), Some("1"));
+        }
     }
 
     #[test]

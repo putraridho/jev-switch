@@ -1,5 +1,20 @@
 # Changelog
 
+## 1.0.0
+
+Everything in 1.0.0-rc.1, plus fixes from five review rounds:
+
+- `-p` runs obey the privacy rules, budget, failover settings and the repo's profile limit;
+  their warnings go to stderr, so stdout carries only the answer.
+- Privacy rules also cover the catch-up a lagging provider gets (earlier turns and git
+  status), checked against the exact text that is sent.
+- Custom commands, skills and recipes can narrow the mode but never widen it.
+- An unreadable `.jev/team.json` holds the session to plan mode instead of lifting its limit;
+  a routing rule this version cannot read no longer costs the limit.
+- Hooks: input is fed on its own thread, stderr is kept (bounded) even when a background
+  process holds it open, and a timeout kills everything the hook started.
+- `NAME=token` secrets are redacted; `/sessions` snippets survive Unicode case folding.
+
 ## 1.0.0-rc.1
 
 Trust, git, team and insight features for `jev-code`.

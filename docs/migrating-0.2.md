@@ -1,4 +1,4 @@
-# Migrating from 0.2.0 to 1.0.0-rc.1
+# Migrating from 0.2.0 to 1.0.0
 
 Nothing has to be changed by hand. Binary names, environment variables and the formats of
 sessions, usage logs and settings are unchanged.

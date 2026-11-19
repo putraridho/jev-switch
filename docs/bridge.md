@@ -18,7 +18,7 @@ Editor to jev-code (`"type"` selects the message):
 jev-code to the editor:
 
 ```
-{"type":"ready","version":"1.0.0-rc.1","protocol":1}
+{"type":"ready","version":"1.0.0","protocol":1}
 {"type":"ack"}
 {"type":"file_changed","path":"src/a.rs"}
 {"type":"approval_needed","tool":"Bash","summary":"cargo test"}

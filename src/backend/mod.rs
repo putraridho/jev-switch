@@ -545,6 +545,9 @@ const STDERR_KEEP: usize = 8192;
 const STDERR_SHOWN: usize = 400;
 /// After the CLI has answered or died, how long to wait for it to be reaped.
 const REAP_WAIT: Duration = Duration::from_secs(2);
+/// How long the CLI may stay silent after its answer before the runner stops reading and
+/// reaps it (see [`Pump::next_line`]).
+const AFTER_ANSWER_WAIT: Duration = Duration::from_secs(2);
 
 /// How the stdout stream ended.
 enum Ended {
@@ -682,9 +685,12 @@ impl Pump<'_> {
         Line::Events(events)
     }
 
-    /// The next line, under the idle watchdog.
+    /// The next line, under the idle watchdog. Once the answer is in, the CLI only has to
+    /// exit: a short wait, not the full watchdog, so something it left running (a background
+    /// shell, a monitor) cannot hold the session for minutes after the answer.
     async fn next_line(&mut self) -> Line {
-        match tokio::time::timeout(self.idle, self.reader.read_until(b'\n', &mut self.raw)).await {
+        let wait = if self.finished.is_some() { self.idle.min(AFTER_ANSWER_WAIT) } else { self.idle };
+        match tokio::time::timeout(wait, self.reader.read_until(b'\n', &mut self.raw)).await {
             Ok(read) => self.take_line(read),
             Err(_) => Line::Idle,
         }
@@ -1210,6 +1216,16 @@ mod tests {
         // SAFETY: tidying our own test process.
         unsafe { libc::kill(child, libc::SIGKILL) };
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn a_cli_that_lingers_after_its_answer_does_not_hold_the_turn_for_the_watchdog() {
+        // The answer, then a CLI that keeps stdout open and stays silent (a background monitor).
+        let request = req();
+        let started = std::time::Instant::now();
+        let r = run_turn(&Owned("echo FIN:ok; sleep 30".into()), &request, Duration::from_secs(60), &mut |_| {}).await;
+        assert_eq!(r.unwrap().text, "ok");
+        assert!(started.elapsed() < Duration::from_secs(10), "took {:?}", started.elapsed());
     }
 
     #[test]
