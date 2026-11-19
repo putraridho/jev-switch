@@ -690,7 +690,7 @@ beat any guess. Re-run `tune` when prompts, models, or request mix change.
 - `/audit`, `/history`, `/bench` and `/replay` read the audit log and saved sessions;
   `/export file.html` or `.md` and `/sessions export` share a session. Secrets are masked in all
   of them, and a turn that was cut short by a crash is reported at the next start.
-- More: `CHANGELOG.md`, `docs/shortcuts.md`, `docs/platforms.md`, `docs/bridge.md`.
+- More: `CHANGELOG.md`, `docs/changelog-guide.md`, `docs/shortcuts.md`, `docs/platforms.md`, `docs/bridge.md`.
 
 ## Code map
 

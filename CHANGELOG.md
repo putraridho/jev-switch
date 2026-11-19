@@ -1,5 +1,7 @@
 # Changelog
 
+See [docs/changelog-guide.md](docs/changelog-guide.md) for changelog formatting, versioning rules, and release instructions.
+
 ## Unreleased
 
 - The local settings check no longer switches your `settings.local.json` off for harmless git
