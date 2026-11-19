@@ -146,6 +146,11 @@ pub enum Event {
     /// [`Approver`] ([`Approver::withdrawn`]) and writes no answer for it; it never reaches
     /// `on_event`. An id that is not waiting (answered already, or not a question) is ignored.
     PermissionWithdrawn { id: String },
+    /// A message the person typed while the turn ran (see [`Backend::steer_line`]) was picked
+    /// up by the model: it is part of this turn now. The text is the message as sent.
+    /// Backends report every user message they echo; [`run_turn_steered`] passes on only the
+    /// ones it sent, and the person's own prompt is never one of them.
+    Steered(String),
 }
 
 /// A tool call the CLI wants approval for.
@@ -302,6 +307,20 @@ pub trait Backend: Send + Sync {
     /// when [`Backend::interactive`].
     fn permission_response(&self, _req: &PermissionRequest, _decision: &Decision) -> Option<String> {
         None
+    }
+
+    /// The line (without the newline) that adds `text` as a message from the person to the turn
+    /// that is running, or `None` when this CLI cannot take one mid-turn. Only a backend that is
+    /// [`Backend::interactive`] can: its stdin stays open. The CLI answers with
+    /// [`Event::Steered`] once the model has the message, which is at the next step of the
+    /// turn, not at once.
+    fn steer_line(&self, _text: &str) -> Option<String> {
+        None
+    }
+
+    /// Whether [`Backend::steer_line`] works for this backend as configured.
+    fn steerable(&self) -> bool {
+        false
     }
 
     /// Protocol messages produced while parsing stdout (for example ACP setup replies).
@@ -679,6 +698,30 @@ struct Pump<'a> {
     finished: Option<Finish>,
     /// Questions the CLI asked while another was being decided, oldest first.
     queue: VecDeque<PermissionRequest>,
+    /// Messages from the person while the turn runs, to be added to it ([`Backend::steer_line`]).
+    steer: Option<Steering<'a>>,
+    /// Messages written to the CLI that it has not reported picking up yet, oldest first: what
+    /// the person typed, and what was sent of it.
+    sent: VecDeque<(String, String)>,
+}
+
+/// Messages the person types while a turn runs, and how one is made fit to send.
+pub struct Steering<'a> {
+    pub rx: mpsc::UnboundedReceiver<String>,
+    /// The text as it may be sent (secrets blanked), or `None` to keep it out of this turn.
+    pub prepare: &'a (dyn Fn(&str) -> Option<String> + Send + Sync),
+}
+
+/// The next message the person typed, waiting forever when there is no sender or it is gone.
+async fn next_steer(steer: Option<&mut mpsc::UnboundedReceiver<String>>) -> String {
+    match steer {
+        Some(rx) => match rx.recv().await {
+            Some(text) => text,
+            // The sender is gone: nothing more will come.
+            None => std::future::pending().await,
+        },
+        None => std::future::pending().await,
+    }
 }
 
 /// What a line did to the wait it arrived in.
@@ -721,10 +764,33 @@ impl Pump<'_> {
     /// exit: a short wait, not the full watchdog, so something it left running (a background
     /// shell, a monitor) cannot hold the session for minutes after the answer.
     async fn next_line(&mut self) -> Line {
-        let wait = if self.finished.is_some() { self.idle.min(AFTER_ANSWER_WAIT) } else { self.idle };
-        match tokio::time::timeout(wait, self.reader.read_until(b'\n', &mut self.raw)).await {
-            Ok(read) => self.take_line(read),
-            Err(_) => Line::Idle,
+        loop {
+            let wait = if self.finished.is_some() { self.idle.min(AFTER_ANSWER_WAIT) } else { self.idle };
+            let Self { reader, raw, steer, .. } = &mut *self;
+            let steer = steer.as_mut().map(|s| &mut s.rx);
+            // Writing a message to the CLI does not wait for the next line, so a message typed
+            // while a long tool runs goes in at once.
+            let typed = tokio::select! {
+                read = tokio::time::timeout(wait, reader.read_until(b'\n', raw)) => match read {
+                    Ok(read) => return self.take_line(read),
+                    Err(_) => return Line::Idle,
+                },
+                typed = next_steer(steer) => typed,
+            };
+            self.steer_in(typed);
+        }
+    }
+
+    /// Add a message the person typed to the running turn. Not once the answer is in: stdin is
+    /// closing then, and the message stays with the person's queue to run as the next turn.
+    fn steer_in(&mut self, text: String) {
+        if self.finished.is_some() {
+            return;
+        }
+        let Some(prepared) = self.steer.as_ref().and_then(|s| (s.prepare)(&text)) else { return };
+        if let Some(line) = self.backend.steer_line(&prepared) {
+            self.feed.send(format!("{line}\n"));
+            self.sent.push_back((text, prepared));
         }
     }
 
@@ -756,6 +822,18 @@ impl Pump<'_> {
             Event::PermissionWithdrawn { id } => {
                 self.queue.retain(|q| q.id != id);
                 Some(Signal::Withdrawn(id))
+            }
+            // The CLI echoes the person's own prompt too: only what was sent in is reported.
+            Event::Steered(text) => {
+                if self.sent.front().is_some_and(|(_, sent)| sent.trim() == text.trim()) {
+                    if let Some((typed, _)) = self.sent.pop_front() {
+                        match held {
+                            Some(held) => held.push(Event::Steered(typed)),
+                            None => self.deliver(Event::Steered(typed)),
+                        }
+                    }
+                }
+                None
             }
             shown => {
                 match held {
@@ -909,10 +987,25 @@ pub async fn run_turn_with(
     on_event: &mut (dyn FnMut(&Event) + Send),
     approver: &dyn Approver,
 ) -> Result<TurnOutcome, TurnError> {
+    run_turn_steered(backend, req, idle_timeout, on_event, approver, None).await
+}
+
+/// [`run_turn_with`] that also takes messages the person types while the turn runs
+/// (`steer`), for a backend that [`Backend::steerable`]. A message is written to the CLI as
+/// it arrives and [`Event::Steered`] reports when the model has it. One that was not picked up
+/// by the time the answer came is simply not reported: whoever sent it still has it.
+pub async fn run_turn_steered(
+    backend: &dyn Backend,
+    req: &TurnRequest,
+    idle_timeout: Duration,
+    on_event: &mut (dyn FnMut(&Event) + Send),
+    approver: &dyn Approver,
+    steer: Option<Steering<'_>>,
+) -> Result<TurnOutcome, TurnError> {
     // A guard, not a call after the await: a cancelled turn drops this future, and the
     // backend's files must go then too.
     let _cleanup = CleanupOnDrop(backend);
-    run_child(backend, req, idle_timeout, on_event, approver).await
+    run_child(backend, req, idle_timeout, on_event, approver, steer).await
 }
 
 /// Runs [`Backend::cleanup`] when the turn ends or its future is dropped.
@@ -963,6 +1056,7 @@ async fn run_child(
     idle_timeout: Duration,
     on_event: &mut (dyn FnMut(&Event) + Send),
     approver: &dyn Approver,
+    steer: Option<Steering<'_>>,
 ) -> Result<TurnOutcome, TurnError> {
     let mut cmd = backend.command(req);
     cmd.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).kill_on_drop(true);
@@ -989,6 +1083,8 @@ async fn run_child(
         feed: &mut feed,
         finished: None,
         queue: VecDeque::new(),
+        steer: steer.filter(|_| backend.steerable()),
+        sent: VecDeque::new(),
     }
     .run()
     .await;
@@ -1533,6 +1629,117 @@ mod tests {
         drop(files);
         assert!(!b.exists(), "dropping the owner removes its files too");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// An interactive "CLI" that takes messages on stdin: the prompt is its first line, each
+    /// later line `MSG:<text>` is echoed back as `ECHO:<text>` after a pause (the model taking
+    /// it at its next step), and `GO` on a line ends the turn.
+    struct Steerable(&'static str);
+
+    impl Backend for Steerable {
+        fn provider(&self) -> ProviderId {
+            ProviderId::Claude
+        }
+        fn command(&self, req: &TurnRequest) -> Command {
+            let mut c = Command::new("sh");
+            c.arg("-c").arg(self.0).current_dir(&req.dir);
+            c
+        }
+        fn parse_line(&self, line: &str) -> Vec<Event> {
+            let line = line.trim_end();
+            match line.split_once(':') {
+                Some(("ECHO", t)) => vec![Event::Steered(t.into())],
+                Some(("FIN", t)) => vec![Event::Finished(Finish { text: t.into(), session_id: None, usage: Usage::default() })],
+                _ => vec![],
+            }
+        }
+        fn interactive(&self) -> bool {
+            true
+        }
+        fn steerable(&self) -> bool {
+            true
+        }
+        fn steer_line(&self, text: &str) -> Option<String> {
+            Some(format!("MSG:{text}"))
+        }
+        fn stdin_payload(&self, req: &TurnRequest) -> Option<String> {
+            Some(format!("{}\n", req.prompt))
+        }
+        fn classify_error(&self, _: &str) -> ErrorKind {
+            ErrorKind::Other
+        }
+    }
+
+    async fn steered_turn(script: &'static str, send: &[&str], prepare: &(dyn Fn(&str) -> Option<String> + Send + Sync)) -> (Result<TurnOutcome, TurnError>, Vec<String>) {
+        let (tx, rx) = mpsc::unbounded_channel();
+        for text in send {
+            tx.send((*text).to_string()).unwrap();
+        }
+        let mut taken = Vec::new();
+        let result = {
+            let mut on_event = |e: &Event| {
+                if let Event::Steered(t) = e {
+                    taken.push(t.clone());
+                }
+            };
+            run_turn_steered(&Steerable(script), &req(), Duration::from_secs(10), &mut on_event, &NoApprover, Some(Steering { rx, prepare })).await
+        };
+        drop(tx);
+        (result, taken)
+    }
+
+    /// Reads the prompt, then each message: `MSG:x` is echoed as `ECHO:x`, `MSG:GO` ends the turn.
+    const ECHO_ALL: &str = "read prompt; while read line; do case \"$line\" in MSG:GO) echo FIN:done; exit 0;; MSG:*) echo \"ECHO:${line#MSG:}\";; esac; done";
+
+    #[tokio::test]
+    async fn a_message_typed_during_the_turn_is_sent_in_and_reported_when_taken() {
+        // `GO` ends the turn, so the first message is echoed before the answer comes.
+        let (result, taken) = steered_turn(ECHO_ALL, &["also run the tests", "GO"], &|t| Some(t.to_string())).await;
+        assert_eq!(result.unwrap().text, "done");
+        assert_eq!(taken, vec!["also run the tests".to_string()], "only the message that was sent in is reported, as typed");
+    }
+
+    #[tokio::test]
+    async fn a_message_the_policy_refuses_is_not_sent_and_not_reported() {
+        let prepare = |t: &str| (!t.contains("secret")).then(|| t.to_string());
+        let (result, taken) = steered_turn(ECHO_ALL, &["use the secret file", "GO"], &prepare).await;
+        assert_eq!(result.unwrap().text, "done");
+        assert!(taken.is_empty(), "{taken:?}");
+    }
+
+    #[tokio::test]
+    async fn the_text_sent_may_differ_from_the_text_typed_and_the_typed_one_is_reported() {
+        let prepare = |t: &str| Some(t.replace("sk-123", "[hidden]"));
+        let (result, taken) = steered_turn(ECHO_ALL, &["use key sk-123", "GO"], &prepare).await;
+        assert!(result.is_ok());
+        assert_eq!(taken, vec!["use key sk-123".to_string()], "the person's own words come back, so their queue can match them");
+    }
+
+    #[tokio::test]
+    async fn a_message_not_taken_before_the_answer_is_never_reported() {
+        // The CLI answers without reading what was sent: it is still the person's to run next.
+        let (result, taken) = steered_turn("read prompt; echo FIN:done", &["too late"], &|t| Some(t.to_string())).await;
+        assert_eq!(result.unwrap().text, "done");
+        assert!(taken.is_empty(), "{taken:?}");
+    }
+
+    #[tokio::test]
+    async fn the_prompts_own_echo_is_not_a_steered_message() {
+        // A CLI that echoes every user message, the first prompt included.
+        let script = "read prompt; echo \"ECHO:$prompt\"; echo FIN:done";
+        let (result, taken) = steered_turn(script, &[], &|t| Some(t.to_string())).await;
+        assert!(result.is_ok());
+        assert!(taken.is_empty(), "{taken:?}");
+    }
+
+    #[tokio::test]
+    async fn a_backend_that_cannot_take_messages_ignores_the_channel() {
+        let (tx, rx) = mpsc::unbounded_channel();
+        tx.send("hello".to_string()).unwrap();
+        let mut on_event = |_: &Event| {};
+        let prepare = |t: &str| Some(t.to_string());
+        let out = run_turn_steered(&Fake("echo FIN:ok"), &req(), Duration::from_secs(5), &mut on_event, &NoApprover, Some(Steering { rx, prepare: &prepare })).await;
+        assert_eq!(out.unwrap().text, "ok");
     }
 
     #[tokio::test]

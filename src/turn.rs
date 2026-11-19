@@ -84,6 +84,14 @@ pub trait Ui: Send {
         self.note(text);
     }
 
+    /// Messages the person types while the next attempt runs, for a backend that can add them
+    /// to the turn ([`backend::Backend::steerable`]). The sender lives as long as the UI wants
+    /// them taken; dropping the receiver (the attempt is over) tells it to stop. `None`: this
+    /// UI has no input during a turn, or does not forward it.
+    fn steering(&mut self) -> Option<tokio::sync::mpsc::UnboundedReceiver<String>> {
+        None
+    }
+
     /// A tool call waits for the person's answer. `offer` is what [`Decision::AllowAlways`]
     /// would save, or why "always" is not offered: the engine decided it, the UI only shows it
     /// (and offers the choice only when it is `Ok`). The question is put on screen by this call; the returned [`Answer`] resolves with what the person said
@@ -402,10 +410,18 @@ struct Chosen {
     mcp: Option<McpAttachment>,
 }
 
+/// The prompt with what the person added while the turn ran, as the turn (and a retry of it)
+/// has it.
+fn with_steered(prompt: &str, steered: &[String]) -> String {
+    steered.iter().fold(prompt.to_string(), |all, text| format!("{all}\n\n(added while it ran) {text}"))
+}
+
 /// One started attempt and what came of it.
 struct Attempt {
     chosen: Chosen,
     tools: Vec<String>,
+    /// Messages the person typed during the attempt that the model took into the turn.
+    steered: Vec<String>,
     wall_ms: u64,
     result: Result<TurnOutcome, TurnError>,
     /// The attempt failed after it had produced text, which was therefore never shown.
@@ -993,6 +1009,8 @@ impl Engine {
         let mut notes: Vec<String> = Vec::new();
         let mut last_failure: Option<(Attempt, TurnError)> = None;
         let mut attempts = 0;
+        // What the person added while the turn ran, kept for a retry on another model.
+        let mut steered: Vec<String> = Vec::new();
         loop {
             if cancel.is_cancelled() {
                 // The earlier attempt really failed (and may have touched files): keep its
@@ -1026,7 +1044,8 @@ impl Engine {
                 *before = self.snapshot_tree(cancel, true).await;
             }
             ui.route_facts(&chosen.facts);
-            let attempt = self.run_attempt(chosen, prompt, ui, cancel).await;
+            let attempt = self.run_attempt(chosen, &with_steered(prompt, &steered), ui, cancel).await;
+            steered.extend(attempt.steered.iter().cloned());
             self.turn_activity.add_tools(&attempt.tools);
             self.log_attempt(&attempt, &jev, attempts, &notes);
             if !attempt.cancelled {
@@ -1039,7 +1058,7 @@ impl Engine {
                 return self.cancelled_report(prompt, Some(&attempt), attempts, ui);
             }
             let err = match attempt.result.clone() {
-                Ok(out) => return self.finish(prompt, attempt, out, attempts),
+                Ok(out) => return self.finish(&with_steered(prompt, &steered), attempt, out, attempts),
                 Err(err) => err,
             };
             let spec = attempt.chosen.spec;
@@ -1323,6 +1342,8 @@ impl Engine {
             mode: self.mode,
         };
         let mut tools: Vec<String> = Vec::new();
+        let mut steered: Vec<String> = Vec::new();
+        let steer_rx = if backend.steerable() { ui.steering() } else { None };
         // Progress (tools, plan) is shown as it happens; assistant text is held back until
         // the attempt is known to have succeeded, so a failed attempt's partial commentary
         // never sits on screen as if it were an answer.
@@ -1335,6 +1356,9 @@ impl Engine {
             let shared_ui: SharedUi = Mutex::new(&mut *ui);
             let approver = EngineApprover { ui: &shared_ui, cancel, dir: &self.dir, mode: self.mode, hooks: &self.hooks };
             let hooks = &self.hooks;
+            let (guards, now, dir, model) = (&self.guards, &self.now, &self.dir, chosen.spec.id);
+            let prepare = move |text: &str| guards.steer_text(dir, text, provider, model, now());
+            let steering = steer_rx.map(|rx| backend::Steering { rx, prepare: &prepare });
             let mut on_event = |e: &Event| match e {
                 Event::Text(_) => {
                     if stream {
@@ -1351,13 +1375,14 @@ impl Engine {
                             hooks::fire(hooks, hooks::Event::PostTool, name, Some(summary));
                         }
                         Event::Plan(plan) => runtime.note_plan(provider, plan.clone()),
+                        Event::Steered(text) => steered.push(text.clone()),
                         _ => {}
                     }
                 }
             };
             // Dropping the turn future on a cancel kills the CLI and its children.
             tokio::select! {
-                r = backend::run_turn_with(&*backend, &req, idle, &mut on_event, &approver) => Some(r),
+                r = backend::run_turn_steered(&*backend, &req, idle, &mut on_event, &approver, steering) => Some(r),
                 _ = cancel.cancelled() => None,
             }
         };
@@ -1390,7 +1415,7 @@ impl Engine {
                 ui.event(&Event::Text(answer.to_string()));
             }
         }
-        Attempt { chosen, tools, wall_ms: started.elapsed().as_millis() as u64, result, discarded, cancelled }
+        Attempt { chosen, tools, steered, wall_ms: started.elapsed().as_millis() as u64, result, discarded, cancelled }
     }
 
     // ------------------------------------------------------------------ outcomes
@@ -2213,6 +2238,15 @@ mod tests {
         assert_eq!(r.engine.runtime.cooldowns.active(a, NOW), Some(reset - NOW));
         assert!(r.engine.runtime.cooldowns.active(a, reset - 1).is_some(), "not over 10 minutes early");
         assert!(r.engine.runtime.cooldowns.active(a, reset).is_none());
+    }
+
+    #[test]
+    fn a_turn_keeps_what_was_added_while_it_ran() {
+        assert_eq!(with_steered("fix the bug", &[]), "fix the bug");
+        assert_eq!(
+            with_steered("fix the bug", &["and run clippy".to_string(), "then commit".to_string()]),
+            "fix the bug\n\n(added while it ran) and run clippy\n\n(added while it ran) then commit"
+        );
     }
 
     #[test]

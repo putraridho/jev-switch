@@ -181,6 +181,9 @@ pub async fn run(repl: Repl, mut rx: mpsc::UnboundedReceiver<FrontMsg>, opts: Op
             return 1;
         }
     };
+    // The session moves into the task that runs a turn; the console is shared, so messages
+    // typed meanwhile can still reach that turn.
+    let console = repl.console.clone();
     let project = repl.engine.dir().to_path_buf();
     let tracked = lineedit::tracked_files(&project);
     let mut app = App::new(project, History::load(opts.history.as_deref()), repl.engine.mode(), route_label(&repl), tracked);
@@ -293,7 +296,7 @@ pub async fn run(repl: Repl, mut rx: mpsc::UnboundedReceiver<FrontMsg>, opts: Op
         while let Ok(msg) = rx.try_recv() {
             actions.extend(app.on_front(msg));
         }
-        let next = carry_out(actions, &mut app, &mut screen, &mut events, &stop_tx, &mut idle, &mut mode_picked_during_turn, style);
+        let next = carry_out(actions, &mut app, &mut screen, &mut events, &stop_tx, &mut idle, &mut mode_picked_during_turn, style, &console);
         if let Some(started) = next.start {
             task = Some(started);
         }
@@ -355,10 +358,16 @@ fn carry_out(
     idle: &mut Option<(Repl, Stops)>,
     mode_picked_during_turn: &mut bool,
     style: Style,
+    console: &crate::console::Console,
 ) -> Next {
     let mut next = Next::default();
     for action in actions {
         match action {
+            // The model may take it into the turn that is running; if it cannot, the message
+            // waits in the queue for the next one.
+            Action::Steer(text) => {
+                console.steer(&text);
+            }
             Action::Submit(line) => {
                 if let Some(started) = start(idle, &line, style, screen, app) {
                     next.start = Some(started);

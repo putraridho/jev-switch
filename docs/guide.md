@@ -375,7 +375,7 @@ A mistyped command (`/provders`) is never sent to the model: it says so and sugg
 | key                       | what it does                                                                                                                                                                                                             |
 | ------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `/`, `@`                  | open the command menu or the file menu (above); Tab completes the selected item, Enter runs it                                                                                                                         |
-| typing during a turn      | the box stays usable; Enter queues the message to run after the turn (queued ones are listed above the box, in order)                                                                                                    |
+| typing during a turn      | the box stays usable; Enter queues the message (queued ones are listed above the box, in order). On Claude the model takes it into the turn that is running, at its next step, as in Claude Code; on the other providers it runs after the turn |
 | Esc                       | while a turn runs: stop it; a message typed before Esc is sent right after (queued ones keep waiting)                                                                                                                    |
 | Ctrl-C                    | while a turn runs: stop it (the model CLI and everything it started are killed), drop the queue, and carry on; in the box: clear it; on an empty box, press again within 2 s to exit                                     |
 | Ctrl-D                    | exit (on an empty box)                                                                                                                                                                                                   |
@@ -389,6 +389,19 @@ A mistyped command (`/provders`) is never sent to the model: it says so and sugg
 Piped input still works (`printf 'explain src/lib.rs\n/quit\n' | jev-code`): one line per
 message, no prompt, no colours, no live line. `NO_COLOR=1` keeps the box and menus but draws them
 without colour and without animation.
+
+#### Messages typed during a turn
+
+Enter during a turn queues the message and shows it under the working row. When the turn runs on
+Claude (or DeepSeek through Claude Code), the message is also sent to the running turn: Claude
+Code has it at its next step (after the tool it is running), so the model can change course
+without waiting for the whole turn, and the line `↳ message (taken into the running turn)` shows
+when it did. The message stays in the queue until then. If the turn ends first, or the provider
+cannot take a message mid-turn (Codex, Antigravity), it runs as the next turn, as before. The
+privacy policy and the secret scan apply to the message as to any prompt; a message the policy
+keeps from the provider is not sent in and waits for the next turn, where routing decides. A message
+taken into a turn is kept with that turn's prompt in the session history. Esc (stop, then send what
+is typed) and Ctrl-C (stop, drop the queue) work as before.
 
 #### One-shot and scripting
 

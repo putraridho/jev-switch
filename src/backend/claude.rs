@@ -234,6 +234,15 @@ fn user_events(ev: &Value) -> Vec<Event> {
     if !ev["parent_tool_use_id"].is_null() {
         return Vec::new();
     }
+    // `--replay-user-messages`: a message from stdin, echoed when the model has it.
+    if ev["isReplay"].as_bool() == Some(true) {
+        let content = &ev["message"]["content"];
+        let text = match content.as_str() {
+            Some(text) => text.to_string(),
+            None => content.as_array().into_iter().flatten().filter(|b| b["type"] == "text").filter_map(|b| b["text"].as_str()).collect::<Vec<_>>().join("\n"),
+        };
+        return vec![Event::Steered(text)];
+    }
     let blocks = ev["message"]["content"].as_array().into_iter().flatten();
     blocks
         .filter(|b| b["type"] == "tool_result")
@@ -405,6 +414,9 @@ impl Backend for ClaudeBackend {
             cmd.args(["--input-format", "stream-json"]);
         }
         if self.interactive {
+            // The CLI echoes each message sent on stdin once the model has it: how a message
+            // typed during the turn is known to have been taken (see `steer_line`).
+            cmd.arg("--replay-user-messages");
             // AskUserQuestion needs Claude Code's own screen: here it would reach the person as
             // raw JSON to approve, with no way to answer it.
             cmd.args(["--permission-prompt-tool", "stdio", "--disallowedTools", "AskUserQuestion", "--append-system-prompt", SESSION_NOTE]);
@@ -439,6 +451,18 @@ impl Backend for ClaudeBackend {
 
     fn interactive(&self) -> bool {
         self.interactive
+    }
+
+    fn steerable(&self) -> bool {
+        self.interactive
+    }
+
+    fn steer_line(&self, text: &str) -> Option<String> {
+        if !self.interactive {
+            return None;
+        }
+        let line = InputLine::User { message: InputMessage { role: Role::User, content: InputContent::Text(text) } };
+        serde_json::to_string(&line).ok()
     }
 
     fn permission_response(&self, req: &PermissionRequest, decision: &Decision) -> Option<String> {
@@ -794,6 +818,25 @@ mod tests {
         backend().in_session()
     }
 
+    #[test]
+    fn a_session_takes_a_message_mid_turn_and_reports_when_the_model_has_it() {
+        let line = session().steer_line("also run clippy").unwrap();
+        assert_eq!(json_of(&line), json!({"type": "user", "message": {"role": "user", "content": "also run clippy"}}));
+        assert!(session().steerable());
+        // Without the host protocol stdin is closed after the prompt: nothing can be added.
+        assert!(backend().steer_line("x").is_none() && !backend().steerable());
+        let replay = |content: &str| format!(r#"{{"type":"user","message":{{"role":"user","content":{content}}},"isReplay":true,"session_id":"s"}}"#);
+        let steered = |l: String| backend().parse_line(&l).into_iter().map(|e| match e {
+            Event::Steered(t) => t,
+            other => panic!("{other:?}"),
+        }).collect::<Vec<_>>();
+        assert_eq!(steered(replay(r#""also run clippy""#)), ["also run clippy"]);
+        assert_eq!(steered(replay(r#"[{"type":"text","text":"a"},{"type":"text","text":"b"}]"#)), ["a\nb"]);
+        // A tool result is still a tool result.
+        let result = r#"{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t","content":"ok"}]}}"#;
+        assert!(matches!(backend().parse_line(result).as_slice(), [Event::ToolResult { ok: true, .. }]));
+    }
+
     fn request_from(turn: &str) -> PermissionRequest {
         let events: Vec<Event> = turn.lines().flat_map(|l| backend().parse_line(l)).collect();
         events
@@ -879,7 +922,7 @@ mod tests {
         assert_eq!(
             a,
             ["-p", "--model", "sonnet-x", "--output-format", "stream-json", "--verbose", "--setting-sources", "user,local", "--permission-mode", "acceptEdits",
-             "--input-format", "stream-json", "--permission-prompt-tool", "stdio", "--disallowedTools", "AskUserQuestion",
+             "--input-format", "stream-json", "--replay-user-messages", "--permission-prompt-tool", "stdio", "--disallowedTools", "AskUserQuestion",
              "--append-system-prompt", SESSION_NOTE]
         );
         assert!(session().interactive());

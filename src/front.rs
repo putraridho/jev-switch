@@ -58,6 +58,8 @@ pub enum FrontMsg {
     ClearScreen,
     /// Ring the bell (a long turn is over).
     Bell,
+    /// The model took this queued message into the running turn: it no longer waits.
+    Steered(String),
 }
 
 /// The session's end of the channel. Cheap to clone.
