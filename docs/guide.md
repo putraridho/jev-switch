@@ -372,6 +372,12 @@ to change an accent, glyph or badge; truecolor, 256 and 16-colour terminals are 
 
 A mistyped command (`/provders`) is never sent to the model: it says so and suggests the closest one.
 
+`/compact` asks for its summary in a fresh, read-only CLI session, so it can work even
+when the old session's context is full. It sends a size-limited copy of the recorded
+conversation (including tool summaries); oversized histories retain the beginning and
+the most recent content, with omitted content marked. If no summary comes back, the
+original conversation and its saved session remain intact.
+
 | key                       | what it does                                                                                                                                                                                                             |
 | ------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `/`, `@`                  | open the command menu or the file menu (above); Tab completes the selected item, Enter runs it                                                                                                                         |

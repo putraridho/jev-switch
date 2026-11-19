@@ -14,6 +14,68 @@ fn rig_with_state(name: &str, script: &str) -> Rig {
 }
 
 #[tokio::test]
+async fn compact_uses_a_fresh_cli_even_when_the_old_history_exceeds_every_window() {
+    let mut r = rig_with_state("compact-full", "case \"$FAKE_PROMPT\" in Summarise*) test -z \"$FAKE_SESSION_ID\" || exit 1; printf '%s' \"$FAKE_PROMPT\" > summary-request; printf 'FIN:recovered summary\\n';; *) printf 'TOOL:Read src/main.rs\\nFIN:original answer\\n';; esac");
+    send(&mut r, "original goal").await;
+    let path = r.repl.engine.session_path().unwrap().to_path_buf();
+    let saved = std::fs::read(&path).unwrap();
+    let mut oversized = r.repl.engine.sessions.log()[0].clone();
+    oversized.prompt = "x".repeat(8_000_000);
+    oversized.reply = "latest next step".into();
+    r.repl.engine.sessions.record(oversized);
+    r.repl.carry.push("waiting shell output".into());
+    r.out.clear();
+    run(&mut r, "/compact keep paths").await;
+    assert!(r.out.text().contains("compacted 1 turn"), "{}", r.out.text());
+    let request = std::fs::read_to_string(r.dir.join("summary-request")).unwrap();
+    assert!(request.len() < 54_000);
+    for expected in ["original goal", "original answer", "Read src/main.rs", "latest next step", "keep paths", "omitted to fit"] {
+        assert!(request.contains(expected), "missing {expected}");
+    }
+    assert_eq!(std::fs::read(&path).unwrap(), saved, "the temporary summary must not overwrite the old saved session");
+    assert_eq!(r.repl.engine.sessions.turns(), 0);
+    assert!(r.repl.engine.session_path().is_none());
+    assert!(r.repl.with_carry("next").contains("recovered summary"));
+    assert!(r.repl.with_carry("next").contains("waiting shell output"));
+}
+
+#[tokio::test]
+async fn compact_failure_preserves_the_conversation_and_saved_session() {
+    let mut r = rig_with_state("compact-failed", "case \"$FAKE_PROMPT\" in Summarise*) printf 'context window exceeded\\n' >&2; exit 1;; *) printf 'FIN:original answer\\n';; esac");
+    send(&mut r, "original goal").await;
+    let path = r.repl.engine.session_path().unwrap().to_path_buf();
+    let saved = std::fs::read(&path).unwrap();
+    let records = r.repl.engine.sessions.log().to_vec();
+    let mode = r.repl.engine.mode();
+    r.repl.carry.push("waiting note".into());
+    run(&mut r, "/compact").await;
+    assert!(r.out.text().contains("Not compacted"), "{}", r.out.text());
+    assert_eq!(r.repl.engine.sessions.log(), records);
+    assert_eq!(r.repl.engine.sessions.session_id(ProviderId::Claude), Some("s1"));
+    assert_eq!(r.repl.engine.last_answer(), Some("original answer"));
+    assert_eq!(r.repl.engine.mode(), mode);
+    assert_eq!(r.repl.log().turns().len(), 1);
+    assert_eq!(r.repl.carry, ["waiting note"]);
+    assert_eq!(r.repl.engine.session_path(), Some(path.as_path()));
+    assert_eq!(std::fs::read(path).unwrap(), saved);
+}
+
+#[tokio::test]
+async fn interrupting_compact_restores_the_original_cli_context() {
+    let mut r = rig("compact-interrupted", "case \"$FAKE_PROMPT\" in Summarise*) sleep 30;; *) printf 'FIN:original answer\\n';; esac");
+    send(&mut r, "original goal").await;
+    let records = r.repl.engine.sessions.log().to_vec();
+    let mode = r.repl.engine.mode();
+    let mut interrupt = Presses { pending: vec![Duration::from_millis(300)] };
+    let mut io = Io { interrupt: &mut interrupt, confirm: None };
+    r.repl.handle(crate::commands::parse("/compact"), &mut io).await;
+    assert!(r.out.text().contains("Not compacted"), "{}", r.out.text());
+    assert_eq!(r.repl.engine.sessions.log(), records);
+    assert_eq!(r.repl.engine.sessions.session_id(ProviderId::Claude), Some("s1"));
+    assert_eq!(r.repl.engine.mode(), mode);
+}
+
+#[tokio::test]
 async fn notes_are_kept_listed_forgotten_and_start_the_next_session() {
     let mut r = rig_with_state("proj-notes", "read -r first; printf 'FIN:%s\\n' \"$first\"");
     run(&mut r, "/project notes").await;
