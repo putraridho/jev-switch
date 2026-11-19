@@ -88,6 +88,14 @@ pub fn tool_row(summary: &str, project: &Path, style: Style, width: usize) -> St
     truncate_to_width(&line, clamp_width(width))
 }
 
+/// The calls of a long run held back, as one dim row: `  ⏺ 12 more tool calls · Bash ×8 · Read ×4`.
+pub fn tool_run_summary(counts: &[(String, usize)], style: Style, width: usize) -> String {
+    let total: usize = counts.iter().map(|(_, n)| n).sum();
+    let by_tool: Vec<String> = counts.iter().map(|(t, n)| format!("{} ×{n}", display_tool(t))).collect();
+    let line = format!("  {} {}", style.dim("⏺"), style.dim(&format!("{total} more tool calls · {}", by_tool.join(" · "))));
+    truncate_to_width(&line, clamp_width(width))
+}
+
 /// A worker's result, from the delegate tool's first lines: `worker w1 (gemini argon): done`
 /// and `files changed (2):` become `⇉ worker w1 · gemini argon · done · 2 files`.
 fn worker_result(ok: bool, text: &str, style: Style) -> String {
@@ -280,6 +288,13 @@ mod tests {
         assert_eq!(rows[0], "", "a blank line separates turns");
         assert!(rows[1].contains("\x1b[48;5;236") && strip_ansi(rows[1]).contains("❯ x"));
         assert_eq!(crate::uifmt::display_width(&strip_ansi(rows[1])), 39);
+    }
+
+    #[test]
+    fn a_long_run_of_calls_is_one_row_counting_them_by_tool() {
+        let counts = vec![("Bash".to_string(), 8), ("Read".to_string(), 3), ("mcp__jev__delegate".to_string(), 1)];
+        assert_eq!(tool_run_summary(&counts, OFF, 80), "  ⏺ 12 more tool calls · Bash ×8 · Read ×3 · Delegate ×1");
+        assert!(crate::uifmt::display_width(&tool_run_summary(&counts, OFF, 20)) <= 20);
     }
 
     #[test]

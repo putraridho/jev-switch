@@ -219,9 +219,17 @@ pub fn render(app: &App, width: usize, now: Instant, style: Style) -> Frame {
         if let Some(m) = &app.menu {
             main.extend(menu_rows(m, main_w, &th));
         }
-        rows.extend(if side.is_empty() { main } else { compose(&main, &side, w, style) });
-        rows.push(router_row(app, w, &th));
-        rows.push(footer(app, w, now, &th));
+        if side.is_empty() {
+            rows.extend(main);
+            rows.push(router_row(app, w, &th));
+            rows.push(footer(app, w, now, &th));
+        } else {
+            // Beside the panel, the router row and footer sit right under the box: the panel is
+            // taller than the box, and at the bottom of it they left a gap.
+            main.push(router_row(app, main_w, &th));
+            main.push(footer(app, main_w, now, &th));
+            rows.extend(compose(&main, &side, w, style));
+        }
     }
     Frame { rows, cursor }
 }

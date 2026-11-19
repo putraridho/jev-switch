@@ -17,6 +17,8 @@ See [docs/changelog-guide.md](docs/changelog-guide.md) for changelog formatting,
 - **Long prompts no longer break mid-word.** The input box wraps at spaces; only a word wider than the box is cut.
 - **What the model says between tool calls is readable.** It was dim italic; it is now full brightness, indented with the tool rows. Answers share that margin.
 - **Reasoning no longer fills the scrollback.** The model's thinking is not printed between tool calls; its latest line shows on the working row (`Thinking · …`) and goes with the turn, leaving the tool rows and a short answer. `JEV_SHOW_THINKING=1` prints it as before.
+- **Long runs of tool calls fold.** The first five calls of a run print as they happen; any after that are held and printed as one row (`⏺ 7 more tool calls · Bash ×5 · Read ×2`) when the run ends, with the calls that failed shown in full. Edits and delegations always print on their own. `JEV_TOOL_ROWS=all` prints every call.
+- **No gap under the input box.** Beside the side panel, the router row and footer sit right under the box instead of at the bottom of the panel.
 - **Quieter auto-allow.** `✓ auto-allowed <command>` no longer repeats the command under the tool row that already shows it: a short dim `✓ auto-allowed` instead.
 
 ## 1.4.0

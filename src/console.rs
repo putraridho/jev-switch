@@ -211,6 +211,11 @@ struct Inner {
     /// With a front: the tools called whose results have not come back, oldest first, so a
     /// result is worded for its tool.
     tools_waiting: std::collections::VecDeque<String>,
+    /// With a front: the tool calls of the run in progress, held back until it ends so a long
+    /// run can print as one summary row (see [`Inner::flush_run`]).
+    run: Vec<HeldCall>,
+    /// How many calls of the run in progress already printed as they came.
+    run_printed: usize,
     /// With a front: nothing of this turn printed yet (the first step needs no blank line).
     fresh_turn: bool,
     /// Where messages typed during the turn go to be added to it ([`Ui::steering`]); a send
@@ -255,6 +260,8 @@ impl Console {
             front: None,
             pending_text: None,
             tools_waiting: std::collections::VecDeque::new(),
+            run: Vec::new(),
+            run_printed: 0,
             fresh_turn: true,
             steer: None,
         };
@@ -695,6 +702,8 @@ impl Inner {
 
     fn begin(&mut self) {
         self.fresh_turn = true;
+        self.run.clear();
+        self.run_printed = 0;
         if let Some(front) = &self.front {
             front.send(FrontMsg::TurnStarted);
             return;
@@ -736,6 +745,7 @@ impl Inner {
             self.emit_err(&line);
         }
         if self.front.is_some() {
+            self.flush_run();
             self.flush_text(false);
             self.tools_waiting.clear();
         }
@@ -744,9 +754,32 @@ impl Inner {
         }
     }
 
+    /// The run of tool calls is over: print what was held back as one dim row counting the
+    /// calls by tool (`⏺ 7 more tool calls · Bash ×5 · Read ×2`), then the calls among them that
+    /// failed, in full.
+    fn flush_run(&mut self) {
+        self.run_printed = 0;
+        if self.run.is_empty() {
+            return;
+        }
+        let run = std::mem::take(&mut self.run);
+        let (style, width) = (self.cfg.err_style, self.width());
+        let mut counts: Vec<(String, usize)> = Vec::new();
+        for h in &run {
+            match counts.iter_mut().find(|(t, _)| *t == h.tool) {
+                Some((_, n)) => *n += 1,
+                None => counts.push((h.tool.clone(), 1)),
+            }
+        }
+        let mut rows = vec![uifmt::tool_run_summary(&counts, style, width)];
+        rows.extend(run.into_iter().filter(|h| h.failed).flat_map(|h| h.rows));
+        self.emit_err(&rows.join("\n"));
+    }
+
     /// Print the held assistant text: as narration (a tool call followed it) or as the answer.
     fn flush_text(&mut self, narration: bool) {
         let Some(text) = self.pending_text.take() else { return };
+        self.flush_run();
         let (style, width) = (self.cfg.out_style, self.width());
         let shown = if narration {
             self.step(uifmt::narration(&text, style, width))
@@ -781,10 +814,19 @@ impl Inner {
                 self.flush_text(true);
                 let activity = uifmt::relativize_paths(&uifmt::strip_ansi(summary), &self.cfg.project);
                 self.set_activity(&activity);
-                self.tools_waiting.push_back(uifmt::tool_name(summary).to_string());
+                let name = uifmt::tool_name(summary).to_string();
+                self.tools_waiting.push_back(name.clone());
                 let row = uifmt::tool_row(summary, &self.cfg.project, style, width);
                 self.fresh_turn = false;
-                self.emit_err(&row);
+                if !fold_tool_runs() || stands_alone(&name) {
+                    self.flush_run();
+                    self.emit_err(&row);
+                } else if self.run_printed < FOLD_RUN_AFTER {
+                    self.run_printed += 1;
+                    self.emit_err(&row);
+                } else {
+                    self.run.push(HeldCall { tool: name, rows: vec![row], resolved: false, failed: false });
+                }
             }
             Event::Thinking(t) => {
                 self.flush_text(true);
@@ -802,23 +844,39 @@ impl Inner {
                 }
             }
             Event::Edit { removed, added, .. } => {
+                self.flush_run();
                 let preview = uifmt::edit_preview(removed, added, style, width);
                 self.emit_err(&preview);
             }
             Event::ToolResult { ok, text } => {
                 let tool = self.tools_waiting.pop_front().unwrap_or_default();
-                if let Some(row) = uifmt::tool_result_row(&tool, *ok, text, style, width) {
-                    self.emit_err(&row);
-                }
-                if let Some(folded) = uifmt::tool_output_fold(&tool, *ok, text, style, width) {
-                    self.emit_err(&folded);
+                let rows: Vec<String> = [uifmt::tool_result_row(&tool, *ok, text, style, width), uifmt::tool_output_fold(&tool, *ok, text, style, width)].into_iter().flatten().collect();
+                // A held call takes its own result; any other prints at once.
+                match self.run.iter_mut().find(|h| !h.resolved && h.tool == tool) {
+                    Some(held) => {
+                        held.resolved = true;
+                        held.failed = !*ok;
+                        held.rows.extend(rows);
+                    }
+                    None => {
+                        for row in rows {
+                            self.emit_err(&row);
+                        }
+                    }
                 }
             }
             Event::Hint(t) => {
                 let text = hint_line(t, style, width);
-                self.emit_err(&text);
+                match self.run.last_mut() {
+                    Some(held) if is_allow_note(t) => held.rows.push(text),
+                    _ => {
+                        self.flush_run();
+                        self.emit_err(&text);
+                    }
+                }
             }
             Event::Steered(text) => {
+                self.flush_run();
                 self.flush_text(true);
                 if let Some(front) = &self.front {
                     front.send(FrontMsg::Steered(text.clone()));
@@ -856,6 +914,7 @@ impl Inner {
             self.emit_err(&line);
         }
         let label = if f.model.is_empty() { f.provider.clone() } else { format!("{} · {}", f.provider, f.model) };
+        self.flush_run();
         if let Some(front) = self.front.clone() {
             // The router at work leads the turn: where it went and why, in one row.
             front.send(FrontMsg::Label(label));
@@ -924,6 +983,36 @@ fn steered_line(text: &str, style: Style) -> String {
     let shown = text.lines().next().unwrap_or_default();
     let more = if text.lines().count() > 1 { " …" } else { "" };
     format!("  {} {}{more} {}", style.cyan("↳"), shown, style.dim("(taken into the running turn)"))
+}
+
+/// A tool call held back with what it printed (its row, its result, the note that it was
+/// allowed unasked), while the run it belongs to is still going.
+struct HeldCall {
+    tool: String,
+    rows: Vec<String>,
+    resolved: bool,
+    failed: bool,
+}
+
+/// The first calls of a run print as they come (a long-running one must show); the ones after
+/// that are held back and fold into one summary row when the run ends.
+const FOLD_RUN_AFTER: usize = 5;
+
+/// `JEV_TOOL_ROWS=all` prints every tool call as it comes instead of folding long runs.
+fn fold_tool_runs() -> bool {
+    std::env::var("JEV_TOOL_ROWS").map_or(true, |v| !v.trim().eq_ignore_ascii_case("all"))
+}
+
+/// Calls that always print on their own: what changes files, and what is handed to a worker.
+fn stands_alone(tool: &str) -> bool {
+    let t = tool.to_ascii_lowercase();
+    matches!(t.as_str(), "edit" | "multiedit" | "write" | "notebookedit" | "apply_patch" | "delegate") || t.ends_with("__delegate")
+}
+
+/// The note that a call was allowed without asking (`✓ auto-allowed …`).
+fn is_allow_note(text: &str) -> bool {
+    let flat = uifmt::strip_ansi(text);
+    flat.trim_start().starts_with("\u{2713} auto-allowed ") || flat.trim_start().starts_with("\u{2713} allowed (remembered) ")
 }
 
 /// A hint as one yellow line that fits the terminal: a long command or message is cut with `…`
@@ -1010,6 +1099,7 @@ impl Ui for Console {
         let mut g = self.lock();
         // A failed attempt's last words are not an answer.
         g.pending_text = None;
+        g.flush_run();
         g.tools_waiting.clear();
         if f.will_retry {
             g.pending = Some(Pending {
@@ -1328,6 +1418,53 @@ mod tests {
     use super::testing::Buf;
     use super::*;
     use crate::backend::{ErrorKind, ProviderId};
+
+    /// Everything the front was asked to print, without colour.
+    fn printed(heard: &mut tokio::sync::mpsc::UnboundedReceiver<FrontMsg>) -> String {
+        let mut out = String::new();
+        while let Ok(msg) = heard.try_recv() {
+            if let FrontMsg::Print(text) = msg {
+                out.push_str(&uifmt::strip_ansi(&text));
+                out.push('\n');
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn the_calls_of_a_long_run_after_the_first_few_fold_into_one_row_and_failures_stay() {
+        let (c, _, _) = console(false, Style::off(), true);
+        let (front, mut heard) = Front::channel();
+        let mut c = c.with_front(front);
+        for i in 0..9 {
+            c.event(&Event::Tool(format!("Bash cmd{i}")));
+            c.event(&Event::ToolResult { ok: i != 7, text: format!("out{i}") });
+        }
+        c.event(&Event::Text("done".into()));
+        c.end_turn();
+        let e = printed(&mut heard);
+        assert!(e.contains("cmd0") && e.contains("cmd4"), "the first calls print as they come: {e}");
+        assert!(e.contains("4 more tool calls · Bash ×4"), "{e}");
+        assert!(e.contains("cmd7"), "a failed call keeps its row: {e}");
+        assert!(!e.contains("cmd5") && !e.contains("cmd8"), "later calls that went well are folded: {e}");
+    }
+
+    #[test]
+    fn a_short_run_prints_every_call_and_edits_always_stand_alone() {
+        let (c, _, _) = console(false, Style::off(), true);
+        let (front, mut heard) = Front::channel();
+        let mut c = c.with_front(front);
+        for i in 0..3 {
+            c.event(&Event::Tool(format!("Read f{i}")));
+            c.event(&Event::ToolResult { ok: true, text: "ok".into() });
+        }
+        c.event(&Event::Tool("Edit src/a.rs".into()));
+        c.event(&Event::Text("done".into()));
+        c.end_turn();
+        let e = printed(&mut heard);
+        assert!(e.contains("Read f0") && e.contains("Read f2") && e.contains("Edit src/a.rs"), "{e}");
+        assert!(!e.contains("tool calls"), "{e}");
+    }
 
     #[test]
     fn reasoning_stays_off_the_scrollback_and_shows_as_the_latest_line_on_the_working_row() {
