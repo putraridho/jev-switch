@@ -17,11 +17,26 @@ export CLAUDE_CODE_GATEWAY_HINT_HEADERS=1
 export ANTHROPIC_CUSTOM_MODEL_OPTION="jev-code[1m]"
 export ANTHROPIC_CUSTOM_MODEL_OPTION_NAME="Jev Code"
 export ANTHROPIC_CUSTOM_MODEL_OPTION_DESCRIPTION="Routes each turn: Sonnet, or Opus for hard and security work"
+# The delegate tool (MCP server `jev`): Claude Code can hand self-contained pieces to workers on
+# your other subscriptions (Codex, Antigravity ...), each in its own git worktree, and merge the
+# diffs it reviewed. Needs jev-delegate-mcp (installed beside jev-code); JEV_DELEGATE=off skips it.
+# The config is per project folder and rewritten each start (the content is the same for every
+# session in the folder). `--mcp-config` takes several values, so an option that is already the
+# default follows it: a prompt typed after it is not read as another config file.
+mcp=()
+DELEGATE="$(command -v jev-delegate-mcp || true)"
+if [ "${JEV_DELEGATE:-on}" != off ] && [ -n "$DELEGATE" ]; then
+  key="$(printf %s "$PWD" | shasum | cut -c1-12)"
+  cfg="$STATE/mcp-delegate-claude-$key.json"
+  json() { local s=${1//\\/\\\\}; printf '"%s"' "${s//\"/\\\"}"; }
+  (umask 077; printf '{"mcpServers":{"jev":{"command":%s,"args":["--dir",%s]}}}\n' "$(json "$DELEGATE")" "$(json "$PWD")" >"$cfg")
+  mcp=(--mcp-config "$cfg" --setting-sources user,project,local)
+fi
 for a in "$@"; do
-  case "$a" in --model|--model=*) exec claude "$@" ;; esac
+  case "$a" in --model|--model=*) exec claude ${mcp[@]+"${mcp[@]}"} "$@" ;; esac
 done
 # Orchestrate mode (off by default; /orchestrate on turns it on for a session).
 MOD="${XDG_DATA_HOME:-$HOME/.local/share}/jev-router/mods/jev-orchestrate"
 plugin=()
 [ -d "$MOD" ] && plugin=(--plugin-dir "$MOD")
-exec claude --model 'jev-code[1m]' "${plugin[@]}" "$@"
+exec claude ${mcp[@]+"${mcp[@]}"} --model 'jev-code[1m]' "${plugin[@]}" "$@"

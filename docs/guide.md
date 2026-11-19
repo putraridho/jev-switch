@@ -69,6 +69,15 @@ is not `localhost`/`127.0.0.1`/`[::1]` gets 403, a request without credentials i
 without being routed, at most `JEV_GATEWAY_MAX_INFLIGHT` (32) requests run at once, and a
 non-loopback `JEV_GATEWAY_ADDR` is refused unless `JEV_GATEWAY_ALLOW_REMOTE=1`.
 
+**Delegate tool.** When `jev-delegate-mcp` is installed, `jev-claude` also attaches it to Claude
+Code as the MCP server `jev` (`mcp__jev__delegate`, `show_diff`, `merge`, `discard`): Claude can
+hand a self-contained piece of work to a worker on your other subscriptions (Codex, Antigravity,
+...) in its own git worktree, read the diff and merge it, exactly as in `jev-code`
+(see "Orchestration across providers"; Jev picks the worker, the tool has no model parameter).
+Claude Code asks before each use like any MCP tool. The server's config is written to
+`<state dir>/mcp-delegate-claude-<folder hash>.json` (0600) at each start. `JEV_DELEGATE=off`
+starts `jev-claude` without it.
+
 - The gateway forwards every request to Anthropic byte-for-byte and streams the
   response back. It changes only the `model` field, and only when it is `jev-code`.
 - It decides once per user prompt (Claude Code's `x-claude-code-prompt-id` hint

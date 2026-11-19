@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- **`jev-claude` attaches the delegate tool.** Claude Code gets the MCP server `jev`
+  (`delegate`, `show_diff`, `merge`, `discard`), so it can hand pieces of a task to workers on your
+  Codex and Antigravity subscriptions. `JEV_DELEGATE=off` leaves it out.
+
 Fixes from code review round 4.
 
 - **Project Claude settings are trusted only as they were.** `/hooks trust` now also records
