@@ -17,16 +17,32 @@ use serde_json::{json, Map, Value};
 /// Where the project's own rules live, relative to the project folder.
 pub const LOCAL_SETTINGS: &str = ".claude/settings.local.json";
 
-/// Whether the project's local settings were committed to the repository.
+/// Whether the project's local settings must be treated as not the user's own: committed to
+/// the repository, or git could not say (a folder owned by someone else, "dubious
+/// ownership", is refused by git and is the likeliest place for a shipped settings file).
+/// Only a clean "not tracked" (exit 1), no git program, or a folder that is not under git at
+/// all leaves the file trusted as the user's own.
 pub(crate) fn local_settings_tracked(project: &Path) -> bool {
-    std::process::Command::new("git")
+    let output = std::process::Command::new("git")
         .arg("-C")
         .arg(project)
         .args(["ls-files", "--error-unmatch", "--", LOCAL_SETTINGS])
+        .env("LC_ALL", "C")
         .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .is_ok_and(|status| status.success())
+        .output();
+    match output {
+        Ok(out) => tracked_from_git(out.status.code(), &String::from_utf8_lossy(&out.stderr)),
+        Err(_) => false,
+    }
+}
+
+/// The decision of [`local_settings_tracked`] from git's exit code and what it said.
+fn tracked_from_git(code: Option<i32>, stderr: &str) -> bool {
+    match code {
+        Some(0) => true,
+        Some(1) => false,
+        _ => !stderr.contains("not a git repository"),
+    }
 }
 
 /// A run of this many spaces or more is shown as a count, so spaces cannot push the rest of
@@ -1525,6 +1541,15 @@ pub fn parse_args(rest: &str) -> Result<PermissionsCmd, String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn git_failures_do_not_trust_the_local_settings() {
+        assert!(tracked_from_git(Some(0), ""));
+        assert!(!tracked_from_git(Some(1), "error: pathspec did not match"));
+        assert!(!tracked_from_git(Some(128), "fatal: not a git repository (or any of the parent directories): .git"));
+        assert!(tracked_from_git(Some(128), "fatal: detected dubious ownership in repository at '/x'"));
+        assert!(tracked_from_git(None, ""));
+    }
+
     use super::*;
 
     fn project() -> &'static Path {

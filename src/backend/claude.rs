@@ -398,7 +398,7 @@ impl Backend for ClaudeBackend {
             cmd.args(["--resume", id]);
         }
         let places = crate::ext::Places::from_env(&req.dir);
-        let project_trusted = places.user.as_deref().is_some_and(|user| crate::ext::hooks::is_trusted(user, &req.dir));
+        let project_trusted = places.user.as_deref().is_some_and(|user| crate::ext::hooks::claude_settings_trusted(user, &req.dir));
         let sources = setting_sources(!permissions::local_settings_tracked(&req.dir), project_trusted);
         cmd.args(["--setting-sources", sources, "--permission-mode", req.mode.claude_flag()]);
         if self.interactive || sends_image_blocks(self.provider, req) {

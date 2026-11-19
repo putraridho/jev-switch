@@ -127,8 +127,36 @@ fn trusted_path(line: &str) -> &Path {
     Path::new(line.split_once('\t').map_or_else(|| line.trim(), |(path, _)| path))
 }
 
+/// A trust line is `path`, `hooks hash` and `settings hash`, tab separated. Older lines have
+/// fewer columns: the path alone (the first versions) or the path and hooks hash.
+fn columns(line: &str) -> (&str, Option<&str>, Option<&str>) {
+    let mut parts = line.splitn(3, '\t');
+    (parts.next().unwrap_or(""), parts.next(), parts.next())
+}
+
 fn has_hash(entries: &str, project: &Path, hash: &str) -> bool {
-    entries.lines().any(|line| line.split_once('\t').is_some_and(|(path, saved)| Path::new(path) == project && saved == hash))
+    entries.lines().any(|line| {
+        let (path, saved, _) = columns(line);
+        Path::new(path) == project && saved == Some(hash)
+    })
+}
+
+/// Hash of the project's `.claude/settings.json` (of nothing when there is none, which no
+/// file added later can match). That file can define hooks, `env` and helper commands that
+/// Claude Code runs, so it is trusted only as it was when `/hooks trust` was run.
+fn settings_hash(project: &Path) -> String {
+    sha256::hex(&std::fs::read(project.join(".claude/settings.json")).unwrap_or_default())
+}
+
+/// Whether the project's `.claude/settings.json` is the one that was trusted.
+pub fn claude_settings_trusted(user: &Path, project: &Path) -> bool {
+    let current = settings_hash(project);
+    std::fs::read_to_string(trusted_file(user)).is_ok_and(|entries| {
+        entries.lines().any(|line| {
+            let (path, _, saved) = columns(line);
+            Path::new(path) == project && saved == Some(current.as_str())
+        })
+    })
 }
 
 /// Remember the current project's hooks. `Ok(false)`: they were already trusted.
@@ -149,6 +177,7 @@ pub fn trust_project_with_preview(user: &Path, project: &Path) -> std::io::Resul
         Err(error) => return Err(error),
     };
     let hash = sha256::hex(&bytes);
+    let settings = settings_hash(project);
     let defs = parse_defs(&hooks_path, &bytes, &mut Vec::new());
     let entries = match std::fs::read_to_string(trusted_file(user)) {
         Ok(entries) => entries,
@@ -156,7 +185,7 @@ pub fn trust_project_with_preview(user: &Path, project: &Path) -> std::io::Resul
         Err(error) => return Err(error),
     };
     let matching: Vec<&str> = entries.lines().filter(|line| trusted_path(line) == project).collect();
-    if matching.len() == 1 && has_hash(matching[0], project, &hash) {
+    if matching.len() == 1 && has_hash(matching[0], project, &hash) && columns(matching[0]).2 == Some(settings.as_str()) {
         return Ok((false, defs));
     }
     std::fs::create_dir_all(user)?;
@@ -171,7 +200,7 @@ pub fn trust_project_with_preview(user: &Path, project: &Path) -> std::io::Resul
     for line in entries.lines().filter(|line| trusted_path(line) != project) {
         writeln!(file, "{line}")?;
     }
-    writeln!(file, "{path}\t{hash}")?;
+    writeln!(file, "{path}\t{hash}\t{settings}")?;
     Ok((true, defs))
 }
 
@@ -548,6 +577,37 @@ mod tests {
         assert_eq!((retrusted.defs().len(), retrusted.skipped_untrusted), (1, 0));
         assert_eq!(retrusted.run(Event::TurnEnd, None, None), Outcome::default());
         assert!(project.join("new").exists());
+    }
+
+    #[test]
+    fn project_claude_settings_are_trusted_only_as_they_were() {
+        let dir = temp("settings-trust");
+        let (project, user) = (dir.join("proj"), dir.join("cfg"));
+        std::fs::create_dir_all(project.join(".claude")).unwrap();
+        let settings = project.join(".claude/settings.json");
+        std::fs::write(&settings, r#"{"permissions":{}}"#).unwrap();
+        assert!(!claude_settings_trusted(&user, &project), "not trusted before /hooks trust");
+        assert!(trust_project(&user, &project).unwrap());
+        assert!(claude_settings_trusted(&user, &project));
+        assert!(!trust_project(&user, &project).unwrap(), "nothing changed");
+        std::fs::write(&settings, r#"{"hooks":{"PreToolUse":[{"hooks":[{"type":"command","command":"curl x"}]}]}}"#).unwrap();
+        assert!(is_trusted(&user, &project), "the path stays remembered");
+        assert!(!claude_settings_trusted(&user, &project), "a changed settings file waits for retrust");
+        assert!(trust_project(&user, &project).unwrap());
+        assert!(claude_settings_trusted(&user, &project));
+        assert_eq!(std::fs::read_to_string(trusted_file(&user)).unwrap().lines().count(), 1);
+    }
+
+    #[test]
+    fn a_settings_file_added_after_trust_is_not_trusted() {
+        let dir = temp("settings-added");
+        let (project, user) = (dir.join("proj"), dir.join("cfg"));
+        std::fs::create_dir_all(&project).unwrap();
+        assert!(trust_project(&user, &project).unwrap());
+        assert!(claude_settings_trusted(&user, &project));
+        std::fs::create_dir_all(project.join(".claude")).unwrap();
+        std::fs::write(project.join(".claude/settings.json"), r#"{"env":{"X":"1"}}"#).unwrap();
+        assert!(!claude_settings_trusted(&user, &project));
     }
 
     #[test]

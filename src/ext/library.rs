@@ -94,10 +94,25 @@ pub fn expand(body: &str, args: &str) -> String {
     let args = args.trim();
     let words: Vec<&str> = args.split_whitespace().collect();
     let mentions = body.contains("$ARGUMENTS") || (1..=9).any(|n| body.contains(&format!("${n}")));
-    let mut out = body.replace("$ARGUMENTS", args);
-    for n in (1..=9).rev() {
-        out = out.replace(&format!("${n}"), words.get(n - 1).copied().unwrap_or(""));
+    // One pass over the body, so text that was substituted in is never scanned again: a
+    // typed `$1` or `$5` stays as typed.
+    let mut out = String::with_capacity(body.len() + args.len());
+    let mut rest = body;
+    while let Some(at) = rest.find('$') {
+        out.push_str(&rest[..at]);
+        let tail = &rest[at..];
+        if let Some(after) = tail.strip_prefix("$ARGUMENTS") {
+            out.push_str(args);
+            rest = after;
+        } else if let Some(n) = tail[1..].chars().next().and_then(|c| c.to_digit(10)).filter(|n| *n >= 1) {
+            out.push_str(words.get(n as usize - 1).copied().unwrap_or(""));
+            rest = &tail[2..];
+        } else {
+            out.push('$');
+            rest = &tail[1..];
+        }
     }
+    out.push_str(rest);
     if !mentions && !args.is_empty() {
         out.push_str(&format!("\n\nArguments: {args}"));
     }
@@ -296,6 +311,13 @@ mod tests {
         assert_eq!(expand("compare $1 with $2 ($3)", "a b"), "compare a with b ()");
         assert_eq!(expand("run the tests", "quickly"), "run the tests\n\nArguments: quickly");
         assert_eq!(expand("run the tests", ""), "run the tests");
+    }
+
+    #[test]
+    fn typed_arguments_are_not_expanded_again() {
+        assert_eq!(expand("note: $ARGUMENTS", "pay $1 now"), "note: pay $1 now");
+        assert_eq!(expand("$1 costs $ARGUMENTS", "milk $5"), "milk costs milk $5");
+        assert_eq!(expand("cost: $ and $x $", ""), "cost: $ and $x $");
     }
 
     #[test]

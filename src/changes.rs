@@ -639,7 +639,7 @@ pub fn diff_text(dir: &Path, summary: &ChangeSummary, path: Option<&str>) -> Opt
     // From the repository root, so `path` means the same as in the summary whatever
     // folder the session was started in.
     let root = toplevel(dir)?;
-    let mut args = vec!["--literal-pathspecs", "diff", "--no-color", "--no-ext-diff", "-M", &summary.before, &summary.after];
+    let mut args = vec!["--literal-pathspecs", "-c", "core.quotepath=false", "diff", "--no-color", "--no-ext-diff", "-M", &summary.before, &summary.after];
     // Only what the turn is credited with: the trees also hold other processes' changes.
     let mut mine: Vec<&str> = summary.files.iter().flat_map(|f| std::iter::once(f.path.as_str()).chain(f.old_path.as_deref())).collect();
     mine.retain(|p| path.is_none_or(|want| want == *p));

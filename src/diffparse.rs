@@ -126,11 +126,11 @@ fn unquote_path(p: &str) -> &str {
 
 fn path_of_header(header: &[String]) -> String {
     let side = |prefix: &str| header.iter().find_map(|l| l.strip_prefix(prefix)).map(|p| unquote_path(p.split('\t').next().unwrap_or(p)));
-    if let Some(p) = side("+++ b/") {
-        return p.to_string();
-    }
-    if let Some(p) = side("--- a/") {
-        return p.to_string();
+    // Git quotes a name with a quote, a backslash or a control character: `+++ "b/na\"me"`.
+    for (plain, quoted) in [("+++ b/", "+++ \"b/"), ("--- a/", "--- \"a/")] {
+        if let Some(p) = side(plain).or_else(|| side(quoted)) {
+            return p.to_string();
+        }
     }
     // A pure rename, a mode change or a binary file has no ---/+++ lines.
     if let Some(p) = header.iter().find_map(|l| l.strip_prefix("rename to ")) {
@@ -199,6 +199,12 @@ mod tests {
     use super::*;
 
     const TWO: &str = "diff --git a/src/a.rs b/src/a.rs\nindex 1..2 100644\n--- a/src/a.rs\n+++ b/src/a.rs\n@@ -1,3 +1,3 @@ fn main\n one\n-two\n+TWO\n three\n@@ -10 +10,2 @@\n ten\n+eleven\n\\ No newline at end of file\ndiff --git a/new.txt b/new.txt\nnew file mode 100644\n--- /dev/null\n+++ b/new.txt\n@@ -0,0 +1 @@\n+hi\n";
+
+    #[test]
+    fn quoted_paths_are_read() {
+        let text = "diff --git \"a/na\\\"me.txt\" \"b/na\\\"me.txt\"\nindex 1..2 100644\n--- \"a/na\\\"me.txt\"\n+++ \"b/na\\\"me.txt\"\n@@ -1 +1 @@\n-a\n+b\n";
+        assert_eq!(parse(text)[0].path, "na\\\"me.txt");
+    }
 
     #[test]
     fn splits_files_hunks_and_lines() {

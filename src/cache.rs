@@ -180,7 +180,9 @@ pub fn per_turn(log: &SessionLog) -> Vec<TurnCache> {
     let mut out = Vec::new();
     let mut prev: Option<&TurnRecord> = None;
     for (i, t) in log.turns().iter().enumerate() {
-        let Some(u) = t.usage.filter(|_| t.route.is_some()) else { continue };
+        // A turn whose provider reported no input tokens (Antigravity over ACP) has no cache
+        // data: it is not a miss.
+        let Some(u) = t.usage.filter(|u| t.route.is_some() && u.input_tokens > 0) else { continue };
         let read = u.cached_input_tokens.min(u.input_tokens);
         let rebuilt = u.input_tokens - read;
         let miss = (percent(read, u.input_tokens) < MISS_BELOW_PERCENT).then(|| cause(prev, t));
@@ -216,7 +218,7 @@ impl ProviderCache {
 pub fn by_provider(log: &SessionLog) -> Vec<ProviderCache> {
     let mut rows: Vec<ProviderCache> = Vec::new();
     for t in log.turns() {
-        let (Some((provider, _)), Some(u)) = (&t.route, &t.usage) else { continue };
+        let (Some((provider, _)), Some(u)) = (&t.route, t.usage.as_ref().filter(|u| u.input_tokens > 0)) else { continue };
         let name = provider.to_string();
         let at = rows.iter().position(|r| r.provider == name).unwrap_or_else(|| {
             rows.push(ProviderCache { provider: name, ..ProviderCache::default() });
@@ -310,6 +312,16 @@ mod tests {
         let mut log = SessionLog::default();
         turns.into_iter().for_each(|t| log.push(t));
         log
+    }
+
+    #[test]
+    fn turns_without_token_counts_are_not_cache_misses() {
+        let log = log_of(vec![rec(ProviderId::Gemini, "flash", 0, 0, 1_000), rec(ProviderId::Claude, "opus", 1000, 900, 2_000)]);
+        let turns = per_turn(&log);
+        assert_eq!(turns.len(), 1);
+        assert_eq!(turns[0].turn, 2);
+        let rows = by_provider(&log);
+        assert_eq!(rows.iter().map(|r| r.provider.as_str()).collect::<Vec<_>>(), ["claude"]);
     }
 
     #[test]

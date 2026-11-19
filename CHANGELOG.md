@@ -1,5 +1,25 @@
 # Changelog
 
+## Unreleased
+
+Fixes from code review round 4.
+
+- **Project Claude settings are trusted only as they were.** `/hooks trust` now also records
+  a hash of `.claude/settings.json`; the file (hooks, `env`, helper commands) is loaded only
+  while it still matches, so a later `git pull` that changes it waits for `/hooks trust`
+  again. Projects trusted by an earlier version load no project settings until `/hooks trust`
+  is run once more.
+- A project's `.claude/settings.local.json` is no longer trusted as your own when git cannot
+  say whether it is tracked (for instance "dubious ownership"). A folder that is not under git
+  is unchanged.
+- Custom commands and recipes keep `$1`..`$9` and `$ARGUMENTS` typed inside the arguments as
+  typed (`/note pay $5` no longer loses the `$5`).
+- `/cache` no longer lists turns that reported no token counts (Antigravity over ACP) as misses.
+- Updating an extension keeps the installed copy if the new one cannot be written; `ext pack`
+  skips links to folders instead of looping; `/diff` reads names with non-ASCII characters
+  and quotes; `--every` refuses an interval too large to hold; `/export` writes a private
+  (0600) file.
+
 ## 1.3.1
 
 - The README is now a short introduction: what jev-router is, requirements, installation and first

@@ -246,7 +246,15 @@ impl Repl {
             None => self.engine.dir().join(format!("jev-session-{stamp}.md")),
         };
         let text = crate::export::render(&self.log, crate::export::Format::of_path(&target), &self.engine.dir().display().to_string(), &when);
-        let written = std::fs::OpenOptions::new().write(true).create_new(true).open(&target).and_then(|mut f| std::io::Write::write_all(&mut f, text.as_bytes()));
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        // The transcript holds the whole conversation: private to the user, like the logs.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let written = options.open(&target).and_then(|mut f| std::io::Write::write_all(&mut f, text.as_bytes()));
         match written {
             Ok(()) => {
                 self.audit_event(crate::audit::Event::Export { path: target.display().to_string() });

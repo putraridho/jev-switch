@@ -72,7 +72,7 @@ fn extensions_dir(user: &Path) -> PathBuf {
 /// The folders of the installed extensions, in name order.
 pub fn installed_dirs(user: &Path) -> Vec<PathBuf> {
     let Ok(read) = std::fs::read_dir(extensions_dir(user)) else { return Vec::new() };
-    let mut dirs: Vec<PathBuf> = read.filter_map(Result::ok).map(|e| e.path()).filter(|p| p.is_dir()).collect();
+    let mut dirs: Vec<PathBuf> = read.filter_map(Result::ok).map(|e| e.path()).filter(|p| p.is_dir() && !p.file_name().is_some_and(|n| n.to_string_lossy().starts_with('.'))).collect();
     dirs.sort();
     dirs
 }
@@ -119,7 +119,13 @@ fn walk(dir: &Path, base: &Path, out: &mut Vec<PathBuf>) {
     let Ok(read) = std::fs::read_dir(dir) else { return };
     for entry in read.filter_map(Result::ok) {
         let path = entry.path();
-        if path.is_dir() {
+        // `file_type` does not follow links: a link to a folder (possibly back to a parent) is
+        // skipped, so the walk cannot loop.
+        let is_dir_link = entry.file_type().is_ok_and(|t| t.is_symlink()) && path.is_dir();
+        if is_dir_link {
+            continue;
+        }
+        if entry.file_type().is_ok_and(|t| t.is_dir()) {
             walk(&path, base, out);
         } else if let Ok(rel) = path.strip_prefix(base) {
             out.push(rel.to_path_buf());
@@ -181,18 +187,42 @@ pub fn install(user: &Path, source: &Path) -> Result<Installed, MarketError> {
     let target = extensions_dir(user).join(&manifest.name);
     let mut registry = load_registry(user);
     let replaced = registry.extensions.iter().find(|r| r.name == manifest.name).map(|r| r.version.clone());
-    if target.exists() {
-        std::fs::remove_dir_all(&target).map_err(|e| MarketError(format!("{}: {e}", target.display())))?;
-    }
-    for (rel, bytes) in &bodies {
-        let to = target.join(rel);
-        if let Some(parent) = to.parent() {
-            std::fs::create_dir_all(parent).map_err(|e| MarketError(format!("{}: {e}", parent.display())))?;
+    // Write the new copy beside the installed one and swap them, so a failed write (disk full,
+    // permissions) leaves the installed extension as it was.
+    let stage = extensions_dir(user).join(format!(".{}.new", manifest.name));
+    let backup = extensions_dir(user).join(format!(".{}.old", manifest.name));
+    let _ = std::fs::remove_dir_all(&stage);
+    let _ = std::fs::remove_dir_all(&backup);
+    let staged = (|| -> Result<(), MarketError> {
+        for (rel, bytes) in &bodies {
+            let to = stage.join(rel);
+            if let Some(parent) = to.parent() {
+                std::fs::create_dir_all(parent).map_err(|e| MarketError(format!("{}: {e}", parent.display())))?;
+            }
+            std::fs::write(&to, bytes).map_err(|e| MarketError(format!("{}: {e}", to.display())))?;
         }
-        std::fs::write(&to, bytes).map_err(|e| MarketError(format!("{}: {e}", to.display())))?;
+        let manifest_text = serde_json::to_string_pretty(&manifest).map_err(|e| MarketError(e.to_string()))?;
+        std::fs::write(stage.join(MANIFEST), manifest_text).map_err(|e| MarketError(e.to_string()))
+    })();
+    if let Err(e) = staged {
+        let _ = std::fs::remove_dir_all(&stage);
+        return Err(e);
     }
-    let manifest_text = serde_json::to_string_pretty(&manifest).map_err(|e| MarketError(e.to_string()))?;
-    std::fs::write(target.join(MANIFEST), manifest_text).map_err(|e| MarketError(e.to_string()))?;
+    let had_old = target.exists();
+    if had_old {
+        if let Err(e) = std::fs::rename(&target, &backup) {
+            let _ = std::fs::remove_dir_all(&stage);
+            return Err(MarketError(format!("{}: {e}", target.display())));
+        }
+    }
+    if let Err(e) = std::fs::rename(&stage, &target) {
+        if had_old {
+            let _ = std::fs::rename(&backup, &target);
+        }
+        let _ = std::fs::remove_dir_all(&stage);
+        return Err(MarketError(format!("{}: {e}", target.display())));
+    }
+    let _ = std::fs::remove_dir_all(&backup);
     registry.extensions.retain(|r| r.name != manifest.name);
     registry.extensions.push(Record { name: manifest.name.clone(), version: manifest.version.clone(), source });
     registry.extensions.sort_by(|a, b| a.name.cmp(&b.name));
@@ -284,6 +314,33 @@ mod tests {
         std::fs::create_dir_all(dir.join("commands")).unwrap();
         std::fs::write(dir.join("commands/hello.md"), body).unwrap();
         pack(dir, "hello-kit", version).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn pack_skips_links_to_folders() {
+        let root = temp("loop");
+        let src = root.join("src");
+        package(&src, "1.0.0", "say hello");
+        std::os::unix::fs::symlink("..", src.join("commands/up")).unwrap();
+        let manifest = pack(&src, "hello-kit", "1.0.0").unwrap();
+        assert_eq!(manifest.files.keys().collect::<Vec<_>>(), ["commands/hello.md"]);
+    }
+
+    #[test]
+    fn a_failed_update_keeps_the_installed_copy() {
+        let root = temp("keep");
+        let (src, user) = (root.join("src"), root.join("cfg"));
+        package(&src, "1.0.0", "say hello");
+        install(&user, &src).unwrap();
+        // A file is in the way of the staged folder's name, so staging cannot be written.
+        std::fs::write(user.join("extensions/.hello-kit.new"), "x").unwrap();
+        package(&src, "2.0.0", "say hi");
+        let done = install(&user, &src);
+        // Whatever the outcome, the installed folder is complete and one version.
+        let text = std::fs::read_to_string(user.join("extensions/hello-kit/commands/hello.md")).unwrap();
+        assert!(done.is_ok() == (text == "say hi"), "{done:?} {text}");
+        assert!(installed_dirs(&user).len() == 1);
     }
 
     #[test]

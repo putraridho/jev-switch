@@ -76,7 +76,7 @@ fn interval(text: &str) -> Result<Duration, ScheduleError> {
     if n == 0 {
         return bad("an interval must be more than zero");
     }
-    Ok(Duration::from_secs(n * seconds))
+    n.checked_mul(seconds).map(Duration::from_secs).ok_or_else(usage)
 }
 
 /// One cron field as a bit set over `lo..=hi`.
@@ -208,6 +208,12 @@ mod tests {
         assert_eq!(civil_from_days((NOW / 86_400) as i64), (2026, 11, 18));
         assert_eq!(((NOW / 86_400) as i64 + 4).rem_euclid(7), 3);
         assert_eq!(NOW % 86_400, 10 * 3600 + 7 * 60 + 30);
+    }
+
+    #[test]
+    fn an_interval_too_large_to_hold_is_refused() {
+        assert!("999999999999999999d".parse::<Schedule>().is_err());
+        assert!("18446744073709551615s".parse::<Schedule>().is_ok());
     }
 
     #[test]
