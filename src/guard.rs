@@ -159,6 +159,11 @@ impl Guards {
         self.privacy.check(root, text, &[]).permits(provider).then(|| self.outgoing(text, provider, model, now_ms).prompt)
     }
 
+    /// Whether the privacy policy lets `text` go to `provider` (nothing is audited or changed).
+    pub fn text_permitted(&self, root: &Path, text: &str, provider: ProviderId) -> bool {
+        self.privacy.check(root, text, &[]).permits(provider)
+    }
+
     /// Note in the audit log that the policy kept the prompt from providers.
     pub fn audit_blocked(&self, blocked: &[(ProviderId, String)], now_ms: u64) {
         if let Some(log) = &self.audit {

@@ -333,7 +333,7 @@ impl Console {
         if first {
             g.queued.push_front(message);
         } else {
-            if let Some(tx) = &g.steer {
+            if let Some(tx) = g.steer.as_ref().filter(|_| steerable_text(&message)) {
                 let _ = tx.send(message.clone());
             }
             g.queued.push_back(message);
@@ -345,7 +345,7 @@ impl Console {
     /// cannot take it (another provider, or it is over); the message keeps its place in the
     /// person's queue either way, and the turn reports it ([`Event::Steered`]) once taken.
     pub fn steer(&self, text: &str) -> bool {
-        self.lock().steer.as_ref().is_some_and(|tx| tx.send(text.to_string()).is_ok())
+        steerable_text(text) && self.lock().steer.as_ref().is_some_and(|tx| tx.send(text.to_string()).is_ok())
     }
 
     /// The next queued message, oldest first (one sent with Esc before the rest).
@@ -894,6 +894,12 @@ pub fn note_line(line: &str, style: Style) -> String {
     format!("  {} {text}", style.yellow("⚠"))
 }
 
+/// Whether a queued line is a message for the model. A command (`/model`, `!ls`, a custom
+/// `/name`) is run by the session after the turn and is never written into the turn.
+fn steerable_text(text: &str) -> bool {
+    !text.trim_start().starts_with(['/', '!']) && matches!(crate::commands::parse(text), crate::commands::Command::Prompt(_))
+}
+
 /// `↳ message (taken into the running turn)`: a queued message the model has now.
 fn steered_line(text: &str, style: Style) -> String {
     let shown = text.lines().next().unwrap_or_default();
@@ -1310,6 +1316,19 @@ mod tests {
         // The turn is over: its receiver is gone, and a message can no longer be offered.
         drop(turn);
         assert!(!c.steer("too late"));
+    }
+
+    #[test]
+    fn commands_typed_during_a_turn_are_never_written_into_it() {
+        let (front, _heard) = Front::channel();
+        let (mut c, _, _) = console(false, Style::off(), true);
+        c = c.with_front(front);
+        let mut turn = c.steering().unwrap();
+        for command in ["/clear", "/model sonnet", "!git status", "  /new", "/review-pr 12", "# remember this"] {
+            assert!(!c.steer(command), "{command}");
+        }
+        assert!(turn.try_recv().is_err());
+        assert!(c.steer("also run clippy") && turn.try_recv().is_ok());
     }
 
     #[test]

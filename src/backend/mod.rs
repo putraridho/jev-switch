@@ -764,14 +764,16 @@ impl Pump<'_> {
     /// exit: a short wait, not the full watchdog, so something it left running (a background
     /// shell, a monitor) cannot hold the session for minutes after the answer.
     async fn next_line(&mut self) -> Line {
+        let wait = if self.finished.is_some() { self.idle.min(AFTER_ANSWER_WAIT) } else { self.idle };
+        // One deadline for the line: a message typed meanwhile is not a sign of life from the CLI.
+        let deadline = tokio::time::Instant::now() + wait;
         loop {
-            let wait = if self.finished.is_some() { self.idle.min(AFTER_ANSWER_WAIT) } else { self.idle };
             let Self { reader, raw, steer, .. } = &mut *self;
             let steer = steer.as_mut().map(|s| &mut s.rx);
             // Writing a message to the CLI does not wait for the next line, so a message typed
             // while a long tool runs goes in at once.
             let typed = tokio::select! {
-                read = tokio::time::timeout(wait, reader.read_until(b'\n', raw)) => match read {
+                read = tokio::time::timeout_at(deadline, reader.read_until(b'\n', raw)) => match read {
                     Ok(read) => return self.take_line(read),
                     Err(_) => return Line::Idle,
                 },
@@ -825,8 +827,9 @@ impl Pump<'_> {
             }
             // The CLI echoes the person's own prompt too: only what was sent in is reported.
             Event::Steered(text) => {
-                if self.sent.front().is_some_and(|(_, sent)| sent.trim() == text.trim()) {
-                    if let Some((typed, _)) = self.sent.pop_front() {
+                // Oldest first, but a message the CLI never echoes must not hide the later ones.
+                if let Some(at) = self.sent.iter().position(|(_, sent)| sent.trim() == text.trim()) {
+                    if let Some((typed, _)) = self.sent.remove(at) {
                         match held {
                             Some(held) => held.push(Event::Steered(typed)),
                             None => self.deliver(Event::Steered(typed)),
@@ -854,9 +857,16 @@ impl Pump<'_> {
         let mut held: Vec<Event> = Vec::new();
         let mut ended: Option<Ended> = None;
         let answer = loop {
+            let Self { reader, raw, steer, .. } = &mut *self;
+            let steer = steer.as_mut().map(|s| &mut s.rx);
+            // A message typed while a question waits goes to the CLI as well: it has it at its next step.
             let line = tokio::select! {
                 d = &mut decision => break Some(d),
-                read = self.reader.read_until(b'\n', &mut self.raw) => self.take_line(read),
+                read = reader.read_until(b'\n', raw) => self.take_line(read),
+                typed = next_steer(steer) => {
+                    self.steer_in(typed);
+                    continue;
+                }
             };
             let Line::Events(events) = line else {
                 ended = Some(Ended::Eof);
@@ -912,6 +922,11 @@ impl Pump<'_> {
                 if let Some(Signal::Failed(message)) = self.absorb(event, None) {
                     return Ok(Ended::Failed(message));
                 }
+            }
+            // The answer is in while a message the CLI has not taken sits in its pipe: stop now,
+            // so the CLI is not given the time to start on it (see `run_child`).
+            if self.finished.is_some() && !self.sent.is_empty() {
+                break;
             }
             while let Some(req) = self.queue.pop_front() {
                 match self.ask(req).await {
@@ -1072,7 +1087,7 @@ async fn run_child(
     let stderr = collect_stderr(child.stderr.take());
 
     let mut plan = None;
-    let ended = Pump {
+    let mut pump = Pump {
         backend,
         reader: BufReader::new(stdout),
         raw: Vec::new(),
@@ -1085,9 +1100,13 @@ async fn run_child(
         queue: VecDeque::new(),
         steer: steer.filter(|_| backend.steerable()),
         sent: VecDeque::new(),
-    }
-    .run()
-    .await;
+    };
+    let ended = pump.run().await;
+    // Messages written to the CLI that it never took before the answer: they are still the
+    // person's to run, so the CLI must not start on them now (it would read them from the pipe
+    // and the next turn would run them a second time).
+    let not_taken = !pump.sent.is_empty();
+    drop(pump);
     let classified = |message: String| TurnError::new(backend.classify_error(&message), message);
     match ended {
         Err(Idle) => {
@@ -1098,6 +1117,12 @@ async fn run_child(
         Ok(Ended::Failed(message)) => {
             let _ = child.start_kill();
             Err(classified(message))
+        }
+        Ok(Ended::Finished(finish)) if not_taken => {
+            // Dropping `group` kills everything the CLI started as well.
+            let _ = child.start_kill();
+            let _ = reap(&mut child).await;
+            judge(finish, plan)
         }
         Ok(Ended::Finished(finish)) => {
             if reap(&mut child).await.is_some() {
@@ -1730,6 +1755,49 @@ mod tests {
         let (result, taken) = steered_turn(script, &[], &|t| Some(t.to_string())).await;
         assert!(result.is_ok());
         assert!(taken.is_empty(), "{taken:?}");
+    }
+
+    #[tokio::test]
+    async fn a_message_the_cli_never_echoes_does_not_hide_the_ones_after_it() {
+        // Takes `b` into the turn but never reports `a`.
+        let script = "read prompt; while read line; do case \"$line\" in MSG:GO) echo FIN:done; exit 0;; MSG:b) echo ECHO:b;; esac; done";
+        let (result, taken) = steered_turn(script, &["a", "b", "GO"], &|t| Some(t.to_string())).await;
+        assert!(result.is_ok());
+        assert_eq!(taken, vec!["b".to_string()]);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn the_cli_is_stopped_at_once_when_a_message_was_not_taken_so_it_runs_only_once_later() {
+        let mark = std::env::temp_dir().join(format!("jev-steer-mark-{}", std::process::id()));
+        let _ = std::fs::remove_file(&mark);
+        // Answers, then (after the time a model needs to start) would read the message left in the pipe and act on it.
+        let script: &'static str = Box::leak(format!("read prompt; sleep 0.3; echo FIN:done; sleep 0.5; read line; touch {}", mark.display()).into_boxed_str());
+        let (result, taken) = steered_turn(script, &["run the tests"], &|t| Some(t.to_string())).await;
+        assert_eq!(result.unwrap().text, "done");
+        assert!(taken.is_empty());
+        tokio::time::sleep(Duration::from_millis(800)).await;
+        assert!(!mark.exists(), "the CLI acted on a message that stays in the person's queue");
+    }
+
+    #[tokio::test]
+    async fn typing_does_not_keep_a_silent_cli_alive() {
+        let (tx, rx) = mpsc::unbounded_channel();
+        let feeder = tokio::spawn(async move {
+            for i in 0..40 {
+                if tx.send(format!("message {i}")).is_err() {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+        });
+        let mut on_event = |_: &Event| {};
+        let prepare = |t: &str| Some(t.to_string());
+        let started = std::time::Instant::now();
+        let out = run_turn_steered(&Steerable("read prompt; sleep 30"), &req(), Duration::from_millis(700), &mut on_event, &NoApprover, Some(Steering { rx, prepare: &prepare })).await;
+        feeder.abort();
+        assert!(matches!(out, Err(ref e) if e.kind == ErrorKind::Stalled), "{out:?}");
+        assert!(started.elapsed() < Duration::from_millis(2500), "typing kept it waiting: {:?}", started.elapsed());
     }
 
     #[tokio::test]

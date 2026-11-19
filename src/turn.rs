@@ -1044,7 +1044,11 @@ impl Engine {
                 *before = self.snapshot_tree(cancel, true).await;
             }
             ui.route_facts(&chosen.facts);
-            let attempt = self.run_attempt(chosen, &with_steered(prompt, &steered), ui, cancel).await;
+            // What was added during an earlier attempt goes to the next model only if the policy
+            // lets that model have it.
+            let provider = chosen.spec.provider;
+            let allowed: Vec<String> = steered.iter().filter(|t| self.guards.text_permitted(&self.dir, t, provider)).cloned().collect();
+            let attempt = self.run_attempt(chosen, &with_steered(prompt, &allowed), ui, cancel).await;
             steered.extend(attempt.steered.iter().cloned());
             self.turn_activity.add_tools(&attempt.tools);
             self.log_attempt(&attempt, &jev, attempts, &notes);
@@ -1055,7 +1059,7 @@ impl Engine {
                 }
             }
             if attempt.cancelled {
-                return self.cancelled_report(prompt, Some(&attempt), attempts, ui);
+                return self.cancelled_report(&with_steered(prompt, &steered), Some(&attempt), attempts, ui);
             }
             let err = match attempt.result.clone() {
                 Ok(out) => return self.finish(&with_steered(prompt, &steered), attempt, out, attempts),
@@ -1100,7 +1104,7 @@ impl Engine {
                         will_retry: false,
                         text: &message,
                     });
-                    self.record_failed(prompt, &attempt, &err);
+                    self.record_failed(&with_steered(prompt, &steered), &attempt, &err);
                     return TurnReport {
                         provider: Some(spec.provider),
                         model: Some(spec.id.to_string()),
