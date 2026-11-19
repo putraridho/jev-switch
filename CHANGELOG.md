@@ -4,11 +4,12 @@ See [docs/changelog-guide.md](docs/changelog-guide.md) for changelog formatting,
 
 ## Unreleased
 
+### Fixes
+- **`/compact` works when the old session is full.** The summary is now requested in a fresh, read-only CLI session from a size-limited copy of the recorded conversation (tool summaries included), so it no longer depends on the old session having room left. A history over the limit keeps its beginning and its most recent part, with the omitted middle marked. If no summary comes back, the original conversation and its saved session are left intact.
+- **Bounded test concurrency.** Tests default to eight harness threads instead of 24, and the 30-round Git regression uses four workers instead of spawning all 30 at once, reducing open-file pressure that could fail Git-backed tests.
+
 ### Development
 - **Audit log shows what a long turn did.** Each `turn` line in `audit.jsonl` now also records `cached_tokens` (the cached share of `in_tokens`), `context_tokens` (the size of the last request, when the CLI reports it) and `tool_calls`, so a slow turn can be told apart: many tool calls over a growing context, or a cold cache. Older lines still read, with these as 0.
-
-### Fixes
-- **Bounded test concurrency.** Tests default to eight harness threads instead of 24, and the 30-round Git regression uses four workers instead of spawning all 30 at once, reducing open-file pressure that could fail Git-backed tests.
 
 ## 1.5.0
 
