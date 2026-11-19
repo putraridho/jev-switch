@@ -2,10 +2,11 @@
 
 ## Unreleased
 
-- The local settings check switches your `settings.local.json` off only when git says "dubious
-  ownership" (or the file is committed); other git errors no longer do.
+- The local settings check no longer switches your `settings.local.json` off for harmless git
+  failures (not under git, a locked index, a missing folder); a committed file, "dubious
+  ownership" or any other git failure still does.
 - `--every` takes at most 365 days.
-- `ext install` refuses a package file that is, or sits behind, a symbolic link.
+- `ext install` refuses a package file or manifest that is, or sits behind, a symbolic link.
 
 - **`jev-claude` attaches the delegate tool.** Claude Code gets the MCP server `jev`
   (`delegate`, `show_diff`, `merge`, `discard`), so it can hand pieces of a task to workers on your

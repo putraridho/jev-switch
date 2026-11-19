@@ -113,6 +113,10 @@ fn reject_links(source: &Path, rel: &Path, shown: &str) -> Result<(), MarketErro
 
 fn read_manifest(dir: &Path) -> Result<Manifest, MarketError> {
     let file = dir.join(MANIFEST);
+    // The manifest holds the checksums: it must be the package's own file.
+    if std::fs::symlink_metadata(&file).is_ok_and(|m| m.file_type().is_symlink()) {
+        return fail(format!("{} is a symbolic link; it must be a file of the package", file.display()));
+    }
     let text = std::fs::read_to_string(&file).map_err(|e| MarketError(format!("{}: {e}", file.display())))?;
     let manifest: Manifest = serde_json::from_str(&text).map_err(|e| MarketError(format!("{}: {e}", file.display())))?;
     if !valid_name(&manifest.name) {
@@ -376,6 +380,19 @@ mod tests {
         std::os::unix::fs::symlink(root.join("elsewhere"), src.join("commands")).unwrap();
         let done = install(&user, &src);
         assert!(done.as_ref().is_err_and(|e| e.0.contains("symbolic link")), "{done:?}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn install_refuses_a_manifest_that_is_a_link() {
+        let root = temp("manifest-link");
+        let (src, user) = (root.join("src"), root.join("cfg"));
+        package(&src, "1.0.0", "say hello");
+        std::fs::rename(src.join(MANIFEST), root.join("elsewhere.json")).unwrap();
+        std::os::unix::fs::symlink(root.join("elsewhere.json"), src.join(MANIFEST)).unwrap();
+        let done = install(&user, &src);
+        assert!(done.as_ref().is_err_and(|e| e.0.contains("symbolic link")), "{done:?}");
+        assert!(installed_dirs(&user).is_empty());
     }
 
     #[test]

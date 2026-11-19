@@ -68,7 +68,7 @@ fn interval(text: &str) -> Result<Duration, ScheduleError> {
     let usage = || ScheduleError(format!("`{text}` is not a schedule: use an interval like 30s, 10m, 2h, 1d or a five-field cron expression"));
     let split = text.find(|c: char| !c.is_ascii_digit()).ok_or_else(usage)?;
     let (digits, unit) = text.split_at(split);
-    let too_long = || ScheduleError(format!("`{text}` is too long an interval"));
+    let too_long = || ScheduleError(format!("`{text}` is too long: an interval is at most 365 days"));
     let n: u64 = digits.parse().map_err(|_| if digits.is_empty() { usage() } else { too_long() })?;
     let seconds = match unit {
         "s" => 1,
@@ -220,7 +220,8 @@ mod tests {
         assert!("999999999999999999d".parse::<Schedule>().is_err());
         assert!("18446744073709551615s".parse::<Schedule>().is_err());
         assert!("365d".parse::<Schedule>().is_ok());
-        assert!("366d".parse::<Schedule>().is_err());
+        let err = "400d".parse::<Schedule>().unwrap_err();
+        assert!(err.to_string().contains("at most 365 days"), "{err}");
         assert!("99999999999999999999d".parse::<Schedule>().is_err());
     }
 

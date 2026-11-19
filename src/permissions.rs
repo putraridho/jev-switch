@@ -18,10 +18,10 @@ use serde_json::{json, Map, Value};
 pub const LOCAL_SETTINGS: &str = ".claude/settings.local.json";
 
 /// Whether the project's local settings must be treated as not the user's own: committed to
-/// the repository, or in a folder git refuses as owned by someone else ("dubious ownership",
-/// the likeliest place for a shipped settings file). Any other git failure (a locked index, a
-/// missing folder, no git program, not a repository) leaves the file as the user's own, so a
-/// passing error does not switch their rules off.
+/// the repository, or git failed in a way that could be the repository's doing (a folder owned
+/// by someone else, "dubious ownership", or a damaged index). Only the failures below, which
+/// say nothing about the repository, leave the file as the user's own: not under git at all, a
+/// locked index (another git running), a missing folder, or no git program.
 pub(crate) fn local_settings_tracked(project: &Path) -> bool {
     let output = std::process::Command::new("git")
         .arg("-C")
@@ -36,12 +36,15 @@ pub(crate) fn local_settings_tracked(project: &Path) -> bool {
     }
 }
 
+/// What git says when it fails for a reason that is not the repository's doing.
+const HARMLESS_GIT_FAILURES: [&str; 3] = ["not a git repository", "index.lock", "cannot change to"];
+
 /// The decision of [`local_settings_tracked`] from git's exit code and what it said.
 fn tracked_from_git(code: Option<i32>, stderr: &str) -> bool {
     match code {
         Some(0) => true,
         Some(1) => false,
-        _ => stderr.contains("dubious ownership"),
+        _ => !HARMLESS_GIT_FAILURES.iter().any(|text| stderr.contains(text)),
     }
 }
 
@@ -1547,10 +1550,12 @@ mod tests {
         assert!(!tracked_from_git(Some(1), "error: pathspec did not match"));
         assert!(!tracked_from_git(Some(128), "fatal: not a git repository (or any of the parent directories): .git"));
         assert!(tracked_from_git(Some(128), "fatal: detected dubious ownership in repository at '/x'"));
+        assert!(tracked_from_git(Some(128), "fatal: index file corrupt"));
+        assert!(tracked_from_git(Some(128), "fatal: unsafe repository ('/x' is owned by someone else)"));
         // A passing failure does not switch the person's own rules off.
         assert!(!tracked_from_git(Some(128), "fatal: Unable to create '/x/.git/index.lock': File exists."));
         assert!(!tracked_from_git(Some(128), "fatal: cannot change to '/gone': No such file or directory"));
-        assert!(!tracked_from_git(None, ""));
+        assert!(tracked_from_git(None, ""), "git killed by a signal says nothing: not the person's own");
     }
 
     use super::*;
