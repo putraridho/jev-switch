@@ -595,7 +595,9 @@ impl Drop for Ticker {
 impl Inner {
     /// Columns right now: what the terminal reports, else the configured width.
     fn width(&self) -> usize {
-        self.screen.as_ref().and_then(|s| s.columns()).unwrap_or(self.cfg.width).max(1)
+        let cols = self.screen.as_ref().and_then(|s| s.columns()).unwrap_or(self.cfg.width).max(1);
+        // The front end's chat pane may be narrower than the terminal.
+        terminal::width_cap().map_or(cols, |cap| cols.min(cap)).max(1)
     }
 
     /// Remove the live area (status line and field) from the screen; it is redrawn after the
@@ -781,7 +783,15 @@ impl Inner {
         let Some(text) = self.pending_text.take() else { return };
         self.flush_run();
         let (style, width) = (self.cfg.out_style, self.width());
-        let shown = if narration {
+        let shown = if narration && !show_narration() {
+            // Between tool calls only the calls show; what the model said lives on the
+            // working row for as long as it is the latest thing.
+            let latest = uifmt::strip_ansi(&text).lines().rev().map(str::trim).find(|l| !l.is_empty()).unwrap_or_default().to_string();
+            if !latest.is_empty() {
+                self.set_activity(&latest);
+            }
+            return;
+        } else if narration {
             self.step(uifmt::narration(&text, style, width))
         } else if let Some(route) = self.last_route.as_ref().filter(|_| attribution_gutter_enabled()) {
             // The answer says who wrote it, so a mid-session switch shows at a glance.
@@ -789,8 +799,11 @@ impl Inner {
             uifmt::ProviderTheme::from_env(style).attributed_answer(&[(route.provider.as_str(), route.model.as_str())], &laid_out)
         } else {
             // On the interactive screen the answer shares the margin of the rows around it.
-            let margin = if self.front.is_some() { 2 } else { 0 };
-            uifmt::answer_block(&uifmt::answer_text(&text, style, width.saturating_sub(margin)), margin)
+            if self.front.is_some() {
+                uifmt::answer_panel(&uifmt::answer_text(&text, style, width.saturating_sub(4)), style)
+            } else {
+                uifmt::answer_block(&uifmt::answer_text(&text, style, width), 0)
+            }
         };
         self.fresh_turn = false;
         self.emit_out(&shown);
@@ -841,11 +854,18 @@ impl Inner {
                     // with the turn.
                     let latest = uifmt::strip_ansi(t).lines().rev().map(str::trim).find(|l| !l.is_empty()).unwrap_or_default().to_string();
                     self.set_activity(&if latest.is_empty() { "Thinking".to_string() } else { format!("Thinking · {latest}") });
+                    // A one-line trace stays behind, so the scrollback shows that it thought.
+                    if !latest.is_empty() {
+                        let row = uifmt::truncate_to_width(&format!("  {} {}", style.dim("✻"), style.dim(&style.italic(&latest))), width);
+                        self.fresh_turn = false;
+                        self.emit_err(&row);
+                    }
                 }
             }
-            Event::Edit { removed, added, .. } => {
+            Event::Edit { path, removed, added } => {
                 self.flush_run();
-                let preview = uifmt::edit_preview(removed, added, style, width);
+                let start = edit_start_line(&self.cfg.project, path, removed, added);
+                let preview = uifmt::edit_preview_at(removed, added, start, style, width);
                 self.emit_err(&preview);
             }
             Event::ToolResult { ok, text } => {
@@ -937,6 +957,27 @@ impl Inner {
 /// `JEV_SHOW_THINKING=1` prints the model's reasoning into the scrollback as it comes.
 fn show_thinking() -> bool {
     std::env::var("JEV_SHOW_THINKING").is_ok_and(|v| !v.is_empty() && v != "0")
+}
+
+/// The line an edit starts at, found by reading the file (never writing it): where the text
+/// being replaced is now, or where the new text is when the edit has already landed. `None`
+/// when neither is there (a new file, a path outside the project, a file too large to scan).
+fn edit_start_line(project: &std::path::Path, path: &str, removed: &[String], added: &[String]) -> Option<usize> {
+    let file = std::path::Path::new(path);
+    let full = if file.is_absolute() { file.to_path_buf() } else { project.join(file) };
+    if std::fs::metadata(&full).ok()?.len() > 2_000_000 {
+        return None;
+    }
+    let text = std::fs::read_to_string(&full).ok()?;
+    [removed, added].into_iter().filter(|b| !b.is_empty()).find_map(|block| {
+        let needle = block.join("\n");
+        text.find(&needle).map(|at| text[..at].matches('\n').count() + 1)
+    })
+}
+
+/// `JEV_SHOW_NARRATION=1` prints what the model says between tool calls into the scrollback.
+fn show_narration() -> bool {
+    std::env::var("JEV_SHOW_NARRATION").is_ok_and(|v| !v.is_empty() && v != "0")
 }
 
 fn attribution_gutter_enabled() -> bool {

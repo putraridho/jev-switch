@@ -316,6 +316,8 @@ class World:
             "CLAUDE_BIN": self.claude,
             "FAKE_PIDS": self.pids,
             "JEV_TIMEOUT_MS": "3000",
+            # These scenarios test the inline layout; the full-screen one has its own.
+            "JEV_INLINE": "1",
         }
         env.update({k: v for k, v in extra.items() if v is not None})
         for k, v in extra.items():
@@ -901,7 +903,7 @@ def a_typed_prompt_runs_a_turn_with_tools_answer_and_summary(w):
         for part in ("in 15", "out 3"):
             if part in line:
                 raise Fail(f"token counts belong to /cost, not every turn: {line!r}")
-        if "⎿ read 1 line" not in summary:
+        if "⎿ ✓ read 1 line" not in summary:
             raise Fail(f"what the tool returned should show under it:\n{p.screen_tail()}")
         if not re.search(r"· \d+(ms|s)\b", line):
             raise Fail(f"summary line should have the elapsed time: {line!r}")
@@ -1941,6 +1943,39 @@ def workflows_shows_orchestration_and_is_in_the_menu(w):
 
 
 @scenario
+def skill_starts_lists_shows_and_completes_a_skill(w):
+    p = Pty(w, [w.repo], "skill")
+    try:
+        prompt_ready(p)
+        p.send("/skill\r")
+        p.expect("no skills yet", 10, "the empty state")
+        wait_prompt(p, 5)
+        p.send("/skill new db query the database\r")
+        p.expect("started skill /db", 10, "the new skill")
+        wait_prompt(p, 5)
+        if not os.path.exists(os.path.join(w.repo, ".jev", "skills", "db", "SKILL.md")):
+            raise Fail("the skill file should be written in the project")
+        p.send("/skill\r")
+        p.expect("skills (1)", 10, "the list")
+        shown = p.printed()
+        if "query the database" not in shown or "/skill show <name>" not in shown:
+            raise Fail(f"the list should show the description and how to use it:\n{p.screen_tail()}")
+        wait_prompt(p, 5)
+        p.send("/skill show db\r")
+        p.expect("run it: /skill db", 10, "the skill text")
+        wait_prompt(p, 5)
+        p.send("/skill ")
+        p.expect("query the database", 5, "the skill and its description in the menu")
+        p.send("\x15")
+        p.settle(0.2)
+        p.send("/skill dbb\r")
+        p.expect("Did you mean /skill db?", 10, "the near-miss suggestion")
+        quit_with_ctrl_d(p)
+    finally:
+        p.close()
+
+
+@scenario
 def the_permission_mode_carries_over_to_the_next_session(w):
     def start(args, name):
         p = Pty(w, args + [w.repo], name)
@@ -2056,6 +2091,41 @@ def the_terminal_is_restored_when_the_program_ends(w):
         wait_prompt(p, 25, "the prompt after a slow turn")
         quit_with_ctrl_d(p)
         raw = p.raw.decode("utf-8", "replace")
+        if raw.rfind("\x1b[?25l") > raw.rfind("\x1b[?25h"):
+            raise Fail("the cursor was left hidden at exit")
+    finally:
+        p.close()
+
+
+@scenario
+def full_screen_draws_chat_box_and_sidebar_and_leaves_the_terminal_clean(w):
+    """Without JEV_INLINE the app takes the alternate screen: the chat on top, the box under
+    it, the side panel as a full-height column (beside it when wide); the wheel and PageUp are
+    read; and the alternate screen and the mouse are given back at exit. The tiny emulator
+    does not know absolute cursor moves, so this reads the bytes written."""
+    p = Pty(w, [w.repo], "fullscreen", env=w.env(JEV_INLINE=None), cols=130, rows=34)
+    try:
+        p.expect("Ask anything", 15, "the box")
+        p.send("explain the code quick\r")
+        p.expect(ANSWER, 20, "the answer in the chat pane")
+        p.settle(0.5)
+        raw = p.raw.decode("utf-8", "replace")
+        for needle, what in (("\x1b[?1049h", "the alternate screen"), ("\x1b[?1000h", "mouse reporting"), ("\x1b[1;1H", "rows drawn in place"), ("Router", "the side panel")):
+            if needle not in raw:
+                raise Fail(f"full screen should use {what} ({needle!r}):\n{p.tail()}")
+        # PageUp and the wheel are keys the app reads, not text in the box.
+        p.send("\x1b[5~")
+        p.send("\x1b[<64;10;10M")
+        p.settle(0.4)
+        if "[5~" in p.printed().split(ANSWER)[-1] or "64;10;10" in p.printed().split(ANSWER)[-1]:
+            raise Fail("PageUp or the wheel was typed into the box")
+        p.send("\x04")
+        code = p.wait_exit(10)
+        if code != 0:
+            raise Fail(f"Ctrl-D should exit with 0, got {code}")
+        raw = p.raw.decode("utf-8", "replace")
+        if raw.rfind("\x1b[?1049l") < raw.rfind("\x1b[?1049h"):
+            raise Fail("the alternate screen was not left at exit")
         if raw.rfind("\x1b[?25l") > raw.rfind("\x1b[?25h"):
             raise Fail("the cursor was left hidden at exit")
     finally:
@@ -2279,7 +2349,7 @@ def the_input_box_stays_under_the_working_row_for_the_whole_turn(w):
         rows = [r for r in p.vt.screen() if r.strip()]
         work = [i for i, r in enumerate(rows) if "esc to stop" in r]
         box = [i for i, r in enumerate(rows) if r.startswith("╭")]
-        if not work or not box or box[-1] != work[-1] + 1:
+        if not work or not box or [b for b in box if b > work[-1]][:1] != [work[-1] + 1]:
             raise Fail(f"the box should sit right under the working row:\n{p.screen_tail()}")
         if "enter queue · esc stop" not in rows[-1]:
             raise Fail(f"the footer should say what Enter and Esc do now:\n{p.screen_tail()}")
@@ -2336,20 +2406,91 @@ def backslash_enter_adds_a_line_and_bang_runs_a_shell_command(w):
         p.close()
 
 
+def jobs_wanted():
+    """How many scenarios run at once: `JEV_PTY_JOBS`, else 4 (or fewer on a small machine).
+    Every scenario has its own home, repo and terminal, so they do not share anything."""
+    try:
+        return max(1, int(os.environ["JEV_PTY_JOBS"]))
+    except (KeyError, ValueError):
+        return max(1, min(4, os.cpu_count() or 1))
+
+
+def pass_cache():
+    """The scenarios that already passed on this exact binary: `target/pty-pass-<binary hash>/`
+    holds one file per scenario, keyed by a hash of its source. Another build starts empty.
+    `JEV_PTY_FRESH=1` ignores it. (A change to a helper above the scenarios is not seen: use it.)"""
+    import hashlib
+    import inspect
+
+    with open(BIN, "rb") as f:
+        binary = hashlib.sha256(f.read()).hexdigest()[:16]
+    root = os.path.join(ROOT, "target", f"pty-pass-{binary}")
+    os.makedirs(root, exist_ok=True)
+    # Old builds' caches would pile up: keep only this binary's.
+    for d in os.listdir(os.path.join(ROOT, "target")):
+        if d.startswith("pty-pass-") and d != os.path.basename(root):
+            shutil.rmtree(os.path.join(ROOT, "target", d), ignore_errors=True)
+
+    def key(fn):
+        return os.path.join(root, hashlib.sha256((fn.__name__ + inspect.getsource(fn)).encode()).hexdigest()[:16])
+
+    return key
+
+
+def run_parallel(selected, jobs):
+    """Each scenario in its own process (`=name` selects exactly one), `jobs` at a time; the
+    results print in the scenario order, as a serial run would."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    def one(fn):
+        started = time.time()
+        r = subprocess.run([sys.executable, "-I", os.path.abspath(__file__), "=" + fn.__name__], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, env={**os.environ, "JEV_PTY_JOBS": "1"})
+        return fn, r.returncode, r.stdout, time.time() - started
+
+    key = pass_cache()
+    fresh = os.environ.get("JEV_PTY_FRESH", "") not in ("", "0")
+    skipped = [] if fresh else [fn for fn in selected if os.path.exists(key(fn))]
+    todo = [fn for fn in selected if fn not in skipped]
+    failures = 0
+    with ThreadPoolExecutor(max_workers=jobs) as pool:
+        for fn, code, out, took in pool.map(one, todo):
+            if code == 0:
+                open(key(fn), "w").close()
+            lines = [l for l in out.splitlines() if l.strip() and "scenarios passed" not in l]
+            if code == 0:
+                print(lines[0] if lines else f"ok    {fn.__name__.replace('_', ' ')} ({took:.1f}s)")
+            else:
+                failures += 1
+                print("\n".join(lines) or f"FAIL  {fn.__name__.replace('_', ' ')}\n      exit {code}")
+            sys.stdout.flush()
+    note = f" ({len(skipped)} unchanged since they last passed on this build; JEV_PTY_FRESH=1 runs them)" if skipped else ""
+    print(f"\n{len(selected) - failures}/{len(selected)} scenarios passed{note}")
+    return 1 if failures else 0
+
+
 def main():
     if not os.path.exists(BIN):
         print(f"missing {BIN}: run `cargo build --bin code` first", file=sys.stderr)
         return 2
     wanted = sys.argv[1:]
+    exact = [w[1:] for w in wanted if w.startswith("=")]
+    if exact:
+        wanted = []
+    selected = [
+        fn
+        for fn in SCENARIOS
+        if (exact and fn.__name__ in exact)
+        or (not exact and (not wanted or any(w in fn.__name__ or w in fn.__name__.replace("_", " ") for w in wanted)))
+    ]
+    jobs = jobs_wanted()
+    if len(selected) > 1 and jobs > 1:
+        return run_parallel(selected, jobs)
     jev, url = start_jev()
     signal.signal(signal.SIGALRM, on_alarm)
     failures = 0
     ran = 0
-    for fn in SCENARIOS:
+    for fn in selected:
         name = fn.__name__.replace("_", " ")
-        # A filter matches the function name or the name as printed (`typed prompt`).
-        if wanted and not any(w in fn.__name__ or w in name for w in wanted):
-            continue
         ran += 1
         world = World(url, fn.__name__[:12])
         started = time.time()

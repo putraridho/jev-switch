@@ -9,7 +9,7 @@ use std::path::PathBuf;
 use std::pin::Pin;
 use std::time::{Duration, Instant};
 
-use crossterm::event::{Event, EventStream, KeyboardEnhancementFlags, PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags};
+use crossterm::event::{Event, EventStream, MouseEventKind, KeyboardEnhancementFlags, PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags};
 use crossterm::{execute, terminal};
 use futures_util::StreamExt;
 use tokio::sync::mpsc;
@@ -70,6 +70,13 @@ fn keys_on() -> std::io::Result<()> {
     terminal::enable_raw_mode()?;
     pick_background();
     let mut out = std::io::stdout();
+    if FULLSCREEN.load(std::sync::atomic::Ordering::SeqCst) {
+        use std::io::Write;
+        out.write_all(super::screen::FULL_ON.as_bytes())?;
+        out.write_all(b"\x1b[2J")?;
+        out.flush()?;
+        crate::terminal::note_alt_screen(true);
+    }
     execute!(out, crossterm::event::EnableBracketedPaste)?;
     // Inside tmux or on a console the request could be printed instead of understood.
     if term_env().keyboard_protocol() {
@@ -98,6 +105,12 @@ fn term_env() -> crate::termenv::TermEnv {
 /// Put the keyboard back as a command or the shell expects it.
 fn keys_off() {
     let mut out = std::io::stdout();
+    if FULLSCREEN.load(std::sync::atomic::Ordering::SeqCst) {
+        use std::io::Write;
+        let _ = out.write_all(crate::terminal::LEAVE_ALT_SCREEN);
+        let _ = out.flush();
+        crate::terminal::note_alt_screen(false);
+    }
     if crate::terminal::note_keyboard_protocol(false) {
         let _ = execute!(out, PopKeyboardEnhancementFlags);
     }
@@ -117,6 +130,65 @@ impl Drop for KeyModes {
 
 fn width() -> usize {
     terminal::size().map(|(w, _)| usize::from(w)).unwrap_or_else(|_| crate::terminal::width())
+}
+
+/// The full-screen layout is on: the app keeps the conversation and draws the whole terminal
+/// (alternate screen, chat pane, input box, full-height side panel).
+static FULLSCREEN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Full screen on a terminal, unless `JEV_INLINE=1` asks for the conversation to go into the
+/// terminal's own scrollback instead.
+fn fullscreen_wanted() -> bool {
+    use std::io::IsTerminal;
+    std::io::stdout().is_terminal() && std::env::var("JEV_INLINE").map_or(true, |v| v.is_empty() || v == "0")
+}
+
+/// Terminal columns and rows.
+fn size() -> (usize, usize) {
+    terminal::size().map(|(w, h)| (usize::from(w), usize::from(h))).unwrap_or_else(|_| (crate::terminal::width(), 24))
+}
+
+/// The columns text is laid out in: the chat pane when the side panel has its own column.
+fn text_width(app: &App) -> usize {
+    let cols = size().0;
+    if app.fullscreen {
+        let w = cols.saturating_sub(1).max(20);
+        if w >= crate::workstation::panel::SPLIT_MIN_WIDTH { w - crate::workstation::panel::PANEL_WIDTH - 3 } else { w }
+    } else {
+        cols
+    }
+}
+
+/// What the screen shows now.
+fn frame(app: &mut App, style: Style) -> view::Frame {
+    let (cols, rows) = size();
+    if app.fullscreen {
+        crate::terminal::set_width_cap(Some(text_width(app)));
+        let (frame, pane) = view::render_full(app, cols, rows, Instant::now(), style);
+        app.pane_rows = pane;
+        frame
+    } else {
+        view::render(app, cols, Instant::now(), style)
+    }
+}
+
+fn draw(screen: &mut Screen<std::io::Stdout>, app: &mut App, style: Style) {
+    let f = frame(app, style);
+    if app.fullscreen {
+        screen.draw_full(&f);
+    } else {
+        screen.draw(&f);
+    }
+}
+
+/// Finished output: into the conversation, or above the live area inline.
+fn show(screen: &mut Screen<std::io::Stdout>, app: &mut App, text: &str, style: Style) {
+    if app.fullscreen {
+        app.show(text);
+    } else {
+        let f = frame(app, style);
+        screen.print_above(text, &f);
+    }
 }
 
 /// The branch and how many files differ from it, `main ±3`; `None` outside a repository.
@@ -197,6 +269,7 @@ type Done = (Repl, Stops, Flow);
 /// Run the interactive session until the person quits. Returns the exit code.
 pub async fn run(repl: Repl, mut rx: mpsc::UnboundedReceiver<FrontMsg>, opts: Options) -> i32 {
     let style = opts.style;
+    FULLSCREEN.store(fullscreen_wanted(), std::sync::atomic::Ordering::SeqCst);
     let _modes = match keys_on() {
         Ok(()) => KeyModes,
         Err(e) => {
@@ -212,6 +285,7 @@ pub async fn run(repl: Repl, mut rx: mpsc::UnboundedReceiver<FrontMsg>, opts: Op
     let mut workers_read = Instant::now();
     let tracked = lineedit::tracked_files(&project);
     let mut app = App::new(project.clone(), History::load(opts.history.as_deref()), repl.engine.mode(), route_label(&repl), tracked);
+    app.fullscreen = FULLSCREEN.load(std::sync::atomic::Ordering::SeqCst);
     refresh(&mut app, &repl);
     let (keymap, problems) = crate::workstation::keymap::load();
     app.keymap = keymap;
@@ -253,7 +327,7 @@ pub async fn run(repl: Repl, mut rx: mpsc::UnboundedReceiver<FrontMsg>, opts: Op
             }
         }
         if !app.suspended {
-            screen.draw(&view::render(&app, width(), Instant::now(), style));
+            draw(&mut screen, &mut app, style);
         }
 
         let mut actions = tokio::select! {
@@ -272,10 +346,20 @@ pub async fn run(repl: Repl, mut rx: mpsc::UnboundedReceiver<FrontMsg>, opts: Op
                 Some(Ok(Event::Resize(w, _))) if w == 0 => Vec::new(),
                 Some(Ok(Event::Resize(w, _))) => {
                     let w = usize::from(w);
-                    if w < last_width {
+                    if app.fullscreen {
+                        screen.forget();
+                    } else if w < last_width {
                         screen.resized(w);
                     }
                     last_width = w;
+                    Vec::new()
+                }
+                Some(Ok(Event::Mouse(m))) => {
+                    match m.kind {
+                        MouseEventKind::ScrollUp => app.scroll_chat(3),
+                        MouseEventKind::ScrollDown => app.scroll_chat(-3),
+                        _ => {}
+                    }
                     Vec::new()
                 }
                 Some(Ok(_)) => Vec::new(),
@@ -340,12 +424,25 @@ pub async fn run(repl: Repl, mut rx: mpsc::UnboundedReceiver<FrontMsg>, opts: Op
     };
 
     // Let the session print what it still has (a save error), then hand the terminal back.
+    let mut late = Vec::new();
     while let Ok(FrontMsg::Print(text)) = rx.try_recv() {
-        screen.print_above(&text, &view::Frame { rows: Vec::new(), cursor: None });
+        late.push(text);
     }
-    screen.erase();
-    drop(events);
-    keys_off();
+    if app.fullscreen {
+        // The alternate screen is about to go: what is left to say goes on the real one.
+        drop(events);
+        keys_off();
+        for text in late {
+            println!("{text}");
+        }
+    } else {
+        for text in late {
+            screen.print_above(&text, &view::Frame { rows: Vec::new(), cursor: None });
+        }
+        screen.erase();
+        drop(events);
+        keys_off();
+    }
     if let Some((mut repl, _)) = idle {
         if let Err(e) = repl.engine.save_now() {
             eprintln!("  could not save the session: {e}");
@@ -370,7 +467,8 @@ fn start(idle: &mut Option<(Repl, Stops)>, line: &str, style: Style, screen: &mu
     app.suggestion = None;
     let first = app.sent == 0;
     app.sent += 1;
-    screen.print_above(&crate::uifmt::sent_block(line, first, style, width()), &view::render(app, width(), Instant::now(), style));
+    let block = crate::uifmt::sent_block(line, first, style, text_width(app));
+    show(screen, app, &block, style);
     let line = line.to_string();
     Some(tokio::spawn(async move {
         let mut confirm = CardConfirm(repl.console.front());
@@ -417,14 +515,18 @@ fn carry_out(
                 next.exit = Some(0);
                 return next;
             }
-            Action::Print(text) => screen.print_above(&text, &view::render(app, width(), Instant::now(), style)),
+            Action::Print(text) => show(screen, app, &text, style),
             Action::Mode(_) => {
                 if idle.is_none() {
                     *mode_picked_during_turn = true;
                 }
             }
             Action::ClearScreen => {
-                screen.raw(crate::console::CLEAR_SCREEN);
+                if app.fullscreen {
+                    app.transcript.clear();
+                } else {
+                    screen.raw(crate::console::CLEAR_SCREEN);
+                }
                 screen.forget();
             }
             Action::Bell => screen.raw("\x07"),

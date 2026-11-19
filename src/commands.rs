@@ -118,7 +118,7 @@ pub enum Command {
     /// sent to the model: a typo must not cost a turn.
     /// `args` is the rest of the line: a custom command or recipe of that name may take it.
     Unknown { typed: String, args: String, suggestion: Option<&'static str> },
-    /// `/extensions`, `/recipe`, `/hooks`.
+    /// `/extensions`, `/recipe`, `/skill`, `/hooks`.
     Ext(ExtCmd),
 }
 
@@ -293,7 +293,7 @@ pub fn parse(line: &str) -> Command {
             _ => invalid("usage: /mcp [list | login <server>]"),
         },
         // A typo'd command must not cost a model turn; a path like `/etc/hosts` is still a prompt.
-        "/extensions" | "/recipe" | "/hooks" | "/settings" => {
+        "/extensions" | "/recipe" | "/skill" | "/hooks" | "/settings" => {
             ext::parse_command(head, rest().as_deref()).map_or(Command::Empty, |r| r.map_or_else(Command::Invalid, Command::Ext))
         }
         h if h.starts_with('/') && !h[1..].contains('/') => {

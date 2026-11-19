@@ -29,6 +29,32 @@ pub fn note_front_keys(on: bool) {
     FRONT_KEYS.store(on, Ordering::SeqCst);
 }
 
+/// Set while the front end is on the alternate screen with the mouse captured (its
+/// full-screen layout), so [`restore`] leaves both.
+static ALT_SCREEN: AtomicBool = AtomicBool::new(false);
+
+/// Record that the alternate screen was entered (`true`) or left (`false`).
+pub fn note_alt_screen(on: bool) {
+    ALT_SCREEN.store(on, Ordering::SeqCst);
+}
+
+/// Columns the console may lay text out in, when the front end shows it in a pane narrower
+/// than the terminal (the chat beside the side panel); 0 means the whole terminal.
+static WIDTH_CAP: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// Set (or with `None` clear) the width the console lays text out in.
+pub fn set_width_cap(cols: Option<usize>) {
+    WIDTH_CAP.store(cols.unwrap_or(0), Ordering::SeqCst);
+}
+
+/// The cap set by [`set_width_cap`], if any.
+pub fn width_cap() -> Option<usize> {
+    Some(WIDTH_CAP.load(Ordering::SeqCst)).filter(|c| *c > 0)
+}
+
+/// Leave the mouse modes and the alternate screen.
+pub const LEAVE_ALT_SCREEN: &[u8] = b"\x1b[?1006l\x1b[?1000l\x1b[?1049l";
+
 /// Set while the keyboard protocol is pushed (it is not asked for inside tmux, on a console
 /// or on a dumb terminal, see [`crate::termenv`]), so [`restore`] only pops what was pushed.
 static KEYBOARD_PROTOCOL: AtomicBool = AtomicBool::new(false);
@@ -109,6 +135,11 @@ impl Drop for TerminalGuard {
 /// nothing to undo.
 pub fn restore() {
     use std::io::Write;
+    if ALT_SCREEN.swap(false, Ordering::SeqCst) {
+        let mut out = std::io::stdout();
+        let _ = out.write_all(LEAVE_ALT_SCREEN);
+        let _ = out.flush();
+    }
     if FRONT_KEYS.swap(false, Ordering::SeqCst) {
         let mut out = std::io::stdout();
         let _ = out.write_all(front_restore_bytes(KEYBOARD_PROTOCOL.swap(false, Ordering::SeqCst)));

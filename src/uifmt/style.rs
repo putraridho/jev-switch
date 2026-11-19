@@ -127,6 +127,17 @@ impl Style {
     pub fn band(&self, s: &str) -> String {
         self.paint(if light_background() { "48;5;254" } else { "48;5;236" }, s)
     }
+    /// `s` on a tinted row for a diff: a muted red for what an edit takes out, a muted green
+    /// for what it puts in, a step off the background on either theme. Plain when colour is off.
+    pub fn tint(&self, added: bool, s: &str) -> String {
+        let code = match (added, light_background()) {
+            (true, false) => "48;5;22",
+            (true, true) => "48;5;194",
+            (false, false) => "48;5;52",
+            (false, true) => "48;5;224",
+        };
+        self.paint(code, s)
+    }
     /// The accent for structure (markers, the prompt, headings): readable on either
     /// background, where plain cyan washes out on light.
     pub fn accent(&self, s: &str) -> String {

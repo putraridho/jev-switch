@@ -23,7 +23,7 @@ pub struct Cmd {
     pub hint: &'static str,
 }
 
-pub const COMMANDS: [Cmd; 57] = [
+pub const COMMANDS: [Cmd; 58] = [
     Cmd { name: "/model", args: "[target]", group: Group::Model, about: "Pin a model or provider, or `auto` to let the router choose", example: "/model codex:gpt-6.1-sol", hint: "auto|codex|claude:..." },
     Cmd { name: "/provider", args: "auto|off", group: Group::Model, about: "Route across providers (auto), or use Claude only (off)", example: "/provider off", hint: "auto|off" },
     Cmd { name: "/orchestrate", args: "[on|off]", group: Group::Model, about: "Let a planner split a big task across cheaper workers", example: "/orchestrate on", hint: "on|off" },
@@ -52,6 +52,7 @@ pub const COMMANDS: [Cmd; 57] = [
     Cmd { name: "/review", args: "[focus]", group: Group::Project, about: "Review the uncommitted changes for bugs, without editing", example: "/review the parser changes", hint: "[focus]" },
     Cmd { name: "/help", args: "", group: Group::Info, about: "Show this help, or search it: /help <words>", example: "/help diff", hint: "" },
     Cmd { name: "/recipe", args: "[name args]", group: Group::Project, about: "List recipes, or run one: a saved sequence of steps, one turn each", example: "/recipe fix-tests the parser", hint: "[name] [args]" },
+    Cmd { name: "/skill", args: "[name args | show <name> | new <name>]", group: Group::Project, about: "List skills, run one, read one, or start a new one: saved know-how you call by name", example: "/skill new db query the database", hint: "[name] [args] | show <name> | new <name>" },
     Cmd { name: "/extensions", args: "", group: Group::Project, about: "List custom commands, skills, recipes and installed extensions", example: "", hint: "" },
     Cmd { name: "/hooks", args: "[trust]", group: Group::Project, about: "Show the hooks that run on tool calls; `trust` lets this project's hooks run", example: "/hooks trust", hint: "[trust]" },
     Cmd { name: "/settings", args: "", group: Group::Info, about: "Show settings from config files and profiles, and where each came from", example: "", hint: "" },

@@ -13,3 +13,4 @@ pub mod menu;
 pub mod view;
 pub mod run;
 pub mod screen;
+pub mod transcript;

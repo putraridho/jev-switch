@@ -569,6 +569,7 @@ mod tests {
             ready_providers: vec!["claude".into(), "codex".into()],
             models: vec!["codex:gpt-6.1-sol".into()],
             changed_files: vec!["src/a.rs".into()],
+            skills: Vec::new(),
         }
     }
 

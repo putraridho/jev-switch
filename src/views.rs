@@ -77,7 +77,16 @@ pub fn complete_ctx(engine: &Engine, now_ms: u64) -> CompleteCtx {
         ready_providers,
         models: usable.iter().map(|(p, m)| format!("{p}:{m}")).collect(),
         changed_files: engine.last_changes().map(|c| c.files.iter().map(|f| f.path.clone()).collect()).unwrap_or_default(),
+        skills: skill_choices(engine.dir()),
     }
+}
+
+/// The skills of this project and the user, for `/skill` completion.
+fn skill_choices(project: &std::path::Path) -> Vec<crate::uifmt::SkillChoice> {
+    let lib = crate::ext::library::Library::discover(&crate::ext::Places::from_env(project));
+    lib.of_kind(crate::ext::library::Kind::Skill)
+        .map(|e| crate::uifmt::SkillChoice { name: e.name.clone(), description: e.meta.description.clone(), hint: e.meta.hint.clone() })
+        .collect()
 }
 
 /// The facts of `/status`.

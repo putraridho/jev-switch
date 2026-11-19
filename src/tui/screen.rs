@@ -15,6 +15,8 @@ const SYNC_ON: &str = "\x1b[?2026h";
 const SYNC_OFF: &str = "\x1b[?2026l";
 const HIDE: &str = "\x1b[?25l";
 const SHOW: &str = "\x1b[?25h";
+/// The alternate screen, with the mouse reported (wheel scrolling) in the SGR encoding.
+pub const FULL_ON: &str = "\x1b[?1049h\x1b[?1000h\x1b[?1006h";
 /// Clear from the cursor to the end of the screen.
 const CLEAR_DOWN: &str = "\x1b[J";
 
@@ -34,6 +36,47 @@ pub struct Screen<W: Write> {
 impl<W: Write> Screen<W> {
     pub fn new(out: W, styled: bool) -> Self {
         Self { out, styled, rows: Vec::new(), cursor_row: 0, last: None }
+    }
+
+    /// Take the alternate screen and the mouse (the full-screen layout).
+    pub fn enter_full(&mut self) {
+        self.last = None;
+        self.write(&format!("{FULL_ON}\x1b[2J"));
+    }
+
+    /// Give the alternate screen and the mouse back.
+    pub fn leave_full(&mut self) {
+        self.last = None;
+        self.write(&format!("{SHOW}{}", String::from_utf8_lossy(crate::terminal::LEAVE_ALT_SCREEN)));
+    }
+
+    /// Draw a whole-terminal frame: every row at its own place, so nothing depends on where
+    /// the cursor was. Only the rows that differ from the last frame are written.
+    pub fn draw_full(&mut self, frame: &Frame) {
+        if self.last.as_ref() == Some(frame) {
+            return;
+        }
+        let mut buf = String::from(SYNC_ON);
+        buf.push_str(HIDE);
+        let same_shape = self.last.as_ref().is_some_and(|l| l.rows.len() == frame.rows.len());
+        if !same_shape {
+            buf.push_str("\x1b[2J");
+        }
+        for (i, row) in frame.rows.iter().enumerate() {
+            if same_shape && self.last.as_ref().and_then(|l| l.rows.get(i)) == Some(row) {
+                continue;
+            }
+            buf.push_str(&format!("\x1b[{};1H\x1b[2K{row}", i + 1));
+            if self.styled {
+                buf.push_str("\x1b[0m");
+            }
+        }
+        if let Some((r, c)) = frame.cursor {
+            buf.push_str(&format!("\x1b[{};{}H{SHOW}", r + 1, c + 1));
+        }
+        buf.push_str(SYNC_OFF);
+        self.last = Some(frame.clone());
+        self.write(&buf);
     }
 
     /// Back to the first row of the live area, at its first column.
@@ -202,6 +245,19 @@ mod tests {
 
     fn written(s: Screen<Vec<u8>>) -> String {
         String::from_utf8(s.into_inner()).unwrap_or_default()
+    }
+
+    #[test]
+    fn a_full_frame_writes_each_row_in_place_and_a_tick_rewrites_only_what_changed() {
+        let mut s = Screen::new(Vec::new(), false);
+        s.draw_full(&frame(&["chat", "box", "foot"], Some((1, 2))));
+        let before = s.out.len();
+        s.draw_full(&frame(&["chat", "box", "foot"], Some((1, 2))));
+        assert_eq!(s.out.len(), before, "nothing changed, nothing written");
+        s.draw_full(&frame(&["chat", "box", "FOOT"], Some((1, 2))));
+        let out = String::from_utf8(s.into_inner()).unwrap_or_default();
+        assert!(out.starts_with("\x1b[?2026h\x1b[?25l\x1b[2J\x1b[1;1H\x1b[2Kchat\x1b[2;1H\x1b[2Kbox\x1b[3;1H\x1b[2Kfoot\x1b[2;3H\x1b[?25h"), "{out:?}");
+        assert_eq!(&out[before..], "\x1b[?2026h\x1b[?25l\x1b[3;1H\x1b[2KFOOT\x1b[2;3H\x1b[?25h\x1b[?2026l");
     }
 
     #[test]

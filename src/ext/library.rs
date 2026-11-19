@@ -8,7 +8,7 @@
 //!   one after the other, each as its own turn, stopping at the first that does not answer.
 //!
 //! `<dir>` is searched in this order, the first definition of a name wins: the project's `.jev`
-//! (`.claude/commands` is read too, for commands people already wrote), the user's config
+//! (`.claude/commands` and `.claude/skills` are read too, for what people already wrote), the user's config
 //! folder, then the installed extensions. A name may not shadow a built-in command.
 
 use std::path::{Path, PathBuf};
@@ -76,6 +76,8 @@ pub struct Entry {
     pub origin: Origin,
     pub meta: Meta,
     pub steps: Vec<Step>,
+    /// The file it was read from.
+    pub path: PathBuf,
 }
 
 /// What running an entry asks of the session.
@@ -165,6 +167,31 @@ fn recipe_steps(body: &str, name: &str) -> Vec<Step> {
     steps
 }
 
+/// Words `/skill` reads itself, so a skill cannot be created under them.
+pub const SKILL_WORDS: [&str; 3] = ["list", "show", "new"];
+
+/// Where `/skill new <name>` puts the file.
+pub fn skill_path(places: &Places, name: &str) -> PathBuf {
+    places.project.join(".jev").join("skills").join(name).join("SKILL.md")
+}
+
+/// Start a skill in the project: a `SKILL.md` with a header and a body to fill in. Never
+/// overwrites a file that is there. Returns the path written.
+pub fn create_skill(places: &Places, name: &str, description: &str) -> Result<PathBuf, String> {
+    let path = skill_path(places, name);
+    if path.exists() {
+        return Err(format!("{} already exists", path.display()));
+    }
+    let description = description.trim().replace('\n', " ");
+    let description = if description.is_empty() { "What this skill is for, in one line".to_string() } else { description };
+    let text = format!(
+        "---\ndescription: {description}\nhint: [what to apply it to]\n---\nWrite what the agent should do when this skill is called.\n\n$ARGUMENTS is what was typed after the skill's name.\n"
+    );
+    std::fs::create_dir_all(path.parent().expect("a skill path has a folder")).map_err(|e| format!("{}: {e}", path.display()))?;
+    std::fs::write(&path, text).map_err(|e| format!("{}: {e}", path.display()))?;
+    Ok(path)
+}
+
 /// A name that can be typed after a slash: lowercase letters, digits, `-` and `_`.
 pub fn valid_name(name: &str) -> bool {
     !name.is_empty() && name.len() <= 40 && name.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '_')
@@ -195,8 +222,8 @@ fn roots(places: &Places, kind: Kind) -> Vec<Root> {
         }
     }
     roots.push(Root { dir: places.project.join(".jev").join(kind.dir()), origin: Origin::Project });
-    if kind == Kind::Command {
-        roots.push(Root { dir: places.project.join(".claude").join("commands"), origin: Origin::Project });
+    if matches!(kind, Kind::Command | Kind::Skill) {
+        roots.push(Root { dir: places.project.join(".claude").join(kind.dir()), origin: Origin::Project });
     }
     roots
 }
@@ -277,7 +304,7 @@ impl Library {
             Kind::Recipe => recipe_steps(&doc.body, name),
             Kind::Command | Kind::Skill => vec![Step { title: name.to_string(), body: doc.body }],
         };
-        self.entries.push(Entry { name: name.to_string(), kind, origin: origin.clone(), meta: doc.meta, steps });
+        self.entries.push(Entry { name: name.to_string(), kind, origin: origin.clone(), meta: doc.meta, steps, path: path.to_path_buf() });
     }
 
     pub fn find(&self, name: &str) -> Option<&Entry> {
@@ -364,5 +391,33 @@ mod tests {
         let inv = lib.find("r").unwrap().invoke("x y");
         assert_eq!(inv.label, "/r x y");
         assert_eq!(inv.prompts, vec![("One".to_string(), "do x".to_string()), ("Two".to_string(), "then x y".to_string())]);
+    }
+
+    #[test]
+    fn a_new_skill_is_written_loadable_and_never_overwritten() {
+        let root = temp("new-skill");
+        let places = Places { project: root.join("proj"), user: None };
+        let path = create_skill(&places, "db", "Query the db").unwrap();
+        assert_eq!(path, root.join("proj/.jev/skills/db/SKILL.md"));
+        let lib = Library::discover(&places);
+        let skill = lib.find("db").expect("the new skill loads");
+        assert_eq!((skill.kind, skill.meta.description.as_str(), skill.meta.hint.as_str()), (Kind::Skill, "Query the db", "[what to apply it to]"));
+        assert!(lib.problems.is_empty(), "{:?}", lib.problems);
+        let before = std::fs::read_to_string(&path).unwrap();
+        assert!(create_skill(&places, "db", "other").unwrap_err().contains("already exists"));
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), before);
+        let blank = create_skill(&places, "plain", "  ").unwrap();
+        assert!(std::fs::read_to_string(blank).unwrap().contains("description: What this skill is for"));
+    }
+
+    #[test]
+    fn claude_skills_of_the_project_are_read_after_its_own() {
+        let root = temp("claude-skills");
+        write(&root.join("proj/.claude/skills/a/SKILL.md"), "---\ndescription: from claude\n---\nbody");
+        write(&root.join("proj/.claude/skills/b/SKILL.md"), "from claude b");
+        write(&root.join("proj/.jev/skills/b/SKILL.md"), "from jev b");
+        let lib = Library::discover(&Places { project: root.join("proj"), user: None });
+        assert_eq!(lib.find("a").unwrap().meta.description, "from claude");
+        assert_eq!(lib.find("b").unwrap().steps[0].body, "from jev b");
     }
 }

@@ -4,7 +4,17 @@ See [docs/changelog-guide.md](docs/changelog-guide.md) for changelog formatting,
 
 ## Unreleased
 
+## 1.6.0
+
+A `/skill` command, and a clearer terminal UI.
+
+- `/skill` lists your skills in a table, runs one (`/skill db the users table`), shows one before you run it (`/skill show db`) and starts a new one (`/skill new db query the database`). Typing `/skill ` opens a menu of skills with their descriptions and argument hints. Skills in a project's `.claude/skills/` are read too.
 - `/help` is easier to scan: descriptions start in a narrower column, so most fit on one line instead of wrapping.
+- A failing command's output no longer repeats the line already quoted on its result row.
+- Tool calls read at a glance: the tool name is bold with an accent marker, and each result starts with a green ✓, a yellow ✗ (a command that reported failures) or a red ✗ (it failed).
+- Between tool calls only the calls show: what the model says moves to the working row, and its reasoning leaves a one-line `✻` trace. `JEV_SHOW_NARRATION=1` brings the narration back.
+- The answer has a thin accent bar down its left edge (with colour on).
+- On a terminal too narrow for the side panel, the panel (router, context, branch) now stacks under the input box instead of vanishing.
 
 ## 1.5.1
 

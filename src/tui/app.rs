@@ -172,6 +172,12 @@ pub struct App {
     pub keymap: Keymap,
     /// What the last answer offered to do next, shown dim in the empty box; Right takes it.
     pub suggestion: Option<String>,
+    /// The full-screen layout: the app keeps the conversation and draws the whole terminal.
+    pub fullscreen: bool,
+    /// The conversation, in the full-screen layout.
+    pub transcript: super::transcript::Transcript,
+    /// Rows of the chat pane at the last draw, for how far a page scrolls.
+    pub pane_rows: usize,
 }
 
 /// One subscription on the router row: its name, how much of its plan window is used, or how
@@ -223,7 +229,23 @@ impl App {
             vim: vim::enabled_from(std::env::var("JEV_VIM").ok().as_deref()).then(Vim::default),
             keymap: Keymap::default(),
             suggestion: None,
+            fullscreen: false,
+            transcript: super::transcript::Transcript::default(),
+            pane_rows: 20,
         }
+    }
+
+    /// Scroll the chat pane: positive goes back in time. A no-op inline (the terminal's own
+    /// scrollback does it).
+    pub fn scroll_chat(&mut self, by: isize) {
+        if self.fullscreen {
+            self.transcript.scroll_by(by, self.pane_rows);
+        }
+    }
+
+    /// Add finished output to the conversation (full-screen layout).
+    pub fn show(&mut self, text: &str) {
+        self.transcript.push_text(text);
     }
 
     /// The dim text after the cursor that Right would put in: the suggested next prompt in an
@@ -594,6 +616,10 @@ impl App {
             }
             KeyCode::Char('b') if ctrl(&k) => self.editor.left(),
             KeyCode::Char('f') if ctrl(&k) => self.editor.right(),
+            KeyCode::PageUp => self.scroll_chat(self.pane_rows.saturating_sub(2).max(1) as isize),
+            KeyCode::PageDown => self.scroll_chat(-(self.pane_rows.saturating_sub(2).max(1) as isize)),
+            KeyCode::End if ctrl(&k) => self.transcript.to_end(),
+            KeyCode::Home if ctrl(&k) => self.transcript.to_start(self.pane_rows),
             KeyCode::Home => self.editor.home(),
             KeyCode::End => self.editor.end(),
             KeyCode::Char('a') if ctrl(&k) => self.editor.home(),
