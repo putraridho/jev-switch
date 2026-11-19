@@ -52,6 +52,7 @@ fn arg_choices(command: &str, ctx: &CompleteCtx) -> Vec<String> {
     let words: Vec<&str> = match command {
         "/provider" => vec!["auto", "off"],
         "/orchestrate" => vec!["on", "off"],
+        "/thinking" => vec!["on", "off"],
         "/mode" => vec!["ask", "edit", "plan", "auto"],
         "/effort" => vec!["default", "auto", "low", "medium", "high"],
         "/providers" => vec!["refresh"],

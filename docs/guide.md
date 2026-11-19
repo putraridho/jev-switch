@@ -293,31 +293,47 @@ providers that are ready, named in words (`claude, codex ready`; `no provider re
 
 #### Using it
 
-Type in the box at the bottom and press Enter. The conversation goes into the terminal's own
-scrollback (scroll, search and copy work as usual); only the area under it is redrawn. Each
-kind of thing in a turn has its own look, so a glance tells them apart:
+Type in the box at the bottom and press Enter. jev-code fills the terminal: the chat on top,
+the input box under it, and a side panel (router, context, branch) as a full-height column on
+the right. Below 100 columns the panel moves under the box, as a single compact box (on a
+terminal shorter than 30 rows it shrinks to one summary row). Scroll the chat with the mouse
+wheel or PageUp/PageDown; Ctrl-Home and Ctrl-End jump to the start and the end. New output
+does not move you while you read back. Because the app draws the screen, the terminal's own
+scrollback and plain text selection do not apply: hold Shift (Option in some terminals) to
+select with the mouse. `JEV_INLINE=1` starts the inline layout instead: the conversation goes
+into the terminal's own scrollback (scroll, search and copy work as usual) and only the area
+under it is redrawn. Each kind of thing in a turn has its own look, so a glance tells them
+apart:
 
 ```
 ───────────────────────────────────────────────────────────────
 ❯ fix the empty-input crash in the parser          ← what you sent (bold), turns ruled apart
 
   ◆ codex · gpt-6.1-sol   feature · switched from claude (limit)   ← where the router sent it, and why
-  ✻ The empty case returns None; callers unwrap it…                ← the model's thinking (dim italic)
+  ✻ The empty case returns None; callers unwrap it…                ← a one-line trace of its thinking (dim italic)
 
-  Let me run the parser tests.                                     ← narration between steps
-  ⏺ Bash cargo test parser                                         ← a tool call (dim)
-    ⎿ test result: FAILED. 3 passed; 1 failed  (+2 lines)          ← what came back (yellow: it failed)
+  ⏺ Bash cargo test parser                                         ← a tool call (bold name)
+    ⎿ ✗ test result: FAILED. 3 passed; 1 failed  (+2 lines)        ← what came back: ✓ ok, ✗ yellow reported
+                                                                      failures, ✗ red failed
   ⏺ Edit src/parser.rs
     ⎿ +3 −1                                                        ← the edit as a small diff
-      - if s.is_empty() { return None; }
-      + if s.is_empty() { return Some(Token::Eof); }
+      41 - if s.is_empty() { return None; }                         ← line numbers, red and green rows
+      41 + if s.is_empty() { return Some(Token::Eof); }
   ⇉ Delegate write tests for the empty case                        ← a piece handed to a worker
     ⎿ worker w1 · gemini gemini-4-argon · done · 1 file
 
-Fixed: an empty input now yields Token::Eof.                       ← the answer (plain, set apart)
+▎ Fixed: an empty input now yields Token::Eof.                     ← the answer (an accent bar down its edge)
 
   ✓ codex · 14s · 2 files +9 −1                                    ← how it ended
 ```
+
+Between tool calls only the calls show: what the model says in between (and the last line of
+its thinking) is on the working row while it is the latest thing. `JEV_SHOW_NARRATION=1`
+prints that text into the conversation. The answer is drawn as it is written on Claude,
+DeepSeek, Gemini and Antigravity (Codex and Grok deliver it when the turn is done); the
+finished answer replaces the preview. `/thinking on` prints the model's whole reasoning for
+the turn and keeps the choice for the next session (`/thinking off` goes back to the one-line
+trace; `JEV_SHOW_THINKING=1` seeds it).
 
 Under the conversation: a working row while a model works (`⠹ Running cargo test · 12s ·
 codex · gpt-6.1-sol   esc to stop`), the input box, the router row (`⇄ auto · claude 32% ·
@@ -342,6 +358,7 @@ to change an accent, glyph or badge; truecolor, 256 and 16-colour terminals are 
 | `/model [target]`           | pin a model or provider, or `auto` to let the router choose. `target` is `auto`, `<provider>`, `<provider>:<model>` or `sonnet`/`opus`/`haiku`; with no argument, show the pin. Pins are never silently overridden |
 | `/provider auto\|off`       | route across providers (default), or Claude only                                                                                                                                                                   |
 | `/orchestrate [on\|off]`    | let a planner split a big task across cheaper workers (below)                                                                                                                                                      |
+| `/thinking [on\|off]`       | print the model's whole reasoning for the turn, or only its one-line trace; the choice is kept for the next session                                                                                               |
 | `/new`                      | start a fresh session on every provider; the saved ones stay and can be resumed                                                                                                                                    |
 | `/rename [name]`            | name this session; the footer shows the name and `/resume` lists the session by it                                                                                                                                 |
 | `/resume`                   | pick up the most recent saved session of this folder other than the running one; again, the one before                                                                                                             |

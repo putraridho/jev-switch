@@ -12,7 +12,7 @@ use super::app::App;
 use super::menu::MENU_ROWS;
 use crate::mode::Mode;
 use crate::workstation::panel::{compose, panel_rows, Section, PANEL_WIDTH, SPLIT_MIN_WIDTH};
-use crate::uifmt::{display_width,truncate_to_width, wrap_to_width, Spinner, Style};
+use crate::uifmt::{answer_panel, answer_text, display_width,truncate_to_width, wrap_to_width, Spinner, Style};
 
 /// Below the side-by-side width, the panel stacks under the box down to this width; narrower
 /// than that, the one-row router summary is all that fits.
@@ -314,7 +314,7 @@ pub fn render_full(app: &App, cols: usize, height: usize, now: Instant, style: S
         live.cursor = live.cursor.and_then(|(r, c)| r.checked_sub(cut).map(|r| (r, c)));
     }
     let chat_h = height - live.rows.len();
-    let mut left: Vec<String> = app.transcript.window(chat_h).iter().map(|l| truncate_to_width(l, main_w)).collect();
+    let mut left = chat_rows(app, main_w, chat_h, style);
     left.extend(live.rows);
     let cursor = live.cursor.map(|(r, c)| (r + chat_h, c));
     let rows = if wide {
@@ -327,6 +327,26 @@ pub fn render_full(app: &App, cols: usize, height: usize, now: Instant, style: S
         left
     };
     (Frame { rows, cursor }, chat_h)
+}
+
+/// The conversation rows for the chat pane, ending with the answer as it is being written.
+/// The preview is shown only while following the end; it never enters the transcript, and
+/// the finished answer replaces it when the turn commits.
+fn chat_rows(app: &App, width: usize, height: usize, style: Style) -> Vec<String> {
+    let preview = app.live_answer.as_deref().filter(|t| !t.trim().is_empty()).filter(|_| app.transcript.scrolled() == 0);
+    let Some(text) = preview else {
+        return app.transcript.window(height).iter().map(|l| truncate_to_width(l, width)).collect();
+    };
+    let laid = answer_panel(&answer_text(text, style, width.saturating_sub(4)), style);
+    let mut rows: Vec<String> = laid.split('\n').map(|l| truncate_to_width(l, width)).collect();
+    // A long answer keeps its newest rows, like the conversation below the fold.
+    if rows.len() > height {
+        rows.drain(..rows.len() - height);
+    }
+    let above = height - rows.len();
+    let mut all: Vec<String> = app.transcript.window(above).iter().map(|l| truncate_to_width(l, width)).collect();
+    all.extend(rows);
+    all
 }
 
 /// A usage meter, `▰▰▰▱▱▱▱▱`, filled in proportion to `pct` and coloured by how close to the
@@ -725,6 +745,23 @@ mod tests {
         assert_eq!(row, pane + 1);
         assert_eq!(col, 4);
         assert!(f.rows[row].contains("Ask anything") || f.rows[row].contains('›'), "{}", f.rows[row]);
+    }
+
+    #[test]
+    fn the_answer_being_written_is_drawn_in_the_chat_until_it_is_committed() {
+        let mut a = full_app();
+        a.live_answer = Some("Hel".into());
+        let (f, _) = render_full(&a, 140, 40, Instant::now(), OFF);
+        assert!(f.rows.join("\n").contains("Hel"));
+        // Scrolled back, the preview stays out of the way.
+        a.show(&(1..=30).map(|i| format!("l{i}")).collect::<Vec<_>>().join("\n"));
+        a.transcript.scroll_by(5, 10);
+        let (f, _) = render_full(&a, 140, 40, Instant::now(), OFF);
+        assert!(!f.rows.join("\n").contains("Hel"));
+        a.transcript.to_end();
+        a.live_answer = None;
+        let (f, _) = render_full(&a, 140, 40, Instant::now(), OFF);
+        assert!(!f.rows.join("\n").contains("Hel"));
     }
 
     #[test]

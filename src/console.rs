@@ -208,6 +208,9 @@ struct Inner {
     /// it looks: a tool call makes it narration (the model thinking aloud), the end of the
     /// turn makes it the answer, a failed attempt drops it.
     pending_text: Option<String>,
+    /// With a front: the answer as it is being written, for the live preview only. The
+    /// committed answer still comes from `pending_text` / the final `Text`.
+    live_answer: String,
     /// With a front: the tools called whose results have not come back, oldest first, so a
     /// result is worded for its tool.
     tools_waiting: std::collections::VecDeque<String>,
@@ -221,6 +224,9 @@ struct Inner {
     /// Where messages typed during the turn go to be added to it ([`Ui::steering`]); a send
     /// that fails means the turn is over.
     steer: Option<tokio::sync::mpsc::UnboundedSender<String>>,
+    /// Whether the model's whole reasoning is printed. `/thinking` sets it; the
+    /// `JEV_SHOW_THINKING` environment variable seeds it.
+    show_thinking: bool,
 }
 
 /// The terminal output. Cheap to clone; every clone writes through the same lock.
@@ -259,11 +265,13 @@ impl Console {
             queued: std::collections::VecDeque::new(),
             front: None,
             pending_text: None,
+            live_answer: String::new(),
             tools_waiting: std::collections::VecDeque::new(),
             run: Vec::new(),
             run_printed: 0,
             fresh_turn: true,
             steer: None,
+            show_thinking: show_thinking_from_env(),
         };
         Self {
             inner: Arc::new(Mutex::new(inner)),
@@ -451,6 +459,18 @@ impl Console {
 
     pub fn out_style(&self) -> Style {
         self.lock().cfg.out_style
+    }
+
+    /// Whether the model's whole reasoning is printed (otherwise only its latest line shows
+    /// on the working row).
+    pub fn show_thinking(&self) -> bool {
+        self.lock().show_thinking
+    }
+
+    /// Print the model's whole reasoning from now on, or stop. `/thinking` sets it and keeps
+    /// the choice for the next session.
+    pub fn set_show_thinking(&self, on: bool) {
+        self.lock().show_thinking = on;
     }
 
     pub fn err_style(&self) -> Style {
@@ -704,6 +724,7 @@ impl Inner {
 
     fn begin(&mut self) {
         self.fresh_turn = true;
+        self.discard_preview();
         self.run.clear();
         self.run_printed = 0;
         if let Some(front) = &self.front {
@@ -780,6 +801,9 @@ impl Inner {
 
     /// Print the held assistant text: as narration (a tool call followed it) or as the answer.
     fn flush_text(&mut self, narration: bool) {
+        // Whatever was being written is finished (or was not the answer): the preview goes
+        // before the text is laid out below.
+        self.discard_preview();
         let Some(text) = self.pending_text.take() else { return };
         self.flush_run();
         let (style, width) = (self.cfg.out_style, self.width());
@@ -843,7 +867,7 @@ impl Inner {
             }
             Event::Thinking(t) => {
                 self.flush_text(true);
-                if show_thinking() {
+                if self.show_thinking {
                     self.set_activity("Thinking");
                     let block = self.step(uifmt::thinking_block(t, style, width));
                     self.fresh_turn = false;
@@ -863,12 +887,14 @@ impl Inner {
                 }
             }
             Event::Edit { path, removed, added } => {
+                self.discard_preview();
                 self.flush_run();
                 let start = edit_start_line(&self.cfg.project, path, removed, added);
                 let preview = uifmt::edit_preview_at(removed, added, start, style, width);
                 self.emit_err(&preview);
             }
             Event::ToolResult { ok, text } => {
+                self.discard_preview();
                 let tool = self.tools_waiting.pop_front().unwrap_or_default();
                 let rows: Vec<String> = [uifmt::tool_result_row(&tool, *ok, text, style, width), uifmt::tool_output_fold(&tool, *ok, text, style, width)].into_iter().flatten().collect();
                 // A held call takes its own result; any other prints at once.
@@ -909,7 +935,27 @@ impl Inner {
                 self.flush_text(false);
                 self.pending_text = Some(t.clone());
             }
+            // The answer as it is written. Preview only: the whole text still arrives as
+            // `Event::Text` and is what gets committed.
+            Event::TextDelta(t) if self.cfg.stream_answers => {
+                self.live_answer.push_str(t);
+                if let Some(front) = &self.front {
+                    front.send(FrontMsg::AnswerDelta(t.clone()));
+                }
+            }
             _ => {}
+        }
+    }
+
+    /// Drop the answer as it was being written. Called before anything that turns the text
+    /// into something else: a tool (it was narration), a failure, a cancel, or the commit.
+    fn discard_preview(&mut self) {
+        if self.live_answer.is_empty() {
+            return;
+        }
+        self.live_answer.clear();
+        if let Some(front) = &self.front {
+            front.send(FrontMsg::AnswerReset);
         }
     }
 
@@ -952,10 +998,9 @@ impl Inner {
     }
 }
 
-/// The answer gutter and attribution header are opt-in: `JEV_CODE_GUTTER=1`. Off by default
-/// so existing users' answers (and the PTY scenarios) keep their layout.
-/// `JEV_SHOW_THINKING=1` prints the model's reasoning into the scrollback as it comes.
-fn show_thinking() -> bool {
+/// `JEV_SHOW_THINKING=1` seeds whether the model's whole reasoning is printed; `/thinking`
+/// changes it for the session and keeps the choice.
+fn show_thinking_from_env() -> bool {
     std::env::var("JEV_SHOW_THINKING").is_ok_and(|v| !v.is_empty() && v != "0")
 }
 
@@ -980,6 +1025,8 @@ fn show_narration() -> bool {
     std::env::var("JEV_SHOW_NARRATION").is_ok_and(|v| !v.is_empty() && v != "0")
 }
 
+/// The answer gutter and attribution header are opt-in: `JEV_CODE_GUTTER=1`. Off by default
+/// so existing users' answers (and the PTY scenarios) keep their layout.
 fn attribution_gutter_enabled() -> bool {
     gutter_setting(std::env::var("JEV_CODE_GUTTER").ok().as_deref())
 }
@@ -1100,6 +1147,13 @@ impl Ui for Console {
                 let text = hint_line(t, style, width);
                 g.emit_err(&text);
             }
+            // The whole reasoning, when asked for and nowhere else: it is not the answer.
+            Event::Thinking(t) if g.show_thinking => {
+                let (style, width) = (g.cfg.err_style, g.width());
+                let block = g.step(uifmt::thinking_block(t, style, width));
+                g.fresh_turn = false;
+                g.emit_err(&block);
+            }
             Event::Text(t) if g.cfg.stream_answers => {
                 let text = uifmt::answer_text(t, g.cfg.out_style, g.width());
                 g.emit_out(&format!("{text}\n"));
@@ -1139,6 +1193,7 @@ impl Ui for Console {
         let mut g = self.lock();
         // A failed attempt's last words are not an answer.
         g.pending_text = None;
+        g.discard_preview();
         g.flush_run();
         g.tools_waiting.clear();
         if f.will_retry {
@@ -1174,7 +1229,10 @@ impl Ui for Console {
     }
 
     /// The `■ stopped` summary says it; no extra line.
-    fn cancelled(&mut self, _text: &str) {}
+    fn cancelled(&mut self, _text: &str) {
+        // The half-written answer is not one: it goes with the turn.
+        self.lock().discard_preview();
+    }
 
     /// Stops the status line, prints the question and returns the wait for one key.
     fn ask_permission(&mut self, req: &PermissionRequest, offer: &Offer) -> Answer {
@@ -1504,6 +1562,61 @@ mod tests {
         let e = printed(&mut heard);
         assert!(e.contains("Read f0") && e.contains("Read f2") && e.contains("Edit src/a.rs"), "{e}");
         assert!(!e.contains("tool calls"), "{e}");
+    }
+
+    #[test]
+    fn the_answer_is_previewed_while_it_is_written_and_committed_once() {
+        let (c, _, _) = console(false, Style::off(), true);
+        let (front, mut heard) = Front::channel();
+        let mut c = c.with_front(front);
+        c.begin_turn();
+        c.event(&Event::TextDelta("Hel".into()));
+        c.event(&Event::TextDelta("lo".into()));
+        let mut deltas = 0;
+        while let Ok(msg) = heard.try_recv() {
+            match msg {
+                FrontMsg::AnswerDelta(t) => {
+                    deltas += 1;
+                    assert!(t == "Hel" || t == "lo", "{t}");
+                }
+                FrontMsg::AnswerReset => panic!("nothing finished yet"),
+                _ => {}
+            }
+        }
+        assert_eq!(deltas, 2);
+        c.event(&Event::Text("Hello".into()));
+        c.end_turn();
+        let mut seen = Vec::new();
+        while let Ok(msg) = heard.try_recv() {
+            match msg {
+                FrontMsg::AnswerReset => seen.push("reset"),
+                FrontMsg::Print(t) => {
+                    assert!(uifmt::strip_ansi(&t).contains("Hello"), "{t}");
+                    seen.push("print");
+                }
+                _ => {}
+            }
+        }
+        assert_eq!(seen, vec!["reset", "print"], "the preview goes, then the finished answer once");
+    }
+
+    #[test]
+    fn a_tool_after_streamed_text_drops_the_preview_because_it_was_narration() {
+        let (c, _, _) = console(false, Style::off(), true);
+        let (front, mut heard) = Front::channel();
+        let mut c = c.with_front(front);
+        c.begin_turn();
+        c.event(&Event::TextDelta("I'll look".into()));
+        c.event(&Event::Tool("Read a.txt".into()));
+        let mut reset = false;
+        while let Ok(msg) = heard.try_recv() {
+            match msg {
+                FrontMsg::AnswerReset => reset = true,
+                FrontMsg::Print(t) => assert!(!uifmt::strip_ansi(&t).contains("I'll look"), "{t}"),
+                _ => {}
+            }
+        }
+        assert!(reset, "the preview is dropped when the text turns out to be narration");
     }
 
     #[test]

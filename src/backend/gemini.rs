@@ -189,7 +189,13 @@ impl GeminiBackend {
             }
             Some("message") => {
                 if ev["role"] == "assistant" {
-                    pending.text.push_str(ev["content"].as_str().unwrap_or(""));
+                    let text = ev["content"].as_str().unwrap_or("");
+                    pending.text.push_str(text);
+                    // `delta` messages are pieces of the text being written; the whole text
+                    // still comes at the next tool call or in the result.
+                    if ev["delta"] == true && !text.is_empty() {
+                        return vec![Event::TextDelta(text.to_string())];
+                    }
                 }
                 vec![]
             }
@@ -453,14 +459,25 @@ mod tests {
     #[test]
     fn gemini_turn_parses_to_narration_tool_and_rebuilt_answer() {
         let events = parse_all(&gemini(), GEMINI_TURN);
-        assert_eq!(events.len(), 3, "{events:?}");
-        assert_eq!(events[0], Event::Text("I'll read the file.".into()));
-        assert_eq!(events[1], Event::Tool("read_file /work/a.txt".into()));
-        let Event::Finished(f) = &events[2] else { panic!("{:?}", events[2]) };
+        // Each written piece comes first, for the live screen; the whole text still follows.
+        assert_eq!(events.len(), 7, "{events:?}");
+        assert_eq!(events[0], Event::TextDelta("I'll read ".into()));
+        assert_eq!(events[1], Event::TextDelta("the file.".into()));
+        assert_eq!(events[2], Event::Text("I'll read the file.".into()));
+        assert_eq!(events[3], Event::Tool("read_file /work/a.txt".into()));
+        assert_eq!(events[4], Event::TextDelta("It says ".into()));
+        assert_eq!(events[5], Event::TextDelta("hello.".into()));
+        let Event::Finished(f) = &events[6] else { panic!("{:?}", events[6]) };
         // Only the text after the last tool call is the answer.
         assert_eq!(f.text, "It says hello.");
         assert_eq!(f.session_id.as_deref(), Some("6f1c2d3e-4a5b-4c6d-8e7f-0123456789ab"));
         assert_eq!(f.usage, Usage { input_tokens: 1200, cached_input_tokens: 800, output_tokens: 300, context_tokens: None });
+    }
+
+    #[test]
+    fn a_gemini_message_without_delta_is_not_a_streamed_piece() {
+        let events = gemini().parse_line(r#"{"type":"message","role":"assistant","content":"whole"}"#);
+        assert_eq!(events, vec![]);
     }
 
     #[test]

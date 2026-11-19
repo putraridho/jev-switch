@@ -4,6 +4,12 @@ See [docs/changelog-guide.md](docs/changelog-guide.md) for changelog formatting,
 
 ## Unreleased
 
+## 1.7.0
+
+A live answer, and reasoning you can choose to see.
+
+- The answer is drawn as it is written on Claude, DeepSeek, Gemini and Antigravity, instead of appearing only when the turn is done. The finished answer replaces the preview. Codex and Grok deliver the answer when complete.
+- `/thinking on|off` prints the model's whole reasoning, or its one-line trace. The choice is kept for the next session; `JEV_SHOW_THINKING=1` still seeds it.
 - The Router panel and `/providers` now show `agy` next to `gemini` when Antigravity is the CLI running it.
 
 ## 1.6.0
@@ -16,7 +22,8 @@ A `/skill` command, and a clearer terminal UI.
 - Tool calls read at a glance: the tool name is bold with an accent marker, and each result starts with a green ✓, a yellow ✗ (a command that reported failures) or a red ✗ (it failed).
 - Between tool calls only the calls show: what the model says moves to the working row, and its reasoning leaves a one-line `✻` trace. `JEV_SHOW_NARRATION=1` brings the narration back.
 - The answer has a thin accent bar down its left edge (with colour on).
-- On a terminal too narrow for the side panel, the panel (router, context, branch) now stacks under the input box instead of vanishing.
+- jev-code now fills the terminal: the chat on top, the input box under it and the side panel (router, context, branch) as a full-height column on the right. Scroll with the wheel or PageUp/PageDown. Below 100 columns the panel moves under the box. The terminal's own scrollback no longer holds the chat; `JEV_INLINE=1` brings the inline layout back.
+- Edits show as a diff: line numbers, with the removed and added lines on red and green rows.
 
 ## 1.5.1
 

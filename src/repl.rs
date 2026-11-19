@@ -326,6 +326,12 @@ impl Repl {
                 self.console.out(&format!("  orchestrate: {}", on_off(on)));
             }
             Command::ShowOrchestrate => self.console.out(&format!("  orchestrate: {}", on_off(self.engine.orchestrate()))),
+            Command::SetThinking(on) => {
+                self.console.set_show_thinking(on);
+                self.remember_flag(crate::prefs::Flag::Thinking, on, "thinking");
+                self.console.out(&format!("  thinking: {}", on_off(on)));
+            }
+            Command::ShowThinking => self.console.out(&format!("  thinking: {}", on_off(self.console.show_thinking()))),
             Command::Trust(cmd) => return self.trust(cmd, io).await,
             Command::SetMode(mode) => {
                 let mode = self.adopt_mode(mode);
@@ -940,10 +946,16 @@ mod tests {
         assert!(!r.repl.engine.enabled());
         run(&mut r, "/orchestrate on").await;
         assert!(r.repl.engine.orchestrate());
+        run(&mut r, "/thinking on").await;
+        assert!(r.repl.console.show_thinking());
+        run(&mut r, "/thinking").await;
+        run(&mut r, "/thinking off").await;
+        assert!(!r.repl.console.show_thinking());
         run(&mut r, "/model").await;
         run(&mut r, "/model nonsense").await;
         let o = r.out.text();
         assert!(o.contains("model: codex") && o.contains("routing: off (Claude only)") && o.contains("orchestrate: on"), "{o}");
+        assert!(o.contains("thinking: on") && o.contains("thinking: off"), "{o}");
         assert!(o.contains("⚠ unknown provider"), "{o}");
         run(&mut r, "/providers").await;
         assert!(r.out.text().contains("● claude"), "{}", r.out.text());

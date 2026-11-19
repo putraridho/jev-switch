@@ -1397,6 +1397,7 @@ impl Engine {
         if let Some(effort) = self.effort.resolve(chosen.spec.tier) {
             backend.set_effort(effort);
         }
+        backend.set_streaming(self.stream_text);
         if let Some(mcp) = chosen.mcp.as_ref().filter(|_| backend.supports_mcp()) {
             match orchestrate::write_mcp_config(mcp) {
                 Ok(()) => {
@@ -1427,6 +1428,9 @@ impl Engine {
         // the attempt is known to have succeeded, so a failed attempt's partial commentary
         // never sits on screen as if it were an answer.
         let mut held: Vec<Event> = Vec::new();
+        // Whether any text was shown before the attempt was known to have succeeded, so a
+        // failed attempt can say it discarded it.
+        let mut streamed_any = false;
         let idle = self.idle_timeout;
         let stream = self.stream_text;
         let started = Instant::now();
@@ -1444,6 +1448,14 @@ impl Engine {
                         lock_ui(&shared_ui).event(e);
                     }
                     held.push(e.clone());
+                }
+                // Partial text is a preview of the answer, not an answer: the whole text
+                // still arrives above (or in the finished event) and is what gets committed.
+                Event::TextDelta(_) => {
+                    if stream {
+                        lock_ui(&shared_ui).event(e);
+                        streamed_any = true;
+                    }
                 }
                 other => {
                     lock_ui(&shared_ui).event(other);
@@ -1469,7 +1481,7 @@ impl Engine {
         };
         let cancelled = result.is_none();
         let result = result.unwrap_or_else(|| Err(TurnError::new(ErrorKind::Other, "cancelled by the user")));
-        let discarded = result.is_err() && !held.is_empty();
+        let discarded = result.is_err() && (!held.is_empty() || streamed_any);
         if let Ok(out) = &result {
             let streamed = |t: &str| {
                 if held.iter().any(|e| matches!(e, Event::Text(s) if s.trim() == t)) {

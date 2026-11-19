@@ -178,6 +178,9 @@ pub struct App {
     pub transcript: super::transcript::Transcript,
     /// Rows of the chat pane at the last draw, for how far a page scrolls.
     pub pane_rows: usize,
+    /// The answer as it is being written, for the live preview in the full-screen layout.
+    /// Never part of the conversation: the finished answer arrives as a `Print`.
+    pub live_answer: Option<String>,
 }
 
 /// One subscription on the router row: its name, how much of its plan window is used, or how
@@ -234,6 +237,7 @@ impl App {
             fullscreen: false,
             transcript: super::transcript::Transcript::default(),
             pane_rows: 20,
+            live_answer: None,
         }
     }
 
@@ -307,8 +311,12 @@ impl App {
     pub fn on_front(&mut self, msg: FrontMsg) -> Vec<Action> {
         match msg {
             FrontMsg::Print(text) => return vec![Action::Print(text)],
-            FrontMsg::TurnStarted => self.working = Some(Working { label: "thinking".into(), activity: None, started: Instant::now() }),
+            FrontMsg::TurnStarted => {
+                self.live_answer = None;
+                self.working = Some(Working { label: "thinking".into(), activity: None, started: Instant::now() });
+            }
             FrontMsg::TurnEnded => {
+                self.live_answer = None;
                 self.working = None;
                 self.approval = None;
             }
@@ -334,8 +342,16 @@ impl App {
                 self.suspended = false;
                 return vec![Action::Resume];
             }
-            FrontMsg::ClearScreen => return vec![Action::ClearScreen],
+            FrontMsg::ClearScreen => {
+                self.live_answer = None;
+                return vec![Action::ClearScreen];
+            }
             FrontMsg::Bell => return vec![Action::Bell],
+            FrontMsg::AnswerDelta(text) => match self.live_answer.as_mut() {
+                Some(live) => live.push_str(&text),
+                None => self.live_answer = Some(text),
+            },
+            FrontMsg::AnswerReset => self.live_answer = None,
             FrontMsg::Steered(text) => {
                 if let Some(at) = self.queue.iter().position(|q| *q == text) {
                     self.queue.remove(at);

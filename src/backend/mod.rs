@@ -131,6 +131,9 @@ pub enum Event {
     Edit { path: String, removed: Vec<String>, added: Vec<String> },
     /// Assistant text: part of the answer.
     Text(String),
+    /// A piece of assistant text as it is written, in order. For the screen only: the whole
+    /// text still arrives once as [`Event::Text`] (or in [`Finish::text`]).
+    TextDelta(String),
     /// A diagnostic about the turn that is never part of the answer: a tool call that was
     /// denied or failed, with what to do about it. Shown on stderr as it happens.
     Hint(String),
@@ -342,6 +345,10 @@ pub trait Backend: Send + Sync {
     /// Set the reasoning effort of this backend's turns. A CLI with no such control
     /// ignores it (see [`crate::effort::supported`]).
     fn set_effort(&mut self, _effort: crate::effort::Effort) {}
+
+    /// Ask this CLI for partial assistant text, when it can give it. A backend with no
+    /// partial stream ignores it; the answer still arrives whole.
+    fn set_streaming(&mut self, _on: bool) {}
 
     /// Classify an error message from the CLI (a `Failed` text or a stderr tail).
     /// Implementations call [`classify_common`] first and may add their own rules.

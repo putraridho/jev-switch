@@ -34,6 +34,10 @@ pub enum Command {
     SetOrchestrate(bool),
     /// `/orchestrate` with no argument: show whether it is on.
     ShowOrchestrate,
+    /// `/thinking on|off`: print the model's whole reasoning, for this and later sessions.
+    SetThinking(bool),
+    /// `/thinking` with no argument: show whether it is on.
+    ShowThinking,
     /// `/mode` with no argument: show the mode.
     ShowMode,
     /// `/mode <name>`.
@@ -269,6 +273,12 @@ pub fn parse(line: &str) -> Command {
             (Some("off"), false) => Command::SetOrchestrate(false),
             _ => invalid("usage: /orchestrate on|off"),
         },
+        "/thinking" => match (arg, extra) {
+            (None, _) => Command::ShowThinking,
+            (Some("on"), false) => Command::SetThinking(true),
+            (Some("off"), false) => Command::SetThinking(false),
+            _ => invalid("usage: /thinking on|off"),
+        },
         "/mode" => match (arg, extra) {
             (None, _) => Command::ShowMode,
             (Some(word), false) => word.parse().map_or_else(|e: crate::mode::UnknownMode| Command::Invalid(e.to_string()), Command::SetMode),
@@ -387,6 +397,15 @@ mod tests {
         assert!(matches!(parse("/mode auto plan"), Command::Invalid(_)));
         assert!(matches!(parse("/orchestrate maybe"), Command::Invalid(m) if m.contains("on|off")));
         assert!(matches!(parse("/orchestrate on now"), Command::Invalid(_)));
+    }
+
+    #[test]
+    fn thinking_toggle() {
+        assert_eq!(parse("/thinking on"), Command::SetThinking(true));
+        assert_eq!(parse("/thinking off"), Command::SetThinking(false));
+        assert_eq!(parse("/thinking"), Command::ShowThinking);
+        assert!(matches!(parse("/thinking maybe"), Command::Invalid(m) if m.contains("on|off")));
+        assert!(matches!(parse("/thinking on now"), Command::Invalid(_)));
     }
 
     #[test]

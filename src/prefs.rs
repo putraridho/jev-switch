@@ -14,6 +14,8 @@ pub enum Flag {
     Orchestrate,
     /// `/provider auto|off`: whether the router picks among providers.
     Routing,
+    /// `/thinking on|off`: print the model's whole reasoning.
+    Thinking,
 }
 
 impl Flag {
@@ -21,6 +23,7 @@ impl Flag {
         match self {
             Flag::Orchestrate => "orchestrate",
             Flag::Routing => "routing",
+            Flag::Thinking => "thinking",
         }
     }
 }
@@ -45,6 +48,7 @@ pub struct Saved {
     pub mode: Option<Mode>,
     pub orchestrate: Option<bool>,
     pub routing: Option<bool>,
+    pub thinking: Option<bool>,
 }
 
 impl Saved {
@@ -53,6 +57,7 @@ impl Saved {
             mode: mode::load_saved(state_dir),
             orchestrate: load_flag(state_dir, Flag::Orchestrate),
             routing: load_flag(state_dir, Flag::Routing),
+            thinking: load_flag(state_dir, Flag::Thinking),
         }
     }
 }
@@ -71,16 +76,18 @@ mod tests {
     #[test]
     fn a_kept_flag_survives_and_a_bad_file_is_no_choice() {
         let d = dir("flags");
-        for flag in [Flag::Orchestrate, Flag::Routing] {
+        for flag in [Flag::Orchestrate, Flag::Routing, Flag::Thinking] {
             assert_eq!(load_flag(&d, flag), None);
             save_flag(&d, flag, false).unwrap();
             assert_eq!(load_flag(&d, flag), Some(false));
             save_flag(&d, flag, true).unwrap();
             assert_eq!(load_flag(&d, flag), Some(true));
         }
-        // The two flags do not share a file.
+        // The flags do not share a file.
         save_flag(&d, Flag::Routing, false).unwrap();
+        save_flag(&d, Flag::Thinking, false).unwrap();
         assert_eq!(load_flag(&d, Flag::Orchestrate), Some(true));
+        assert_eq!(load_flag(&d, Flag::Thinking), Some(false));
         std::fs::write(d.join("orchestrate"), "maybe").unwrap();
         assert_eq!(load_flag(&d, Flag::Orchestrate), None);
         let _ = std::fs::remove_dir_all(&d);
@@ -92,7 +99,8 @@ mod tests {
         assert_eq!(Saved::load(&d), Saved::default());
         mode::save(&d, Mode::Auto).unwrap();
         save_flag(&d, Flag::Orchestrate, false).unwrap();
-        assert_eq!(Saved::load(&d), Saved { mode: Some(Mode::Auto), orchestrate: Some(false), routing: None });
+        save_flag(&d, Flag::Thinking, true).unwrap();
+        assert_eq!(Saved::load(&d), Saved { mode: Some(Mode::Auto), orchestrate: Some(false), routing: None, thinking: Some(true) });
         let _ = std::fs::remove_dir_all(&d);
     }
 }

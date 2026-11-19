@@ -14,6 +14,8 @@
 | Up / Down | Earlier and later messages |
 | Ctrl-R | Search earlier messages |
 | Right | Take the dim suggestion: the next step the last answer offered (empty box), or the rest of an earlier message that starts with what you typed |
+| PageUp / PageDown, mouse wheel | Scroll the chat back and forward (full-screen layout) |
+| Ctrl-Home / Ctrl-End | Jump to the start / the end of the chat |
 | Ctrl-L | Clear the screen |
 | Shift-Tab | Cycle the mode: ask, edit, plan, auto |
 | `!command` | Run in the shell; the output goes with your next message |

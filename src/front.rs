@@ -35,6 +35,12 @@ pub enum FrontMsg {
     /// Finished output, styled, possibly several lines: it goes above the live area, into
     /// the scrollback, and never changes again.
     Print(String),
+    /// More assistant text while the answer is being written. Transient: it is drawn in
+    /// place and never enters the conversation; the finished answer arrives as a `Print`.
+    AnswerDelta(String),
+    /// Drop the answer being written: it was narration, a failed attempt, or the finished
+    /// answer has just been printed.
+    AnswerReset,
     /// A turn started: show the working row.
     TurnStarted,
     /// The turn is over: remove the working row.

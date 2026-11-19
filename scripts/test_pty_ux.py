@@ -90,8 +90,10 @@ if [ "$1" = "auth" ]; then
   exit 0
 fi
 host=0
+stream=0
 for arg in "$@"; do
   [ "$arg" = "--input-format" ] && host=1
+  [ "$arg" = "--include-partial-messages" ] && stream=1
 done
 if [ $host = 1 ]; then
   # One JSON line: its "\n" escapes stand for the line breaks of the prompt.
@@ -186,8 +188,18 @@ case "$last" in
     emit '{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"r3","content":"The file a.txt has been updated."}]}}'
     answer="Fixed: an empty input now yields **Token::Eof** instead of nothing.\\n\\n- the parser test passes\\n- no other caller relied on None"
     ;;
-  *offernext*)
-    # An answer that ends by offering the next step: the box suggests that step. The one
+  *streamtest*)
+    # With --include-partial-messages the answer is written piece by piece before the whole
+    # message and the result arrive. Without it, only the whole answer is sent.
+    if [ $stream = 1 ]; then
+      emit '{"type":"stream_event","parent_tool_use_id":null,"event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"STREAMCHUNKONE "}}}'
+      sleep 1.2
+      emit '{"type":"stream_event","parent_tool_use_id":null,"event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"STREAMCHUNKTWO"}}}'
+      sleep 0.4
+    fi
+    answer="STREAMCHUNKONE STREAMCHUNKTWO"
+    ;;
+  *offernext*)    # An answer that ends by offering the next step: the box suggests that step. The one
     # that pauses leaves time to queue a message during the turn.
     case "$last" in *pause*) sleep 1.5 ;; esac
     answer="Done, the build passes.\\n\\nWant me to commit this and tag v9.9.9?"
@@ -2128,6 +2140,71 @@ def full_screen_draws_chat_box_and_sidebar_and_leaves_the_terminal_clean(w):
             raise Fail("the alternate screen was not left at exit")
         if raw.rfind("\x1b[?25l") > raw.rfind("\x1b[?25h"):
             raise Fail("the cursor was left hidden at exit")
+    finally:
+        p.close()
+
+
+@scenario
+def a_streamed_answer_is_drawn_before_the_turn_ends(w):
+    """With `--include-partial-messages`, the full-screen chat shows the answer as it is
+    written: the first piece is on screen while the fake CLI still holds the second. The turn
+    then commits the whole answer and the choice of asking for partial text is visible."""
+    p = Pty(w, [w.repo], "stream", env=w.env(JEV_INLINE=None), cols=130, rows=34)
+    try:
+        p.expect("Ask anything", 15, "the box")
+        p.send("streamtest please\r")
+        p.expect("STREAMCHUNKONE", 10, "the first piece of the answer while it is written")
+        if "✓ claude" in p.printed():
+            raise Fail(f"the answer was committed before the turn ended:\n{p.tail()}")
+        p.expect("✓ claude", 20, "the end of the turn")
+        p.expect("STREAMCHUNKONE STREAMCHUNKTWO", 10, "the finished answer in the chat")
+        if "--include-partial-messages" not in cli_args(w):
+            raise Fail(f"the streaming turn should ask for partial messages: {cli_args(w)}")
+        p.settle(0.3)
+        p.send("\x04")
+        if p.wait_exit(10) != 0:
+            raise Fail("Ctrl-D should exit with 0")
+    finally:
+        p.close()
+
+
+def thinking_pref(w, value):
+    path = os.path.join(w.state, "jev-router", "thinking")
+    with open(path) as f:
+        got = f.read().strip()
+    if got != value:
+        raise Fail(f"thinking should be kept as {value!r}, the file says {got!r}")
+
+
+@scenario
+def thinking_shows_the_whole_reasoning_when_turned_on_and_the_choice_is_kept(w):
+    """`/thinking on` prints the model's reasoning in full for the turn; the choice is saved and
+    a new session starts with it. `/thinking off` goes back to the one-line trace."""
+    p = Pty(w, [w.repo], "thinking")
+    try:
+        prompt_ready(p)
+        p.send("/thinking on\r")
+        p.expect("thinking: on", 10, "the confirmation")
+        p.send("realistic please\r")
+        p.expect("The user reports empty input", 20, "the whole reasoning")
+        p.expect("… 1 more line of thinking", 10, "the rest of the reasoning counted")
+        p.expect("Fixed: an empty input", 20, "the answer")
+        p.expect("✓ claude", 20, "the end of the turn")
+        wait_prompt(p, 10, "the next prompt")
+        thinking_pref(w, "on")
+        p.send("/thinking off\r")
+        p.expect("thinking: off", 10, "the toggle off")
+        thinking_pref(w, "off")
+        quit_with_ctrl_d(p)
+    finally:
+        p.close()
+    # The saved choice is read at startup: no need to set it again.
+    p = Pty(w, [w.repo], "thinking2")
+    try:
+        prompt_ready(p)
+        p.send("/thinking\r")
+        p.expect("thinking: off", 10, "the saved choice")
+        quit_with_ctrl_d(p)
     finally:
         p.close()
 

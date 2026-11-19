@@ -436,6 +436,10 @@ async fn session(args: &Args, dir: &Path, term: &Term, console: Console, state_d
     timeline.set_probe_source(probes);
     timeline.record(Phase::ProviderProbe, began);
     let saved = timeline.time(Phase::SavedState, || state_dir.as_deref().map(Saved::load).unwrap_or_default());
+    // What the person last chose with `/thinking` beats the environment variable.
+    if let Some(on) = saved.thinking {
+        console.set_show_thinking(on);
+    }
     let home = std::env::var("HOME").ok();
     let mut repl = timeline.time(Phase::Engine, || {
         let engine = engine_for(args, runtime, router, dir.to_path_buf(), console.can_ask(), Some(saved)).with_persistence(state_dir.clone());

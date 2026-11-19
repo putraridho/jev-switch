@@ -153,7 +153,12 @@ impl Acp {
         match update["sessionUpdate"].as_str() {
             Some("agent_message_chunk") => {
                 if update["content"]["type"] == "text" {
-                    self.text.push_str(update["content"]["text"].as_str().unwrap_or(""));
+                    let text = update["content"]["text"].as_str().unwrap_or("");
+                    self.text.push_str(text);
+                    // The answer as it is written; the finished turn still reports the whole.
+                    if !text.is_empty() {
+                        return vec![Event::TextDelta(text.to_string())];
+                    }
                 }
             }
             Some("tool_call" | "tool_call_update") => {

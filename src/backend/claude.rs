@@ -54,6 +54,8 @@ pub struct ClaudeBackend {
     /// Run as a `jev-code` session: tool approvals are asked to the host and the model is
     /// told where it runs.
     interactive: bool,
+    /// Ask for partial assistant text (`--include-partial-messages`), for the live screen.
+    streaming: bool,
 }
 
 impl ClaudeBackend {
@@ -73,6 +75,7 @@ impl ClaudeBackend {
             mcp_config: None,
             mcp_name: None,
             interactive: false,
+            streaming: false,
         }
     }
 
@@ -201,8 +204,22 @@ fn assistant_events(ev: &Value) -> Vec<Event> {
     out
 }
 
-fn lines_of(v: &Value) -> Vec<String> {
-    v.as_str().map(|s| s.lines().map(String::from).collect()).unwrap_or_default()
+/// A piece of the answer as Claude writes it (`--include-partial-messages`). Only top-level
+/// text deltas: a subagent's text, thinking and tool input stay out. The whole message still
+/// arrives as `assistant` and is what the turn commits.
+fn stream_delta(ev: &Value) -> Vec<Event> {
+    if !ev["parent_tool_use_id"].is_null() {
+        return Vec::new();
+    }
+    let inner = &ev["event"];
+    if inner["type"] != "content_block_delta" || inner["delta"]["type"] != "text_delta" {
+        return Vec::new();
+    }
+    let text = inner["delta"]["text"].as_str().unwrap_or("");
+    (!text.is_empty()).then(|| Event::TextDelta(text.to_string())).into_iter().collect()
+}
+
+fn lines_of(v: &Value) -> Vec<String> {    v.as_str().map(|s| s.lines().map(String::from).collect()).unwrap_or_default()
 }
 
 /// What an Edit, MultiEdit or Write call changes, from its input.
@@ -404,6 +421,9 @@ impl Backend for ClaudeBackend {
             // is closed, where every tool approval fails with "Stream closed".
             .env(NO_BACKGROUND_ENV, "1")
             .envs(self.env.iter().map(|(k, v)| (k, v)));
+        if self.streaming {
+            cmd.arg("--include-partial-messages");
+        }
         if let Some(id) = &req.session_id {
             cmd.args(["--resume", id]);
         }
@@ -491,10 +511,15 @@ impl Backend for ClaudeBackend {
         self.env.push((THINKING_ENV.to_string(), effort.thinking_tokens().to_string()));
     }
 
+    fn set_streaming(&mut self, on: bool) {
+        self.streaming = on;
+    }
+
     fn parse_line(&self, line: &str) -> Vec<Event> {
         let Ok(ev) = serde_json::from_str::<Value>(line) else { return vec![] };
         match ev["type"].as_str() {
             Some("assistant") => assistant_events(&ev),
+            Some("stream_event") => stream_delta(&ev),
             Some("user") => user_events(&ev),
             Some("system") if ev["subtype"] == "permission_denied" => vec![Event::Hint(format!(
                 "\u{2717} denied {} \u{2014} allow it via CODE_ALLOWED_TOOLS or your Claude Code settings",
@@ -537,6 +562,7 @@ mod tests {
             mcp_config: None,
             mcp_name: None,
             interactive: false,
+            streaming: false,
         }
     }
 
@@ -626,6 +652,34 @@ mod tests {
         let result = json!({"type":"user","parent_tool_use_id":null,"message":{"content":[{"type":"tool_result","content":"subagent report"}]}});
         let events = backend().parse_line(&result.to_string());
         assert!(!events.iter().any(|e| matches!(e, Event::Text(_))), "a sub-agent's report is a tool result, not the answer: {events:?}");
+    }
+
+    #[test]
+    fn partial_text_is_the_live_preview_and_never_a_subagent_or_thinking() {
+        let line = json!({"type":"stream_event","parent_tool_use_id":null,
+            "event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Hel"}}});
+        assert_eq!(backend().parse_line(&line.to_string()), vec![Event::TextDelta("Hel".into())]);
+        for event in [
+            json!({"type":"content_block_delta","delta":{"type":"thinking_delta","thinking":"hmm"}}),
+            json!({"type":"content_block_delta","delta":{"type":"input_json_delta","partial_json":"{}"}}),
+            json!({"type":"message_start"}),
+        ] {
+            let line = json!({"type":"stream_event","parent_tool_use_id":null,"event":event});
+            assert_eq!(backend().parse_line(&line.to_string()), vec![], "not answer text: {line}");
+        }
+        let nested = json!({"type":"stream_event","parent_tool_use_id":"agent-1",
+            "event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"sub"}}});
+        assert_eq!(backend().parse_line(&nested.to_string()), vec![], "a subagent's text never joins the answer");
+    }
+
+    #[test]
+    fn partial_messages_are_requested_only_when_streaming() {
+        let mut b = backend();
+        let plain = args(&b.command(&req(None)));
+        assert!(!plain.iter().any(|a| a == "--include-partial-messages"), "{plain:?}");
+        b.set_streaming(true);
+        let streamed = args(&b.command(&req(None)));
+        assert!(streamed.iter().any(|a| a == "--include-partial-messages"), "{streamed:?}");
     }
 
     #[test]
