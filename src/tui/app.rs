@@ -187,6 +187,8 @@ pub struct ProviderChip {
     pub name: String,
     pub used: Option<u8>,
     pub cooling: Option<String>,
+    /// The CLI behind it when the name does not say (see `AvailRow::via`).
+    pub via: Option<String>,
 }
 
 /// How long a footer notice stays.

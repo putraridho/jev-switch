@@ -43,6 +43,9 @@ fn avail_row(a: &Availability, rt: &Runtime, now_ms: u64) -> AvailRow {
     row.detail = a.detail.clone();
     row.verified = a.verified;
     row.cooldown = rt.cooldown_left(a.provider, now_ms).map(format_left);
+    if a.provider == ProviderId::Gemini {
+        row.via = Some(crate::providers::gemini_via().to_string());
+    }
     match rt.blocked.get(&a.provider) {
         Some(BlockReason::Auth) => {
             row.status = ProviderStatus::NotLoggedIn;

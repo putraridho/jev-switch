@@ -210,7 +210,7 @@ fn provider_chips(repl: &Repl) -> Vec<super::app::ProviderChip> {
         .filter(|r| r.status == crate::uifmt::ProviderStatus::Ready)
         .map(|r| {
             let used = r.provider.parse::<crate::backend::ProviderId>().ok().and_then(|p| rt.plan_utilization(p)).map(|u| (u.clamp(0.0, 1.0) * 100.0).round() as u8);
-            super::app::ProviderChip { name: r.provider, used, cooling: r.cooldown }
+            super::app::ProviderChip { name: r.provider, used, cooling: r.cooldown, via: r.via }
         })
         .collect()
 }

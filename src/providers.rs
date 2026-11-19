@@ -117,6 +117,14 @@ pub fn gemini_env(lookup: &dyn Fn(&str) -> Option<String>) -> Vec<(String, Strin
         .collect()
 }
 
+/// The CLI behind `gemini` right now, for display: `gemini` or `agy`.
+pub fn gemini_via() -> &'static str {
+    match detect_gemini_flavor() {
+        Flavor::GeminiCli => "gemini",
+        Flavor::Antigravity => "agy",
+    }
+}
+
 fn detect_gemini_flavor() -> Flavor {
     let settings = std::env::var_os("HOME")
         .and_then(|h| std::fs::read_to_string(PathBuf::from(h).join(".gemini/settings.json")).ok());

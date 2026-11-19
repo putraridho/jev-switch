@@ -40,6 +40,8 @@ pub struct AvailRow {
     pub verified: bool,
     /// How long a usage-limit cooldown has left, e.g. `2h 10m`.
     pub cooldown: Option<String>,
+    /// The CLI that runs it when the ID does not say (`gemini` runs `agy` without Gemini CLI).
+    pub via: Option<String>,
 }
 
 impl AvailRow {
@@ -52,6 +54,7 @@ impl AvailRow {
             detail: String::new(),
             verified: true,
             cooldown: None,
+            via: None,
         }
     }
 }
@@ -108,6 +111,9 @@ pub fn providers_table(rows: &[AvailRow], style: Style, width: usize) -> String 
             }
         };
         let mut suffix_plain = String::new();
+        if let Some(v) = r.via.as_deref().filter(|v| *v != r.provider) {
+            suffix_plain.push_str(&format!(" · via {v}"));
+        }
         if !r.verified {
             suffix_plain.push_str(" (unverified)");
         }

@@ -355,7 +355,10 @@ fn panel_sections(app: &App, style: Style) -> Vec<Section> {
             match (&p.cooling, p.used) {
                 (Some(left), _) => format!("{name} {}", style.yellow(&format!("cooling {left}"))),
                 (None, Some(u)) => format!("{name} {} {u:>3}%", meter(u, 8, style)),
-                (None, None) => format!("{name} {}", style.dim("ready")),
+                (None, None) => match p.via.as_deref().filter(|v| *v != p.name) {
+                    Some(v) => format!("{name} {}", style.dim(&format!("ready · {v}"))),
+                    None => format!("{name} {}", style.dim("ready")),
+                },
             }
         })
         .collect();
@@ -682,7 +685,7 @@ mod tests {
     fn a_wide_terminal_shows_the_side_panel_beside_the_box_and_a_narrow_one_does_not() {
         let mut a = app();
         a.git = Some("main ±3".into());
-        a.providers = vec![crate::tui::app::ProviderChip { name: "codex".into(), used: Some(71), cooling: None }];
+        a.providers = vec![crate::tui::app::ProviderChip { name: "codex".into(), used: Some(71), cooling: None, via: None }];
         let wide = render(&a, 140, Instant::now(), OFF);
         let text = wide.rows.join("\n");
         assert!(wide.rows[0].contains("Router"), "{text}");
@@ -702,7 +705,7 @@ mod tests {
         let mut a = app();
         a.fullscreen = true;
         a.git = Some("main ±3".into());
-        a.providers = vec![crate::tui::app::ProviderChip { name: "codex".into(), used: Some(71), cooling: None }];
+        a.providers = vec![crate::tui::app::ProviderChip { name: "codex".into(), used: Some(71), cooling: None, via: None }];
         a.show("one\ntwo\nthree");
         a
     }
@@ -777,15 +780,29 @@ mod tests {
         use crate::tui::app::ProviderChip;
         let mut a = app();
         a.providers = vec![
-            ProviderChip { name: "claude".into(), used: Some(32), cooling: None },
-            ProviderChip { name: "codex".into(), used: Some(85), cooling: None },
-            ProviderChip { name: "gemini".into(), used: None, cooling: Some("1h20m".into()) },
+            ProviderChip { name: "claude".into(), used: Some(32), cooling: None, via: None },
+            ProviderChip { name: "codex".into(), used: Some(85), cooling: None, via: None },
+            ProviderChip { name: "gemini".into(), used: None, cooling: Some("1h20m".into()), via: None },
         ];
         a.orchestrate = true;
         let s = screen(&a, 120);
         assert!(s.contains("  ⇄ auto · claude 32% · codex 85% · gemini cooling 1h20m · orchestrate on"), "{s}");
         a.providers.clear();
         assert!(screen(&a, 120).contains("⇄ auto · no provider ready · /doctor"));
+    }
+
+    #[test]
+    fn a_ready_row_names_the_cli_only_when_it_differs_from_the_provider() {
+        use crate::tui::app::ProviderChip;
+        let style = crate::uifmt::Style::off();
+        let rows = |via: Option<&str>| {
+            let mut a = app();
+            a.providers = vec![ProviderChip { name: "gemini".into(), used: None, cooling: None, via: via.map(String::from) }];
+            panel_sections(&a, style).remove(0).rows.join("\n")
+        };
+        assert!(rows(Some("agy")).contains("ready · agy"));
+        assert!(!rows(Some("gemini")).contains('·'));
+        assert!(!rows(None).contains('·'));
     }
 
     #[test]
