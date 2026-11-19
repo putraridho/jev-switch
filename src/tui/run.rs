@@ -199,6 +199,9 @@ pub async fn run(repl: Repl, mut rx: mpsc::UnboundedReceiver<FrontMsg>, opts: Op
     let mut mode_picked_during_turn = false;
     let mut tick = tokio::time::interval(term_env().tick(TICK));
     let mut last_width = width();
+    // The answer the suggestion was last made from: a line that brings no new answer (a
+    // command) makes none. A resumed session's last answer is not suggested from.
+    let mut answer_seen: Option<String> = idle.as_ref().and_then(|(r, _)| r.engine.last_answer()).map(String::from);
 
     let code = loop {
         // Idle: catch up with the session, then run the next queued message, if any.
@@ -270,6 +273,11 @@ pub async fn run(repl: Repl, mut rx: mpsc::UnboundedReceiver<FrontMsg>, opts: Op
                             app.mode = repl.engine.mode();
                         }
                         refresh(&mut app, &repl);
+                        let answer = repl.engine.last_answer();
+                        if answer != answer_seen.as_deref() {
+                            app.suggestion = answer.and_then(crate::gimmicks::suggest::next_prompt);
+                            answer_seen = answer.map(String::from);
+                        }
                         idle = Some((repl, stops));
                         if let Some(c) = flow_code {
                             break c;
@@ -320,6 +328,9 @@ struct Next {
 /// first, as it stays in the scrollback.
 fn start(idle: &mut Option<(Repl, Stops)>, line: &str, style: Style, screen: &mut Screen<std::io::Stdout>, app: &mut App) -> Option<JoinHandle<Done>> {
     let (mut repl, mut stops) = idle.take()?;
+    // Any line that runs answers the last answer, however it was sent (Enter, the queue,
+    // Esc during a turn): its offer no longer stands, even when the line brings no answer.
+    app.suggestion = None;
     let first = app.sent == 0;
     app.sent += 1;
     screen.print_above(&crate::uifmt::sent_block(line, first, style, width()), &view::render(app, width(), Instant::now(), style));

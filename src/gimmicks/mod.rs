@@ -5,6 +5,7 @@
 //! - [`savings`]: the savings ticker and the `/wrapped` recap;
 //! - [`shortcuts`]: `!` shell passthrough and `#` notes to project memory;
 //! - [`ghost`]: inline completion from history and project files;
+//! - [`suggest`]: the next-prompt suggestion an answer's closing offer gives;
 //! - [`title`]: title-bar status and the bell, so a long turn can be left alone;
 //! - [`session_title`]: automatic session names and the "where we left off" line;
 //! - [`autopsy`]: `/why-failed`;
@@ -21,4 +22,5 @@ pub mod race;
 pub mod savings;
 pub mod session_title;
 pub mod shortcuts;
+pub mod suggest;
 pub mod title;

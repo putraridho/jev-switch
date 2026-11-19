@@ -186,6 +186,12 @@ case "$last" in
     emit '{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"r3","content":"The file a.txt has been updated."}]}}'
     answer="Fixed: an empty input now yields **Token::Eof** instead of nothing.\\n\\n- the parser test passes\\n- no other caller relied on None"
     ;;
+  *offernext*)
+    # An answer that ends by offering the next step: the box suggests that step. The one
+    # that pauses leaves time to queue a message during the turn.
+    case "$last" in *pause*) sleep 1.5 ;; esac
+    answer="Done, the build passes.\\n\\nWant me to commit this and tag v9.9.9?"
+    ;;
   *)
     emit '{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t1","name":"Read","input":{"file_path":"a.txt"}}]}}'
     emit '{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t1","content":"1\thello"}]}}'
@@ -779,6 +785,48 @@ def the_banner_is_one_line_naming_the_ready_providers(w):
             raise Fail(f"the input box should follow the one banner line:\n{p.screen_tail()}")
         if "checking providers" in p.visible().replace("checking providers...", "", 1):
             raise Fail("the progress notice must be erased, not left as a banner line")
+        quit_with_ctrl_d(p)
+    finally:
+        p.close()
+
+
+@scenario
+def an_answer_that_offers_a_next_step_suggests_it_and_right_takes_it(w):
+    p = Pty(w, [w.repo], "suggest")
+    try:
+        prompt_ready(p)
+        ask(p, "please offernext", answer="Want me to commit this and tag v9.9.9?")
+        rows = p.vt.screen()
+        box = [r for r in rows if "│ › commit this and tag v9.9.9" in r]
+        if not box or not any("→ to use" in r for r in rows):
+            raise Fail(f"the empty box should show the offered step and how to take it:\n{p.screen_tail()}")
+        p.send("\x1b[C")  # Right
+        p.settle(0.3)
+        p.send("\r")
+        p.expect("› commit this and tag v9.9.9", 15, "the suggestion, sent as typed")
+        p.expect(ANSWER, 15, "its answer")
+        wait_prompt(p, 15, "the next prompt")
+        if any("→ to use" in r for r in p.vt.screen()):
+            raise Fail(f"an answer without an offer leaves no suggestion:\n{p.screen_tail()}")
+        # What is typed is completed from earlier messages, dim; Right takes the rest.
+        p.send("please off")
+        p.settle(0.3)
+        if not any("│ › please offernext" in r for r in p.vt.screen()):
+            raise Fail(f"the typed text should be followed by the rest of the earlier message:\n{p.screen_tail()}")
+        p.send("\x1b[C")
+        p.settle(0.2)
+        p.send("\x15")  # Ctrl-U: clear the box again before quitting
+        # A message queued during the turn answers the offer: once it has run, even a command
+        # that brings no answer, the offer is gone.
+        p.send("please offernextpause\r")
+        p.expect("› please offernextpause", 15, "the sent message")
+        p.settle(0.3)
+        p.send("/keys\r")
+        p.expect("Want me to commit this and tag v9.9.9?", 15, "the answer with its offer")
+        wait_prompt(p, 15, "the prompt after the queued command")
+        p.settle(0.5)
+        if any("→ to use" in r for r in p.vt.screen()):
+            raise Fail(f"a queued message that ran should clear the offer:\n{p.screen_tail()}")
         quit_with_ctrl_d(p)
     finally:
         p.close()

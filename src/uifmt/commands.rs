@@ -82,7 +82,7 @@ pub const COMMANDS: [Cmd; 56] = [
     Cmd { name: "/terminal-setup", args: "[install]", group: Group::Info, about: "Make Shift-Enter insert a new line in your terminal", example: "/terminal-setup install", hint: "[install]" },
 ];
 
-pub const KEYS: [(&str, &str); 15] = [
+pub const KEYS: [(&str, &str); 16] = [
     ("Enter", "send; while a turn runs, queue it for after the turn"),
     ("Shift-Enter", "new line inside your message (also Alt-Enter, Ctrl-J, or \\ then Enter)"),
     ("/", "open the command menu: ↑↓ choose, Tab complete, Enter run, Esc close"),
@@ -92,6 +92,7 @@ pub const KEYS: [(&str, &str); 15] = [
     ("Ctrl-D", "exit (on an empty box)"),
     ("↑ / ↓", "earlier and later messages"),
     ("Ctrl-R", "search earlier messages for what is typed"),
+    ("→", "take the dim suggestion: the step the last answer offered, or the rest of an earlier message"),
     ("Ctrl-L", "clear the screen"),
     ("Shift-Tab", "cycle the mode: ask, edit, plan, auto"),
     ("!command", "run it in the shell; the output goes with your next message"),

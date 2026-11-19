@@ -198,17 +198,29 @@ fn input_box(app: &App, w: usize, th: &Theme) -> (Vec<String>, (usize, usize)) {
     // Inside the borders: `│ › ` before the text, ` │` after.
     let text_w = w.saturating_sub(6).max(1);
     let mut rows = vec![border('╭', '╮', "", w, th)];
+    let ghost = app.ghost();
     if app.editor.is_empty() {
-        let placeholder = if app.working.is_some() { "Type to queue a message for after this turn" } else { "Ask anything · / for commands · @ for files" };
-        rows.push(boxed(&format!("{} {}", th.accent("›"), th.muted(placeholder)), w, th));
-        rows.push(border('╰', '╯', "", w, th));
+        // A suggested next prompt takes the placeholder's place; the border says how to take it.
+        let (shown, hint) = match &ghost {
+            Some(suggestion) => (truncate_to_width(suggestion, text_w), "→ to use"),
+            None if app.working.is_some() => ("Type to queue a message for after this turn".to_string(), ""),
+            None => ("Ask anything · / for commands · @ for files".to_string(), ""),
+        };
+        rows.push(boxed(&format!("{} {}", th.accent("›"), th.muted(&shown)), w, th));
+        rows.push(border('╰', '╯', hint, w, th));
         return (rows, (1, 4));
     }
     let (lines, (cr, cc)) = app.editor.layout(text_w);
     let first = cr.saturating_sub(INPUT_ROWS - 1);
     for (i, line) in lines.iter().enumerate().skip(first).take(INPUT_ROWS) {
         let lead = if i == 0 { th.accent("›") } else { " ".to_string() };
-        rows.push(boxed(&format!("{lead} {line}"), w, th));
+        // The ghost text follows the cursor, on its row, cut to what is left of it.
+        let rest = match &ghost {
+            Some(g) if i == cr => truncate_to_width(g, text_w.saturating_sub(display_width(line))),
+            _ => String::new(),
+        };
+        let rest = if rest.is_empty() { rest } else { th.muted(&rest) };
+        rows.push(boxed(&format!("{lead} {line}{rest}"), w, th));
     }
     let hidden = lines.len().saturating_sub(first + INPUT_ROWS);
     let bottom = if first > 0 || hidden > 0 { format!("{} lines", lines.len()) } else { String::new() };
@@ -362,6 +374,22 @@ mod tests {
         assert!(f.rows[3].starts_with("  ⇄ auto"), "the router row: {}", f.rows[3]);
         assert!(f.rows[4].starts_with("  edit mode (shift-tab)") && f.rows[4].ends_with("enter send · shift-enter newline"), "{}", f.rows[4]);
         assert_eq!(f.cursor, Some((1, 4)));
+    }
+
+    #[test]
+    fn a_suggestion_takes_the_placeholders_place_and_ghost_text_follows_the_typed_text() {
+        let mut a = app();
+        a.suggestion = Some("commit this and tag v1.1.0".into());
+        let f = render(&a, 70, Instant::now(), OFF);
+        assert!(f.rows[1].starts_with("│ › commit this and tag v1.1.0 "), "{}", f.rows[1]);
+        assert!(f.rows[2].contains("→ to use"), "{}", f.rows[2]);
+        assert_eq!(f.cursor, Some((1, 4)), "the cursor sits before the suggestion");
+
+        let mut typing = App::new(Path::new("/nonexistent").into(), History::from_entries(&["fix the parser"]), crate::mode::Mode::Edit, "auto".into(), Vec::new());
+        typed(&mut typing, "fix t");
+        let f = render(&typing, 70, Instant::now(), OFF);
+        assert!(f.rows[1].starts_with("│ › fix the parser "), "{}", f.rows[1]);
+        assert_eq!(f.cursor, Some((1, 9)), "the cursor stays after what was typed");
     }
 
     #[test]

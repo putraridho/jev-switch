@@ -634,6 +634,12 @@ impl Engine {
         &self.pin
     }
 
+    /// The last answer the session got (resumed sessions included), for the next-prompt
+    /// suggestion.
+    pub fn last_answer(&self) -> Option<&str> {
+        self.previous.as_ref().map(|(_, reply)| reply.as_str())
+    }
+
     pub fn enabled(&self) -> bool {
         self.enabled
     }

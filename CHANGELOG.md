@@ -1,5 +1,18 @@
 # Changelog
 
+## 1.2.0
+
+Prompt suggestions.
+
+- After a turn, the empty input box suggests the next prompt, dim, and Right puts it in the
+  box. It is the step the answer ended by offering ("Want me to commit this and tag v1.1.0?"
+  suggests `commit this and tag v1.1.0`), worked out locally: nothing is sent, nothing is
+  spent. No offer, no suggestion; any line that runs afterwards (typed, queued, or sent with
+  Esc) clears it.
+- Ghost text while typing: the rest of the newest earlier message that starts with what is
+  typed (or of an `@file`) shows dim after the cursor, and Right takes it. It stays out of the
+  way of menus, approval cards, history browsing and multi-line text.
+
 ## 1.1.0
 
 Security fixes from an audit of 1.0.0. Some defaults change; see "Behaviour changes".

@@ -152,6 +152,8 @@ pub struct App {
     pub vim: Option<Vim>,
     /// The user's own key bindings.
     pub keymap: Keymap,
+    /// What the last answer offered to do next, shown dim in the empty box; Right takes it.
+    pub suggestion: Option<String>,
 }
 
 /// One subscription on the router row: its name, how much of its plan window is used, or how
@@ -201,7 +203,33 @@ impl App {
             orchestrate: false,
             vim: vim::enabled_from(std::env::var("JEV_VIM").ok().as_deref()).then(Vim::default),
             keymap: Keymap::default(),
+            suggestion: None,
         }
+    }
+
+    /// The dim text after the cursor that Right would put in: the suggested next prompt in an
+    /// empty box, else the rest of a sent message (or an `@file`) that starts with what is
+    /// typed. Only at the end of a one-line text, and never over a menu, card or history.
+    pub fn ghost(&self) -> Option<String> {
+        if self.menu.is_some() || self.approval.is_some() || self.confirm.is_some() || self.history.browsing() {
+            return None;
+        }
+        let text = self.editor.text();
+        if text.is_empty() {
+            return self.suggestion.clone().filter(|_| self.working.is_none());
+        }
+        if self.editor.cursor() != text.len() || text.contains('\n') {
+            return None;
+        }
+        crate::gimmicks::ghost::ghost_suffix(text, self.history.newest_first(), &self.tracked)
+    }
+
+    /// Right at the end of the text: take the ghost text. False when there is none.
+    fn accept_ghost(&mut self) -> bool {
+        let Some(rest) = self.ghost() else { return false };
+        self.editor.insert_str(&rest);
+        self.edited();
+        true
     }
 
     /// Something to animate or expire: the loop redraws on its timer only then.
@@ -418,6 +446,8 @@ impl App {
         if text.trim().is_empty() {
             return Vec::new();
         }
+        // Anything sent answers the last answer: its offer no longer stands.
+        self.suggestion = None;
         self.history.remember(&text);
         if self.working.is_some() {
             self.queue.push_back(text);
@@ -522,7 +552,11 @@ impl App {
             KeyCode::Char('b') if alt(&k) => self.editor.word_left(),
             KeyCode::Char('f') if alt(&k) => self.editor.word_right(),
             KeyCode::Left => self.editor.left(),
-            KeyCode::Right => self.editor.right(),
+            KeyCode::Right => {
+                if !self.accept_ghost() {
+                    self.editor.right();
+                }
+            }
             KeyCode::Char('b') if ctrl(&k) => self.editor.left(),
             KeyCode::Char('f') if ctrl(&k) => self.editor.right(),
             KeyCode::Home => self.editor.home(),
@@ -622,6 +656,50 @@ mod tests {
             out.extend(a.on_key(key(KeyCode::Char(c)), Instant::now()));
         }
         out
+    }
+
+    #[test]
+    fn right_takes_the_suggested_next_prompt_and_sending_clears_it() {
+        let mut a = app();
+        a.suggestion = Some("commit this and tag v1.1.0".into());
+        assert_eq!(a.ghost().as_deref(), Some("commit this and tag v1.1.0"));
+        a.on_key(key(KeyCode::Right), Instant::now());
+        assert_eq!(a.editor.text(), "commit this and tag v1.1.0");
+        assert_eq!(a.ghost(), None, "nothing left to add");
+        let out = a.on_key(key(KeyCode::Enter), Instant::now());
+        assert_eq!(submitted(&out), Some("commit this and tag v1.1.0"));
+        assert_eq!((a.suggestion.as_deref(), a.ghost()), (None, None));
+    }
+
+    #[test]
+    fn the_suggestion_waits_for_an_empty_idle_box_and_typing_something_else_hides_it() {
+        let mut a = app();
+        a.suggestion = Some("push the branch".into());
+        a.working = Some(Working { label: "thinking".into(), activity: None, started: Instant::now() });
+        assert_eq!(a.ghost(), None, "not while a turn runs");
+        a.working = None;
+        typed(&mut a, "zz");
+        assert_eq!(a.ghost(), None, "typed text that matches nothing has no ghost");
+        a.on_key(key(KeyCode::Backspace), Instant::now());
+        a.on_key(key(KeyCode::Backspace), Instant::now());
+        assert_eq!(a.ghost().as_deref(), Some("push the branch"), "an empty box shows it again");
+        // A typed message replaces the offer once sent.
+        typed(&mut a, "something else");
+        a.on_key(key(KeyCode::Enter), Instant::now());
+        assert_eq!(a.suggestion, None);
+    }
+
+    #[test]
+    fn typed_text_ghosts_the_newest_matching_message_and_right_takes_it_only_at_the_end() {
+        let mut a = app();
+        typed(&mut a, "older");
+        assert_eq!(a.ghost().as_deref(), Some(" message"));
+        a.on_key(key(KeyCode::Left), Instant::now());
+        assert_eq!(a.ghost(), None, "not with the cursor inside the text");
+        a.on_key(key(KeyCode::Right), Instant::now());
+        assert_eq!((a.editor.text(), a.editor.cursor()), ("older", 5), "Right moves the cursor when there is no ghost");
+        a.on_key(key(KeyCode::Right), Instant::now());
+        assert_eq!(a.editor.text(), "older message");
     }
 
     fn submitted(actions: &[Action]) -> Option<&str> {

@@ -68,6 +68,16 @@ impl History {
         Self { entries: entries.iter().map(|s| s.to_string()).collect(), ..Self::default() }
     }
 
+    /// The messages, newest first (for ghost text).
+    pub fn newest_first(&self) -> impl Iterator<Item = &String> {
+        self.entries.iter().rev()
+    }
+
+    /// Whether ↑/↓ browsing is under way (ghost text stays out of the way then).
+    pub fn browsing(&self) -> bool {
+        self.pos.is_some()
+    }
+
     /// Keep a sent message (not blank, not the same as the last one) and stop browsing.
     pub fn remember(&mut self, line: &str) {
         self.pos = None;
