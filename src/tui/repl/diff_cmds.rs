@@ -2,7 +2,8 @@
 //! and `/rewind`. The wording and layout come from [`crate::tui::render`], the arguments and
 //! the git work from [`crate::changes::application::diff_command`].
 
-use crate::tui::repl::session::{page, Io, Repl};
+use crate::tui::repl::session::pager::page;
+use crate::tui::repl::session::{Io, Repl};
 use crate::changes::infrastructure::git_working_tree as changes;
 use crate::changes::domain::undo_report::UndoError;
 use crate::changes::application::diff_command as diffcmd;

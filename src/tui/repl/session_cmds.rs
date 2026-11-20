@@ -7,7 +7,8 @@ use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 
 use crate::approval::domain::settings_document;
-use crate::tui::repl::session::{run_turn, Flow, Io, Repl, TurnEnd};
+use crate::tui::repl::session::turn_race::{run_turn, TurnEnd};
+use crate::tui::repl::session::{Flow, Io, Repl};
 use crate::turn::application::attach;
 use crate::catalog::domain::model_table as catalog;
 use crate::shared::infrastructure::env_file as envfile;
