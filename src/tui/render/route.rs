@@ -3,7 +3,7 @@
 
 use crate::tui::render::style::{Style, Theme};
 
-pub use crate::turn::application::engine::RouteFacts;
+pub use crate::turn::domain::route_facts::RouteFacts;
 
 struct ParsedReason {
     task: Option<String>,

@@ -1,0 +1,40 @@
+//! The turn log: one JSON row per attempt, appended to the file `JEV_CODE_LOG` names.
+
+use serde_json::{json, Value};
+
+use crate::backend::infrastructure::outcome_wire::turn_row;
+use crate::backend::{ProviderId, TurnError, TurnOutcome};
+use crate::shared::infrastructure::jsonl_log as log;
+
+/// What one attempt adds to the log, besides what the outcome already carries.
+pub(in crate::turn) struct AttemptRow<'a> {
+    pub provider: ProviderId,
+    pub model: &'a str,
+    pub session: Option<&'a str>,
+    pub reason: &'a str,
+    /// Jev's numbers for the turn.
+    pub jev: &'a Value,
+    pub result: &'a Result<TurnOutcome, TurnError>,
+    pub wall_ms: u64,
+    pub attempt: u32,
+    pub orchestrated: bool,
+    pub cancelled: bool,
+    pub notes: &'a [String],
+}
+
+/// Append the row of one attempt to the log at `path`.
+pub(in crate::turn) fn append_attempt(path: &str, a: &AttemptRow<'_>) {
+    let mut row = turn_row(a.provider, a.model, a.session, a.reason, a.jev, a.result, a.wall_ms);
+    if let Value::Object(o) = &mut row {
+        o.insert("attempt".into(), json!(a.attempt));
+        o.insert("orchestrated".into(), json!(a.orchestrated));
+        if a.cancelled {
+            o.insert("error_kind".into(), json!("cancelled"));
+            o.insert("cancelled".into(), json!(true));
+        }
+        if !a.notes.is_empty() {
+            o.insert("failover_notes".into(), json!(a.notes));
+        }
+    }
+    log::append(path, &row);
+}

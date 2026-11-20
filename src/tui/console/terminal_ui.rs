@@ -25,7 +25,8 @@ use crate::approval::domain::rule_policy as permissions;
 use crate::approval::domain::rule_policy::{Offer, Review, Settled};
 use crate::tui::tty::terminal_guard as terminal;
 use crate::tui::tty::terminal_guard::{Screen, StdScreen};
-use crate::turn::application::engine::{Answer, Failover, NoRouteInfo, Ui};
+use crate::turn::application::ports::{Answer, Ui};
+use crate::turn::domain::failover::{Failover, NoRouteInfo};
 use crate::tui::render as uifmt;
 use crate::tui::render::{FileChange, RouteFacts, Style, SummaryFacts, Theme};
 
@@ -2080,9 +2081,9 @@ mod tests {
             return answer;
         }
         let project = c.lock().cfg.project.clone();
-        let settled = crate::turn::application::engine::settle(answer, offer, &project);
+        let settled = crate::turn::application::ports::settle(answer, offer, &project);
         c.permission_settled(req, &settled);
-        crate::turn::application::engine::settled_decision(&settled)
+        crate::turn::application::ports::settled_decision(&settled)
     }
 
     /// The question and the person's answer, start to end, settled as the engine does.
