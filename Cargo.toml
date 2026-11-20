@@ -68,6 +68,11 @@ path = "src/bin/orch_tune.rs"
 name = "delegate_mcp"
 path = "src/bin/delegate_mcp.rs"
 
+# Debug builds keep file and line numbers for backtraces but not variable-level debug info:
+# a cold `cargo build --all-targets` is about a quarter faster and `target/` smaller.
+[profile.dev]
+debug = "line-tables-only"
+
 # What `scripts/install.sh` builds for this machine: release speed, but incremental, so
 # reinstalling after a small change recompiles only what changed. Releases use `release`.
 [profile.local]
