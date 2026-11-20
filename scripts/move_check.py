@@ -65,10 +65,55 @@ def scaffold(path):
     return PurePosixPath(path).name in SCAFFOLD or path.startswith("tests/architecture_baseline/")
 
 
+MODULE_PATH = re.compile(r"\b(crate|jev_router|super)(::[a-z_][a-z0-9_]*)+::(?=[A-Za-z_{])")
+
+
+def item_canonical(line):
+    """A line as an item move sees it: visibility dropped, and a module path in front of a name
+    (`crate::backend::ProviderId`, `crate::shared::ProviderId`) reduced to `crate::…::`, since
+    a caller rewritten to the item's new home is part of the move."""
+    return MODULE_PATH.sub("crate::…::", VISIBILITY.sub(r"\1", line)).strip()
+
+
+def item_move(rev):
+    """Items moved between files: every line removed anywhere in the commit is added somewhere,
+    and the reverse, apart from `use`/`mod` lines, visibility and module paths. Scaffolding
+    (`mod.rs`, `lib.rs`, baselines, the architecture test's tables) and docs are left out."""
+    diff = git("diff", "--no-ext-diff", "--no-color", "--no-textconv", "-M", "--unified=0", f"{rev}~1", rev, "--", "*.rs", "*.py")
+    removed, added = Counter(), Counter()
+    path = ""
+    for line in diff.decode("utf-8", "surrogateescape").splitlines():
+        if line.startswith("+++ b/"):
+            path = line[6:]
+            continue
+        if line.startswith(("--- ", "+++ ", "diff ", "index ", "@@ ")):
+            continue
+        if not line.startswith(("-", "+")) or path == "tests/architecture.rs":
+            continue
+        content = line[1:]
+        if ALLOWED_LINE.match(content) or not content.strip() or content.lstrip().startswith("//!"):
+            continue
+        (removed if line[0] == "-" else added)[item_canonical(content)] += 1
+    return list((removed - added).elements()), list((added - removed).elements())
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("rev", nargs="?", default="HEAD")
-    rev = parser.parse_args().rev
+    parser.add_argument("--items", action="store_true", help="the commit moves items between files (Phase 1a): compare all removed and added lines")
+    args = parser.parse_args()
+    rev = args.rev
+    if args.items:
+        removed, added = item_move(rev)
+        for line in removed:
+            print(f"- {line}")
+        for line in added:
+            print(f"+ {line}")
+        if removed or added:
+            print(f"move check: {len(removed)} removed and {len(added)} added lines are not part of a move")
+            return 1
+        print("move check: pure item move")
+        return 0
     failures = 0
     for status, paths in changes(rev):
         if status[0] in "RC":

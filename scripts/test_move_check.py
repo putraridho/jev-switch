@@ -32,9 +32,25 @@ class MoveCheckTests(unittest.TestCase):
         self.git("add", "-A")
         self.git("-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false", "commit", "-qm", "fixture")
 
-    def check_move(self):
+    def check_move(self, *flags):
         self.commit()
-        return subprocess.run([sys.executable, "-I", str(SCRIPT)], cwd=self.repo, env=self.env, text=True, capture_output=True)
+        return subprocess.run([sys.executable, "-I", str(SCRIPT), *flags], cwd=self.repo, env=self.env, text=True, capture_output=True)
+
+    def test_an_item_moved_to_another_file_with_its_callers_rewritten_is_an_item_move(self):
+        self.write("old.rs", "use super::thing;\nfn one() {}\nfn three() {}\nfn four() {}\nfn five() {}\n")
+        self.write("other.rs", "original\n//! The new home.\nfn two() {}\nlet x = crate::shared::Id::A;\n")
+        self.check_move()  # a first commit that adds the caller in its old form is set up below
+        self.write("other.rs", "original\n//! The new home.\nfn two() {}\nlet x = crate::backend::Id::A;\n")
+        self.commit()
+        self.write("other.rs", "original\n//! The new home.\nfn two() {}\nlet x = crate::shared::Id::A;\n")
+        self.assertEqual(self.check_move("--items").returncode, 0)
+
+    def test_an_item_changed_on_the_way_is_not_an_item_move(self):
+        self.write("old.rs", "use super::thing;\nfn one() {}\nfn three() {}\nfn four() {}\nfn five() {}\n")
+        self.write("other.rs", "original\nfn two_changed() {}\n")
+        result = self.check_move("--items")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("fn two_changed()", result.stdout)
 
     def test_pure_rename(self):
         self.git("mv", "old.rs", "new.rs")
