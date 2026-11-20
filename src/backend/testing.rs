@@ -8,7 +8,7 @@ use std::sync::{Arc, Mutex};
 
 use tokio::process::Command;
 
-use super::{classify_common, Backend, ErrorKind, Event, Finish, McpAttachment, ProviderId, TurnRequest, Usage};
+use crate::backend::{classify_common, Backend, ErrorKind, Event, Finish, McpAttachment, ProviderId, TurnRequest, Usage};
 
 /// What the session id of a finished turn is.
 #[derive(Clone)]

@@ -1,15 +1,9 @@
 //! The types and infrastructure every context shares. Nothing here may depend on
 //! any other module of this crate.
 
-pub mod envfile;
-pub mod git_guard;
-pub mod limit_notice;
-pub mod log;
-pub mod private_file;
-pub mod secrets;
-pub mod sha256;
-pub mod text;
-pub mod wording;
+
+pub mod domain;
+pub mod infrastructure;
 
 use std::str::FromStr;
 

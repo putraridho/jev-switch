@@ -1,147 +1,8 @@
-// Map concern: turn and backend consume chat's anthropic model constants and
-// limit classifiers, but 1.3 excludes chat from both. They may need a new owner.
+// A file belongs to the bounded context named by its top-level folder under `src/`
+// (`src/approval/...` is `approval`). The map of which context may import which is EDGES.
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
-
-const MODULES: &[(&str, &str)] = &[
-    ("anthropic", "chat"), ("availability", "providers"), ("backend", "backend"),
-    ("shared", "shared"),
-    ("catalog", "catalog"), ("changes", "changes"), ("cli", "tui"),
-    ("commands", "tui"), ("console", "tui"), ("cooldown", "providers"),
-    ("delegate", "orchestration"), ("doctor", "doctor"), ("envfile", "shared"),
-    ("handoff", "session"), ("lineedit", "tui"), ("log", "shared"),
-    ("orchestrate", "orchestration"), ("permissions", "approval"), ("prefix", "gateway"),
-    ("providers", "providers"), ("repl", "tui"), ("router", "judgment"),
-    ("routing", "routing"), ("terminal", "tui"), ("transcript", "chat"),
-    ("turn", "turn"), ("turnlog", "backend"), ("typesafe", "judgment"),
-    ("uifmt", "tui"), ("usage", "gateway"), ("views", "tui"),
-    ("agentview", "tui"), // not in 4.5: agent panels
-    ("attach", "turn"), // not in 4.5: prompt attachments
-    ("audit", "session"), // not in 4.5: turn history
-    ("background", "turn"), // not in 4.5: background turn work
-    ("balance", "providers"), // not in 4.5: provider account
-    ("base64", "shared"), // not in 4.5: shared encoding
-    ("bench", "tui"), // not in 4.5: bench command
-    ("bgquery", "tui"), // not in 4.5: terminal probing
-    ("bridge", "tui"), // not in 4.5: editor interface
-    ("budget", "turn"), // not in 4.5: session spending guard
-    ("cache", "session"), // not in 4.5: session cache facts
-    ("ctxintel", "session"), // not in 4.5: context-window facts
-    ("diffcmd", "tui"), // not in 4.5: diff command
-    ("diffparse", "changes"), // not in 4.5: diff representation
-    ("effort", "turn"), // not in 4.5: reasoning selection
-    ("export", "session"), // not in 4.5: session export
-    ("ext", "approval"), // not in 4.5: extension trust
-    ("extcmds", "tui"), // not in 4.5: extension commands
-    ("failover", "turn"), // not in 4.5: failover policy
-    ("front", "tui"), // not in 4.5: front-end channel
-    ("gimmicks", "tui"), // not in 4.5: presentation features
-    ("gitflow", "tui"), // not in 4.5: git commands
-    ("guard", "turn"), // not in 4.5: turn guards
-    ("guard_cmd", "tui"), // not in 4.5: guard commands
-    ("headless", "tui"), // not in 4.5: noninteractive interface
-    ("host", "tui"), // not in 4.5: host commands
-    ("inflight", "turn"), // not in 4.5: turn recovery
-    ("layers", "approval"), // not in 4.5: settings layers
-    ("learn", "tui"), // not in 4.5: help commands
-    ("libcmd", "tui"), // not in 4.5: session commands
-    ("mcp", "backend"), // not in 4.5: provider MCP discovery
-    ("mode", "approval"), // not in 4.5: permission mode
-    ("perf", "shared"), // not in 4.5: timing instrumentation
-    ("picker", "tui"), // not in 4.5: session picker
-    ("planstore", "providers"), // not in 4.5: provider plan readings
-    ("prefs", "session"), // not in 4.5: session preferences
-    ("privacy", "approval"), // not in 4.5: data policy
-    ("probecache", "providers"), // not in 4.5: provider probe cache
-    ("profile", "approval"), // not in 4.5: permission profiles
-    ("projcmd", "tui"), // not in 4.5: project commands
-    ("projectkind", "shared"), // not in 4.5: project facts
-    ("projmemory", "session"), // not in 4.5: project memory
-    ("redact", "shared"), // not in 4.5: redaction
-    ("replay", "session"), // not in 4.5: session replay
-    ("repomap", "session"), // not in 4.5: session repository context
-    ("routing_rules", "routing"), // not in 4.5: routing policy
-    ("schedule", "tui"), // not in 4.5: scheduled interface
-    ("scoreboard", "session"), // not in 4.5: session provider history
-    ("selfupdate", "tui"), // not in 4.5: update command
-    ("sessionimport", "session"), // not in 4.5: session import
-    ("sessionlib", "session"), // not in 4.5: saved sessions
-    ("sessionlog", "session"), // not in 4.5: session history
-    ("sessionmeta", "session"), // not in 4.5: session metadata
-    ("team", "routing"), // not in 4.5: team routing policy
-    ("termenv", "tui"), // not in 4.5: terminal environment
-    ("termsetup", "tui"), // not in 4.5: terminal setup
-    ("tui", "tui"), // not in 4.5: terminal interface
-    ("typeahead", "tui"), // not in 4.5: terminal input
-    ("workercheck", "orchestration"), // not in 4.5: worker checks
-    ("workstation", "tui"), // not in 4.5: terminal interface
-];
-
-const EXTRA_MODULES: &[(&str, &str)] = &[
-    ("agentview::orch", "tui"), // not in 4.5: agent panel
-    ("agentview::stored", "tui"), // not in 4.5: agent panel
-    ("agentview::tasks", "tui"), // not in 4.5: agent panel
-    ("agentview::workers", "tui"), // not in 4.5: agent panel
-    ("backend::codex_plan", "backend"), // not in 4.5: provider adapter
-    ("backend::gemini::acp", "backend"), // not in 4.5: provider adapter
-    ("backend::select", "backend"), // provider selection
-    ("backend::effort", "backend"), // effort levels and their CLI encoding
-    ("backend::turnlog", "backend"), // turn log rows
-    ("ext::cli", "tui"), // not in 4.5: extension interface
-    ("ext::frontmatter", "approval"), // not in 4.5: extension trust
-    ("ext::hooks", "approval"), // not in 4.5: extension trust
-    ("ext::library", "approval"), // not in 4.5: extension trust
-    ("ext::market", "approval"), // not in 4.5: extension trust
-    ("ext::view", "tui"), // not in 4.5: extension interface
-    ("gimmicks::autopsy", "tui"), // not in 4.5: presentation
-    ("gimmicks::gauge", "tui"), // not in 4.5: presentation
-    ("gimmicks::ghost", "tui"), // not in 4.5: presentation
-    ("gimmicks::packs", "tui"), // not in 4.5: presentation
-    ("gimmicks::palette", "tui"), // not in 4.5: presentation
-    ("gimmicks::race", "tui"), // not in 4.5: presentation
-    ("gimmicks::savings", "tui"), // not in 4.5: presentation
-    ("gimmicks::session_title", "tui"), // not in 4.5: presentation
-    ("gimmicks::shortcuts", "tui"), // not in 4.5: presentation
-    ("gimmicks::suggest", "tui"), // not in 4.5: presentation
-    ("gimmicks::title", "tui"), // not in 4.5: presentation
-    ("repl::cache_cmds", "tui"), // not in 4.5: session commands
-    ("repl::diff_cmds", "tui"), // not in 4.5: session commands
-    ("repl::ext_cmds", "tui"), // not in 4.5: session commands
-    ("repl::headless", "tui"), // not in 4.5: session commands
-    ("repl::library_cmds", "tui"), // not in 4.5: session commands
-    ("repl::project_cmds", "tui"), // not in 4.5: session commands
-    ("repl::session_cmds", "tui"), // not in 4.5: session commands
-    ("repl::team_cmds", "tui"), // not in 4.5: session commands
-    ("tui::app", "tui"), // not in 4.5: terminal interface
-    ("tui::editor", "tui"), // not in 4.5: terminal interface
-    ("tui::history", "tui"), // not in 4.5: terminal interface
-    ("tui::menu", "tui"), // not in 4.5: terminal interface
-    ("tui::run", "tui"), // not in 4.5: terminal interface
-    ("tui::screen", "tui"), // not in 4.5: terminal interface
-    ("tui::transcript", "tui"), // not in 4.5: terminal interface
-    ("tui::view", "tui"), // not in 4.5: terminal interface
-    ("uifmt::diffview", "tui"), // not in 4.5: rendering
-    ("uifmt::highlight", "tui"), // not in 4.5: rendering
-    ("uifmt::identity", "tui"), // not in 4.5: rendering
-    ("uifmt::roles", "tui"), // not in 4.5: rendering
-    ("uifmt::session", "tui"), // not in 4.5: rendering
-    ("uifmt::workflows", "tui"), // not in 4.5: rendering
-    ("workstation::access", "tui"), // not in 4.5: terminal interface
-    ("workstation::collapse", "tui"), // not in 4.5: terminal interface
-    ("workstation::fuzzy", "tui"), // not in 4.5: terminal interface
-    ("workstation::keymap", "tui"), // not in 4.5: terminal interface
-    ("workstation::vim", "tui"), // not in 4.5: terminal interface
-];
-
-const DOCUMENTED_CHILDREN: &[&str] = &[
-    "backend::claude", "backend::codex", "backend::gemini", "backend::grok",
-    "shared::envfile", "shared::git_guard", "shared::limit_notice", "shared::log", "shared::private_file", "shared::secrets", "shared::sha256", "shared::text", "shared::wording",
-    "uifmt::ansi", "uifmt::changes", "uifmt::commands", "uifmt::complete",
-    "uifmt::failure", "uifmt::markdown", "uifmt::permissions", "uifmt::provider_view",
-    "uifmt::route", "uifmt::screens", "uifmt::status", "uifmt::style",
-    "uifmt::summary", "uifmt::text", "uifmt::width", "uifmt::wrap",
-];
 
 const EDGES: &[(&str, &[&str])] = &[
     ("shared", &[]), ("catalog", &["shared"]), ("approval", &["shared"]),
@@ -466,15 +327,13 @@ fn architecture() {
         if test_paths.iter().any(|path| file.starts_with(path)) { continue; }
         let relative = file.strip_prefix(root).unwrap();
         let module = module_path(relative);
-        let full_module = module.join("::");
-        assert!(module.len() == 1 || DOCUMENTED_CHILDREN.contains(&full_module.as_str()) || EXTRA_MODULES.iter().any(|(name, _)| *name == full_module), "unmapped module: {}", relative.display());
-        let context = EXTRA_MODULES.iter().find(|(name, _)| *name == full_module)
-            .or_else(|| MODULES.iter().find(|(name, _)| *name == module[0]))
-            .unwrap_or_else(|| panic!("unmapped module: {}", relative.display())).1;
+        let context = module[0].as_str();
+        assert!(EDGES.iter().any(|(name, _)| *name == context), "{} is in no known context folder", relative.display());
         let allowed = EDGES.iter().find(|(name, _)| *name == context).unwrap().1;
         for (target, line) in paths(&without_tests(&lex(&fs::read_to_string(&file).unwrap())), &module) {
-            let name = target.trim_start_matches("crate::");
-            let target_context = MODULES.iter().find(|(module, _)| *module == name).unwrap_or_else(|| panic!("{}:{line}: unmapped target {target}", relative.display())).1;
+            let target_context = target.trim_start_matches("crate::");
+            if target_context == "testkit" { continue; }
+            assert!(EDGES.iter().any(|(name, _)| *name == target_context), "{}:{line}: {target} is in no known context folder", relative.display());
             if target_context != context && !allowed.contains(&target_context) {
                 violations.entry((context.into(), relative.to_string_lossy().into_owned(), target)).or_default().push(line);
             }

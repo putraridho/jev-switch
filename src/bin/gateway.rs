@@ -38,14 +38,14 @@ use futures_util::StreamExt as _;
 use serde_json::{json, Value};
 use tokio::sync::{Mutex, OwnedSemaphorePermit, Semaphore};
 
-use jev_router::anthropic::{MODEL_CHEAP, MODEL_MID, MODEL_STRONG, MODEL_TOP};
-use jev_router::log;
-use jev_router::orchestrate::{orch_gate, Gate};
-use jev_router::router::{Orchestration, Router, CODE_STRONG_THRESHOLD, ORCH_TRIGGER_P, TOP_THRESHOLD};
-use jev_router::routing::Sticky;
-use jev_router::typesafe::TypeSafe;
-use jev_router::prefix::PrefixWatch;
-use jev_router::usage::{find_cwd, project_of, request_params, Turns, UsageTap};
+use jev_router::chat::infrastructure::claude_print_cli::{MODEL_CHEAP, MODEL_MID, MODEL_STRONG, MODEL_TOP};
+use jev_router::shared::infrastructure::jsonl_log as log;
+use jev_router::orchestration::domain::orchestration_gate::{orch_gate, Gate};
+use jev_router::judgment::application::judge::{Orchestration, Router, CODE_STRONG_THRESHOLD, ORCH_TRIGGER_P, TOP_THRESHOLD};
+use jev_router::routing::domain::decide::Sticky;
+use jev_router::judgment::infrastructure::typesafe_http::TypeSafe;
+use jev_router::gateway::domain::prefix_fingerprint::PrefixWatch;
+use jev_router::gateway::application::usage_tap::{find_cwd, project_of, request_params, Turns, UsageTap};
 
 const ALIAS: &str = "jev-code";
 /// Start of the context block the jev-orchestrate mod attaches to a prompt that

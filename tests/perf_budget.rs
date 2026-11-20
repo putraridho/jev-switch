@@ -1,6 +1,6 @@
 //! The start-up performance budget, checked against the real `code` binary with no provider
 //! CLI on `PATH` (so nothing real runs and no quota is spent). The second start must read
-//! the probe cache and stay within every phase budget of [`jev_router::perf::Phase::budget`].
+//! the probe cache and stay within every phase budget of [`jev_router::tui::app::startup_timeline::Phase::budget`].
 
 use std::path::Path;
 use std::process::{Command, Output};

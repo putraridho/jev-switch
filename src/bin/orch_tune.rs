@@ -20,9 +20,9 @@ use serde_json::Value;
 use tokio::sync::Semaphore;
 use tokio::task::JoinSet;
 
-use jev_router::log;
-use jev_router::router::{Orchestration, Router};
-use jev_router::typesafe::TypeSafe;
+use jev_router::shared::infrastructure::jsonl_log as log;
+use jev_router::judgment::application::judge::{Orchestration, Router};
+use jev_router::judgment::infrastructure::typesafe_http::TypeSafe;
 
 const CONCURRENCY: usize = 8;
 const EXAMPLES_PER_BAND: usize = 6;

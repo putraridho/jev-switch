@@ -1,3 +1,1 @@
-T1 | src/ext/library.rs | crate::uifmt | 1
-T1 | src/layers.rs | crate::uifmt | 1
-T1 | src/privacy.rs | crate::providers | 1
+T1 | src/approval/application/extension_library.rs | crate::tui | 1

@@ -3,7 +3,7 @@
 //! child: newline-delimited JSON-RPC 2.0, one message per line.
 //!
 //! The tool has NO model parameter. Which worker model runs a piece is Jev's decision
-//! (see `jev_router::delegate`); anything the planner says about models is ignored.
+//! (see `jev_router::orchestration::application::delegator`); anything the planner says about models is ignored.
 //!
 //!   delegate_mcp [--dir <project dir>] [--planner <provider:model>]
 //!
@@ -22,11 +22,11 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::sync::{mpsc, OnceCell};
 use tokio::task::JoinSet;
 
-use jev_router::delegate::{has_leftovers, router_judge, BoxFut, DelegateApi, DelegateRequest, Delegator, GitWorktrees};
-use jev_router::log;
-use jev_router::providers::Runtime;
-use jev_router::router::Router;
-use jev_router::typesafe::TypeSafe;
+use jev_router::orchestration::application::delegator::{has_leftovers, router_judge, BoxFut, DelegateApi, DelegateRequest, Delegator, GitWorktrees};
+use jev_router::shared::infrastructure::jsonl_log as log;
+use jev_router::providers::application::provider_registry::Runtime;
+use jev_router::judgment::application::judge::Router;
+use jev_router::judgment::infrastructure::typesafe_http::TypeSafe;
 
 /// Protocol versions this server speaks, newest first. A client's requested version is
 /// echoed when it is one of these, else the newest is offered (the client then decides).
@@ -307,8 +307,8 @@ impl Lazy {
         let delegator = Delegator::new(runtime, router_judge(router), Box::new(worktrees))
             .with_log(log::path_from_env("JEV_DELEGATE_LOG", "orchestration.jsonl"))
             .with_planner(self.planner.clone())
-            .with_guards(jev_router::guard::Guards::load(Some(&state), &self.dir))
-            .with_auto_merge(auto_merge_on(jev_router::envfile::lookup("JEV_AUTO_MERGE").as_deref()))
+            .with_guards(jev_router::turn::application::guards::Guards::load(Some(&state), &self.dir))
+            .with_auto_merge(auto_merge_on(jev_router::shared::infrastructure::env_file::lookup("JEV_AUTO_MERGE").as_deref()))
             .with_store(&state);
         // Workers an earlier run left: reload the mergeable ones, remove the abandoned ones.
         delegator.recover().await;
@@ -433,7 +433,7 @@ mod tests {
     use super::*;
     use std::sync::Mutex;
 
-    use jev_router::delegate::{DelegateResult, FileStat, Landing, ReviewReason};
+    use jev_router::orchestration::application::delegator::{DelegateResult, FileStat, Landing, ReviewReason};
 
     /// The arguments of one `wait` call: task ids and timeout.
     type WaitCall = (Option<Vec<String>>, Option<Duration>);

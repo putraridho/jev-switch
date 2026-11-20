@@ -7,10 +7,10 @@
 use std::io::{self, Write};
 
 use anyhow::Result;
-use jev_router::anthropic::{Anthropic, MODEL_CHEAP, MODEL_MID, MODEL_STRONG};
-use jev_router::router::Router;
-use jev_router::transcript::Transcript;
-use jev_router::typesafe::TypeSafe;
+use jev_router::chat::infrastructure::claude_print_cli::{Anthropic, MODEL_CHEAP, MODEL_MID, MODEL_STRONG};
+use jev_router::judgment::application::judge::Router;
+use jev_router::chat::domain::transcript::Transcript;
+use jev_router::judgment::infrastructure::typesafe_http::TypeSafe;
 
 const HELP: &str = "jev-chat: Q&A chat with per-turn model routing (Haiku for simple, Sonnet by default, Opus for hard or security questions)
 

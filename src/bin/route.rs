@@ -29,14 +29,16 @@ use anyhow::{Context, Result};
 use tokio::sync::Semaphore;
 use tokio::task::JoinSet;
 
-use jev_router::catalog::{MODEL_CHEAP, MODEL_MID, MODEL_STRONG};
+use jev_router::catalog::domain::model_table::{MODEL_CHEAP, MODEL_MID, MODEL_STRONG};
 use jev_router::shared::ProviderId;
-use jev_router::catalog::{self, Allowances, Overrides, Usable};
-use jev_router::routing::{self, Pin, RouteInput, RoutingState, Signals};
-use jev_router::router::{security_level, Decision, Router, CODE_STRONG_THRESHOLD};
+use jev_router::catalog::domain::model_table as catalog;
+use jev_router::catalog::domain::model_table::{Allowances, Overrides, Usable};
+use jev_router::routing::domain::decide as routing;
+use jev_router::routing::domain::decide::{Pin, RouteInput, RoutingState, Signals};
+use jev_router::judgment::application::judge::{security_level, Decision, Router, CODE_STRONG_THRESHOLD};
 
 const TIERS: [&str; 3] = [MODEL_CHEAP, MODEL_MID, MODEL_STRONG];
-use jev_router::typesafe::TypeSafe;
+use jev_router::judgment::infrastructure::typesafe_http::TypeSafe;
 
 const CONCURRENCY: usize = 8;
 

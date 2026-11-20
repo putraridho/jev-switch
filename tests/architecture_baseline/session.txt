@@ -1,8 +1,4 @@
-T1 | src/audit.rs | crate::turn | 1
-T1 | src/cache.rs | crate::uifmt | 1
-T1 | src/ctxintel.rs | crate::uifmt | 1
-T1 | src/export.rs | crate::turn | 1
-T1 | src/prefs.rs | crate::mode | 3
-T1 | src/sessionlib.rs | crate::uifmt | 1
-T1 | src/sessionlib.rs | crate::views | 1
-T1 | src/sessionlog.rs | crate::turn | 1
+T1 | src/session/application/export.rs | crate::turn | 3
+T1 | src/session/application/session_library.rs | crate::tui | 2
+T1 | src/session/domain/context_intelligence.rs | crate::tui | 1
+T1 | src/session/domain/context_intelligence.rs | crate::turn | 1

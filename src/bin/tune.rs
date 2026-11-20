@@ -18,8 +18,8 @@ use std::fs;
 use anyhow::{Context, Result};
 use serde::Deserialize;
 
-use jev_router::router::Router;
-use jev_router::typesafe::TypeSafe;
+use jev_router::judgment::application::judge::Router;
+use jev_router::judgment::infrastructure::typesafe_http::TypeSafe;
 
 /// One labeled example. `cheap_was_fine` is the ground truth that matters:
 /// did the CHEAP model actually produce a good-enough answer for this request?

@@ -4,7 +4,7 @@
 //! really use, catches it up on what the others did, and fails over to the next one on a limit
 //! or an error.
 //!
-//! This file only wires the terminal to the library: arguments (`jev_router::cli`), the line
+//! This file only wires the terminal to the library: arguments (`jev_router::tui::cli_args`), the line
 //! editor (`lineedit`), output (`console`), commands and turns (`repl`), screens (`views`).
 //! Every exit goes through `run`'s return value, so the terminal guard always runs.
 //!
@@ -16,28 +16,34 @@ use std::io::{IsTerminal, Read, Write};
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
-use jev_router::cli::{self, Action, Args, PromptSource};
-use jev_router::commands;
-use jev_router::console::{Console, ConsoleConfig, CLEAR_SCREEN};
-use jev_router::envfile;
-use jev_router::front::{Front, FrontMsg};
-use jev_router::tui;
-use jev_router::handoff;
-use jev_router::lineedit::{self, Input, InterruptGuard};
-use jev_router::log;
-use jev_router::mode;
-use jev_router::orchestrate::{self, Setup};
-use jev_router::prefs::Saved;
-use jev_router::perf::{Phase, ProbeSource, Timeline};
-use jev_router::probecache;
-use jev_router::providers::{self, ProbeCache, Runtime};
-use jev_router::repl::{Confirm, Flow, Interrupt, Io, Repl, SigInt};
-use jev_router::router::{Router, CODE_STRONG_THRESHOLD};
-use jev_router::terminal::{self, TerminalGuard};
-use jev_router::turn::Engine;
-use jev_router::typesafe::TypeSafe;
-use jev_router::uifmt::{self, Style};
-use jev_router::views;
+use jev_router::tui::cli_args as cli;
+use jev_router::tui::cli_args::{Action, Args, PromptSource};
+use jev_router::tui::command as commands;
+use jev_router::tui::console::terminal_ui::{Console, ConsoleConfig, CLEAR_SCREEN};
+use jev_router::shared::infrastructure::env_file as envfile;
+use jev_router::tui::console::front::{Front, FrontMsg};
+use jev_router::session::domain::catch_up as handoff;
+use jev_router::tui::input::line_editor as lineedit;
+use jev_router::tui::input::line_editor::{Input, InterruptGuard};
+use jev_router::shared::infrastructure::jsonl_log as log;
+use jev_router::approval::domain::mode;
+use jev_router::orchestration::domain::orchestration_gate as orchestrate;
+use jev_router::orchestration::domain::orchestration_gate::Setup;
+use jev_router::tui::app::preferences::Saved;
+use jev_router::providers::domain::probe_source::ProbeSource;
+use jev_router::tui::app::startup_timeline::{Phase, Timeline};
+use jev_router::providers::infrastructure::probe_cache as probecache;
+use jev_router::providers::application::provider_registry as providers;
+use jev_router::providers::application::provider_registry::{ProbeCache, Runtime};
+use jev_router::tui::repl::session::{Confirm, Flow, Interrupt, Io, Repl, SigInt};
+use jev_router::judgment::application::judge::{Router, CODE_STRONG_THRESHOLD};
+use jev_router::tui::tty::terminal_guard as terminal;
+use jev_router::tui::tty::terminal_guard::TerminalGuard;
+use jev_router::turn::application::engine::Engine;
+use jev_router::judgment::infrastructure::typesafe_http::TypeSafe;
+use jev_router::tui::render as uifmt;
+use jev_router::tui::render::Style;
+use jev_router::tui::views::status_facts as views;
 
 /// What is known about the terminals before anything is printed.
 struct Term {
@@ -87,7 +93,7 @@ fn console_for(term: &Term, project: &Path, stream_answers: bool, front: Option<
         return console.with_front(front);
     }
     if term.interactive() && stream_answers {
-        let console = console.with_key_reader(jev_router::console::terminal_keys());
+        let console = console.with_key_reader(jev_router::tui::console::terminal_ui::terminal_keys());
         // What is typed during a turn shows on the status line: without one it would be blind.
         if term.live() {
             console.with_type_ahead()
@@ -169,15 +175,16 @@ fn apply_layered_settings(args: &Args, dir: &Path) {
         std::env::set_var("JEV_PROFILE", profile);
     }
     let profile = std::env::var("JEV_PROFILE").ok().filter(|p| !p.is_empty());
-    let places = jev_router::ext::Places::from_env(dir);
-    jev_router::layers::Layered::load(&places, profile.as_deref()).apply_to_process();
+    let places = jev_router::approval::application::extensions::Places::from_env(dir);
+    jev_router::tui::app::layered_settings::Layered::load(&places, profile.as_deref()).apply_to_process();
 }
 
 /// `jev-code update [--yes]`: the same as `/update`, from the shell. Asks on the terminal unless
 /// `--yes`; without a terminal to ask on, only `--yes` updates. Exit code: 0 updated or already
 /// the newest, 1 refused or failed, 2 not confirmed.
 fn update_command(yes: bool) -> i32 {
-    use jev_router::selfupdate::{self, Plan};
+    use jev_router::tui::app::self_update as selfupdate;
+    use jev_router::tui::app::self_update::Plan;
     use std::io::{BufRead, IsTerminal, Write};
     let dir = match selfupdate::source_dir() {
         Ok(dir) => dir,
@@ -226,13 +233,13 @@ fn update_command(yes: bool) -> i32 {
 }
 
 /// `jev-code ext ...`: no providers and no terminal setup, only the config folder.
-fn ext_command(action: &jev_router::ext::cli::ExtAction, no_color: bool) -> i32 {
+fn ext_command(action: &jev_router::tui::app::extension_cli::ExtAction, no_color: bool) -> i32 {
     let style = if no_color { Style::off() } else { Style::detect(std::io::stdout().is_terminal()) };
-    let Some(user) = jev_router::ext::config_dir(|n| std::env::var(n).ok()) else {
+    let Some(user) = jev_router::approval::application::extensions::config_dir(|n| std::env::var(n).ok()) else {
         eprintln!("jev-code: no config folder for extensions (HOME is not set; or set JEV_CODE_CONFIG_DIR)");
         return 1;
     };
-    let outcome = jev_router::ext::cli::run(action, &user, style);
+    let outcome = jev_router::tui::app::extension_cli::run(action, &user, style);
     println!("{}", outcome.text);
     outcome.code
 }
@@ -309,7 +316,7 @@ fn engine_for(args: &Args, runtime: Runtime, router: Router, dir: PathBuf, can_a
     let mode = mode::start(args.mode, saved.mode, envfile::lookup("CODE_PERMISSION_MODE").as_deref());
     let routing = saved.routing.unwrap_or_else(|| commands::routing_enabled(envfile::lookup("JEV_PROVIDERS").as_deref()));
     let orchestrate = orchestrate::start(saved.orchestrate, envfile::lookup("JEV_ORCHESTRATE").as_deref(), session.is_some());
-    let hooks = std::sync::Arc::new(jev_router::ext::hooks::Hooks::load(&jev_router::ext::Places::from_env(&dir)));
+    let hooks = std::sync::Arc::new(jev_router::approval::application::extension_hooks::Hooks::load(&jev_router::approval::application::extensions::Places::from_env(&dir)));
     let engine = Engine::new(runtime, router, dir)
         .with_backend_factory(Box::new(providers::run_backends(can_ask)))
         .with_enabled(routing)
@@ -333,8 +340,8 @@ fn engine_for(args: &Args, runtime: Runtime, router: Router, dir: PathBuf, can_a
 /// `jev-code doctor`: the report on stdout; exit 1 when something is a Problem.
 async fn doctor(dir: &Path, console: &Console) -> i32 {
     let (runtime, _) = start_runtime(console, ProbeMode::Live).await;
-    let inputs = jev_router::doctor::gather(&runtime, dir).await;
-    let report = jev_router::doctor::diagnose(&inputs);
+    let inputs = jev_router::doctor::domain::diagnose::gather(&runtime, dir).await;
+    let report = jev_router::doctor::domain::diagnose::diagnose(&inputs);
     console.out(&views::doctor_text(&report, console.out_style(), console.width()));
     i32::from(views::has_problem(&report))
 }
@@ -384,7 +391,7 @@ async fn print_mode(args: &Args, source: &PromptSource, dir: &Path, term: &Term,
         }
     };
     match &args.repeat {
-        Some(repeat) => repl.repeat_shot(&prompt, args.format, repeat, &mut sigint, &mut jev_router::repl::sleeper()).await,
+        Some(repeat) => repl.repeat_shot(&prompt, args.format, repeat, &mut sigint, &mut jev_router::tui::repl::session::sleeper()).await,
         None => repl.one_shot_as(&prompt, args.format, &mut sigint).await,
     }
 }
@@ -464,8 +471,8 @@ async fn session(args: &Args, dir: &Path, term: &Term, console: Console, state_d
     };
     if let Some(rx) = front_rx {
         // The front end saves the session when it ends.
-        let opts = tui::run::Options { style: term.out_style, history: state_dir.as_deref().map(lineedit::history_path) };
-        return tui::run::run(repl, rx, opts).await;
+        let opts = jev_router::tui::app::frontend_loop::Options { style: term.out_style, history: state_dir.as_deref().map(lineedit::history_path) };
+        return jev_router::tui::app::frontend_loop::run(repl, rx, opts).await;
     }
     let code = if term.interactive() {
         edit_loop(&mut repl, term, &console, state_dir.as_deref(), &mut sigint).await
@@ -499,7 +506,7 @@ fn startup(repl: &mut Repl, args: &Args, term: &Term, console: &Console, state_d
     let (style, width, now) = (term.out_style, term.width, log::now_ms());
     let rows = views::avail_rows(&repl.engine.runtime, now);
     console.out(&views::banner(repl.engine.dir(), home, repl.engine.enabled(), &rows, style, width));
-    if let Some(notice) = state_dir.and_then(|d| jev_router::inflight::recovery_notice(d, repl.engine.dir())) {
+    if let Some(notice) = state_dir.and_then(|d| jev_router::turn::infrastructure::inflight::recovery_notice(d, repl.engine.dir())) {
         console.out(&style.yellow(&notice));
     }
     if repl.engine.hooks().settings_changed {
