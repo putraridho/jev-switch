@@ -190,7 +190,7 @@ fn snippet_for(e: &LibraryEntry, word: &str) -> Option<String> {
     let mut origin = Vec::with_capacity(lowered.len());
     for (i, c) in line.char_indices() {
         let width: usize = c.to_lowercase().map(char::len_utf8).sum();
-        origin.extend(std::iter::repeat(i).take(width));
+        origin.extend(std::iter::repeat_n(i, width));
     }
     let at = lowered.find(word).and_then(|found| origin.get(found).copied()).unwrap_or(0);
     let start = line[..at].char_indices().rev().nth(30).map_or(0, |(i, _)| i);
@@ -354,7 +354,7 @@ pub fn disk_use(entries: &[LibraryEntry]) -> DiskUse {
             None => out.by_project.push((e.saved.project.clone(), 1, e.bytes)),
         }
     }
-    out.by_project.sort_by(|a, b| b.2.cmp(&a.2));
+    out.by_project.sort_by_key(|b| std::cmp::Reverse(b.2));
     out
 }
 

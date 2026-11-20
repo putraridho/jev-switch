@@ -602,30 +602,26 @@ impl App {
                     self.menu = None;
                 }
             }
-            KeyCode::Up => {
-                if !self.editor.up() {
-                    // A message sent during the turn that is still queued comes back before
-                    // history does: ↑ takes the newest one out of the queue. Only into an
-                    // empty box, so a draft is never thrown away for it.
-                    if self.editor.is_empty() {
-                        if let Some(queued) = self.queue.pop_back() {
-                            self.editor.set(&queued);
-                            self.menu = None;
-                            return Vec::new();
-                        }
-                    }
-                    if let Some(older) = self.history.older(self.editor.text()) {
-                        self.editor.set(&older);
+            KeyCode::Up if !self.editor.up() => {
+                // A message sent during the turn that is still queued comes back before
+                // history does: ↑ takes the newest one out of the queue. Only into an
+                // empty box, so a draft is never thrown away for it.
+                if self.editor.is_empty() {
+                    if let Some(queued) = self.queue.pop_back() {
+                        self.editor.set(&queued);
                         self.menu = None;
+                        return Vec::new();
                     }
                 }
+                if let Some(older) = self.history.older(self.editor.text()) {
+                    self.editor.set(&older);
+                    self.menu = None;
+                }
             }
-            KeyCode::Down => {
-                if !self.editor.down() {
-                    if let Some(newer) = self.history.newer() {
-                        self.editor.set(&newer);
-                        self.menu = None;
-                    }
+            KeyCode::Down if !self.editor.down() => {
+                if let Some(newer) = self.history.newer() {
+                    self.editor.set(&newer);
+                    self.menu = None;
                 }
             }
             KeyCode::Left if ctrl(&k) || alt(&k) => self.editor.word_left(),
@@ -633,11 +629,7 @@ impl App {
             KeyCode::Char('b') if alt(&k) => self.editor.word_left(),
             KeyCode::Char('f') if alt(&k) => self.editor.word_right(),
             KeyCode::Left => self.editor.left(),
-            KeyCode::Right => {
-                if !self.accept_ghost() {
-                    self.editor.right();
-                }
-            }
+            KeyCode::Right if !self.accept_ghost() => self.editor.right(),
             KeyCode::Char('b') if ctrl(&k) => self.editor.left(),
             KeyCode::Char('f') if ctrl(&k) => self.editor.right(),
             KeyCode::PageUp => self.scroll_chat(self.pane_rows.saturating_sub(2).max(1) as isize),

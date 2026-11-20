@@ -1,0 +1,5 @@
+# masked: nothing (the key "k" and the loopback port are not part of the body)
+=== all_parts
+{"model":"jev-latest","questions":{"n":{"criteria":{"false":"no","true":"yes"},"instructions":"is it so","type":"noul"},"q":{"criteria":{"a":"the first","b":{"examples":["e1","e2"],"not_for":"x","what":"second"}},"instructions":"pick one","type":"choice"}},"state":{"previous":{"answer":"b","ask":"a"},"recent_context":"earlier text","request":"fix the \"login\" bug\n"}}
+=== minimal_solo
+{"model":"jev-latest","questions":{"q":{"criteria":{"a":"A"},"instructions":"pick","type":"choice"}},"state":{"request":"hi"}}

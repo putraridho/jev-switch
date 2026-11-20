@@ -524,6 +524,17 @@ pub(crate) struct SummaryContext<'a> {
     track_changes: bool,
 }
 
+/// What one route decision is made from: the request and the state it is judged against.
+struct ChooseInput<'a> {
+    judged: &'a Judged,
+    signals: Option<&'a Signals>,
+    prompt: &'a str,
+    base: &'a RoutingState,
+    excluded: &'a HashSet<(ProviderId, String)>,
+    attempts: u32,
+    now: u64,
+}
+
 impl Drop for SummaryContext<'_> {
     fn drop(&mut self) {
         self.engine.sessions = std::mem::take(&mut self.sessions);
@@ -1101,7 +1112,15 @@ impl Engine {
                 return self.cancelled_report(prompt, last_failure.as_ref().map(|(a, _)| a), attempts, ui);
             }
             let now = (self.now)();
-            let chosen = match self.choose(&judged, signals.as_ref(), prompt, &base, &excluded, attempts, now) {
+            let chosen = match self.choose(ChooseInput {
+                judged: &judged,
+                signals: signals.as_ref(),
+                prompt,
+                base: &base,
+                excluded: &excluded,
+                attempts,
+                now,
+            }) {
                 Ok(c) => c,
                 Err(e) => {
                     let message = self.no_route_message(&e, now, &excluded);
@@ -1213,16 +1232,8 @@ impl Engine {
 
     // ------------------------------------------------------------------ choosing
 
-    fn choose(
-        &mut self,
-        judged: &Judged,
-        signals: Option<&Signals>,
-        prompt: &str,
-        base: &RoutingState,
-        excluded: &HashSet<(ProviderId, String)>,
-        attempts: u32,
-        now: u64,
-    ) -> Result<Chosen, NoRoute> {
+    fn choose(&mut self, input: ChooseInput<'_>) -> Result<Chosen, NoRoute> {
+        let ChooseInput { judged, signals, prompt, base, excluded, attempts, now } = input;
         // Cleared first, so no path out of here leaves an earlier attempt's snapshot behind.
         self.git_snapshot = None;
         if let Judged::Legacy(want) = judged {
@@ -2225,7 +2236,7 @@ mod tests {
         // A is tried again and stalls again. It was handed the catch-up, but never
         // answered, so it is still owed it.
         r.turn("third request", new_task(TaskType::Feature)).await;
-        let failed_try = r.started().into_iter().filter(|s| s.provider == a).last().unwrap();
+        let failed_try = r.started().into_iter().rfind(|s| s.provider == a).unwrap();
         assert!(failed_try.prompt.contains("second request"), "{}", failed_try.prompt);
         assert_eq!(r.engine.sessions.missed_turns(a), 2, "the stalled attempt did not count as delivery");
 
@@ -2533,8 +2544,8 @@ mod tests {
 
     #[test]
     fn legacy_tiers_are_catalog_models() {
-        for tier in 0..LEGACY_TIERS.len() {
-            assert_eq!(legacy_spec(tier).id, LEGACY_TIERS[tier]);
+        for (tier, id) in LEGACY_TIERS.iter().enumerate() {
+            assert_eq!(legacy_spec(tier).id, *id);
         }
         assert_eq!(legacy_spec(9).id, MODEL_STRONG);
     }
@@ -3639,5 +3650,46 @@ mod tests {
         assert_eq!(ui.asked, 2);
         assert_eq!(ui.withdrawn.len(), 1, "an answered question is never reported as withdrawn");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Replace the digits after `"key":` with `token`, so a per-run value cannot differ.
+    fn mask_number(text: &str, key: &str, token: &str) -> String {
+        let pat = format!("\"{key}\":");
+        let mut out = String::new();
+        let mut rest = text;
+        while let Some(i) = rest.find(&pat) {
+            let (head, tail) = rest.split_at(i + pat.len());
+            out.push_str(head);
+            out.push_str(token);
+            rest = tail.trim_start_matches(|c: char| c.is_ascii_digit());
+        }
+        out.push_str(rest);
+        out
+    }
+
+    /// The rows one turn appended to a fresh log, `ts_ms` and `wall_ms` masked. `script` makes
+    /// the first-choice provider fail.
+    async fn logged_rows(tag: &str, script: Option<&'static str>, signals: Value) -> String {
+        let path = std::env::temp_dir().join(format!("jev-golden-turnlog-{tag}-{}.jsonl", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        let ready = [Claude, Codex];
+        let mut r = rig(&ready);
+        r.engine = r.engine.with_turn_log(Some(path.to_string_lossy().into_owned()));
+        if let Some(s) = script {
+            r.script(first_choice(TaskType::Feature, &ready), s);
+        }
+        r.turn("add a retry to the client", ProviderWant { signals, ..want(TaskType::Feature) }).await;
+        let text = std::fs::read_to_string(&path).unwrap();
+        let _ = std::fs::remove_file(&path);
+        mask_number(&mask_number(&text, "ts_ms", "\"<TS>\""), "wall_ms", "\"<MS>\"")
+    }
+
+    #[tokio::test]
+    async fn golden_turn_log_row() {
+        let typical = logged_rows("a", None, json!({ "task": "feature" })).await;
+        let odd = logged_rows("b", Some(QUOTA), json!({ "task": "feature", "note": "tab\t \"quoted\" é ✓ \\ \u{1}", "none": null })).await;
+        let actual = format!("## typical: one successful attempt\n{typical}## unusual: quota failover, escaped characters in signals\n{odd}");
+        let golden = golden!("turn/turn_log_row.txt");
+        assert_eq!(golden.split_once('\n').unwrap().1, actual);
     }
 }

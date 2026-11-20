@@ -916,14 +916,12 @@ impl Inner {
                     }
                 }
             }
-            Event::Hint(t) => {
-                // That a call went through unasked is what the mode in the footer already
-                // says; under every call it was only noise.
-                if !is_allow_note(t) {
-                    let text = hint_line(t, style, width);
-                    self.flush_run();
-                    self.emit_err(&text);
-                }
+            // That a call went through unasked is what the mode in the footer already
+            // says; under every call it was only noise.
+            Event::Hint(t) if !is_allow_note(t) => {
+                let text = hint_line(t, style, width);
+                self.flush_run();
+                self.emit_err(&text);
             }
             Event::Steered(text) => {
                 self.flush_run();
@@ -1054,7 +1052,6 @@ mod gutter_default_tests {
 
 /// A plain engine note ("[jev] unavailable ...") as a warning line: the bracketed tag
 /// becomes a prefix (`jev: unavailable ...`).
-
 pub fn note_line(line: &str, style: Style) -> String {
     let line = line.trim();
     let text = match line.strip_prefix('[').and_then(|r| r.split_once("] ")) {

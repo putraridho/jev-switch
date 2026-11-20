@@ -177,6 +177,60 @@ mod tests {
         assert_eq!(endpoint(Some(" http://127.0.0.1:9/v1/systemone ")), "http://127.0.0.1:9/v1/systemone");
     }
 
+    /// A loopback server that answers one request with `answers` and returns the exact
+    /// bytes of the body it received.
+    async fn body_sent(call: impl std::future::Future<Output = ()>, listener: tokio::net::TcpListener) -> String {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let server = async move {
+            let (mut sock, _) = listener.accept().await.unwrap();
+            let mut buf = Vec::new();
+            let mut chunk = [0u8; 4096];
+            let body = loop {
+                let n = sock.read(&mut chunk).await.unwrap();
+                buf.extend_from_slice(&chunk[..n]);
+                let Some(end) = buf.windows(4).position(|w| w == b"\r\n\r\n") else { continue };
+                let head = String::from_utf8_lossy(&buf[..end]).to_lowercase();
+                let len: usize = head.lines().find_map(|l| l.strip_prefix("content-length:")).unwrap().trim().parse().unwrap();
+                if buf.len() >= end + 4 + len {
+                    break String::from_utf8(buf[end + 4..end + 4 + len].to_vec()).unwrap();
+                }
+            };
+            let reply = r#"{"answers":{"q":{"choice":"a","confidence":0.5},"n":{"noul":0.5}}}"#;
+            let resp = format!("HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{reply}", reply.len());
+            sock.write_all(resp.as_bytes()).await.unwrap();
+            body
+        };
+        let (body, ()) = tokio::join!(server, call);
+        body
+    }
+
+    #[tokio::test]
+    async fn golden_jev_request() {
+        const MASKED: &str = "# masked: nothing (the key \"k\" and the loopback port are not part of the body)";
+        const GOLDEN: &str = golden!("judgment/jev_request.txt");
+        let sent = |call: std::pin::Pin<Box<dyn std::future::Future<Output = ()>>>, listener| body_sent(call, listener);
+
+        // Every optional part present: a state with nested values and two question kinds.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let client = TypeSafe::with_url("k", &format!("http://{}/v1/systemone", listener.local_addr().unwrap()));
+        let state = json!({ "request": "fix the \"login\" bug\n", "recent_context": "earlier text", "previous": { "ask": "a", "answer": "b" } });
+        let questions = json!({
+            "q": choice_question("pick one", json!({ "a": "the first", "b": { "what": "second", "not_for": "x", "examples": ["e1", "e2"] } })),
+            "n": noul_question("is it so", json!({ "true": "yes", "false": "no" })),
+        });
+        let full = sent(Box::pin(async { client.ask_many(state, questions).await.unwrap(); }), listener).await;
+
+        // Everything optional absent: one solo question, an empty state.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let client = TypeSafe::with_url("k", &format!("http://{}/v1/systemone", listener.local_addr().unwrap()));
+        let solo = sent(Box::pin(async { client.choice(json!({ "request": "hi" }), "pick", json!({ "a": "A" })).await.unwrap(); }), listener).await;
+
+        let actual = format!("=== all_parts\n{full}\n=== minimal_solo\n{solo}\n");
+        let (head, body) = GOLDEN.split_once('\n').unwrap();
+        assert_eq!(head, MASKED);
+        assert_eq!(body, actual);
+    }
+
     #[test]
     fn question_builders_keep_the_wire_shape() {
         assert_eq!(

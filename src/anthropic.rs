@@ -155,6 +155,29 @@ pub fn is_limit_message(text: &str) -> bool {
     lead_words <= MAX_WORDS_BEFORE_LIMIT && is_limit_phrase(sentence)
 }
 
+/// Flatten the history into one prompt: earlier turns as a labeled transcript,
+/// then the latest user message to answer.
+fn render_prompt(messages: &[Message]) -> String {
+    let Some((last, earlier)) = messages.split_last() else {
+        return String::new();
+    };
+    if earlier.is_empty() {
+        return last.content.clone();
+    }
+    let history = earlier
+        .iter()
+        .map(|m| {
+            let who = if m.role == "assistant" { "Assistant" } else { "User" };
+            format!("{}: {}", who, m.content)
+        })
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    format!(
+        "<conversation_so_far>\n{}\n</conversation_so_far>\n\nContinue the conversation. Reply to this latest user message:\n\n{}",
+        history, last.content
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::{is_limit_message, is_limit_phrase};
@@ -202,25 +225,3 @@ mod tests {
     }
 }
 
-/// Flatten the history into one prompt: earlier turns as a labeled transcript,
-/// then the latest user message to answer.
-fn render_prompt(messages: &[Message]) -> String {
-    let Some((last, earlier)) = messages.split_last() else {
-        return String::new();
-    };
-    if earlier.is_empty() {
-        return last.content.clone();
-    }
-    let history = earlier
-        .iter()
-        .map(|m| {
-            let who = if m.role == "assistant" { "Assistant" } else { "User" };
-            format!("{}: {}", who, m.content)
-        })
-        .collect::<Vec<_>>()
-        .join("\n\n");
-    format!(
-        "<conversation_so_far>\n{}\n</conversation_so_far>\n\nContinue the conversation. Reply to this latest user message:\n\n{}",
-        history, last.content
-    )
-}

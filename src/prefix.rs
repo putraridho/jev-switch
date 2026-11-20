@@ -176,6 +176,35 @@ mod tests {
         json!({ "role": "user", "content": [{ "type": "text", "text": text, "cache_control": { "type": "ephemeral" } }] })
     }
 
+    /// The usage log's `prefix` field is what `observe` returns, written as `to_string`.
+    #[test]
+    fn golden_usage_prefix() {
+        const MASKED: &str = "# masked: nothing";
+        const GOLDEN: &str = golden!("gateway/usage_prefix.txt");
+        let parse = |s: &str| serde_json::from_str::<Value>(s).unwrap();
+        let watch = PrefixWatch::new();
+        let mut out = String::new();
+        let mut step = |name: &str, session: &str, class: &str, text: &str| {
+            out.push_str(&format!("=== {name}\n{}\n", watch.observe(session, class, &parse(text))));
+        };
+        // Two requests that differ only in where `cache_control` sits and in key order: intact.
+        step("first_has_no_predecessor", "s1", "main", r#"{"system":"sys","tools":[{"name":"Bash","description":"d"}],"messages":[{"role":"user","content":[{"type":"text","text":"a","cache_control":{"type":"ephemeral"}}]}]}"#);
+        step("cache_control_moved_and_keys_reordered", "s1", "main", r#"{"messages":[{"content":[{"text":"a","type":"text"}],"role":"user"},{"role":"user","content":[{"type":"text","text":"b","cache_control":{"type":"ephemeral"}}]}],"tools":[{"description":"d","name":"Bash"}],"system":"sys"}"#);
+        // Every optional part present: an earlier message edited, with a long text and a non-text block.
+        let long = "x".repeat(100);
+        let before = format!(r#"{{"system":"sys","tools":[],"messages":[{{"role":"user","content":[{{"type":"text","text":"{long}"}}]}},{{"role":"assistant","content":[{{"type":"tool_use","id":"t","name":"Bash","input":{{}}}}]}},{{"role":"user","content":"tail"}}]}}"#);
+        let after = format!(r#"{{"system":"sys","tools":[],"messages":[{{"role":"user","content":[{{"type":"text","text":"{long}!"}}]}},{{"role":"assistant","content":[{{"type":"tool_use","id":"t","name":"Bash","input":{{}}}}]}},{{"role":"user","content":"tail"}},{{"role":"user","content":"new"}}]}}"#);
+        step("edited_early_message_first", "s2", "subagent", &before);
+        step("edited_early_message", "s2", "subagent", &after);
+        // System and tools changed, and the other class and session are separate chains.
+        step("system_and_tools_changed", "s2", "subagent", r#"{"system":"sys2","tools":[{"name":"T"}],"messages":[]}"#);
+        step("other_class_has_no_predecessor", "s2", "main", r#"{"system":"sys","messages":[]}"#);
+        let actual = out;
+        let (head, body) = GOLDEN.split_once('\n').unwrap();
+        assert_eq!(head, MASKED);
+        assert_eq!(body, actual);
+    }
+
     #[test]
     fn first_request_has_no_predecessor() {
         let w = PrefixWatch::new();

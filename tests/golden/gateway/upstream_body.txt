@@ -1,0 +1,10 @@
+# masked: the values of ts, ts_ms, end_ms, wall_ms, latency_ms, ttfb_ms and gap_ms (each becomes <key>)
+=== bare
+{"model":"claude-fable-5-2","max_tokens":  10,"messages":[{"role":"user","content":"fix the login bug in the settings page"}]}
+=== full
+{"max_tokens":10,"messages":[{"content":"fix the login bug in the settings page","role":"user"}],"model":"claude-fable-5-2","stream":true,"system":[{"text":"Primary working directory: /work/proj\nrules","type":"text"}],"zeta":100.0}
+{"messages":[{"content":"fix the login bug","role":"user"},{"content":[{"text":"Done.","type":"text"}],"role":"assistant"},{"content":"now make the button blue","role":"user"}],"model":"claude-fable-5-2","stream":true,"system":[{"text":"Primary working directory: /work/proj\nrules","type":"text"}]}
+=== orchestrated
+{"model":"claude-opus-5-5","messages":[{"role":"user","content":"build the feature <jev-orchestrate>plan, delegate, review</jev-orchestrate>"}]}
+=== haiku
+{"max_tokens":5,"messages":[{"content":"title this","role":"user"}],"model":"claude-haiku-5-5"}

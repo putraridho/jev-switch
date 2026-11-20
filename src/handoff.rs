@@ -1209,4 +1209,36 @@ mod tests {
         store(&state.0, &project.0, &saved);
         assert_eq!(saved_session_info_in(&state.0, &project.0, NOW), None);
     }
+
+    #[test]
+    fn golden_saved_session() {
+        let state = TempState::new("golden-state");
+        let written = |name: &str, saved: &SavedSession| {
+            let path = state.0.join(name);
+            write_atomic(&path, &saved.render()).unwrap();
+            std::fs::read_to_string(&path).unwrap()
+        };
+        let mut typical = Sessions::new();
+        typical.set_session_id(ProviderId::Claude, "sess-1".into());
+        typical.record(rec(ProviderId::Claude, "add a retry", "done", &["Edit src/a.rs", "Bash cargo test"], true));
+        let typical = SavedSession { project: "/work/app".into(), saved_ms: NOW, sessions: typical, current: Some((ProviderId::Claude, "m1".into())) };
+
+        let mut odd = Sessions::new();
+        odd.set_name(Some("  the \"big\"\n refactor  "));
+        odd.set_session_id(ProviderId::Codex, "sess-2".into());
+        odd.record(rec(ProviderId::Codex, "ask é ✓\ttab", &"x".repeat(SAVED_REPLY_CHARS + 10), &[], true));
+        odd.record_failed(rec(ProviderId::Gemini, "again", "(no answer: login)", &["Read b.rs"], false));
+        odd.record_interrupted("stop it", ProviderId::Claude, "m2", vec![]);
+        let odd = SavedSession { project: "/work/app \\ \"x\"".into(), saved_ms: NOW + 1, sessions: odd, current: None };
+
+        let empty = SavedSession { project: "/work/empty".into(), saved_ms: 0, sessions: Sessions::new(), current: None };
+        let actual = format!(
+            "## typical: one answered turn\n{}\n## unusual: named, cut reply, failed and interrupted turns, escapes\n{}\n## unusual: nothing yet\n{}\n",
+            written("a.json", &typical),
+            written("b.json", &odd),
+            written("c.json", &empty),
+        );
+        let golden = golden!("session/saved_session.txt");
+        assert_eq!(golden.split_once('\n').unwrap().1, actual);
+    }
 }

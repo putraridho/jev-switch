@@ -1,0 +1,5 @@
+# masked: nothing (the file has no trailing newline, so one is added after each case)
+## typical: the delegate server as `attachment` builds it
+{"mcpServers":{"jev":{"args":["--dir","/work/app","--planner","claude:claude-opus-5-5"],"command":"/opt/jev/bin/delegate_mcp"}}}
+## unusual: no arguments, spaces, quotes and non-ASCII text
+{"mcpServers":{"j\"ev é":{"args":[],"command":"/opt/my tools/é \\ delegate"}}}

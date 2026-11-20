@@ -5,6 +5,7 @@
 //!   - % routed to the cheap model (your savings), and
 //!   - miss rate = of those cheap routes, the fraction the cheap model would NOT
 //!     have handled well (the costly error).
+//!
 //! It then suggests the LOWEST cutoff whose miss rate is within MISS_BUDGET
 //! (default 0.05) — i.e. maximum savings inside your error budget.
 //!

@@ -106,7 +106,7 @@ mod tests {
         let out = side_by_side(("claude", "one two three four"), ("codex", "short"), 41, Style::off());
         let rows: Vec<&str> = out.lines().collect();
         assert_eq!(rows[0], format!("claude{} │ codex", " ".repeat(13)));
-        assert_eq!(rows[1], format!("one two three four{} │ short", " ".repeat(1)));
+        assert_eq!(rows[1], format!("one two three four{} │ short", " "));
         for row in &rows {
             assert!(display_width(row) <= 41, "{row:?}");
         }

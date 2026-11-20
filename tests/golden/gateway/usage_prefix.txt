@@ -1,0 +1,13 @@
+# masked: nothing
+=== first_has_no_predecessor
+null
+=== cache_control_moved_and_keys_reordered
+{"first_diff":null,"intact":true,"prev_messages":1,"shared_messages":1,"system_changed":false,"tail_only":false,"tools_changed":false}
+=== edited_early_message_first
+null
+=== edited_early_message
+{"first_diff":{"block":{"bytes":126,"text":"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx","type":"text"},"block_index":0,"blocks":1,"prev_blocks":1,"role":"user"},"intact":false,"prev_messages":3,"shared_messages":0,"system_changed":false,"tail_only":false,"tools_changed":false}
+=== system_and_tools_changed
+{"first_diff":null,"intact":false,"prev_messages":4,"shared_messages":0,"system_changed":true,"tail_only":false,"tools_changed":true}
+=== other_class_has_no_predecessor
+null

@@ -8,7 +8,7 @@
 //! - [`suggest`]: the next-prompt suggestion an answer's closing offer gives;
 //! - [`title`]: title-bar status and the bell, so a long turn can be left alone;
 //! - [`session_title`]: automatic session names and the "where we left off" line;
-//! - [`autopsy`]: `/why-failed`;
+//! - [`autopsy`][]: `/why-failed`;
 //! - [`palette`]: fuzzy search for the Ctrl-K command palette;
 //! - [`race`]: `/race` side-by-side rendering and winner choice, `/ask-other` prompts;
 //! - [`packs`]: theme packs.

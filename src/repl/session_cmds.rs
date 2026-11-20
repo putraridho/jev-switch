@@ -477,7 +477,7 @@ impl Repl {
     pub(super) fn mcp(&mut self, cmd: crate::commands::McpCmd) {
         match cmd {
             crate::commands::McpCmd::List => {
-                let servers = crate::mcp::discover(&self.engine.dir(), self.home.as_deref().map(Path::new), self.engine.orchestrate());
+                let servers = crate::mcp::discover(self.engine.dir(), self.home.as_deref().map(Path::new), self.engine.orchestrate());
                 let style = self.out_style();
                 self.page_out(&uifmt::mcp_text(&servers, style));
             }
@@ -489,7 +489,7 @@ impl Repl {
 
     fn mcp_login(&mut self, server: &str) {
         let style = self.out_style();
-        let servers = crate::mcp::discover(&self.engine.dir(), self.home.as_deref().map(Path::new), self.engine.orchestrate());
+        let servers = crate::mcp::discover(self.engine.dir(), self.home.as_deref().map(Path::new), self.engine.orchestrate());
         let matching: Vec<_> = servers.iter().filter(|s| s.name == server).collect();
         if matching.is_empty() {
             self.console.out(&format!("{} Server `{server}` is not configured in any provider.", style.yellow("⚠")));

@@ -850,4 +850,36 @@ mod tests {
         assert_eq!(w.reloads(), 4);
         let _ = std::fs::remove_dir_all(&dir);
     }
+
+    #[test]
+    fn golden_cooldowns() {
+        let dir = std::env::temp_dir().join(format!("jev-golden-cooldowns-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let saved = |name: &str, before: Option<&str>, cd: &Cooldowns| {
+            let path = dir.join(name);
+            if let Some(text) = before {
+                std::fs::write(&path, text).unwrap();
+            }
+            cd.save(&path, NOW).unwrap();
+            std::fs::read_to_string(&path).unwrap()
+        };
+        let mut typical = Cooldowns::default();
+        typical.start_with(Claude, Some("1760003600"), NOW, &never);
+        typical.start_with(Codex, None, NOW, &unresolvable);
+        // The file already holds an expired entry, a later one for the same provider, a number
+        // that is not a time and a provider nobody knows: the save merges and drops what is over.
+        let mut odd = Cooldowns::default();
+        odd.start_with(Claude, Some("a quarter of an hour"), NOW, &unresolvable);
+        let before = r#"{"claude": 1760000000001, "codex": 1759999999999, "gemini": 1760090000000, "grok": "soon", "nobody": 5}"#;
+        let actual = format!(
+            "## typical: two providers cooling down\n{}\n## unusual: merged into an existing file with expired, later and unreadable entries\n{}\n## unusual: nothing cooling down\n{}\n",
+            saved("a.json", None, &typical),
+            saved("b.json", Some(before), &odd),
+            saved("c.json", None, &Cooldowns::default()),
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+        let golden = golden!("providers/cooldowns.txt");
+        assert_eq!(golden.split_once('\n').unwrap().1, actual);
+    }
 }

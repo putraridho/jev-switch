@@ -1,0 +1,7 @@
+# masked: nothing
+=== fresh_edit
+["--single=hi","--model","grok-4.6","--output-format","streaming-messages-json","--no-auto-update","--no-alt-screen","--permission-mode","default","--allow","Edit","--allow","Write"]
+=== resumed_edit
+["--single=hi","--model","grok-4.6","--output-format","streaming-messages-json","--no-auto-update","--no-alt-screen","--permission-mode","default","--allow","Edit","--allow","Write","--resume","sess-1"]
+=== fresh_ask
+["--single=hi","--model","grok-4.6","--output-format","streaming-messages-json","--no-auto-update","--no-alt-screen","--permission-mode","default"]

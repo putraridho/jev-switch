@@ -99,7 +99,7 @@ pub fn skill_text(e: &Entry, style: Style) -> String {
     let body = e.steps.first().map_or("", |s| s.body.as_str());
     lines.extend(body.lines().map(|l| if l.is_empty() { String::new() } else { format!("  {}", crate::permissions::visible(l)) }));
     lines.push(String::new());
-    lines.push(style.dim(&format!("  run it: /skill {} {}", e.name, if e.meta.hint.is_empty() { "" } else { &e.meta.hint }).trim_end().to_string()));
+    lines.push(style.dim(format!("  run it: /skill {} {}", e.name, if e.meta.hint.is_empty() { "" } else { &e.meta.hint }).trim_end()));
     lines.join("\n")
 }
 

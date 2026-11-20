@@ -80,7 +80,7 @@ pub fn discover(home: &Path, project: &Path) -> Vec<Found> {
             found.push(Found { source: Source::Codex, modified_ms: modified_ms(&path), path });
         }
     }
-    found.sort_by(|a, b| b.modified_ms.cmp(&a.modified_ms));
+    found.sort_by_key(|b| std::cmp::Reverse(b.modified_ms));
     found.truncate(MAX_FOUND);
     found
 }

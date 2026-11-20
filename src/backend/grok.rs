@@ -225,10 +225,10 @@ impl Backend for GrokBackend {
 mod tests {
     use super::*;
 
-    const TURN1: &str = include_str!("../../tests/fixtures/grok/turn1.jsonl");
-    const ERR_AUTH: &str = include_str!("../../tests/fixtures/grok/err_auth.jsonl");
-    const ERR_PLAN: &str = include_str!("../../tests/fixtures/grok/err_not_entitled.jsonl");
-    const EMPTY: &str = include_str!("../../tests/fixtures/grok/empty.jsonl");
+    const TURN1: &str = fixture!("grok/turn1.jsonl");
+    const ERR_AUTH: &str = fixture!("grok/err_auth.jsonl");
+    const ERR_PLAN: &str = fixture!("grok/err_not_entitled.jsonl");
+    const EMPTY: &str = fixture!("grok/empty.jsonl");
 
     fn backend() -> GrokBackend {
         GrokBackend::new("grok")
@@ -317,6 +317,22 @@ mod tests {
     fn classifies_common_errors_and_unknowns() {
         assert!(matches!(backend().classify_error("HTTP 429 Too Many Requests"), ErrorKind::Quota { .. }));
         assert_eq!(backend().classify_error("weird"), ErrorKind::Other);
+    }
+
+    #[test]
+    fn golden_grok_args() {
+        const MASKED: &str = "# masked: nothing";
+        const GOLDEN: &str = golden!("backend/grok_args.txt");
+        let case = |name: &str, r: TurnRequest| format!("=== {name}\n{}\n", serde_json::to_string(&args(&backend().command(&r))).unwrap());
+        let actual = [
+            case("fresh_edit", req(None)),
+            case("resumed_edit", req(Some("sess-1"))),
+            case("fresh_ask", TurnRequest { mode: Mode::Ask, ..req(None) }),
+        ]
+        .concat();
+        let (head, body) = GOLDEN.split_once('\n').unwrap();
+        assert_eq!(head, MASKED);
+        assert_eq!(body, actual);
     }
 
     #[test]

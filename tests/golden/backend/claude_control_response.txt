@@ -1,0 +1,9 @@
+# masked: nothing
+=== allow
+{"response":{"request_id":"req-1","response":{"behavior":"allow","updatedInput":{"content":"a \"b\"\n","nested":{"a":[100.0,2.0],"z":1},"path":"/tmp/p/x.txt"}},"subtype":"success"},"type":"control_response"}
+=== allow_always
+{"response":{"request_id":"req-1","response":{"behavior":"allow","updatedInput":{"content":"a \"b\"\n","nested":{"a":[100.0,2.0],"z":1},"path":"/tmp/p/x.txt"}},"subtype":"success"},"type":"control_response"}
+=== deny
+{"response":{"request_id":"req-1","response":{"behavior":"deny","message":"not here"},"subtype":"success"},"type":"control_response"}
+=== allow_empty_input
+{"response":{"request_id":"req-1","response":{"behavior":"allow","updatedInput":{}},"subtype":"success"},"type":"control_response"}

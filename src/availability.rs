@@ -91,15 +91,13 @@ pub async fn probe_all() -> Vec<Availability> {
 }
 
 /// One provider's probe, with no time cap of its own: the caller says how long it may take.
-pub fn probe_provider(provider: ProviderId) -> impl Future<Output = Availability> + Send + 'static {
-    async move {
-        match provider {
-            ProviderId::Claude => probe_claude().await,
-            ProviderId::DeepSeek => probe_deepseek().await,
-            ProviderId::Codex => probe_codex().await,
-            ProviderId::Gemini => probe_gemini().await,
-            ProviderId::Grok => probe_grok().await,
-        }
+pub async fn probe_provider(provider: ProviderId) -> Availability {
+    match provider {
+        ProviderId::Claude => probe_claude().await,
+        ProviderId::DeepSeek => probe_deepseek().await,
+        ProviderId::Codex => probe_codex().await,
+        ProviderId::Gemini => probe_gemini().await,
+        ProviderId::Grok => probe_grok().await,
     }
 }
 
@@ -765,10 +763,10 @@ mod tests {
         assert!(is_mise_wrapper(&shim), "mise shims install on first run too (the agy accident)");
         assert!(!is_mise_wrapper(Path::new("/opt/shims/tool")), "only mise's shims directory");
         // Only a lazy launcher and mise has nothing installed: never run it.
-        assert!(!really_installed(&[wrapper.clone()], false));
-        assert!(!really_installed(&[shim.clone()], false));
+        assert!(!really_installed(std::slice::from_ref(&wrapper), false));
+        assert!(!really_installed(std::slice::from_ref(&shim), false));
         // A lazy launcher for a tool mise already installed is safe to run.
-        assert!(really_installed(&[wrapper.clone()], true));
+        assert!(really_installed(std::slice::from_ref(&wrapper), true));
         // A real binary anywhere on PATH is installed.
         assert!(really_installed(&[shim, real], false));
         // Nothing on PATH is never installed, whatever mise says.

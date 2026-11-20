@@ -407,16 +407,16 @@ fn names_auth_type(json: &str) -> bool {
 mod tests {
     use super::*;
 
-    const GEMINI_TURN: &str = include_str!("../../tests/fixtures/gemini/turn_tools.jsonl");
-    const GEMINI_QUOTA: &str = include_str!("../../tests/fixtures/gemini/err_quota.jsonl");
-    const GEMINI_EMPTY_ERR: &str = include_str!("../../tests/fixtures/gemini/err_empty.jsonl");
-    const GEMINI_EMPTY_OK: &str = include_str!("../../tests/fixtures/gemini/empty_success.jsonl");
-    const GEMINI_AUTH_STDERR: &str = include_str!("../../tests/fixtures/gemini/err_auth_stderr.txt");
-    const AGY_TURN: &str = include_str!("../../tests/fixtures/agy/turn_tools.jsonl");
-    const AGY_AUTH: &str = include_str!("../../tests/fixtures/agy/err_auth.jsonl");
-    const AGY_QUOTA: &str = include_str!("../../tests/fixtures/agy/err_quota.jsonl");
-    const AGY_EMPTY: &str = include_str!("../../tests/fixtures/agy/empty_success.jsonl");
-    const AGY_EMPTY_DENIED: &str = include_str!("../../tests/fixtures/agy/empty_success_denied.jsonl");
+    const GEMINI_TURN: &str = fixture!("gemini/turn_tools.jsonl");
+    const GEMINI_QUOTA: &str = fixture!("gemini/err_quota.jsonl");
+    const GEMINI_EMPTY_ERR: &str = fixture!("gemini/err_empty.jsonl");
+    const GEMINI_EMPTY_OK: &str = fixture!("gemini/empty_success.jsonl");
+    const GEMINI_AUTH_STDERR: &str = fixture!("gemini/err_auth_stderr.txt");
+    const AGY_TURN: &str = fixture!("agy/turn_tools.jsonl");
+    const AGY_AUTH: &str = fixture!("agy/err_auth.jsonl");
+    const AGY_QUOTA: &str = fixture!("agy/err_quota.jsonl");
+    const AGY_EMPTY: &str = fixture!("agy/empty_success.jsonl");
+    const AGY_EMPTY_DENIED: &str = fixture!("agy/empty_success_denied.jsonl");
 
     fn gemini() -> GeminiBackend {
         GeminiBackend::new(Flavor::GeminiCli, "gemini")
@@ -645,6 +645,33 @@ mod tests {
                 assert!(all.iter().all(|a| !forbidden.contains(&a.as_str())), "{:?}: {all:?}", b.flavor);
             }
         }
+    }
+
+    /// A gemini and an agy turn: fresh, then resumed.
+    fn golden_cases(backend: &GeminiBackend) -> String {
+        [("fresh", req(None)), ("resumed", req(Some("sess-1")))]
+            .map(|(name, r)| format!("=== {name}\n{}\n", serde_json::to_string(&args(&backend.command(&r))).unwrap()))
+            .concat()
+    }
+
+    #[test]
+    fn golden_gemini_args() {
+        const MASKED: &str = "# masked: nothing";
+        const GOLDEN: &str = golden!("backend/gemini_args.txt");
+        let actual = golden_cases(&gemini());
+        let (head, body) = GOLDEN.split_once('\n').unwrap();
+        assert_eq!(head, MASKED);
+        assert_eq!(body, actual);
+    }
+
+    #[test]
+    fn golden_agy_args() {
+        const MASKED: &str = "# masked: nothing";
+        const GOLDEN: &str = golden!("backend/agy_args.txt");
+        let actual = golden_cases(&agy());
+        let (head, body) = GOLDEN.split_once('\n').unwrap();
+        assert_eq!(head, MASKED);
+        assert_eq!(body, actual);
     }
 
     #[test]

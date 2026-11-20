@@ -441,7 +441,7 @@ fn input_box(app: &App, w: usize, th: &Theme) -> (Vec<String>, (usize, usize)) {
 fn box_label(app: &App, th: &Theme) -> String {
     let mut parts = Vec::new();
     if let Some(label) = app.vim.as_ref().and_then(|v| v.label()) {
-        parts.push(th.strong(&label));
+        parts.push(th.strong(label));
     }
     parts.push(th.muted(&app.route));
     parts.push(th.mode(app.mode));

@@ -301,7 +301,7 @@ fn named_secrets(text: &str, urls: &[Finding]) -> Vec<Finding> {
         let quoted_end = if escaped_quote {
             text[v..].find("\\\"").filter(|e| !text[v..v + e].contains('\n')).map(|e| v + e)
         } else {
-            quote.and_then(|q| text[v..].find(|ch: char| ch == q || ch == '\n').filter(|e| text[v + e..].starts_with(q)).map(|e| v + e))
+            quote.and_then(|q| text[v..].find([q, '\n']).filter(|e| text[v + e..].starts_with(q)).map(|e| v + e))
         };
         let end = quoted_end.unwrap_or_else(|| text[v..].find(|ch: char| ch.is_whitespace() || matches!(ch, '"' | '\'' | ',' | ';' | ')' | '}')).map_or(text.len(), |e| v + e));
         let value = &text[v..end];

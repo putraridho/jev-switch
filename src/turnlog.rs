@@ -149,4 +149,26 @@ mod tests {
         assert_eq!(row["error"], "limit");
         assert!(row["usage"].is_null() && row["plan"].is_null() && row["session"].is_null());
     }
+
+    #[test]
+    fn golden_ask_line() {
+        // `bin/ask.rs` prints exactly `ask_json(..)` and a newline.
+        let line = |provider: &str, model: &str, result: &Result<TurnOutcome, TurnError>, wall_ms: u64| format!("{}\n", ask_json(provider, model, result, wall_ms));
+        let typical = TurnOutcome {
+            text: "done".into(),
+            session_id: Some("sess-1".into()),
+            usage: Usage { input_tokens: 10, cached_input_tokens: 4, output_tokens: 2, context_tokens: Some(9) },
+            plan: None,
+        };
+        let odd = TurnError { kind: ErrorKind::Quota { resets_at: Some("5pm".into()) }, message: "limit \"hit\"\n\tnext é ✓ \\ \u{1}".into() };
+        let unusual_ok = TurnOutcome { text: String::new(), session_id: None, usage: Usage::default(), plan: None };
+        let actual = format!(
+            "## typical: answer with session and usage\n{}## unusual: empty answer, no session\n{}## unusual: failure with escaped characters\n{}",
+            line("codex", "m", &Ok(typical), 42),
+            line("deepseek", "", &Ok(unusual_ok), 0),
+            line("claude", "k", &Err(odd), 7),
+        );
+        let golden = golden!("backend/ask_line.txt");
+        assert_eq!(golden.split_once('\n').unwrap().1, actual);
+    }
 }

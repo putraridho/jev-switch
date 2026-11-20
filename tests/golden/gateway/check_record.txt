@@ -1,0 +1,7 @@
+# masked: the values of ts, ts_ms, end_ms, wall_ms, latency_ms, ttfb_ms and gap_ms (each becomes <key>)
+=== jev_answers
+{"cutoff":0.5,"hard_p":0.99,"multi_part_p":0.66,"planner":"claude-fable-5-2","prompt":"add a login page, a settings page and tests for both","route_tier":3,"sequential_p":0.11,"session":"s-check","skipped":null,"trigger":true,"ts":"<ts>","vetoed":false}
+{"cutoff":0.5,"enabled":true,"multi_part_p":0.66,"planner":"claude-fable-5-2","sequential_p":0.11,"skipped":null,"trigger":true,"vetoed":false}
+=== jev_down
+{"cutoff":0.5,"hard_p":null,"multi_part_p":null,"planner":"claude-opus-5-5","prompt":"add a login page, a settings page and tests for both","route_tier":null,"sequential_p":null,"session":"s-check","skipped":null,"trigger":false,"ts":"<ts>","vetoed":null}
+{"cutoff":0.5,"enabled":true,"multi_part_p":null,"planner":"claude-opus-5-5","sequential_p":null,"skipped":null,"trigger":false,"vetoed":null}

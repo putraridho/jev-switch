@@ -1,0 +1,7 @@
+# masked: nothing
+## typical: answer with session and usage
+{"error":null,"error_kind":null,"model":"m","ok":true,"provider":"codex","session_id":"sess-1","text":"done","usage":{"cached_input_tokens":4,"context_tokens":9,"input_tokens":10,"output_tokens":2},"wall_ms":42}
+## unusual: empty answer, no session
+{"error":null,"error_kind":null,"model":"","ok":true,"provider":"deepseek","session_id":null,"text":"","usage":{"cached_input_tokens":0,"context_tokens":null,"input_tokens":0,"output_tokens":0},"wall_ms":0}
+## unusual: failure with escaped characters
+{"error":"limit \"hit\"\n\tnext é ✓ \\ \u0001","error_kind":"quota","model":"k","ok":false,"provider":"claude","session_id":null,"text":"","usage":null,"wall_ms":7}

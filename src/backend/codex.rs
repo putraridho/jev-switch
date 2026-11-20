@@ -318,9 +318,9 @@ pub fn allowed_models_from_cache(json: &str) -> Vec<String> {
 mod tests {
     use super::*;
 
-    const TURN1: &str = include_str!("../../tests/fixtures/codex/turn1.jsonl");
-    const TURN2: &str = include_str!("../../tests/fixtures/codex/turn2_resume.jsonl");
-    const ERR_PLAN: &str = include_str!("../../tests/fixtures/codex/err_model_not_on_plan.jsonl");
+    const TURN1: &str = fixture!("codex/turn1.jsonl");
+    const TURN2: &str = fixture!("codex/turn2_resume.jsonl");
+    const ERR_PLAN: &str = fixture!("codex/err_model_not_on_plan.jsonl");
 
     fn backend() -> CodexBackend {
         CodexBackend::new("codex", "workspace-write")
@@ -528,6 +528,32 @@ mod tests {
                 assert_eq!(a.iter().any(|arg| arg.contains("default_tools_approval_mode")), matches!(mode, crate::mode::Mode::Edit | crate::mode::Mode::Auto), "{mode}: {a:?}");
             }
         }
+    }
+
+    #[test]
+    fn golden_codex_args() {
+        const MASKED: &str = "# masked: nothing";
+        const GOLDEN: &str = golden!("backend/codex_args.txt");
+        let case = |name: &str, b: &CodexBackend, r: &TurnRequest| format!("=== {name}\n{}\n", serde_json::to_string(&args(&b.command(r))).unwrap());
+        let mut with_mcp = backend();
+        with_mcp.attach_mcp(&McpAttachment {
+            name: "jev".into(),
+            command: "/bin/delegate_mcp".into(),
+            args: vec!["--dir".into(), "/repo".into()],
+            config_path: "/state/mcp.json".into(),
+        });
+        let mut images = req(None);
+        images.images = vec!["/tmp/proj/shot.png".into()];
+        let actual = [
+            case("fresh", &backend(), &req(None)),
+            case("fresh_with_image", &backend(), &images),
+            case("resumed", &backend(), &req(Some("thread-1"))),
+            case("resumed_with_mcp", &with_mcp, &req(Some("thread-1"))),
+        ]
+        .concat();
+        let (head, body) = GOLDEN.split_once('\n').unwrap();
+        assert_eq!(head, MASKED);
+        assert_eq!(body, actual);
     }
 
     #[test]

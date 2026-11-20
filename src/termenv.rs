@@ -149,7 +149,7 @@ mod tests {
         assert_eq!(env(&[("TERM", "xterm"), ("TMUX", "/tmp/tmux-1/default,1,0")]).multiplexer, Some(Multiplexer::Tmux));
         assert_eq!(env(&[("TERM", "tmux-256color")]).multiplexer, Some(Multiplexer::Tmux));
         assert_eq!(env(&[("TERM", "screen"), ("STY", "123.pts")]).multiplexer, Some(Multiplexer::Screen));
-        assert!(!env(&[("TERM", "xterm"), ("TMUX", "")]).multiplexer.is_some(), "an empty variable is not tmux");
+        assert!(env(&[("TERM", "xterm"), ("TMUX", "")]).multiplexer.is_none(), "an empty variable is not tmux");
         assert!(!env(&[("TERM", "tmux")]).keyboard_protocol());
     }
 

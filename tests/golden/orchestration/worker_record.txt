@@ -1,0 +1,5 @@
+# masked: nothing
+## typical: a running worker with an owner (file w1.json, no trailing newline)
+{"worker_id":"w1","path":"/work/wt/w1","repo":"/work/app","provider":"claude","model":"claude-sonnet-5-5","created_ms":1760000000000,"running":true,"shown":[],"covered":{},"merged":[],"owner":{"pid":4242,"start":1759999000000}}
+## unusual: finished, partly merged, no owner, odd path (file w-2_x.json, no trailing newline)
+{"worker_id":"w-2_x","path":"/work/wt/with space/é \"q\"","repo":"/work/app","provider":"codex","model":"","created_ms":0,"running":false,"shown":["src/a.rs","src/b.rs"],"covered":{"src/a.rs":0,"src/b.rs":2},"merged":["src/a.rs"],"owner":null}

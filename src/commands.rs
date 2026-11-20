@@ -249,7 +249,7 @@ pub fn parse(line: &str) -> Command {
         "/resume" => Command::Resume(rest()),
         "/rename" => Command::Rename(rest()),
         "/workflows" | "/workers" => Command::Workflows,
-        "/sessions" => crate::libcmd::parse(&line[head.len()..]).map_or_else(|e| Command::Invalid(format!("{e}")), Command::Sessions),
+        "/sessions" => crate::libcmd::parse(&line[head.len()..]).map_or_else(|e| Command::Invalid(e.to_string()), Command::Sessions),
         "/project" => crate::projcmd::parse(&line[head.len()..]).map_or_else(Command::Invalid, Command::Project),
         "/diff" => {
             // The rest of the line is one path, so a name with spaces works.

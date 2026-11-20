@@ -234,7 +234,7 @@ pub fn pick_worker(signals: &BriefSignals, view: &WorkerView) -> Result<&'static
 /// itself contains ` b/` is still read right.
 fn header_paths(rest: &str) -> (&str, &str) {
     let n = rest.len();
-    if n >= 3 && (n - 3) % 2 == 0 {
+    if n >= 3 && (n - 3).is_multiple_of(2) {
         let half = (n - 3) / 2;
         if rest.is_char_boundary(half) && rest.is_char_boundary(half + 3) && &rest[half..half + 3] == " b/" && rest[..half] == rest[half + 3..] {
             return (&rest[..half], &rest[..half]);
@@ -2539,7 +2539,7 @@ mod tests {
     struct Fake {
         provider: ProviderId,
         script: &'static str,
-        started: Arc<Mutex<Vec<(ProviderId, String, PathBuf, String)>>>,
+        started: Started,
         /// The permission mode of every turn started, in order.
         modes: Modes,
     }
@@ -3906,6 +3906,88 @@ mod tests {
         assert_eq!((recent[1].files_changed.len(), recent[1].tool_calls.len()), (1, 2));
         assert_eq!(recent_delegations(&log, &repo, 1).len(), 1, "the limit keeps the newest");
         assert!(recent_delegations(&state.join("missing.jsonl"), &repo, 10).is_empty());
+    }
+
+    #[test]
+    fn golden_delegate_log_row() {
+        let log_path = temp_dir("golden-log").join("orchestration.jsonl");
+        let r = rig(&[Claude], TaskType::Feature);
+        let d = r.d.with_log(Some(log_path.to_string_lossy().into_owned()));
+        let spec = |p, id| crate::catalog::find(p, id).unwrap();
+        let ok = Ok(TurnOutcome {
+            text: "did the piece".into(),
+            session_id: None,
+            usage: Usage { input_tokens: 10, cached_input_tokens: 4, output_tokens: 7, context_tokens: Some(9) },
+            plan: None,
+        });
+        let quota = Err(TurnError { kind: ErrorKind::Quota { resets_at: Some("5pm".into()) }, message: "limit \"hit\"\n\té ✓ \\".into() });
+        let jev = json!({ "task": "feature", "edit_p": 0.5 });
+        let files = ["src/net.rs".to_string()];
+        let tools = ["Edit src/net.rs".to_string()];
+        let typical = AttemptLog {
+            spec: spec(Claude, "claude-sonnet-5-5"), id: "w1", task: TaskType::Feature, attempt: 1, read_only: false, jev: &jev, result: &ok,
+            wall_ms: 1500, started_ms: 1_760_000_000_000, files: &files, tools: &tools, landing: Some("review_no_tests"), in_place: false,
+        };
+        let odd_files = ["dir with space/é.rs".to_string(), "q\"uote.rs".to_string()];
+        let odd_tools = ["Bash echo \"hi\"\tthere".to_string()];
+        let odd = AttemptLog {
+            spec: spec(Claude, "claude-opus-5-5"), id: "w-2_x", task: TaskType::HardDebug, attempt: 3, read_only: true, jev: &Value::Null, result: &quota,
+            wall_ms: 0, started_ms: u64::MAX, files: &odd_files, tools: &odd_tools, landing: None, in_place: true,
+        };
+        d.log_attempt(&typical);
+        d.log_attempt(&odd);
+        let repo = handoff_key(&r.wt.repo());
+        let text = std::fs::read_to_string(&log_path).unwrap();
+        let mut lines = text.lines().map(|l| {
+            let mut v: Value = serde_json::from_str(l).unwrap();
+            v["ts_ms"] = json!("<TS>");
+            assert_eq!(v["repo"], json!(repo));
+            v["repo"] = json!("<REPO>");
+            format!("{v}\n")
+        });
+        let actual = format!("## typical: one successful attempt\n{}## unusual: failed read-only attempt, escapes, maximum start time\n{}", lines.next().unwrap(), lines.next().unwrap());
+        let golden = golden!("orchestration/delegate_log_row.txt");
+        assert_eq!(golden.split_once('\n').unwrap().1, actual);
+    }
+
+    #[test]
+    fn golden_worker_record() {
+        let dir = temp_dir("golden-workers");
+        let store = Store { dir: dir.join("workers") };
+        let typical = Saved {
+            worker_id: "w1".into(),
+            path: "/work/wt/w1".into(),
+            repo: "/work/app".into(),
+            provider: "claude".into(),
+            model: "claude-sonnet-5-5".into(),
+            created_ms: 1_760_000_000_000,
+            running: true,
+            shown: Default::default(),
+            covered: Default::default(),
+            merged: Default::default(),
+            owner: Some(Owner { pid: 4242, start: Some(1_759_999_000_000) }),
+        };
+        let odd = Saved {
+            worker_id: "w-2_x".into(),
+            path: "/work/wt/with space/é \"q\"".into(),
+            repo: "/work/app".into(),
+            provider: "codex".into(),
+            model: String::new(),
+            created_ms: 0,
+            running: false,
+            shown: ["src/b.rs".to_string(), "src/a.rs".to_string()].into_iter().collect(),
+            covered: [("src/b.rs".to_string(), 2), ("src/a.rs".to_string(), 0)].into_iter().collect(),
+            merged: ["src/a.rs".to_string()].into_iter().collect(),
+            owner: None,
+        };
+        let mut actual = String::new();
+        for (case, saved) in [("typical: a running worker with an owner", &typical), ("unusual: finished, partly merged, no owner, odd path", &odd)] {
+            store.save(saved);
+            let bytes = std::fs::read_to_string(store.file(&saved.worker_id)).unwrap();
+            actual.push_str(&format!("## {case} (file {}.json, no trailing newline)\n{bytes}\n", saved.worker_id));
+        }
+        let golden = golden!("orchestration/worker_record.txt");
+        assert_eq!(golden.split_once('\n').unwrap().1, actual);
     }
 
 }

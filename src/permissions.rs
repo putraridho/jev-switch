@@ -774,7 +774,7 @@ fn split_chain(command: &str) -> Result<Vec<Vec<Word>>, Refusal> {
                         Some('"') => break,
                         // In double quotes a backslash is itself unless it escapes one of these
                         // (`grep "a\|b"` is a backslash and a bar); an escape is not followed.
-                        Some('\\') if at(i + 1).is_some_and(|n| !matches!(n, '$' | '`' | '"' | '\\') && !(n.is_control() || is_invisible(n))) => word.text.push('\\'),
+                        Some('\\') if at(i + 1).is_some_and(|n| !(matches!(n, '$' | '`' | '"' | '\\') || n.is_control() || is_invisible(n))) => word.text.push('\\'),
                         Some(q) if matches!(q, '$' | '`' | '\\') || (q.is_control() && !matches!(q, '\t' | '\n')) || is_invisible(q) => return Err(BAD),
                         Some(q) => word.text.push(q),
                     }
@@ -898,7 +898,7 @@ fn bash_rules(command: &str) -> Result<Vec<String>, Refusal> {
         // An exact-text rule (`git log --oneline -1`, a listing) is this command's own, as long
         // as every word of it is the real word and not a stand-in for one that held spaces.
         let literal = !words.iter().any(|w| w == "ARG");
-        if !rule.ends_with(":*)") && !(literal || is_listing(&command.split(' ').collect::<Vec<_>>())) {
+        if !(rule.ends_with(":*)") || literal || is_listing(&command.split(' ').collect::<Vec<_>>())) {
             return Err(Refusal::ShellSyntax);
         }
         if !rules.contains(&rule) {
@@ -1248,6 +1248,7 @@ pub enum Settled {
 pub fn save_always(project: &Path, always: &Always) -> Result<bool, SettingsError> {
     update(&local_settings_path(project), |settings| {
         // Every rule is tried (no short-circuit), so all of them end up in the file.
+        #[allow(clippy::unnecessary_fold)] // `any` would stop at the first rule already there.
         let rule_added = always.rules.iter().fold(false, |added, rule| settings.add(List::Allow, rule) || added);
         let folder_added = always.folder.as_deref().is_some_and(|dir| settings.add(List::Directories, &dir.to_string_lossy()));
         rule_added || folder_added
@@ -1624,6 +1625,44 @@ pub fn parse_args(rest: &str) -> Result<PermissionsCmd, String> {
 
 #[cfg(test)]
 mod tests {
+    /// Every edit kind the module makes to `.claude/settings.local.json`, in order, each with
+    /// the file as it stands afterwards. `before` is what the file holds to begin with.
+    fn edit_steps(name: &str, before: Option<&str>, rule: &str, dir: &str) -> String {
+        use super::{add_allow_rule, add_directory, local_settings_path, remove_allow_rule, save_always, Always};
+        let project = tmp(name);
+        let path = local_settings_path(&project);
+        if let Some(text) = before {
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(&path, text).unwrap();
+        }
+        let always = Always { rules: vec!["Bash(grep:*)".into(), "Edit".into()], folder: Some(PathBuf::from("/work/more")) };
+        let mut out = String::new();
+        let mut step = |label: &str, changed: Result<bool, super::SettingsError>| {
+            let text = std::fs::read_to_string(&path).unwrap_or_else(|_| "(no file)\n".to_string());
+            out.push_str(&format!("# {label} -> changed: {}\n{text}", changed.unwrap()));
+        };
+        step("add_allow_rule", add_allow_rule(&project, rule));
+        step("add_allow_rule again", add_allow_rule(&project, rule));
+        step("add_directory", add_directory(&project, Path::new(dir)));
+        step("save_always", save_always(&project, &always));
+        step("remove_allow_rule", remove_allow_rule(&project, rule));
+        step("remove_allow_rule absent", remove_allow_rule(&project, "Nope"));
+        step("remove_allow_rule Bash(grep:*)", remove_allow_rule(&project, "Bash(grep:*)"));
+        step("remove_allow_rule Edit", remove_allow_rule(&project, "Edit"));
+        let _ = std::fs::remove_dir_all(&project);
+        out
+    }
+
+    #[test]
+    fn golden_settings_local() {
+        let typical = edit_steps("golden-a", None, "Bash(cargo test:*)", "/work/shared");
+        let existing = "{\n    \"model\": \"opus\",\n    \"hooks\": {\"Stop\": [{\"command\": \"é\"}]},\n    \"permissions\": {\n        \"deny\": [\"Bash(rm:*)\"],\n        \"allow\": [\"Read\"],\n        \"defaultMode\": \"plan\"\n    }\n}";
+        let odd = edit_steps("golden-b", Some(existing), "WebFetch(domain:docs.rs) \"é\"", "/work/with space/é");
+        let actual = format!("## typical: no file yet\n{typical}## unusual: an existing file with other keys, deny list, four-space indent and no final newline\n{odd}");
+        let golden = golden!("approval/settings_local.txt");
+        assert_eq!(golden.split_once('\n').unwrap().1, actual);
+    }
+
     #[test]
     fn command_line_rules_split_outside_parentheses_only() {
         assert_eq!(super::split_rules("Bash(cargo test) Edit,Bash(git status:*)"), ["Bash(cargo test)", "Edit", "Bash(git status:*)"]);
@@ -2219,7 +2258,7 @@ mod tests {
 
     // ------------------------------------------------- a call asked about for its path
 
-    const BLOCKED_FIXTURE: &str = include_str!("../tests/fixtures/claude/permission_allow.jsonl");
+    const BLOCKED_FIXTURE: &str = fixture!("claude/permission_allow.jsonl");
 
     /// The recorded request: Claude Code asked about a `touch` because `/tmp/spike/outside.txt`
     /// is outside the allowed folders.

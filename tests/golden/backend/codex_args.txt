@@ -1,0 +1,9 @@
+# masked: nothing
+=== fresh
+["exec","--json","-C","/tmp/proj","-s","workspace-write","-m","gpt-x"]
+=== fresh_with_image
+["exec","--json","-C","/tmp/proj","-s","workspace-write","-m","gpt-x","--image=/tmp/proj/shot.png"]
+=== resumed
+["exec","resume","--json","-m","gpt-x","-c","sandbox_mode=\"workspace-write\"","thread-1","-"]
+=== resumed_with_mcp
+["exec","resume","--json","-m","gpt-x","-c","sandbox_mode=\"workspace-write\"","-c","mcp_servers.jev.command=\"/bin/delegate_mcp\"","-c","mcp_servers.jev.args=[\"--dir\",\"/repo\"]","-c","mcp_servers.jev.tool_timeout_sec=3600","-c","mcp_servers.jev.default_tools_approval_mode=\"approve\"","thread-1","-"]

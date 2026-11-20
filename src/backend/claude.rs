@@ -543,7 +543,7 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    const TURN1: &str = include_str!("../../tests/fixtures/claude/turn1.jsonl");
+    const TURN1: &str = fixture!("claude/turn1.jsonl");
 
     fn parse_all(backend: &ClaudeBackend) -> Vec<Event> {
         TURN1.lines().flat_map(|l| backend.parse_line(l)).collect()
@@ -863,11 +863,11 @@ mod tests {
 
     // ------------------------------------------------------------- host approvals
 
-    const ALLOW_TURN: &str = include_str!("../../tests/fixtures/claude/permission_allow.jsonl");
-    const DENY_TURN: &str = include_str!("../../tests/fixtures/claude/permission_deny.jsonl");
-    const ALLOW_LINE: &str = include_str!("../../tests/fixtures/claude/control_response_allow.jsonl");
-    const DENY_LINE: &str = include_str!("../../tests/fixtures/claude/control_response_deny.jsonl");
-    const USER_LINE: &str = include_str!("../../tests/fixtures/claude/user_message.jsonl");
+    const ALLOW_TURN: &str = fixture!("claude/permission_allow.jsonl");
+    const DENY_TURN: &str = fixture!("claude/permission_deny.jsonl");
+    const ALLOW_LINE: &str = fixture!("claude/control_response_allow.jsonl");
+    const DENY_LINE: &str = fixture!("claude/control_response_deny.jsonl");
+    const USER_LINE: &str = fixture!("claude/user_message.jsonl");
 
     fn session() -> ClaudeBackend {
         backend().in_session()
@@ -905,6 +905,79 @@ mod tests {
 
     fn json_of(line: &str) -> Value {
         serde_json::from_str(line).unwrap()
+    }
+
+    /// One golden case: `=== name`, then the arguments as a JSON array on one line. The
+    /// `--setting-sources` value depends on the developer's trust settings, so it is masked.
+    fn golden_case(name: &str, cmd: &Command) -> String {
+        let mut a = args(cmd);
+        if let Some(i) = a.iter().position(|x| x == "--setting-sources") {
+            a[i + 1] = "<SOURCES>".into();
+        }
+        format!("=== {name}\n{}\n", serde_json::to_string(&a).unwrap())
+    }
+
+    #[test]
+    fn golden_claude_args() {
+        const MASKED: &str = "# masked: the value after --setting-sources (<SOURCES>, from the developer's trust settings)";
+        const GOLDEN: &str = golden!("backend/claude_args.txt");
+        let with_tools = ClaudeBackend { allowed_tools: Some("Bash(cargo *)".into()), ..backend() };
+        let mut mcp = session();
+        mcp.attach_mcp(&attachment());
+        let actual = [
+            golden_case("fresh", &backend().command(&req(None))),
+            golden_case("resumed", &with_tools.command(&req(Some("sess-1")))),
+            golden_case("session_with_mcp", &mcp.command(&req(None))),
+        ]
+        .concat();
+        let (head, body) = GOLDEN.split_once('\n').unwrap();
+        assert_eq!(head, MASKED);
+        assert_eq!(body, actual);
+    }
+
+    #[test]
+    fn golden_deepseek_args() {
+        const MASKED: &str = "# masked: the value after --setting-sources (<SOURCES>, from the developer's trust settings)";
+        const GOLDEN: &str = golden!("backend/deepseek_args.txt");
+        let deepseek = ClaudeBackend {
+            provider: ProviderId::DeepSeek,
+            env: vec![("ANTHROPIC_BASE_URL".into(), "https://deepseek.test/anthropic".into())],
+            ..backend()
+        };
+        let actual = [
+            golden_case("fresh", &deepseek.command(&req(None))),
+            golden_case("resumed_in_session", &ClaudeBackend { interactive: true, ..deepseek }.command(&req(Some("sess-1")))),
+        ]
+        .concat();
+        let (head, body) = GOLDEN.split_once('\n').unwrap();
+        assert_eq!(head, MASKED);
+        assert_eq!(body, actual);
+    }
+
+    #[test]
+    fn golden_claude_control_response() {
+        const MASKED: &str = "# masked: nothing";
+        const GOLDEN: &str = golden!("backend/claude_control_response.txt");
+        let request = |input: Value, blocked_path: Option<&str>| PermissionRequest {
+            id: "req-1".into(),
+            tool: "Write".into(),
+            summary: "unused".into(),
+            input,
+            blocked_path: blocked_path.map(String::from),
+        };
+        let full = request(json!({ "path": "/tmp/p/x.txt", "content": "a \"b\"\n", "nested": { "z": 1, "a": [1e2, 2.0] } }), Some("/tmp/p/x.txt"));
+        let bare = request(json!({}), None);
+        let line = |r: &PermissionRequest, d: Decision| session().permission_response(r, &d).unwrap();
+        let actual = format!(
+            "=== allow\n{}\n=== allow_always\n{}\n=== deny\n{}\n=== allow_empty_input\n{}\n",
+            line(&full, Decision::Allow),
+            line(&full, Decision::AllowAlways),
+            line(&full, Decision::Deny { reason: "not here".into() }),
+            line(&bare, Decision::Allow),
+        );
+        let (head, body) = GOLDEN.split_once('\n').unwrap();
+        assert_eq!(head, MASKED);
+        assert_eq!(body, actual);
     }
 
     #[test]

@@ -1,0 +1,286 @@
+# masked: nothing (each step line starts with # and names the edit; the lines after it are the whole file)
+## typical: no file yet
+# add_allow_rule -> changed: true
+{
+  "permissions": {
+    "allow": [
+      "Bash(cargo test:*)"
+    ]
+  }
+}
+# add_allow_rule again -> changed: false
+{
+  "permissions": {
+    "allow": [
+      "Bash(cargo test:*)"
+    ]
+  }
+}
+# add_directory -> changed: true
+{
+  "permissions": {
+    "additionalDirectories": [
+      "/work/shared"
+    ],
+    "allow": [
+      "Bash(cargo test:*)"
+    ]
+  }
+}
+# save_always -> changed: true
+{
+  "permissions": {
+    "additionalDirectories": [
+      "/work/shared",
+      "/work/more"
+    ],
+    "allow": [
+      "Bash(cargo test:*)",
+      "Bash(grep:*)",
+      "Edit"
+    ]
+  }
+}
+# remove_allow_rule -> changed: true
+{
+  "permissions": {
+    "additionalDirectories": [
+      "/work/shared",
+      "/work/more"
+    ],
+    "allow": [
+      "Bash(grep:*)",
+      "Edit"
+    ]
+  }
+}
+# remove_allow_rule absent -> changed: false
+{
+  "permissions": {
+    "additionalDirectories": [
+      "/work/shared",
+      "/work/more"
+    ],
+    "allow": [
+      "Bash(grep:*)",
+      "Edit"
+    ]
+  }
+}
+# remove_allow_rule Bash(grep:*) -> changed: true
+{
+  "permissions": {
+    "additionalDirectories": [
+      "/work/shared",
+      "/work/more"
+    ],
+    "allow": [
+      "Edit"
+    ]
+  }
+}
+# remove_allow_rule Edit -> changed: true
+{
+  "permissions": {
+    "additionalDirectories": [
+      "/work/shared",
+      "/work/more"
+    ],
+    "allow": []
+  }
+}
+## unusual: an existing file with other keys, deny list, four-space indent and no final newline
+# add_allow_rule -> changed: true
+{
+  "hooks": {
+    "Stop": [
+      {
+        "command": "é"
+      }
+    ]
+  },
+  "model": "opus",
+  "permissions": {
+    "allow": [
+      "Read",
+      "WebFetch(domain:docs.rs) \"é\""
+    ],
+    "defaultMode": "plan",
+    "deny": [
+      "Bash(rm:*)"
+    ]
+  }
+}
+# add_allow_rule again -> changed: false
+{
+  "hooks": {
+    "Stop": [
+      {
+        "command": "é"
+      }
+    ]
+  },
+  "model": "opus",
+  "permissions": {
+    "allow": [
+      "Read",
+      "WebFetch(domain:docs.rs) \"é\""
+    ],
+    "defaultMode": "plan",
+    "deny": [
+      "Bash(rm:*)"
+    ]
+  }
+}
+# add_directory -> changed: true
+{
+  "hooks": {
+    "Stop": [
+      {
+        "command": "é"
+      }
+    ]
+  },
+  "model": "opus",
+  "permissions": {
+    "additionalDirectories": [
+      "/work/with space/é"
+    ],
+    "allow": [
+      "Read",
+      "WebFetch(domain:docs.rs) \"é\""
+    ],
+    "defaultMode": "plan",
+    "deny": [
+      "Bash(rm:*)"
+    ]
+  }
+}
+# save_always -> changed: true
+{
+  "hooks": {
+    "Stop": [
+      {
+        "command": "é"
+      }
+    ]
+  },
+  "model": "opus",
+  "permissions": {
+    "additionalDirectories": [
+      "/work/with space/é",
+      "/work/more"
+    ],
+    "allow": [
+      "Read",
+      "WebFetch(domain:docs.rs) \"é\"",
+      "Bash(grep:*)",
+      "Edit"
+    ],
+    "defaultMode": "plan",
+    "deny": [
+      "Bash(rm:*)"
+    ]
+  }
+}
+# remove_allow_rule -> changed: true
+{
+  "hooks": {
+    "Stop": [
+      {
+        "command": "é"
+      }
+    ]
+  },
+  "model": "opus",
+  "permissions": {
+    "additionalDirectories": [
+      "/work/with space/é",
+      "/work/more"
+    ],
+    "allow": [
+      "Read",
+      "Bash(grep:*)",
+      "Edit"
+    ],
+    "defaultMode": "plan",
+    "deny": [
+      "Bash(rm:*)"
+    ]
+  }
+}
+# remove_allow_rule absent -> changed: false
+{
+  "hooks": {
+    "Stop": [
+      {
+        "command": "é"
+      }
+    ]
+  },
+  "model": "opus",
+  "permissions": {
+    "additionalDirectories": [
+      "/work/with space/é",
+      "/work/more"
+    ],
+    "allow": [
+      "Read",
+      "Bash(grep:*)",
+      "Edit"
+    ],
+    "defaultMode": "plan",
+    "deny": [
+      "Bash(rm:*)"
+    ]
+  }
+}
+# remove_allow_rule Bash(grep:*) -> changed: true
+{
+  "hooks": {
+    "Stop": [
+      {
+        "command": "é"
+      }
+    ]
+  },
+  "model": "opus",
+  "permissions": {
+    "additionalDirectories": [
+      "/work/with space/é",
+      "/work/more"
+    ],
+    "allow": [
+      "Read",
+      "Edit"
+    ],
+    "defaultMode": "plan",
+    "deny": [
+      "Bash(rm:*)"
+    ]
+  }
+}
+# remove_allow_rule Edit -> changed: true
+{
+  "hooks": {
+    "Stop": [
+      {
+        "command": "é"
+      }
+    ]
+  },
+  "model": "opus",
+  "permissions": {
+    "additionalDirectories": [
+      "/work/with space/é",
+      "/work/more"
+    ],
+    "allow": [
+      "Read"
+    ],
+    "defaultMode": "plan",
+    "deny": [
+      "Bash(rm:*)"
+    ]
+  }
+}

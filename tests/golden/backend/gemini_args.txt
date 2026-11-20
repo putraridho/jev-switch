@@ -1,0 +1,5 @@
+# masked: nothing
+=== fresh
+["-m","m-1","--output-format","stream-json","--approval-mode","auto_edit"]
+=== resumed
+["-m","m-1","--output-format","stream-json","--approval-mode","auto_edit","--resume","sess-1"]

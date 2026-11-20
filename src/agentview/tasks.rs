@@ -74,10 +74,10 @@ mod tests {
     fn empty_list_shows_nothing_and_long_titles_fit() {
         assert_eq!(task_list(&[], 60, Style::off()), None);
         let long = Task::new(&"x".repeat(200), TaskState::Pending);
-        for l in task_list(&[long.clone()], 40, Style::off()).unwrap_or_default().lines() {
+        for l in task_list(std::slice::from_ref(&long), 40, Style::off()).unwrap_or_default().lines() {
             assert!(display_width(l) <= 40);
         }
-        let styled = task_list(&[long.clone()], 40, Style::on()).unwrap_or_default();
+        let styled = task_list(std::slice::from_ref(&long), 40, Style::on()).unwrap_or_default();
         assert_eq!(strip_ansi(&styled), task_list(&[long], 40, Style::off()).unwrap_or_default());
     }
 }

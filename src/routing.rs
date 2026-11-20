@@ -865,8 +865,8 @@ mod tests {
             for task in TaskType::ALL {
                 for round in 0..40 {
                     let mut f = Fixture::new(&provs);
-                    f.allow = Allowances { credits: rng.next() % 2 == 0, per_token: rng.next() % 2 == 0 };
-                    f.plan = if rng.next() % 2 == 0 { Some(rng.unit()) } else { None };
+                    f.allow = Allowances { credits: rng.next().is_multiple_of(2), per_token: rng.next().is_multiple_of(2) };
+                    f.plan = if rng.next().is_multiple_of(2) { Some(rng.unit()) } else { None };
                     f.context_tokens = rng.pick(&[0, 300_000, 700_000]);
                     f.pin = match rng.next() % 6 {
                         0 => Pin::Provider(rng.pick(&PROVIDERS)),
@@ -883,14 +883,14 @@ mod tests {
                         security_p: rng.unit(),
                         edit_p: rng.unit(),
                         continues_p: rng.unit(),
-                        correction_p: if rng.next() % 2 == 0 { Some(rng.unit()) } else { None },
+                        correction_p: if rng.next().is_multiple_of(2) { Some(rng.unit()) } else { None },
                         orchestration: Orchestration::default(),
                         security_keywords: rng.pick(&[Security::None, Security::Weak, Security::Strong]),
                     };
                     let signals = (round % 5 != 0).then_some(&s);
                     // Start from a random session, including a model that has since become unusable.
                     let mut st = RoutingState::default();
-                    if rng.next() % 3 != 0 {
+                    if !rng.next().is_multiple_of(3) {
                         record_turn(&mut st, rng.pick(&models().iter().collect::<Vec<_>>()));
                     }
                     for _ in 0..3 {

@@ -97,8 +97,7 @@ mod tests {
         for p in ALL {
             assert!(p.spinner_frames().len() >= 4);
         }
-        for text in ["claude.accent=#8ec5ff;codex.accent=#a5f3fc;gemini.accent=#c4b5fd;grok.accent=#93c5fd;deepseek.accent=#67e8f9"] {
-            assert!(ThemeOverrides::parse(text).1.is_empty());
-        }
+        let text = "claude.accent=#8ec5ff;codex.accent=#a5f3fc;gemini.accent=#c4b5fd;grok.accent=#93c5fd;deepseek.accent=#67e8f9";
+        assert!(ThemeOverrides::parse(text).1.is_empty());
     }
 }

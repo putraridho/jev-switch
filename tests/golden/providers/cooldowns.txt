@@ -1,0 +1,7 @@
+# masked: nothing (fixed clock 1760000000000)
+## typical: two providers cooling down
+{"claude":1760003600000,"codex":1760003600000}
+## unusual: merged into an existing file with expired, later and unreadable entries
+{"claude":1760003600000,"gemini":1760090000000}
+## unusual: nothing cooling down
+{}

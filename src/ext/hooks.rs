@@ -226,9 +226,12 @@ pub fn trust_project_with_preview(user: &Path, project: &Path) -> std::io::Resul
     trust_project_full(user, project).map(|(newly, defs, _)| (newly, defs))
 }
 
+/// The outcome of [`trust_project_full`]: newly trusted, the hooks, and the settings lines approved.
+pub type TrustedWithSettings = (bool, Vec<HookDef>, Vec<(String, String)>);
+
 /// As [`trust_project_with_preview`], with the lines of `.claude/settings.json` that were
 /// approved, read from the same bytes that were hashed.
-pub fn trust_project_full(user: &Path, project: &Path) -> std::io::Result<(bool, Vec<HookDef>, Vec<(String, String)>)> {
+pub fn trust_project_full(user: &Path, project: &Path) -> std::io::Result<TrustedWithSettings> {
     let path = project.to_str().filter(|path| !path.contains(['\t', '\n', '\r']))
         .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidInput, "project path cannot be stored"))?;
     let hooks_path = project.join(".jev/hooks.json");

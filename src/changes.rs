@@ -265,6 +265,9 @@ struct Merged {
     added: HashMap<String, Stamp>,
 }
 
+/// The untracked paths an addition pass splits into added and revealed, with their stamps.
+type StampedPaths<'a> = (Vec<(&'a String, &'a Stamp)>, Vec<(&'a String, &'a Stamp)>);
+
 /// Fold the untracked manifests into the tracked file list.
 ///
 /// * untracked now, not before: `Added` (unless it is a tracked file that left the index,
@@ -301,7 +304,7 @@ fn merge_untracked(tree_files: Vec<FileChange>, before: &Snapshot, after: &Snaps
     modified.sort();
     files.extend(modified.into_iter().map(|p| FileChange::new(p.clone(), ChangeStatus::ModifiedUntracked)));
 
-    let (mut added, revealed): (Vec<(&String, &Stamp)>, Vec<(&String, &Stamp)>) = after
+    let (mut added, revealed): StampedPaths<'_> = after
         .untracked
         .iter()
         .filter(|(p, _)| !before.untracked.contains_key(*p) && !deleted.contains(*p))
@@ -989,7 +992,7 @@ pub fn undo(dir: &Path, summary: &ChangeSummary) -> Result<UndoReport, UndoError
     }
 
     // 2. Every old content must be in the old tree, so a failure here leaves the tree untouched.
-    let wanted: Vec<&str> = steps.iter().filter_map(|s| matches!(s, Step::Restore { .. }).then(|| s.path())).collect();
+    let wanted: Vec<&str> = steps.iter().filter(|&s| matches!(s, Step::Restore { .. })).map(|s| s.path()).collect();
     let mut restorable = HashSet::new();
     for chunk in wanted.chunks(200) {
         let mut args = vec!["--literal-pathspecs", "ls-tree", "-z", summary.before.as_str(), "--"];
@@ -1003,7 +1006,7 @@ pub fn undo(dir: &Path, summary: &ChangeSummary) -> Result<UndoReport, UndoError
 
     // 3. Every target must really be inside the repository and not blocked by something
     // that is not ours to replace.
-    let deleting: HashSet<&str> = steps.iter().filter_map(|s| matches!(s, Step::Delete(_)).then(|| s.path())).collect();
+    let deleting: HashSet<&str> = steps.iter().filter(|&s| matches!(s, Step::Delete(_))).map(|s| s.path()).collect();
     for step in &steps {
         if !inside_root(&root_canon, &root.join(step.path())) {
             return Err(UndoError::UnsafePath(step.path().to_string()));
@@ -1156,7 +1159,7 @@ mod tests {
     #[test]
     fn name_status_and_numstat_parse_including_renames_and_binary() {
         let ns = "M\0a.txt\0A\0new.txt\0D\0gone.txt\0R087\0old name.txt\0new name.txt\0T\0t.bin\0";
-        let num = "1\t2\ta.txt\03\t0\tnew.txt\00\t0\t\0old name.txt\0new name.txt\0-\t-\tt.bin\0";
+        let num = "1\t2\ta.txt\x003\t0\tnew.txt\x000\t0\t\0old name.txt\0new name.txt\0-\t-\tt.bin\0";
         let files = build_files(ns, num);
         let by: HashMap<_, _> = files.iter().map(|f| (f.path.as_str(), f)).collect();
         assert_eq!(files.len(), 5);
@@ -1209,7 +1212,7 @@ mod tests {
 
     #[test]
     fn ls_tree_parses_modes_and_skips_submodules() {
-        let raw = "100644 blob aaa\ta.txt\0100755 blob bbb\trun.sh\0120000 blob ccc\tlink\0160000 commit ddd\tsub\0";
+        let raw = "100644 blob aaa\ta.txt\x00100755 blob bbb\trun.sh\x00120000 blob ccc\tlink\x00160000 commit ddd\tsub\0";
         let m = parse_ls_tree_paths(raw);
         assert!(m.contains("a.txt") && m.contains("run.sh") && m.contains("link"));
         assert!(!m.contains("sub"));

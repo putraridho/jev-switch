@@ -297,7 +297,7 @@ pub fn tool_failure_rows(summary: &str, ok: bool, text: &str, project: &Path, st
     let body = relativize_paths(&one_line(summary), project);
     let (verb, detail) = body.split_once(' ').unwrap_or((&body, ""));
     let mark = if ok { style.yellow("✗") } else { style.red("✗") };
-    let mut rows = vec![truncate_to_width(&format!("    {mark} {} {}", style.bold(&display_tool(verb)), style.dim(detail)).trim_end().to_string(), width)];
+    let mut rows = vec![truncate_to_width(format!("    {mark} {} {}", style.bold(&display_tool(verb)), style.dim(detail)).trim_end(), width)];
     if let Some((_, said)) = result_parts(tool, ok, text, style) {
         rows.push(truncate_to_width(&format!("      {said}"), width));
     }

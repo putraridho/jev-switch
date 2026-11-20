@@ -126,7 +126,7 @@ mod tests {
     fn the_breakdown_splits_prompts_answers_notes_and_memory_and_names_the_heaviest_turn() {
         let turns = [turn(&"a".repeat(40), &"b".repeat(80)), turn("hi", &"c".repeat(400))];
         let b = breakdown(&turns, &["x".repeat(120)], Some(&"m".repeat(16)));
-        assert_eq!((b.prompts, b.answers, b.waiting, b.memory), (10 + 0, 20 + 100, 30, 4));
+        assert_eq!((b.prompts, b.answers, b.waiting, b.memory), (10, 20 + 100, 30, 4));
         assert_eq!(b.heaviest_turn, Some((2, 100)));
         assert_eq!(b.total(), 10 + 120 + 30 + 4);
         assert_eq!(breakdown(&[], &[], None), Breakdown::default());

@@ -159,7 +159,7 @@ impl Cap {
             // `2m tokens`, `500k tokens`, `5 usd`: the unit may come last.
             Some((a, u)) if matches!(u.trim(), "tokens" | "usd") => (u.trim(), a.trim()),
             Some((u, a)) => (u.trim(), a.trim()),
-            None => return t.strip_prefix('$').map(|a| Self::usd(a)).unwrap_or_else(|| Err(usage.into())),
+            None => return t.strip_prefix('$').map(Self::usd).unwrap_or_else(|| Err(usage.into())),
         };
         match unit {
             "usd" | "$" => Self::usd(amount),

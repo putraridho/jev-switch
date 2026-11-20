@@ -855,7 +855,7 @@ mod tests {
         assert!(r.ready_providers.is_empty());
         assert!(!r.routing_note.is_empty());
         assert!(has_check(&r, "jev-key") && has_check(&r, "no-provider"));
-        assert_eq!(first_run_hint(&[]).is_some(), true);
+        assert!(first_run_hint(&[]).is_some());
     }
 
     // ---- first run hint

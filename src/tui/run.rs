@@ -386,7 +386,7 @@ pub async fn run(repl: Repl, mut rx: mpsc::UnboundedReceiver<FrontMsg>, opts: Op
                 }
                 // A resize to 0 columns (a window being dragged shut, some multiplexers
                 // while detaching) says nothing about the real width.
-                Some(Ok(Event::Resize(w, _))) if w == 0 => Vec::new(),
+                Some(Ok(Event::Resize(0, _))) => Vec::new(),
                 Some(Ok(Event::Resize(w, _))) => {
                     let w = usize::from(w);
                     if app.fullscreen {

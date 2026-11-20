@@ -129,14 +129,14 @@ pub fn permission_prompt(q: &Question) -> Prompt {
     }
     let tail = join(&[&[choices(q.always, style)], &note_rows]);
     if rows.len() <= MAX_INLINE_ROWS {
-        return Prompt { text: join(&[&top, &rows, &[tail.clone()]]), full: None, tail };
+        return Prompt { text: join(&[&top, &rows, std::slice::from_ref(&tail)]), full: None, tail };
     }
     let more = style.dim(&format!(
         "\u{2026} {} more rows ({} lines in all): the pager above showed all of it",
         rows.len() - PEEK_ROWS,
         lines.len()
     ));
-    let text = join(&[&top, &rows[..PEEK_ROWS], &[more], &[tail.clone()]]);
+    let text = join(&[&top, &rows[..PEEK_ROWS], &[more], std::slice::from_ref(&tail)]);
     Prompt { text, full: Some(join(&[&top, &rows])), tail }
 }
 

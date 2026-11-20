@@ -151,11 +151,7 @@ impl TurnCache {
 }
 
 fn percent(part: u64, whole: u64) -> u64 {
-    if whole == 0 {
-        0
-    } else {
-        part * 100 / whole
-    }
+    (part * 100).checked_div(whole).unwrap_or(0)
 }
 
 fn cause(prev: Option<&TurnRecord>, t: &TurnRecord) -> MissCause {

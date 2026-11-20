@@ -108,9 +108,9 @@ impl Repl {
     pub(super) async fn run_check_command(&mut self, check: Check, command: &str, fix: bool, io: &mut Io<'_>) -> Flow {
         let style = self.out_style();
         for round in 1..=FIX_ROUNDS {
-            self.console.out(&format!("  {} {}", style.dim("running"), style.cyan(&command)));
+            self.console.out(&format!("  {} {}", style.dim("running"), style.cyan(command)));
             let console = self.console.clone();
-            let run = host::run_shell(&command, self.engine.dir(), &mut |line| console.out(&format!("  {}", style.dim(line))));
+            let run = host::run_shell(command, self.engine.dir(), &mut |line| console.out(&format!("  {}", style.dim(line))));
             if run.failed.is_none() && run.code == Some(0) {
                 self.console.out(&format!("{} {check} passed", style.green("✓")));
                 return Flow::Continue;
@@ -124,7 +124,7 @@ impl Repl {
                 self.console.out(&format!("{} {check} still fails after {FIX_ROUNDS} fix attempts; the output goes with your next message", style.yellow("⚠")));
                 return Flow::Continue;
             }
-            let answered = self.prompt(&fix_prompt(check, &command, round), io).await;
+            let answered = self.prompt(&fix_prompt(check, command, round), io).await;
             if !matches!(answered, Flow::Continue) || self.carry_waiting() {
                 // Interrupted, or the model could not answer (its notes are still waiting).
                 return answered;
