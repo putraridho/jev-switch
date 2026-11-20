@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use crate::session::domain::catch_up::write_atomic;
+use crate::shared::infrastructure::private_file::write_atomic;
 
 const FILE: &str = "session-meta.json";
 

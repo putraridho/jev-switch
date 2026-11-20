@@ -9,8 +9,10 @@ use std::time::UNIX_EPOCH;
 use serde::Deserialize;
 
 use crate::backend::ProviderId;
-use crate::session::domain::catch_up as handoff;
-use crate::session::domain::catch_up::{SavedSession, Sessions, TurnRecord};
+use crate::session::infrastructure::session_file;
+use crate::session::domain::saved_session::SavedSession;
+use crate::session::domain::session::Sessions;
+use crate::session::domain::turn_record::TurnRecord;
 
 /// Where a history comes from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -61,7 +63,7 @@ fn jsonl_files(dir: &Path) -> Vec<PathBuf> {
 /// Claude Code keeps a project's histories in `~/.claude/projects/<path with every
 /// non-alphanumeric character turned into "-">/`.
 pub fn claude_project_dir(home: &Path, project: &Path) -> PathBuf {
-    let key = handoff::project_key(project);
+    let key = session_file::project_key(project);
     let encoded: String = key.chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '-' }).collect();
     home.join(".claude").join("projects").join(encoded)
 }
@@ -72,12 +74,12 @@ pub fn discover(home: &Path, project: &Path) -> Vec<Found> {
         .into_iter()
         .map(|path| Found { source: Source::ClaudeCode, modified_ms: modified_ms(&path), path })
         .collect();
-    let key = handoff::project_key(project);
+    let key = session_file::project_key(project);
     let mut rollouts = codex_rollouts(&home.join(".codex").join("sessions"));
     rollouts.sort();
     rollouts.reverse();
     for path in rollouts.into_iter().take(MAX_CODEX_SCANNED) {
-        if codex_cwd(&path).is_some_and(|cwd| handoff::project_key(Path::new(&cwd)) == key) {
+        if codex_cwd(&path).is_some_and(|cwd| session_file::project_key(Path::new(&cwd)) == key) {
             found.push(Found { source: Source::Codex, modified_ms: modified_ms(&path), path });
         }
     }
@@ -128,7 +130,7 @@ pub fn to_saved(turns: Vec<TurnRecord>, project: &Path, saved_ms: u64) -> SavedS
     for turn in turns {
         sessions.push_unseen(turn);
     }
-    SavedSession { project: handoff::project_key(project), saved_ms, sessions, current: None }
+    SavedSession { project: session_file::project_key(project), saved_ms, sessions, current: None }
 }
 
 // ------------------------------------------------------------------ turns
@@ -360,6 +362,7 @@ fn codex_turns(text: &str) -> Vec<TurnRecord> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::session::domain::tool_trail;
 
     fn temp(name: &str) -> PathBuf {
         let d = std::env::temp_dir().join(format!("jev-imp-{name}-{}", std::process::id()));
@@ -404,8 +407,8 @@ this line is not json
         assert_eq!(turns[1].reply, "Tests pass.");
         assert!(turns.iter().all(|t| t.provider == ProviderId::Claude && t.ok));
         // Tools in jev's format are understood by the hand-off.
-        assert_eq!(handoff::files_touched(&turns[0].tools), ["/p/src/parser.rs"]);
-        assert_eq!(handoff::commands_run(&turns[1].tools), ["cargo test"]);
+        assert_eq!(tool_trail::files_touched(&turns[0].tools), ["/p/src/parser.rs"]);
+        assert_eq!(tool_trail::commands_run(&turns[1].tools), ["cargo test"]);
     }
 
     #[test]
@@ -415,7 +418,7 @@ this line is not json
         assert_eq!(turns[0].tools, ["bash ls -la", "apply_patch src/a.rs"]);
         assert_eq!(turns[0].reply, "Here they are.");
         assert_eq!(turns[0].provider, ProviderId::Codex);
-        assert_eq!(handoff::files_touched(&turns[0].tools), ["src/a.rs"]);
+        assert_eq!(tool_trail::files_touched(&turns[0].tools), ["src/a.rs"]);
     }
 
     #[test]
@@ -430,7 +433,7 @@ this line is not json
         std::fs::write(claude.join("notes.txt"), "no").unwrap();
         let day = home.join(".codex/sessions/2026/11/17");
         std::fs::create_dir_all(&day).unwrap();
-        let mine = CODEX.replace("\"/p\"", &serde_json::to_string(&handoff::project_key(&project)).unwrap());
+        let mine = CODEX.replace("\"/p\"", &serde_json::to_string(&session_file::project_key(&project)).unwrap());
         std::fs::write(day.join("rollout-1.jsonl"), mine).unwrap();
         std::fs::write(day.join("rollout-2.jsonl"), CODEX).unwrap(); // another project's
         let found = discover(&home, &project);

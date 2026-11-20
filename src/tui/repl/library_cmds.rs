@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 
 use crate::tui::repl::session_cmds::resolve;
 use crate::tui::repl::session::Repl;
-use crate::session::domain::catch_up as handoff;
+use crate::session::infrastructure::session_file;
 use crate::tui::repl::library_command::SessionsCmd;
 use crate::session::infrastructure::session_import as sessionimport;
 use crate::session::infrastructure::session_import::Found;
@@ -60,7 +60,7 @@ impl Repl {
         }
         let shown = &hits[..hits.len().min(SHOWN)];
         let mut lines = vec![style.bold(&format!("Sessions ({})", hits.len()))];
-        lines.extend(sessionlib::render_hits(shown, now, &handoff::project_key(self.engine.dir()), style));
+        lines.extend(sessionlib::render_hits(shown, now, &session_file::project_key(self.engine.dir()), style));
         if hits.len() > SHOWN {
             lines.push(style.dim(&format!("  ... and {} more: narrow with words or filters", hits.len() - SHOWN)));
         }
@@ -179,11 +179,13 @@ impl Repl {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::session::domain::saved_session::SavedSession;
     use crate::providers::domain::availability::{Availability, State};
     use crate::backend::ProviderId;
     use crate::testkit::capture::Buf;
     use crate::tui::console::terminal_ui::{Console, ConsoleConfig};
-    use crate::session::domain::catch_up::{Sessions, TurnRecord};
+    use crate::session::domain::session::Sessions;
+    use crate::session::domain::turn_record::TurnRecord;
     use crate::providers::application::provider_registry::Runtime;
     use crate::judgment::application::judge::Router;
     use crate::turn::application::engine::Engine;
@@ -218,8 +220,8 @@ mod tests {
         let mut sessions = Sessions::new();
         sessions.record(TurnRecord { prompt: prompt.into(), provider: ProviderId::Codex, model: "m".into(), reply: reply.into(), tools: vec![], ok: true });
         let now = crate::shared::infrastructure::jsonl_log::now_ms();
-        let saved = handoff::SavedSession { project: handoff::project_key(&r.project), saved_ms: now, sessions, current: None };
-        let path = handoff::new_session_file(&r.state, &r.project, now + prompt.len() as u64);
+        let saved = SavedSession { project: session_file::project_key(&r.project), saved_ms: now, sessions, current: None };
+        let path = session_file::new_session_file(&r.state, &r.project, now + prompt.len() as u64);
         crate::shared::infrastructure::private_file::write_atomic(&path, &saved.render()).unwrap();
     }
 

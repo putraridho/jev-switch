@@ -22,7 +22,7 @@ use jev_router::tui::command as commands;
 use jev_router::tui::console::terminal_ui::{Console, ConsoleConfig, CLEAR_SCREEN};
 use jev_router::shared::infrastructure::env_file as envfile;
 use jev_router::tui::console::front::{Front, FrontMsg};
-use jev_router::session::domain::catch_up as handoff;
+use jev_router::session::infrastructure::session_file;
 use jev_router::tui::input::line_editor as lineedit;
 use jev_router::tui::input::line_editor::{Input, InterruptGuard};
 use jev_router::shared::infrastructure::jsonl_log as log;
@@ -516,7 +516,7 @@ fn startup(repl: &mut Repl, args: &Args, term: &Term, console: &Console, state_d
             Ok(info) => console.out(&views::resumed_line(&info, now, style)),
             Err(e) => console.out(&style.dim(&format!("no session to continue ({e}); starting fresh"))),
         }
-    } else if let Some(info) = state_dir.and_then(|d| handoff::saved_session_info_in(d, repl.engine.dir(), now)) {
+    } else if let Some(info) = state_dir.and_then(|d| session_file::saved_session_info_in(d, repl.engine.dir(), now)) {
         console.out(&views::previous_session_line(&info, now, style));
     }
     if term.interactive() {

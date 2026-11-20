@@ -40,7 +40,7 @@ pub fn load_flag(state_dir: &Path, flag: Flag) -> Option<bool> {
 
 /// Keep `flag` for the next session.
 pub fn save_flag(state_dir: &Path, flag: Flag, on: bool) -> std::io::Result<()> {
-    crate::session::domain::catch_up::write_atomic(&state_dir.join(flag.file()), if on { "on" } else { "off" })
+    crate::shared::infrastructure::private_file::write_atomic(&state_dir.join(flag.file()), if on { "on" } else { "off" })
 }
 
 /// Everything the last session left, read once at start.

@@ -5,7 +5,7 @@
 //! The state, the key decoding and the drawing are plain functions of their input so they
 //! are tested; only [`run`] touches the terminal.
 
-use crate::session::domain::catch_up::SessionEntry;
+use crate::session::domain::saved_session::SessionEntry;
 use crate::tui::render::{display_width, truncate_to_width, Style};
 use crate::tui::views::status_facts::human_ago;
 
@@ -301,7 +301,7 @@ pub fn numbered(entries: &[SessionEntry], now_ms: u64, width: usize, style: Styl
 mod tests {
     use super::*;
     use crate::backend::ProviderId;
-    use crate::session::domain::catch_up::SessionInfo;
+    use crate::session::domain::saved_session::SessionInfo;
     use std::path::PathBuf;
 
     const NOW: u64 = 10 * 86_400_000;

@@ -15,7 +15,7 @@ use crate::tui::command::Command;
 use crate::tui::repl::{library_cmds, session_cmds};
 use crate::tui::console::terminal_ui::Console;
 use crate::doctor::domain::diagnose as doctor;
-use crate::session::domain::catch_up::ResumeError;
+use crate::session::domain::saved_session::ResumeError;
 use crate::shared::infrastructure::jsonl_log as log;
 use crate::approval::domain::rule_policy as permissions;
 use crate::approval::domain::rule_policy::PermissionsCmd;

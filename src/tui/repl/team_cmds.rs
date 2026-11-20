@@ -78,7 +78,7 @@ impl Repl {
             let text = format!("There is no session {n}; there are {}.", all.len());
             return self.console.out(&format!("  {}", style.dim(&text)));
         };
-        match crate::session::domain::catch_up::load_path(self.engine.dir(), &entry.path) {
+        match crate::session::infrastructure::session_file::load_path(self.engine.dir(), &entry.path) {
             Ok(saved) => match replay::replay_text(&entry.title, saved.sessions.records()) {
                 Some(text) => self.page_out(&text),
                 None => self.console.out(&format!("  {}", style.dim("That session has no turns."))),
