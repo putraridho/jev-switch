@@ -240,8 +240,8 @@ impl Budget {
     pub fn save(&self, state_dir: &Path) -> std::io::Result<()> {
         let path = state_dir.join(BUDGET_FILE);
         match self.cap {
-            Some(Cap::Usd(v)) => crate::handoff::write_atomic(&path, &format!("usd {v}")),
-            Some(Cap::Tokens(v)) => crate::handoff::write_atomic(&path, &format!("tokens {v}")),
+            Some(Cap::Usd(v)) => crate::shared::private_file::write_atomic(&path, &format!("usd {v}")),
+            Some(Cap::Tokens(v)) => crate::shared::private_file::write_atomic(&path, &format!("tokens {v}")),
             None => match std::fs::remove_file(&path) {
                 Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e),
                 _ => Ok(()),

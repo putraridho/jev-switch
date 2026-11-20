@@ -921,7 +921,7 @@ impl Engine {
             sessions: self.sessions.clone(),
             current: self.routing.current.clone(),
         };
-        handoff::write_atomic(&path, &saved.to_json().to_string())?;
+        crate::shared::private_file::write_atomic(&path, &saved.to_json().to_string())?;
         handoff::prune(&state, &self.dir, &path);
         self.session_file = Some(path);
         Ok(())

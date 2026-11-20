@@ -149,7 +149,7 @@ pub fn load_saved(state_dir: &Path) -> Option<Mode> {
 
 /// Keep `mode` for the next session. Whole-file replace, so a crash never leaves half a word.
 pub fn save(state_dir: &Path, mode: Mode) -> std::io::Result<()> {
-    crate::handoff::write_atomic(&saved_path(state_dir), mode.name())
+    crate::shared::private_file::write_atomic(&saved_path(state_dir), mode.name())
 }
 
 /// The mode an interactive session starts in: what was asked on the command line, else what

@@ -64,7 +64,7 @@ impl FailoverPolicy {
     }
 
     pub fn save(&self, state_dir: &Path) -> std::io::Result<()> {
-        crate::handoff::write_atomic(&state_dir.join(FILE), &self.to_string())
+        crate::shared::private_file::write_atomic(&state_dir.join(FILE), &self.to_string())
     }
 }
 

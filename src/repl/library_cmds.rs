@@ -218,7 +218,7 @@ mod tests {
         let now = crate::log::now_ms();
         let saved = handoff::SavedSession { project: handoff::project_key(&r.project), saved_ms: now, sessions, current: None };
         let path = handoff::new_session_file(&r.state, &r.project, now + prompt.len() as u64);
-        handoff::write_atomic(&path, &saved.render()).unwrap();
+        crate::shared::private_file::write_atomic(&path, &saved.render()).unwrap();
     }
 
     fn run(r: &mut Rig, line: &str) -> String {

@@ -97,7 +97,7 @@ pub fn save(path: &Path, now_ms: u64, fingerprint: u64, avail: &[Availability]) 
         .collect();
     let Ok(text) = serde_json::to_string(&CacheFile { saved_ms: now_ms, fingerprint, entries }) else { return };
     // Owner-only, like every other file in the state folder.
-    let _ = crate::handoff::write_atomic(path, &text);
+    let _ = crate::shared::private_file::write_atomic(path, &text);
 }
 
 #[cfg(test)]

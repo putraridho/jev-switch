@@ -7,11 +7,11 @@
 //! that the caller prepends to the next prompt.
 
 use std::collections::HashMap;
-use std::io::Write as _;
 use std::path::{Path, PathBuf};
 
 use serde_json::{json, Value};
 
+pub use crate::shared::private_file::write_atomic;
 use crate::shared::ProviderId;
 
 /// One finished (or failed) turn, as the hand-off needs to remember it.
@@ -602,30 +602,6 @@ pub fn new_session_file(state_dir: &Path, project_dir: &Path, now_ms: u64) -> Pa
     let dir = project_sessions_dir(state_dir, project_dir);
     let pid = std::process::id();
     (now_ms..).map(|ms| dir.join(format!("{ms}-{pid}.json"))).find(|p| !p.exists()).expect("an unbounded range")
-}
-
-/// Write `text` to `path` through a temp file and a rename, so a crash never leaves half a
-/// file; owner-only, because prompts can be private.
-pub fn write_atomic(path: &Path, text: &str) -> std::io::Result<()> {
-    let dir = path.parent().unwrap_or(Path::new("."));
-    std::fs::create_dir_all(dir)?;
-    let tmp = path.with_extension(format!("tmp-{}", std::process::id()));
-    let mut opts = std::fs::OpenOptions::new();
-    opts.write(true).create(true).truncate(true);
-    // Never through a symlink planted at the temporary name.
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        opts.mode(0o600).custom_flags(libc::O_NOFOLLOW);
-    }
-    let written = opts.open(&tmp).and_then(|mut f| f.write_all(text.as_bytes()).and_then(|()| f.sync_all()));
-    match written.and_then(|()| std::fs::rename(&tmp, path)) {
-        Ok(()) => Ok(()),
-        Err(e) => {
-            let _ = std::fs::remove_file(&tmp);
-            Err(e)
-        }
-    }
 }
 
 /// Read one session file. One that is not for `project_dir` (a hash collision) is

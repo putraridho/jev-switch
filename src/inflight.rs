@@ -31,7 +31,7 @@ fn marker_path(state_dir: &Path, pid: u32) -> PathBuf {
 pub fn begin(state_dir: &Path, project: &Path, prompt: &str, now_ms: u64) {
     let marker = Marker { pid: std::process::id(), started_ms: now_ms, project: project.to_string_lossy().into_owned(), prompt: crate::audit::preview(prompt) };
     if let Ok(text) = serde_json::to_string(&marker) {
-        let _ = crate::handoff::write_atomic(&marker_path(state_dir, marker.pid), &text);
+        let _ = crate::shared::private_file::write_atomic(&marker_path(state_dir, marker.pid), &text);
     }
 }
 
