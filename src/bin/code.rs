@@ -92,7 +92,7 @@ fn console_for(term: &Term, project: &Path, stream_answers: bool, front: Option<
         return console.with_front(front);
     }
     if term.interactive() && stream_answers {
-        let console = console.with_key_reader(jev_router::tui::console::terminal_ui::terminal_keys());
+        let console = console.with_key_reader(jev_router::tui::console::terminal_ui::key_reader::terminal_keys());
         // What is typed during a turn shows on the status line: without one it would be blind.
         if term.live() {
             console.with_type_ahead()
