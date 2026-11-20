@@ -1295,7 +1295,7 @@ fn page_on_terminal(text: &str) -> bool {
     // the mode it had before the turn, which is what the pager expects to find and put back.
     let _owner = lineedit::STDIN_LOCK.lock().unwrap_or_else(PoisonError::into_inner);
     crate::tui::input::typeahead::restore_turn_mode();
-    crate::tui::repl::session::page(text)
+    crate::tui::repl::session::pager::page(text)
 }
 
 /// The text with the two columns of indent every console line has.

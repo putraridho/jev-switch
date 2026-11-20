@@ -34,7 +34,8 @@ use jev_router::providers::domain::probe_source::ProbeSource;
 use jev_router::tui::app::startup_timeline::{Phase, Timeline};
 use jev_router::providers::infrastructure::probe_cache as probecache;
 use jev_router::providers::application::provider_registry::{ProbeCache, Runtime};
-use jev_router::tui::repl::session::{Confirm, Flow, Interrupt, Io, Repl, SigInt};
+use jev_router::tui::repl::session::turn_race::{Interrupt, SigInt};
+use jev_router::tui::repl::session::{Confirm, Flow, Io, Repl};
 use jev_router::judgment::application::judge::{Router, CODE_STRONG_THRESHOLD};
 use jev_router::tui::tty::terminal_guard as terminal;
 use jev_router::tui::tty::terminal_guard::TerminalGuard;
@@ -390,7 +391,7 @@ async fn print_mode(args: &Args, source: &PromptSource, dir: &Path, term: &Term,
         }
     };
     match &args.repeat {
-        Some(repeat) => repl.repeat_shot(&prompt, args.format, repeat, &mut sigint, &mut jev_router::tui::repl::session::sleeper()).await,
+        Some(repeat) => repl.repeat_shot(&prompt, args.format, repeat, &mut sigint, &mut jev_router::tui::repl::headless::sleeper()).await,
         None => repl.one_shot_as(&prompt, args.format, &mut sigint).await,
     }
 }

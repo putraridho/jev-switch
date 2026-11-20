@@ -24,7 +24,8 @@ use crate::tui::console::terminal_ui::TICK;
 use crate::tui::console::front::{Front, FrontMsg};
 use crate::tui::input::line_editor as lineedit;
 use crate::shared::infrastructure::jsonl_log as log;
-use crate::tui::repl::session::{Confirm, Flow, Interrupt, Io, Repl};
+use crate::tui::repl::session::turn_race::Interrupt;
+use crate::tui::repl::session::{Confirm, Flow, Io, Repl};
 use crate::tui::render::Style;
 use crate::tui::views::status_facts as views;
 
