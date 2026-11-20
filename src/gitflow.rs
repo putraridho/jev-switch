@@ -412,8 +412,12 @@ filter.mixed.clean\ngit-lfs clean -- %f\0filter.mixed.smudge\nsh -c x\0extension
 
 /// A throwaway git repository for tests, removed when dropped. Its git calls drop the
 /// `GIT_DIR`, `GIT_WORK_TREE` and `GIT_INDEX_FILE` a test run can inherit (from a git hook),
-/// so they never touch another repository.
+/// so they never touch another repository, and read neither the system nor the global git
+/// config: a machine with git-lfs installed has `filter.lfs.process` there, which git prefers
+/// over the `clean` and `smudge` programs a test sets up.
+// Only unix tests build a repository; on Windows the helper would be unused.
 #[cfg(test)]
+#[cfg_attr(not(unix), allow(dead_code))]
 pub(crate) mod scratch {
     use std::path::PathBuf;
     use std::process::Command;
@@ -444,7 +448,9 @@ pub(crate) mod scratch {
                 .current_dir(&self.path)
                 .env_remove("GIT_DIR")
                 .env_remove("GIT_WORK_TREE")
-                .env_remove("GIT_INDEX_FILE");
+                .env_remove("GIT_INDEX_FILE")
+                .env("GIT_CONFIG_NOSYSTEM", "1")
+                .env("GIT_CONFIG_GLOBAL", if cfg!(windows) { "NUL" } else { "/dev/null" });
             command
         }
 
