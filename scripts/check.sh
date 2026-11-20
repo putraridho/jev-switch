@@ -102,6 +102,9 @@ for path in directory.glob("*.txt"):
 
 increased = False
 for check in sorted(current):
+    if check not in previous:
+        print(f"{check}: a new check, {current[check]} in its first baseline")
+        continue
     if current[check] > previous[check]:
         print(f"{check}: {previous[check]} -> {current[check]} (increased)", file=sys.stderr)
         increased = True

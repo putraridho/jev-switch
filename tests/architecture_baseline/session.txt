@@ -2,3 +2,6 @@ T1 | src/session/application/export.rs | crate::turn | 3
 T1 | src/session/application/session_library.rs | crate::tui | 2
 T1 | src/session/domain/context_intelligence.rs | crate::tui | 1
 T1 | src/session/domain/context_intelligence.rs | crate::turn | 1
+T2 | src/session/application/session_library.rs | crate::session::infrastructure | 3
+T2 | src/session/domain/catch_up.rs | crate::session::infrastructure | 2
+T2 | src/session/domain/catch_up.rs | crate::shared::infrastructure | 3

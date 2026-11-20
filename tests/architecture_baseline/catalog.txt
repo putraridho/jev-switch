@@ -1,0 +1,1 @@
+T2 | src/catalog/domain/model_table.rs | crate::shared::infrastructure | 1

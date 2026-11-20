@@ -1,0 +1,2 @@
+T2 | src/judgment/application/judge.rs | crate::judgment::infrastructure | 6
+T2 | src/judgment/application/judge.rs | crate::shared::infrastructure | 1

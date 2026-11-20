@@ -1,1 +1,2 @@
 T1 | src/routing/domain/decide.rs | crate::turn | 2
+T2 | src/routing/domain/decide.rs | crate::judgment::application | 8

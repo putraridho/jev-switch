@@ -4,6 +4,13 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
+/// How far out a layer is: domain 0, application 1, infrastructure and interface 2. A file
+/// may import its own layer and anything nearer the middle; infrastructure and interface
+/// files may import any layer. The `tui` folder is the delivery layer and has none of these.
+fn layer_rank(name: &str) -> Option<u8> {
+    match name { "domain" => Some(0), "application" => Some(1), "infrastructure" | "interface" => Some(2), _ => None }
+}
+
 const EDGES: &[(&str, &[&str])] = &[
     ("shared", &[]), ("catalog", &["shared"]), ("approval", &["shared"]),
     ("changes", &["shared"]), ("judgment", &["catalog", "shared"]),
@@ -207,7 +214,7 @@ fn paths(tokens: &[Token], module: &[String]) -> Vec<(String, usize)> {
             for (path, alias) in groups {
                 let mut found = Vec::new();
                 record_path(&path, line, module, &scopes, &mut found);
-                if let Some((target, _)) = found.first() {
+                if let Some((target, _)) = found.first().filter(|(target, _)| !target.trim_start_matches("crate::").contains("::")) {
                     let target_name = target.trim_start_matches("crate::");
                     let module_only = path.last().is_some_and(|name| name == "self" || name == target_name);
                     if module_only {
@@ -252,7 +259,7 @@ fn record_path(path: &[String], line: usize, module: &[String], scopes: &[Option
         else if part != "self" { resolved.push(part.clone()); }
     }
     if let Some(target) = resolved.first() {
-        if target != "*" && target != &module[0] { out.push((format!("crate::{target}"), line)); }
+        if target != "*" { out.push((format!("crate::{}", resolved.join("::")), line)); }
     }
 }
 
@@ -322,7 +329,7 @@ fn architecture() {
     let lib = source_dir.join("lib.rs");
     assert!(fs::symlink_metadata(&lib).unwrap().file_type().is_file());
     test_paths.extend(test_module_files(&lib, &lex(&fs::read_to_string(&lib).unwrap())));
-    let mut violations: BTreeMap<(String, String, String), Vec<usize>> = BTreeMap::new();
+    let mut violations: BTreeMap<(String, String, String, String), Vec<usize>> = BTreeMap::new();
     for file in files {
         if test_paths.iter().any(|path| file.starts_with(path)) { continue; }
         let relative = file.strip_prefix(root).unwrap();
@@ -331,11 +338,20 @@ fn architecture() {
         assert!(EDGES.iter().any(|(name, _)| *name == context), "{} is in no known context folder", relative.display());
         let allowed = EDGES.iter().find(|(name, _)| *name == context).unwrap().1;
         for (target, line) in paths(&without_tests(&lex(&fs::read_to_string(&file).unwrap())), &module) {
-            let target_context = target.trim_start_matches("crate::");
+            let parts: Vec<&str> = target.trim_start_matches("crate::").split("::").collect();
+            let target_context = parts[0];
             if target_context == "testkit" { continue; }
             assert!(EDGES.iter().any(|(name, _)| *name == target_context), "{}:{line}: {target} is in no known context folder", relative.display());
+            let file_name = relative.to_string_lossy().into_owned();
             if target_context != context && !allowed.contains(&target_context) {
-                violations.entry((context.into(), relative.to_string_lossy().into_owned(), target)).or_default().push(line);
+                violations.entry(("T1".into(), context.into(), file_name.clone(), format!("crate::{target_context}"))).or_default().push(line);
+            }
+            // T2: a domain file reaches only domain names, an application file only domain and
+            // application names, in its own context and in the others.
+            if let (Some(own), Some(rank)) = (module.get(1).and_then(|layer| layer_rank(layer)), parts.get(1).and_then(|layer| layer_rank(layer))) {
+                if own < 2 && rank > own && (target_context == context || allowed.contains(&target_context)) {
+                    violations.entry(("T2".into(), context.into(), file_name, format!("crate::{target_context}::{}", parts[1]))).or_default().push(line);
+                }
             }
         }
     }
@@ -347,8 +363,8 @@ fn architecture() {
         fs::create_dir_all(&baseline_dir).unwrap();
         for (context, _) in EDGES {
             let mut contents = String::new();
-            for ((owner, file, path), lines) in &violations {
-                if owner == context { contents.push_str(&format!("T1 | {file} | {path} | {}\n", lines.len())); }
+            for ((kind, owner, file, path), lines) in &violations {
+                if owner == context { contents.push_str(&format!("{kind} | {file} | {path} | {}\n", lines.len())); }
             }
             let file = baseline_dir.join(format!("{context}.txt"));
             if let Ok(metadata) = fs::symlink_metadata(&file) { assert!(metadata.file_type().is_file()); }
@@ -371,9 +387,9 @@ fn architecture() {
         }
     }
     let mut errors = Vec::new();
-    for ((context, file, path), lines) in &violations {
-        let entry = format!("T1 | {file} | {path} | {}", lines.len());
-        if !expected.remove(&(context.clone(), entry)) { errors.push(format!("{file}:{}: T1 unexpected {path} ({} occurrences)", lines[0], lines.len())); }
+    for ((kind, context, file, path), lines) in &violations {
+        let entry = format!("{kind} | {file} | {path} | {}", lines.len());
+        if !expected.remove(&(context.clone(), entry)) { errors.push(format!("{file}:{}: {kind} unexpected {path} ({} occurrences)", lines[0], lines.len())); }
     }
     for (context, entry) in expected { errors.push(format!("stale {context} baseline: {entry}")); }
     assert!(errors.is_empty(), "architecture violations:\n{}", errors.join("\n"));
@@ -409,7 +425,7 @@ fn expands_nested_use_groups_and_aliases() {
 fn skips_test_items_and_resolves_super() {
     let tokens = without_tests(&lex("#[cfg(test)] mod tests { crate::hidden(); } #[cfg(any(test, feature = \"testing\"))] fn f() { crate::hidden(); } mod testing { crate::hidden(); } #[cfg(any(not(test), feature = \"testing\"))] fn live() { crate::visible(); } mod nested { use super::super::{other::Thing, third}; }"));
     let found = paths(&tokens, &["one".into()]);
-    assert_eq!(found, vec![("crate::visible".into(), 1), ("crate::other".into(), 1), ("crate::third".into(), 1)]);
+    assert_eq!(found, vec![("crate::visible".into(), 1), ("crate::other::Thing".into(), 1), ("crate::third".into(), 1)]);
 }
 
 #[test]
@@ -418,5 +434,5 @@ fn collects_bare_imported_modules_and_test_files() {
     let tokens = lex(source);
     assert_eq!(test_module_files(Path::new("src/example.rs"), &tokens), vec![PathBuf::from("src/example/helpers.rs"), PathBuf::from("src/example/helpers")]);
     assert_eq!(test_module_files(Path::new("src/lib.rs"), &tokens), vec![PathBuf::from("src/helpers.rs"), PathBuf::from("src/helpers")]);
-    assert_eq!(paths(&without_tests(&tokens), &["example".into()]), vec![("crate::other".into(), 1), ("crate::third".into(), 1), ("crate::third".into(), 1), ("crate::other".into(), 1), ("crate::third".into(), 1)]);
+    assert_eq!(paths(&without_tests(&tokens), &["example".into()]), vec![("crate::other".into(), 1), ("crate::third".into(), 1), ("crate::third::Item".into(), 1), ("crate::other".into(), 1), ("crate::third".into(), 1)]);
 }

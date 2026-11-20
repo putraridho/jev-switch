@@ -1,1 +1,3 @@
 T1 | src/changes/application/diff_command.rs | crate::tui | 3
+T2 | src/changes/application/diff_command.rs | crate::changes::infrastructure | 3
+T2 | src/changes/application/diff_command.rs | crate::shared::infrastructure | 1
