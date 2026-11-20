@@ -53,9 +53,16 @@ pub fn run_shell(command: &str, dir: &Path, on_line: &mut dyn FnMut(&str)) -> Sh
         });
     }
     let mut output = ShellTail::default();
+    // Whether the last piece ended mid-line (a line longer than the cap comes in pieces).
+    let mut unfinished = false;
     let mut take = |line: String, output: &mut ShellTail| {
-        // The UI may display a long line as multiple pieces; the model tail joins them.
-        on_line(line.trim_end_matches(['\n', '\r']));
+        // The UI may display a long line as multiple pieces; the model tail joins them. A
+        // piece that is only the end of such a line is not a line of its own.
+        let text = line.trim_end_matches(['\n', '\r']);
+        if !(unfinished && text.is_empty()) {
+            on_line(text);
+        }
+        unfinished = !line.ends_with('\n');
         output.push(&line);
     };
     let status = loop {
@@ -478,11 +485,15 @@ mod tests {
 
     #[test]
     fn shell_does_not_add_an_empty_line_after_a_cap_sized_line() {
-        let run = run_shell("printf '%020000d\\nend\\n' 0 | tr 0 a", Path::new("."), &mut |_| {});
+        let mut seen = Vec::new();
+        let run = run_shell("printf '%020000d\\nend\\n' 0 | tr 0 a", Path::new("."), &mut |line| seen.push(line.to_string()));
         let full = format!("{}\nend\n", "a".repeat(SHELL_KEEP_BYTES));
         assert_eq!(run.code, Some(0));
         assert_eq!((run.output.as_str(), run.truncated), (keep_tail(&full).0.as_str(), true));
         assert!(!run.output.contains("\n\n"));
+        // The live view shows no empty row the model's tail does not have either.
+        assert!(!seen.iter().any(String::is_empty), "{:?}", seen.iter().map(String::len).collect::<Vec<_>>());
+        assert_eq!(seen.last().map(String::as_str), Some("end"));
     }
 
     #[test]

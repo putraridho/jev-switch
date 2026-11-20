@@ -376,7 +376,7 @@ pub fn git_status_short(dir: &Path) -> String {
     std::process::Command::new("git")
         .arg("-C")
         .arg(dir)
-        .args(crate::gitflow::NO_REPO_PROGRAMS)
+        .args(crate::gitflow::no_repo_programs(dir))
         .args(["status", "--short"])
         .output()
         .ok()
@@ -1228,7 +1228,9 @@ impl Engine {
         let usable = self.runtime.usable(now).without(excluded);
         // A team pin that can take turns at all (provider logged in, not cooling down, not
         // failed over; a pinned model known and still usable); one that cannot is reported
-        // like any pin.
+        // like any pin, before the turn starts. Once an attempt on it has failed, though, the
+        // turn fails over like an automatic one: the pin is the repository's default, and
+        // ending the turn would throw away the work of a retry the person did not opt out of.
         let team_pin_reachable = match (&self.pin, self.pin_origin) {
             (Pin::Provider(p), PinOrigin::Team) => usable.has_provider(*p).then_some(*p),
             (Pin::Model(p, id), PinOrigin::Team) => {
@@ -1236,6 +1238,7 @@ impl Engine {
             }
             _ => None,
         };
+        let team_pin_failed = attempts > 0 && team_pin_reachable.is_none() && self.pin_origin == PinOrigin::Team && !matches!(self.pin, Pin::Auto);
         let catch_ups = self.privacy_catch_ups(&usable);
         let turn = TurnFacts {
             root: &self.dir,
@@ -1282,6 +1285,11 @@ impl Engine {
                 }
                 decided => (decided?, input, Some(format!("pinned by {}", crate::team::FILE))),
             },
+            None if team_pin_failed => {
+                let note = format!("{} pin to {} skipped: it failed this turn", crate::team::FILE, self.pin);
+                let auto = RouteInput { pin: &Pin::Auto, ..input };
+                (routing::decide(&mut state, &auto)?, auto, Some(note))
+            }
             None => (routing::decide(&mut state, &input)?, input, None),
         };
         let outcome = self.plan_orchestration(signals, &decision, &input, base);
@@ -2297,6 +2305,26 @@ mod tests {
         let report = r.turn("add a retry to the client", want(TaskType::Feature)).await;
         assert_eq!(report.status, TurnStatus::NoRoute, "{}", report.message);
         assert!(r.started().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_team_pin_that_fails_during_the_turn_fails_over_to_automatic_routing() {
+        // A pinned model that gives an empty answer is skipped for the rest of the turn.
+        let mut r = rig(&[Claude, DeepSeek]);
+        r.engine.set_team_pin(Pin::Model(Claude, "claude-opus-5-5".into()));
+        r.script(Claude, EMPTY);
+        let report = r.turn("add a retry to the client", want(TaskType::Feature)).await;
+        assert_eq!(report.status, TurnStatus::Answered, "{}", report.message);
+        assert_eq!(report.provider, Some(DeepSeek));
+        assert!(r.ui.routes.iter().any(|s| s.contains("pin") && s.contains("skipped")), "{:?}", r.ui.routes);
+
+        // A pinned provider that hits its limit mid-turn is cooled down.
+        let mut r = rig(&[Claude, DeepSeek]);
+        r.engine.set_team_pin(Pin::Provider(Claude));
+        r.script(Claude, QUOTA);
+        let report = r.turn("add a retry to the client", want(TaskType::Feature)).await;
+        assert_eq!(report.status, TurnStatus::Answered, "{}", report.message);
+        assert_eq!(report.provider, Some(DeepSeek));
     }
 
     #[tokio::test]

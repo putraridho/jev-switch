@@ -162,11 +162,19 @@ fn contains_only_manifest_files(dir: &Path, base: &Path, allowed: &BTreeSet<Path
             if !contains_only_manifest_files(&path, base, allowed) {
                 return false;
             }
-        } else if !kind.is_file() || !path.strip_prefix(base).is_ok_and(|rel| allowed.contains(rel)) {
+        } else if !kind.is_file() || !(is_system_junk(&entry.file_name()) || path.strip_prefix(base).is_ok_and(|rel| allowed.contains(rel))) {
             return false;
         }
     }
     true
+}
+
+/// Files the operating system leaves in folders on its own (Finder's `.DS_Store` and `._`
+/// copies, Explorer's `Thumbs.db` and `desktop.ini`): nobody's work, so they never make a
+/// folder count as edited.
+fn is_system_junk(name: &std::ffi::OsStr) -> bool {
+    let name = name.to_string_lossy();
+    matches!(name.as_ref(), ".DS_Store" | "Thumbs.db" | "desktop.ini") || name.starts_with("._")
 }
 
 fn changed_files(dir: &Path, manifest: &Manifest) -> Vec<String> {
@@ -517,6 +525,24 @@ mod tests {
         let error = install(&user, &src).unwrap_err();
         assert!(error.0.contains("was not installed from a package"), "{error}");
         assert_eq!(std::fs::read_to_string(draft).unwrap(), "unfinished");
+    }
+
+    #[test]
+    fn lost_registry_with_only_system_junk_files_still_replaces_jevs_copy() {
+        let root = temp("lost-registry-junk");
+        let (src, user) = (root.join("src"), root.join("cfg"));
+        package(&src, "1.0.0", "original");
+        install(&user, &src).unwrap();
+        std::fs::remove_file(user.join(REGISTRY)).unwrap();
+        let commands = user.join("extensions/hello-kit/commands");
+        for junk in [".DS_Store", "._hello.md", "Thumbs.db", "desktop.ini"] {
+            std::fs::write(commands.join(junk), "junk").unwrap();
+        }
+        package(&src, "2.0.0", "new");
+
+        let installed = install(&user, &src).unwrap();
+        assert_eq!(installed.version, "2.0.0");
+        assert_eq!(std::fs::read_to_string(commands.join("hello.md")).unwrap(), "new");
     }
 
     #[test]
