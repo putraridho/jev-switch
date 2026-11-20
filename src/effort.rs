@@ -1,43 +1,16 @@
 //! Reasoning effort: `/effort low|medium|high|auto`, and what each provider's CLI does with it.
+//! The levels and their CLI encoding are in [`crate::backend::effort`].
 //!
-//! Claude Code (and DeepSeek through it) takes a thinking budget from `MAX_THINKING_TOKENS`;
-//! Codex takes `model_reasoning_effort`. Gemini and Grok expose no such control through the
+//! Gemini and Grok expose no such control through the
 //! way jev-code drives them, so for them the setting is accepted and has no effect (`/effort`
 //! says so). `auto` picks from the model tier that the router chose for the turn.
 
 use std::fmt;
 use std::str::FromStr;
 
-use crate::shared::ProviderId;
+use crate::backend::effort::Effort;
 use crate::catalog::{self, Tier};
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Effort {
-    Low,
-    Medium,
-    High,
-}
-
-impl Effort {
-    pub const ALL: [Effort; 3] = [Effort::Low, Effort::Medium, Effort::High];
-
-    pub fn name(self) -> &'static str {
-        match self {
-            Self::Low => "low",
-            Self::Medium => "medium",
-            Self::High => "high",
-        }
-    }
-
-    /// The thinking budget Claude Code is given, in tokens.
-    pub fn thinking_tokens(self) -> u32 {
-        match self {
-            Self::Low => 4_000,
-            Self::Medium => 10_000,
-            Self::High => 31_999,
-        }
-    }
-}
+use crate::shared::ProviderId;
 
 /// What the person asked for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]

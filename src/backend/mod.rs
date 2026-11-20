@@ -7,6 +7,7 @@
 pub mod claude;
 pub mod codex;
 pub mod codex_plan;
+pub mod effort;
 pub mod gemini;
 pub mod grok;
 pub mod select;
@@ -29,6 +30,7 @@ use tokio::task::JoinHandle;
 
 use crate::shared::limit_notice::{is_limit_message, is_limit_phrase};
 pub use crate::shared::{ProviderId, Usage};
+pub use effort::Effort;
 
 /// Why a turn failed, as far as the caller needs to react differently.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -263,7 +265,7 @@ pub trait Backend: Send + Sync {
 
     /// Set the reasoning effort of this backend's turns. A CLI with no such control
     /// ignores it (see [`crate::effort::supported`]).
-    fn set_effort(&mut self, _effort: crate::effort::Effort) {}
+    fn set_effort(&mut self, _effort: Effort) {}
 
     /// Ask this CLI for partial assistant text, when it can give it. A backend with no
     /// partial stream ignores it; the answer still arrives whole.

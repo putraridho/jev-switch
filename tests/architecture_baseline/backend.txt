@@ -1,5 +1,2 @@
-T1 | src/backend/claude.rs | crate::effort | 1
 T1 | src/backend/claude.rs | crate::ext | 2
-T1 | src/backend/codex.rs | crate::effort | 2
 T1 | src/backend/gemini/acp.rs | crate::background | 1
-T1 | src/backend/mod.rs | crate::effort | 1

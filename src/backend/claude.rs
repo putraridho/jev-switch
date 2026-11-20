@@ -512,7 +512,7 @@ impl Backend for ClaudeBackend {
     }
 
     /// Claude Code reads its thinking budget from `MAX_THINKING_TOKENS`.
-    fn set_effort(&mut self, effort: crate::effort::Effort) {
+    fn set_effort(&mut self, effort: super::Effort) {
         self.env.retain(|(k, _)| k != THINKING_ENV);
         self.env.push((THINKING_ENV.to_string(), effort.thinking_tokens().to_string()));
     }
@@ -836,8 +836,8 @@ mod tests {
     #[test]
     fn effort_sets_the_thinking_budget_in_the_environment_once() {
         let mut b = backend();
-        b.set_effort(crate::effort::Effort::Low);
-        b.set_effort(crate::effort::Effort::High);
+        b.set_effort(crate::backend::Effort::Low);
+        b.set_effort(crate::backend::Effort::High);
         let cmd = b.command(&req(None));
         let budgets: Vec<_> = cmd.as_std().get_envs().filter(|(k, _)| *k == "MAX_THINKING_TOKENS").collect();
         assert_eq!(budgets.len(), 1);

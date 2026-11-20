@@ -43,7 +43,7 @@ pub struct CodexBackend {
     /// The orchestration planner's delegate tool, passed as `-c` overrides.
     mcp: Option<McpAttachment>,
     /// `model_reasoning_effort`, when the person set one.
-    effort: Option<crate::effort::Effort>,
+    effort: Option<super::Effort>,
 }
 
 impl CodexBackend {
@@ -257,7 +257,7 @@ impl Backend for CodexBackend {
         self.mcp = Some(mcp.clone());
     }
 
-    fn set_effort(&mut self, effort: crate::effort::Effort) {
+    fn set_effort(&mut self, effort: super::Effort) {
         self.effort = Some(effort);
     }
 
@@ -371,7 +371,7 @@ mod tests {
     fn effort_is_passed_as_a_config_override_on_new_and_resumed_turns_and_only_when_set() {
         let args = |b: &CodexBackend, request: &TurnRequest| -> Vec<String> { b.command(request).as_std().get_args().map(|a| a.to_string_lossy().into_owned()).collect() };
         let mut set = backend();
-        set.set_effort(crate::effort::Effort::High);
+        set.set_effort(crate::backend::Effort::High);
         for session in [None, Some("thread")] {
             assert!(args(&set, &req(session)).windows(2).any(|w| w == ["-c", "model_reasoning_effort=\"high\""]));
             assert!(!args(&backend(), &req(session)).iter().any(|a| a.contains("model_reasoning_effort")));

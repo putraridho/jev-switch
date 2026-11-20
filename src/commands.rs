@@ -461,7 +461,7 @@ mod tests {
         assert_eq!(parse("/cache"), Command::Cache);
         assert_eq!(parse("/cache now"), Command::Invalid("usage: /cache".into()));
         assert_eq!(parse("/effort"), Command::Effort(None));
-        assert_eq!(parse("/effort High"), Command::Effort(Some(crate::effort::EffortSetting::Fixed(crate::effort::Effort::High))));
+        assert_eq!(parse("/effort High"), Command::Effort(Some(crate::effort::EffortSetting::Fixed(crate::backend::Effort::High))));
         assert!(matches!(parse("/effort max"), Command::Invalid(m) if m.contains("usage: /effort")));
         assert!(matches!(parse("/effort low now"), Command::Invalid(_)));
         assert_eq!(parse("/budget usd 5"), Command::Guard(GuardCmd::BudgetSet(crate::budget::Cap::Usd(5.0))));

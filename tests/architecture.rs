@@ -30,7 +30,7 @@ const MODULES: &[(&str, &str)] = &[
     ("ctxintel", "session"), // not in 4.5: context-window facts
     ("diffcmd", "tui"), // not in 4.5: diff command
     ("diffparse", "changes"), // not in 4.5: diff representation
-    ("effort", "routing"), // not in 4.5: reasoning selection
+    ("effort", "turn"), // not in 4.5: reasoning selection
     ("export", "session"), // not in 4.5: session export
     ("ext", "tui"), // not in 4.5: extension interface
     ("extcmds", "tui"), // not in 4.5: extension commands
@@ -86,6 +86,7 @@ const EXTRA_MODULES: &[(&str, &str)] = &[
     ("backend::codex_plan", "backend"), // not in 4.5: provider adapter
     ("backend::gemini::acp", "backend"), // not in 4.5: provider adapter
     ("backend::select", "backend"), // provider selection
+    ("backend::effort", "backend"), // effort levels and their CLI encoding
     ("backend::turnlog", "backend"), // turn log rows
     ("ext::cli", "tui"), // not in 4.5: extension interface
     ("ext::frontmatter", "tui"), // not in 4.5: extension interface
