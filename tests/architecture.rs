@@ -86,6 +86,7 @@ const EXTRA_MODULES: &[(&str, &str)] = &[
     ("agentview::workers", "tui"), // not in 4.5: agent panel
     ("backend::codex_plan", "backend"), // not in 4.5: provider adapter
     ("backend::gemini::acp", "backend"), // not in 4.5: provider adapter
+    ("backend::select", "backend"), // provider selection
     ("ext::cli", "tui"), // not in 4.5: extension interface
     ("ext::frontmatter", "tui"), // not in 4.5: extension interface
     ("ext::hooks", "tui"), // not in 4.5: extension interface

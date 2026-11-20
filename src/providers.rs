@@ -17,6 +17,7 @@ use crate::availability::{self, Availability, State};
 use crate::backend::claude::ClaudeBackend;
 use crate::backend::codex::CodexBackend;
 use crate::backend::gemini::{Flavor, GeminiBackend};
+pub use crate::backend::select::{choose_gemini_flavor, deepseek_env, gemini_env};
 use crate::backend::grok::GrokBackend;
 use crate::backend::{Backend, ErrorKind, PlanUsage, ProviderId, TurnError};
 use crate::catalog::{self, Allowances, Overrides, Usable};
@@ -29,36 +30,12 @@ use crate::probecache;
 pub const ALL_PROVIDERS: [ProviderId; 5] =
     [ProviderId::Claude, ProviderId::DeepSeek, ProviderId::Codex, ProviderId::Gemini, ProviderId::Grok];
 
-const DEEPSEEK_BASE_URL: &str = "https://api.deepseek.com/anthropic";
 const MINUTE_MS: u64 = 60_000;
 
+/// Where keys live when `$JEV_ROUTER_ENV` does not say otherwise; shown in fixes.
+pub const DEFAULT_ENV_PATH: &str = "~/.jev-router.env";
+
 // ------------------------------------------------------------------ backends
-
-/// Environment that points the `claude` CLI at DeepSeek's Anthropic-compatible API.
-///
-/// The key goes in both `ANTHROPIC_AUTH_TOKEN` and `ANTHROPIC_API_KEY` because some
-/// Claude Code versions read one and some the other.
-///
-/// UNVERIFIED: that `claude -p` with these variables bypasses the user's Claude
-/// login and really talks to DeepSeek. The availability probe only checks that the
-/// key exists, not that this wiring works.
-pub fn deepseek_env(key: &str) -> Vec<(String, String)> {
-    vec![
-        ("ANTHROPIC_BASE_URL".to_string(), DEEPSEEK_BASE_URL.to_string()),
-        ("ANTHROPIC_AUTH_TOKEN".to_string(), key.to_string()),
-        ("ANTHROPIC_API_KEY".to_string(), key.to_string()),
-    ]
-}
-
-/// Gemini CLI when it is installed and has auth; otherwise Antigravity. Gemini CLI
-/// without auth exits immediately, so installed alone is not enough to prefer it.
-pub fn choose_gemini_flavor(gemini_on_path: bool, gemini_configured: bool) -> Flavor {
-    if gemini_on_path && gemini_configured {
-        Flavor::GeminiCli
-    } else {
-        Flavor::Antigravity
-    }
-}
 
 /// A fresh backend for one turn. Codex and Gemini keep per-turn parse state inside
 /// the instance, so sharing one across turns would mix their output: build a new one
@@ -107,16 +84,6 @@ fn build_backend(provider: ProviderId, session: bool) -> Box<dyn Backend> {
     }
 }
 
-/// Gathers the two facts [`choose_gemini_flavor`] needs from the real machine.
-/// The Gemini auth variables that are set in the environment OR in `~/.jev-router.env`,
-/// so a key kept only in that file still reaches the CLI (and the probe agrees).
-pub fn gemini_env(lookup: &dyn Fn(&str) -> Option<String>) -> Vec<(String, String)> {
-    crate::backend::gemini::AUTH_ENV_VARS
-        .iter()
-        .filter_map(|n| lookup(n).map(|v| (n.to_string(), v)))
-        .collect()
-}
-
 /// The CLI behind `gemini` right now, for display: `gemini` or `agy`.
 pub fn gemini_via() -> &'static str {
     match detect_gemini_flavor() {
@@ -131,6 +98,49 @@ fn detect_gemini_flavor() -> Flavor {
     // The same rule the availability probe uses, so "ready" and "which CLI" agree.
     let configured = crate::backend::gemini::is_configured(settings.as_deref(), |n| envfile::lookup(n).is_some());
     choose_gemini_flavor(crate::availability::installed_for_real(&GeminiBackend::gemini_cli().bin), configured)
+}
+
+/// How to install the CLI behind `provider`: the one source of install hints.
+pub fn install_hint(provider: ProviderId) -> &'static str {
+    match provider {
+        // DeepSeek is the claude CLI pointed at another API.
+        ProviderId::Claude | ProviderId::DeepSeek => "Install Claude Code: https://code.claude.com/docs/en/quickstart",
+        ProviderId::Codex => "npm i -g @openai/codex (or see the vendor's install page)",
+        ProviderId::Gemini => "npm i -g @google/gemini-cli",
+        ProviderId::Grok => {
+            "Install the Grok CLI: see the vendor's install page (if `grok` is a lazy mise wrapper, running `grok` once installs it)"
+        }
+    }
+}
+
+/// The command that logs in to `provider`: the one source of login commands, used by
+/// `doctor`, the first-run hint and every error message. `None` for DeepSeek, which has
+/// no login: it takes an API key in the env file. Only `claude auth login` and `codex
+/// login` were tried against the real CLIs ([`login_verified`]).
+pub fn login_command(provider: ProviderId) -> Option<&'static str> {
+    match provider {
+        ProviderId::Claude => Some("claude auth login"),
+        ProviderId::Codex => Some("codex login"),
+        // Running the CLI starts its own sign-in flow.
+        ProviderId::Gemini => Some("gemini"),
+        ProviderId::Grok => Some("grok"),
+        ProviderId::DeepSeek => None,
+    }
+}
+
+/// Whether [`login_command`] for `provider` was run against the real CLI.
+pub fn login_verified(provider: ProviderId) -> bool {
+    matches!(provider, ProviderId::Claude | ProviderId::Codex)
+}
+
+/// [`login_command`] as one sentence for a message: `run `codex login``.
+pub fn login_instruction(provider: ProviderId) -> String {
+    match (provider, login_command(provider)) {
+        (ProviderId::Gemini, Some(cmd)) => format!("run `{cmd}` and choose a login"),
+        (ProviderId::Grok, Some(cmd)) => format!("run `{cmd}` and sign in"),
+        (_, Some(cmd)) => format!("run `{cmd}`"),
+        (_, None) => format!("add `DEEPSEEK_API_KEY` to {DEFAULT_ENV_PATH}"),
+    }
 }
 
 // ------------------------------------------------------------- pure decisions

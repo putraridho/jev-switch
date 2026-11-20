@@ -9,6 +9,7 @@ pub mod codex;
 pub mod codex_plan;
 pub mod gemini;
 pub mod grok;
+pub mod select;
 #[cfg(test)]
 pub mod testing;
 

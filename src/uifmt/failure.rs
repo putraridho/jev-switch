@@ -30,7 +30,7 @@ fn reset_label(resets_at: Option<&str>) -> Option<String> {
 /// How to log in to `provider`, from the one table in [`crate::doctor`].
 fn login_hint(provider: &str) -> String {
     match provider.parse::<ProviderId>() {
-        Ok(p) => crate::doctor::login_instruction(p),
+        Ok(p) => crate::providers::login_instruction(p),
         Err(_) => format!("log in to {provider}"),
     }
 }
@@ -271,6 +271,28 @@ mod tests {
     use super::*;
     use crate::uifmt::{strip_ansi, display_width};
     use crate::uifmt::testutil::*;
+    use crate::doctor::login_steps;
+    use crate::providers::{install_hint, login_command, login_instruction, ALL_PROVIDERS};
+
+    #[test]
+    fn doctor_steps_and_messages_use_the_same_login_command() {
+        for p in ALL_PROVIDERS {
+            let steps = login_steps(p, "~/.jev-router.env").join("\n");
+            let sentence = login_instruction(p);
+            match login_command(p) {
+                Some(cmd) => {
+                    assert!(steps.contains(cmd), "{p}: {steps}");
+                    assert!(sentence.contains(&format!("`{cmd}`")), "{p}: {sentence}");
+                    // The uifmt wording is built from the same sentence.
+                    assert_eq!(crate::uifmt::next_steps_for(&crate::backend::ErrorKind::Auth, p.as_str())[0].to_lowercase(), sentence.to_lowercase());
+                }
+                None => {
+                    assert!(steps.contains("DEEPSEEK_API_KEY") && sentence.contains("DEEPSEEK_API_KEY"));
+                }
+            }
+            assert!(!install_hint(p).is_empty());
+        }
+    }
 
     /// (kind, from provider, model, where to, partial output discarded, expected note)
     type Case<'a> = (ErrorKind, &'a str, &'a str, Option<(&'a str, &'a str)>, bool, &'a str);
