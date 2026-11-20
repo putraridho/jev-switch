@@ -4,6 +4,8 @@ See [docs/changelog-guide.md](docs/changelog-guide.md) for changelog formatting,
 
 ## Unreleased
 
+## 1.9.0
+
 A new look for jev-code, modelled on Grok Build: only the input box is boxed, and the conversation gets the room.
 
 - A header row on top names the branch, the folder and the session, and on the right how turns are routed, each subscription's plan use and how full the context window is. It replaces the side panel and the router row under the box.
@@ -17,6 +19,8 @@ A new look for jev-code, modelled on Grok Build: only the input box is boxed, an
 - The input box's border is easier to see, so it is clear where to type.
 - The header and the banner shorten a long folder path from the front (`…/project/repo`), keeping the folder name instead of cutting it off.
 - A failed turn's message is indented like the rest of the turn and names the model as `claude · sonnet-5-5`.
+
+- **Code layout (no change in behaviour).** The source is now organised as bounded contexts (`approval`, `backend`, `catalog`, `changes`, `judgment`, `orchestration`, `providers`, `routing`, `session`, `shared`, `turn`, `tui` and more), each split into `domain`, `application` and `infrastructure`. An architecture test checks which context may import which and that an inner layer never reaches outward; `docs/architecture/DDD.md` has the plan. Every command's output is byte-identical to 1.8.2 apart from the UI work above.
 
 ## 1.8.2
 
