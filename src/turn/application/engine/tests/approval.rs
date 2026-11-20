@@ -1,6 +1,8 @@
 //! Tool approvals asked of the person through the UI.
 
 use super::*;
+use crate::approval::application::claude_settings_file;
+use crate::approval::domain::{always_plan, settings_document};
 
 // ------------------------------------------------------------ tool approvals
 
@@ -137,7 +139,7 @@ async fn an_allowed_tool_call_runs_and_the_person_was_asked_once_with_the_rule_o
     let report = ask_turn(&mut engine, &mut ui).await;
     assert_eq!((report.status, report.text.as_str()), (TurnStatus::Answered, "ran"));
     assert_eq!(ui.questions, vec![("Bash".to_string(), "cargo test --quiet".to_string(), Some("Bash(cargo test:*)".to_string()))]);
-    assert!(!permissions::local_settings_path(&dir).exists(), "a plain yes saves nothing");
+    assert!(!settings_document::local_settings_path(&dir).exists(), "a plain yes saves nothing");
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -150,7 +152,7 @@ async fn auto_mode_runs_a_safe_call_without_asking_and_saves_nothing() {
     assert_eq!((report.status, report.text.as_str()), (TurnStatus::Answered, "ran"));
     assert!(ui.questions.is_empty(), "nobody was asked: {:?}", ui.questions);
     assert!(ui.hints.iter().any(|h| h.contains("auto-allowed") && h.contains("cargo test --quiet")), "{:?}", ui.hints);
-    assert!(!permissions::local_settings_path(&dir).exists());
+    assert!(!settings_document::local_settings_path(&dir).exists());
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -164,7 +166,7 @@ async fn auto_mode_allows_a_call_that_cannot_be_remembered() {
     assert_eq!((report.status, report.text.as_str()), (TurnStatus::Answered, "ran"));
     assert!(ui.questions.is_empty());
     assert!(ui.hints.iter().any(|h| h.contains("auto-allowed") && h.contains("git push")));
-    assert!(!permissions::local_settings_path(&dir).exists());
+    assert!(!settings_document::local_settings_path(&dir).exists());
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -186,10 +188,10 @@ async fn always_runs_the_call_and_saves_the_rule_in_the_project() {
     let mut ui = Asked { answers: [Some(Decision::AllowAlways)].into(), ..Asked::default() };
     let report = ask_turn(&mut engine, &mut ui).await;
     assert_eq!(report.text, "ran");
-    let saved = permissions::load(&permissions::local_settings_path(&dir)).unwrap();
-    assert_eq!(saved.list(permissions::List::Allow), ["Bash(cargo test:*)"]);
+    let saved = claude_settings_file::load(&settings_document::local_settings_path(&dir)).unwrap();
+    assert_eq!(saved.list(settings_document::List::Allow), ["Bash(cargo test:*)"]);
     assert!(ui.notes.is_empty(), "{:?}", ui.notes);
-    let always = permissions::Always { rules: vec!["Bash(cargo test:*)".into()], folder: None };
+    let always = always_plan::Always { rules: vec!["Bash(cargo test:*)".into()], folder: None };
     assert_eq!(ui.settled, [Settled::Remembered(always)], "the UI hears what was saved, after the save");
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -214,7 +216,7 @@ async fn a_denied_tool_call_tells_the_model_why_and_the_turn_goes_on() {
     let mut ui = Asked { answers: [Some(denial)].into(), ..Asked::default() };
     let report = ask_turn(&mut engine, &mut ui).await;
     assert_eq!((report.status, report.text.as_str()), (TurnStatus::Answered, "refused the user denied this tool call"));
-    assert!(!permissions::local_settings_path(&dir).exists());
+    assert!(!settings_document::local_settings_path(&dir).exists());
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -244,7 +246,7 @@ async fn a_ui_that_cannot_ask_denies_at_once_with_a_hint_and_never_hangs() {
     assert!(report.text.starts_with("refused no one to ask"), "{}", report.text);
     assert!(ui.hints.iter().any(|t| t.contains("denied Bash") && t.contains("CODE_ALLOWED_TOOLS")), "{:?}", ui.hints);
     assert!(ui.texts.iter().all(|t| !t.contains("denied Bash")), "a hint is never answer text: {:?}", ui.texts);
-    assert!(!permissions::local_settings_path(&dir).exists());
+    assert!(!settings_document::local_settings_path(&dir).exists());
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -331,7 +333,7 @@ async fn a_question_the_cli_withdraws_while_the_person_is_still_deciding_is_drop
     assert_eq!(ui.asked, 1);
     assert!(ui.dropped.load(Ordering::SeqCst), "the wait for a key was abandoned");
     assert_eq!(ui.withdrawn, vec!["q1".to_string()], "the UI was told which question went away");
-    assert!(!permissions::local_settings_path(&dir).exists());
+    assert!(!settings_document::local_settings_path(&dir).exists());
 
     let report = ask_turn(&mut engine, &mut ui).await;
     assert_eq!((report.status, report.text.as_str()), (TurnStatus::Answered, "ran"));

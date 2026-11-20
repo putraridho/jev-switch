@@ -3,8 +3,8 @@
 use std::path::Path;
 
 use crate::backend::{self, Decision, Event, PermissionRequest};
-use crate::approval::domain::rule_policy as permissions;
-use crate::approval::domain::rule_policy::{Offer, Settled};
+use crate::approval::application::claude_settings_file;
+use crate::approval::domain::always_plan::{Offer, Settled};
 use crate::turn::domain::failover::{Failover, NoRouteInfo};
 use crate::turn::domain::route_facts::RouteFacts;
 
@@ -90,7 +90,7 @@ pub fn settle(answer: Option<Decision>, offer: &Offer, project: &Path) -> Settle
         None => Settled::Stopped,
         Some(Decision::Allow) => Settled::Allowed,
         Some(Decision::AllowAlways) => match offer {
-            Ok(always) => match permissions::save_always(project, always) {
+            Ok(always) => match claude_settings_file::save_always(project, always) {
                 Ok(_) => Settled::Remembered(always.clone()),
                 Err(e) => Settled::NotSaved(e),
             },

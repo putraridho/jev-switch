@@ -12,7 +12,7 @@ use crate::session::domain::catch_up::Sessions;
 use crate::shared::infrastructure::jsonl_log as log;
 use crate::approval::domain::mode::Mode;
 use crate::orchestration::domain::orchestration_gate::Setup;
-use crate::approval::domain::rule_policy as permissions;
+use crate::approval::domain::permission_rule;
 use crate::providers::application::provider_registry::Runtime;
 use crate::judgment::application::judge::Router;
 use crate::routing::domain::decide::{Pin, PinOrigin, RoutingState, Sticky};
@@ -59,7 +59,7 @@ impl Engine {
             session_file: None,
             mode: Mode::default(),
             effort: EffortSetting::default(),
-            allowed_tools: permissions::split_rules(&crate::shared::infrastructure::env_file::lookup("CODE_ALLOWED_TOOLS").unwrap_or_default()),
+            allowed_tools: permission_rule::split_rules(&crate::shared::infrastructure::env_file::lookup("CODE_ALLOWED_TOOLS").unwrap_or_default()),
         }
     }
 
@@ -130,7 +130,7 @@ impl Engine {
 
     /// The rules allowed without asking, in place of `CODE_ALLOWED_TOOLS`.
     pub fn with_allowed_tools(mut self, list: &str) -> Self {
-        self.allowed_tools = permissions::split_rules(list);
+        self.allowed_tools = permission_rule::split_rules(list);
         self
     }
 
