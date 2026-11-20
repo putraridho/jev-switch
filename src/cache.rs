@@ -10,7 +10,8 @@
 
 use crate::backend::{ProviderId, Usage};
 use crate::sessionlog::{SessionLog, TurnRecord};
-use crate::uifmt::{human_count, human_duration, Style};
+use crate::shared::wording::{human_count, human_duration};
+use crate::uifmt::Style;
 
 /// What a cached input token costs against an uncached one, in percent. Anthropic bills a
 /// cache read at 10% of the input price; the others publish similar discounts.

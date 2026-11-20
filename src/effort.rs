@@ -125,7 +125,7 @@ pub fn effort_text(setting: EffortSetting, ready: &[ProviderId]) -> String {
             EffortSetting::Auto => effect(*p, Effort::Medium),
         };
         let window = catalog::models().iter().filter(|m| m.provider == *p).map(|m| m.context_tokens).max();
-        let window = window.map(|w| format!("  (context up to {})", crate::uifmt::human_count(w))).unwrap_or_default();
+        let window = window.map(|w| format!("  (context up to {})", crate::shared::wording::human_count(w))).unwrap_or_default();
         lines.push(format!("    {:<9} {shown}{window}", p.as_str()));
     }
     lines.join("\n")

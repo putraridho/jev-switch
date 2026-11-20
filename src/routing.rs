@@ -425,7 +425,7 @@ fn sticky(
     // equally strong one elsewhere.
     if !gate.forced && as_strong_here && cache::worth_keeping(state.warm.as_ref(), cur.provider, input.now_ms) {
         let tokens = state.warm.map_or(0, |w| w.tokens);
-        let why = format!("keeping {}: its {} token cache is warm and no stronger model is on offer", cur.provider, crate::uifmt::human_count(tokens));
+        let why = format!("keeping {}: its {} token cache is warm and no stronger model is on offer", cur.provider, crate::shared::wording::human_count(tokens));
         return hold_within(state, task, cur, &own, why);
     }
     state.held = 0;

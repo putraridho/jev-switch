@@ -8,6 +8,7 @@ pub mod private_file;
 pub mod secrets;
 pub mod sha256;
 pub mod text;
+pub mod wording;
 
 use std::str::FromStr;
 

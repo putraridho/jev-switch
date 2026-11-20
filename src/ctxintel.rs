@@ -3,7 +3,8 @@
 //! (four characters a token); the real total comes from the model's own usage report.
 
 use crate::sessionlog::TurnRecord;
-use crate::uifmt::{human_count, Style};
+use crate::shared::wording::human_count;
+use crate::uifmt::Style;
 
 /// Characters per token, the usual rough figure.
 const CHARS_PER_TOKEN: usize = 4;

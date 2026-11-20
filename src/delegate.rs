@@ -2017,14 +2017,14 @@ impl Delegator {
                     blocks.push(format!("task {}: {}", task_id(n), result.render()));
                 }
                 Collected::Running { started_ms } => {
-                    let took = crate::uifmt::human_duration((self.now)().saturating_sub(started_ms));
+                    let took = crate::shared::wording::human_duration((self.now)().saturating_sub(started_ms));
                     running.push(format!("{} (running for {took})", task_id(n)));
                 }
                 Collected::Gone => blocks.push(format!("task {}: already collected by another wait", task_id(n))),
             }
         }
         if !running.is_empty() {
-            let waited = timeout.map_or(String::new(), |t| format!(" after {}", crate::uifmt::human_duration(t.as_millis() as u64)));
+            let waited = timeout.map_or(String::new(), |t| format!(" after {}", crate::shared::wording::human_duration(t.as_millis() as u64)));
             blocks.push(format!("Still running{waited}: {}. Call wait again to collect them.", running.join(", ")));
         }
         Ok(blocks.join("\n\n"))

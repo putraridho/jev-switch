@@ -1,6 +1,6 @@
 T1 | src/audit.rs | crate::turn | 1
-T1 | src/cache.rs | crate::uifmt | 3
-T1 | src/ctxintel.rs | crate::uifmt | 2
+T1 | src/cache.rs | crate::uifmt | 1
+T1 | src/ctxintel.rs | crate::uifmt | 1
 T1 | src/export.rs | crate::turn | 1
 T1 | src/prefs.rs | crate::mode | 3
 T1 | src/repomap.rs | crate::gitflow | 1
