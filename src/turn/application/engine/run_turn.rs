@@ -3,8 +3,10 @@
 use serde_json::Value;
 
 use crate::turn::domain::turn_status::TurnStatus;
-use crate::changes::infrastructure::git_working_tree as changes;
-use crate::changes::infrastructure::git_working_tree::{ChangeSummary, Snapshot, TurnActivity};
+use crate::changes::application::track_turn::{snapshot_until, summarize_until};
+use crate::changes::domain::change_set::ChangeSummary;
+use crate::changes::domain::snapshot::Snapshot;
+use crate::changes::domain::turn_activity::TurnActivity;
 use crate::judgment::application::judge::CodeWant;
 use crate::turn::application::cancel::{stop_signal, Cancel};
 use crate::turn::application::judged::Judged;
@@ -100,7 +102,7 @@ impl Engine {
         if !self.track_changes {
             return None;
         }
-        changes::snapshot_until(self.dir.clone(), stop_signal(cancel, honor_cancel)).await
+        snapshot_until(self.dir.clone(), stop_signal(cancel, honor_cancel)).await
     }
 
     /// What differs from the `before` snapshot now; `None` if there is no `before`, git
@@ -108,7 +110,7 @@ impl Engine {
     async fn changes_since(&self, before: Option<Snapshot>, activity: TurnActivity, cancel: &Cancel, honor_cancel: bool) -> Option<ChangeSummary> {
         let before = before?;
         let after = self.snapshot_tree(cancel, honor_cancel).await?;
-        let summary = changes::summarize_until(self.dir.clone(), before, after, activity, stop_signal(cancel, honor_cancel)).await?;
+        let summary = summarize_until(self.dir.clone(), before, after, activity, stop_signal(cancel, honor_cancel)).await?;
         (!summary.is_empty()).then_some(summary)
     }
 }

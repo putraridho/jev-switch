@@ -1,1 +1,10 @@
+pub mod change_set;
 pub mod diff_parse;
+pub mod file_change;
+pub mod new_file_diff;
+pub mod safe_path;
+pub mod snapshot;
+pub mod turn_activity;
+pub mod undo_plan;
+pub mod undo_report;
+pub mod untracked_merge;

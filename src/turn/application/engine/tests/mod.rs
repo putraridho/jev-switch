@@ -29,7 +29,7 @@ use crate::turn::domain::failover_policy::MAX_ATTEMPTS;
 use crate::turn::domain::turn_status::TurnStatus;
 use crate::catalog::domain::model_table as catalog;
 use crate::catalog::domain::model_table::find;
-use crate::changes::infrastructure::git_working_tree::UndoError;
+use crate::changes::domain::undo_report::UndoError;
 use crate::session::domain::catch_up::ResumeError;
 use crate::approval::domain::mode::Mode;
 use crate::orchestration::domain::orchestration_gate::Setup;

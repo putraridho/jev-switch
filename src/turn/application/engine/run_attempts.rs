@@ -5,7 +5,7 @@ use std::collections::HashSet;
 use crate::backend::{Event, ProviderId, TurnError};
 use crate::turn::domain::failover_policy::MAX_ATTEMPTS;
 use crate::turn::domain::turn_status::TurnStatus;
-use crate::changes::infrastructure::git_working_tree::Snapshot;
+use crate::changes::domain::snapshot::Snapshot;
 use crate::routing::domain::decide::NoRoute;
 use crate::turn::application::cancel::Cancel;
 use crate::turn::application::judged::Judged;

@@ -17,7 +17,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::turn::domain::effort::EffortSetting;
-use crate::changes::infrastructure::git_working_tree::{ChangeSummary, TurnActivity};
+use crate::changes::domain::change_set::ChangeSummary;
+use crate::changes::domain::turn_activity::TurnActivity;
 use crate::turn::application::guards::Guards;
 use crate::approval::application::extension_hooks::Hooks;
 use crate::session::domain::catch_up::Sessions;
@@ -81,7 +82,7 @@ pub struct Engine {
     orchestrate: bool,
     /// Where the delegate tool is; `None` means orchestration cannot attach it.
     orch_setup: Option<Setup>,
-    /// Snapshot the working tree around every turn (see [`crate::changes::infrastructure::git_working_tree`]).
+    /// Snapshot the working tree around every turn (see [`crate::changes::infrastructure::git_working_tree`] and [`crate::changes::application::track_turn`]).
     track_changes: bool,
     /// What the last turn that started a model changed; consumed by an undo.
     last_changes: Option<ChangeSummary>,

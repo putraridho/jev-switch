@@ -1,7 +1,10 @@
 //! `/diff`, `/undo` and `/rewind`: what the last turns changed.
 
+use crate::changes::application::undo_turn::undo;
 use crate::changes::infrastructure::git_working_tree as changes;
-use crate::changes::infrastructure::git_working_tree::{ChangeSummary, UndoError, UndoReport};
+use crate::changes::domain::change_set::ChangeSummary;
+use crate::changes::domain::undo_report::UndoError;
+use crate::changes::domain::undo_report::UndoReport;
 use super::Engine;
 
 impl Engine {
@@ -60,12 +63,12 @@ impl Engine {
     }
 
     /// Put back what the last turn changed, and only that, if nothing it touched was
-    /// edited since (see [`changes::undo`]). One level: the summary is consumed on
+    /// edited since (see [`undo`]). One level: the summary is consumed on
     /// success. The conversation is told, so the next catch-up is truthful. Blocking
     /// (a few git runs), like any user command.
     pub fn undo_last(&mut self) -> Result<UndoReport, UndoError> {
         let summary = self.last_changes.clone().ok_or(UndoError::NothingToUndo)?;
-        let report = changes::undo(&self.dir, &summary)?;
+        let report = undo(&self.dir, &summary)?;
         self.last_changes = None;
         self.change_history.pop();
         self.sessions.record_undo();

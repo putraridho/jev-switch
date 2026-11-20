@@ -22,7 +22,7 @@ async fn a_turn_reports_what_it_changed_and_the_engine_can_diff_and_undo_it() {
     let sum = report.changes.clone().expect("a git repo");
     let mut paths: Vec<_> = sum.files.iter().map(|f| (f.path.as_str(), f.status)).collect();
     paths.sort_by_key(|p| p.0);
-    use crate::changes::infrastructure::git_working_tree::ChangeStatus::{Added, Deleted, Modified};
+    use crate::changes::domain::file_change::ChangeStatus::{Added, Deleted, Modified};
     assert_eq!(paths, [("a.txt", Modified), ("b.txt", Deleted), ("new.txt", Added)], "ignored files are not changes");
     assert_eq!(r.engine.last_changes(), Some(&sum));
     let diff = r.engine.last_diff(None).unwrap();

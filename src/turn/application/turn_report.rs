@@ -2,7 +2,7 @@
 
 use crate::backend::{ProviderId, Usage};
 use crate::turn::domain::turn_status::TurnStatus;
-use crate::changes::infrastructure::git_working_tree::ChangeSummary;
+use crate::changes::domain::change_set::ChangeSummary;
 #[derive(Debug, Clone)]
 pub struct TurnReport {
     pub status: TurnStatus,

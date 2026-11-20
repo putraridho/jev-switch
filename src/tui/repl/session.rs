@@ -31,7 +31,7 @@ use crate::tui::input::typeahead::TypeAhead;
 use crate::tui::render as uifmt;
 use crate::tui::render::Style;
 use crate::tui::views::status_facts as views;
-use crate::changes::infrastructure::git_working_tree::UndoError;
+use crate::changes::domain::undo_report::UndoError;
 use crate::turn::domain::session_log::{SessionLog, TurnRecord};
 
 pub use crate::tui::repl::headless::sleeper;
