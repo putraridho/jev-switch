@@ -1,11 +1,8 @@
 T1 | src/turn/application/engine.rs | crate::tui | 2
 T1 | src/turn/domain/cache.rs | crate::tui | 1
-T2 | src/turn/application/engine.rs | crate::backend::infrastructure | 1
+T2 | src/turn/application/engine.rs | crate::backend::infrastructure | 3
 T2 | src/turn/application/engine.rs | crate::changes::infrastructure | 6
 T2 | src/turn/application/engine.rs | crate::shared::infrastructure | 4
 T2 | src/turn/application/guards.rs | crate::shared::infrastructure | 1
 T2 | src/turn/domain/budget.rs | crate::shared::infrastructure | 2
 T2 | src/turn/domain/failover_policy.rs | crate::shared::infrastructure | 1
-T2 | src/turn/domain/failover_policy.rs | crate::turn::application | 3
-T2 | src/turn/domain/privacy.rs | crate::providers::application | 1
-T2 | src/turn/domain/session_log.rs | crate::turn::application | 1

@@ -286,7 +286,7 @@ pub fn switch_note(est: &SwitchEstimate, from: ProviderId, to: ProviderId) -> St
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::turn::application::engine::TurnStatus;
+    use crate::turn::domain::turn_status::TurnStatus;
 
     fn usage(input: u64, cached: u64) -> Usage {
         Usage { input_tokens: input, cached_input_tokens: cached, output_tokens: 1, context_tokens: None }

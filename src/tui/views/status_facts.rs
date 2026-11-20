@@ -11,9 +11,11 @@ use crate::catalog::domain::model_table as catalog;
 use crate::changes::infrastructure::git_working_tree::{ChangeStatus, ChangeSummary};
 use crate::doctor::domain::diagnose as doctor;
 use crate::session::domain::catch_up::SessionInfo;
-use crate::providers::application::provider_registry::{format_left, BlockReason, Runtime, ALL_PROVIDERS};
+use crate::providers::application::provider_registry::{format_left, BlockReason, Runtime};
+use crate::shared::ALL_PROVIDERS;
 use crate::routing::domain::decide::Pin;
-use crate::turn::application::engine::{Engine, TurnReport, TurnStatus};
+use crate::turn::application::engine::{Engine, TurnReport};
+use crate::turn::domain::turn_status::TurnStatus;
 use crate::tui::render as uifmt;
 use crate::tui::render::{AvailRow, CompleteCtx, DoctorItem, FileChange, ProviderStatus, ReadyProvider, StatusFacts, Style, SummaryFacts};
 

@@ -85,7 +85,7 @@ impl Guards {
     pub fn restrict(&self, usable: &Usable, turn: &TurnFacts) -> Result<Restricted, String> {
         let verdict = self.verdict(turn);
         let blocked: Vec<(ProviderId, String)> =
-            crate::providers::application::provider_registry::ALL_PROVIDERS.into_iter().filter(|p| usable.has_provider(*p)).filter_map(|p| verdict.denial(p).map(|why| (p, why))).collect();
+            crate::shared::ALL_PROVIDERS.into_iter().filter(|p| usable.has_provider(*p)).filter_map(|p| verdict.denial(p).map(|why| (p, why))).collect();
         let mut current = usable.filter(|p, _| verdict.permits(p));
         if current.is_empty() && !usable.is_empty() {
             return Err(verdict.refusal_line());
@@ -140,7 +140,7 @@ impl Guards {
     pub fn may_leave(&self, root: &Path, text: &str, attached: &[std::path::PathBuf]) -> bool {
         use crate::turn::domain::privacy::{locality, Locality};
         let verdict = self.privacy.check(root, text, attached);
-        crate::providers::application::provider_registry::ALL_PROVIDERS.into_iter().filter(|p| locality(*p) == Locality::Cloud).any(|p| verdict.permits(p))
+        crate::shared::ALL_PROVIDERS.into_iter().filter(|p| locality(*p) == Locality::Cloud).any(|p| verdict.permits(p))
     }
 
     /// The prompt as it may leave for `provider`, after the secret scan; the audit log
@@ -187,7 +187,7 @@ mod tests {
     }
 
     fn all() -> Usable {
-        Usable::all_of(crate::providers::application::provider_registry::ALL_PROVIDERS)
+        Usable::all_of(crate::shared::ALL_PROVIDERS)
     }
 
     fn has(u: &Usable, p: ProviderId) -> bool {
@@ -202,7 +202,7 @@ mod tests {
     fn the_default_changes_nothing() {
         let r = Guards::default().restrict(&all(), &facts("anything", 0)).unwrap();
         assert!(r.blocked.is_empty() && r.notes.is_empty());
-        assert!(crate::providers::application::provider_registry::ALL_PROVIDERS.iter().all(|p| has(&r.usable, *p)));
+        assert!(crate::shared::ALL_PROVIDERS.iter().all(|p| has(&r.usable, *p)));
     }
 
     #[test]

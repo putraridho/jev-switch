@@ -8,7 +8,8 @@ use std::str::FromStr;
 use serde::Serialize;
 
 use crate::changes::infrastructure::git_working_tree::FileChange;
-use crate::turn::application::engine::{TurnReport, TurnStatus};
+use crate::turn::application::engine::TurnReport;
+use crate::turn::domain::turn_status::TurnStatus;
 use crate::tui::views::status_facts as views;
 
 /// How `-p` prints its result.

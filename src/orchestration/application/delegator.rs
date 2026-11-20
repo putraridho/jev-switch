@@ -2058,10 +2058,10 @@ impl Delegator {
         let outgoing = worker_prompt(&req.brief, &req.files, req.read_only);
         let verdict = self.guards.privacy.check(&repo, &outgoing, &[]);
         let mut excluded: HashSet<(ProviderId, String)> = HashSet::new();
-        for p in crate::providers::application::provider_registry::ALL_PROVIDERS.into_iter().filter(|p| !verdict.permits(*p)) {
+        for p in crate::shared::ALL_PROVIDERS.into_iter().filter(|p| !verdict.permits(*p)) {
             excluded.extend(crate::catalog::domain::model_table::models().iter().filter(|m| m.provider == p).map(|m| (m.provider, m.id.to_string())));
         }
-        if crate::providers::application::provider_registry::ALL_PROVIDERS.into_iter().all(|p| !verdict.permits(p)) {
+        if crate::shared::ALL_PROVIDERS.into_iter().all(|p| !verdict.permits(p)) {
             return Finished::done(DelegateResult::failed(format!("not delegated: {}", verdict.refusal_line()), Vec::new()));
         }
         let want = if self.guards.may_leave(&repo, &outgoing, &[]) {

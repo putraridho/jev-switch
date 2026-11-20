@@ -7,7 +7,6 @@ use crate::turn::domain::cache;
 use crate::catalog::domain::model_table as catalog;
 use crate::turn::domain::effort;
 use crate::turn::domain::effort::EffortSetting;
-use crate::providers::application::provider_registry as providers;
 
 impl Repl {
     /// `/cache`.
@@ -18,7 +17,7 @@ impl Repl {
     /// Providers with at least one model that can run now.
     fn ready_providers(&self) -> Vec<ProviderId> {
         let usable = self.engine.runtime.usable(self.now());
-        providers::ALL_PROVIDERS.into_iter().filter(|p| catalog::models().iter().any(|m| m.provider == *p && usable.contains(m))).collect()
+        crate::shared::ALL_PROVIDERS.into_iter().filter(|p| catalog::models().iter().any(|m| m.provider == *p && usable.contains(m))).collect()
     }
 
     /// `/effort` with no argument shows the setting; with one, sets it.

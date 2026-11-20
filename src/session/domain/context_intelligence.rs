@@ -117,7 +117,7 @@ impl AutoCompact {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::turn::application::engine::TurnStatus;
+    use crate::turn::domain::turn_status::TurnStatus;
 
     fn turn(prompt: &str, answer: &str) -> TurnRecord {
         TurnRecord { prompt: prompt.into(), answer: answer.into(), status: TurnStatus::Answered, model: String::new(), route: None, usage: None, elapsed_ms: 0, ended_ms: 0, tool_calls: 0 }

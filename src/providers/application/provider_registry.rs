@@ -26,12 +26,9 @@ use crate::catalog::domain::model_table::{Allowances, Overrides, Usable};
 use crate::providers::domain::reset_time as cooldown;
 use crate::providers::domain::reset_time::{Cooldowns, DiskWatch};
 use crate::shared::infrastructure::env_file as envfile;
+use crate::shared::ALL_PROVIDERS;
 use crate::providers::domain::probe_source::ProbeSource;
 use crate::providers::infrastructure::probe_cache as probecache;
-
-/// Every provider, in the order `/providers` lists them.
-pub const ALL_PROVIDERS: [ProviderId; 5] =
-    [ProviderId::Claude, ProviderId::DeepSeek, ProviderId::Codex, ProviderId::Gemini, ProviderId::Grok];
 
 const MINUTE_MS: u64 = 60_000;
 

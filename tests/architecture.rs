@@ -314,12 +314,125 @@ fn module_path(path: &Path) -> Vec<String> {
     parts
 }
 
+/// Where a name that a context's `mod.rs` exports comes from.
+#[derive(Clone, Debug)]
+enum Origin {
+    /// Defined or re-exported from a file in this layer.
+    Layer(String),
+    /// Re-exported from the front door of another context (or this one) under this name.
+    Via(String, String),
+}
+
+/// The names declared `pub` at the top level of `source`: structs, enums, traits, functions,
+/// constants, statics and type aliases.
+fn pub_items(source: &str) -> Vec<String> {
+    let mut names = Vec::new();
+    for line in source.lines() {
+        if !(line.starts_with("pub ") || line.starts_with("pub(")) { continue; }
+        let words: Vec<&str> = line.split_whitespace().collect();
+        for (index, word) in words.iter().enumerate() {
+            let is_item = matches!(*word, "struct" | "enum" | "trait" | "fn" | "type" | "static")
+                || (*word == "const" && words.get(index + 1).is_some_and(|next| !matches!(*next, "fn" | "unsafe" | "async")));
+            if is_item {
+                if let Some(name) = words.get(index + 1) {
+                    let name: String = name.chars().take_while(|c| c.is_alphanumeric() || *c == '_').collect();
+                    if !name.is_empty() { names.push(name); }
+                }
+                break;
+            }
+            if *word == "use" || *word == "mod" { break; }
+        }
+    }
+    names
+}
+
+/// For each context, the names its `mod.rs` hands out (`pub use ...` and items defined there)
+/// and the layer each one comes from. The rest of the crate says `crate::backend::TurnRequest`;
+/// the layer rule needs to know that `TurnRequest` is a domain name.
+fn front_doors(source_dir: &Path) -> BTreeMap<String, BTreeMap<String, Origin>> {
+    let mut doors = BTreeMap::new();
+    for (context, _) in EDGES {
+        let Ok(text) = fs::read_to_string(source_dir.join(context).join("mod.rs")) else { continue };
+        let tokens = without_tests(&lex(&text));
+        let mut table: BTreeMap<String, Origin> = BTreeMap::new();
+        let mut index = 0;
+        while index < tokens.len() {
+            if tokens[index].text != "pub" { index += 1; continue; }
+            let mut at = index + 1;
+            if tokens.get(at).is_some_and(|token| token.text == "(") { at = matching(&tokens, at, "(", ")") + 1; }
+            match tokens.get(at).map(|token| token.text.as_str()) {
+                Some("use") => {
+                    let mut cursor = at + 1;
+                    let mut leaves = Vec::new();
+                    expand_use(&tokens, &mut cursor, &[], &mut leaves);
+                    for (path, alias) in leaves {
+                        let glob = path.last().is_some_and(|part| part == "*");
+                        let comps: Vec<String> = path.iter().filter(|part| *part != "*").cloned().collect();
+                        let (origin_context, rest): (String, Vec<String>) = match comps.first().map(String::as_str) {
+                            Some("crate") if comps.len() >= 2 => (comps[1].clone(), comps[2..].to_vec()),
+                            Some(_) => ((*context).to_owned(), comps.clone()),
+                            None => continue,
+                        };
+                        let Some(first) = rest.first() else { continue };
+                        if glob {
+                            if layer_rank(first).is_none() { continue; }
+                            let file = source_dir.join(&origin_context).join(format!("{}.rs", rest.join("/")));
+                            for name in fs::read_to_string(file).map(|text| pub_items(&text)).unwrap_or_default() {
+                                table.entry(name).or_insert(Origin::Layer(first.clone()));
+                            }
+                        } else {
+                            let name = alias.or_else(|| comps.last().cloned()).unwrap();
+                            let origin = if layer_rank(first).is_some() { Origin::Layer(first.clone()) } else { Origin::Via(origin_context, first.clone()) };
+                            table.entry(name).or_insert(origin);
+                        }
+                    }
+                    index = cursor;
+                    continue;
+                }
+                Some("struct" | "enum" | "trait" | "fn" | "type" | "const" | "static") => {
+                    if let Some(name) = tokens.get(at + 1) { table.entry(name.text.clone()).or_insert(Origin::Layer("domain".into())); }
+                }
+                _ => {}
+            }
+            index += 1;
+        }
+        doors.insert((*context).to_owned(), table);
+    }
+    doors
+}
+
+/// The layer `name` (as in `crate::<context>::<name>`) comes from, following re-exports.
+fn door_layer(doors: &BTreeMap<String, BTreeMap<String, Origin>>, context: &str, name: &str, depth: usize) -> Option<String> {
+    if depth > 4 { return None; }
+    match doors.get(context)?.get(name)? {
+        Origin::Layer(layer) => Some(layer.clone()),
+        Origin::Via(other, other_name) => door_layer(doors, other, other_name, depth + 1),
+    }
+}
+
+#[test]
+fn front_door_names_resolve_to_the_layer_they_come_from() {
+    let doors = front_doors(&Path::new(env!("CARGO_MANIFEST_DIR")).join("src"));
+    let layer = |context: &str, name: &str| door_layer(&doors, context, name, 0);
+    assert_eq!(layer("backend", "TurnRequest").as_deref(), Some("domain"));
+    assert_eq!(layer("backend", "Event").as_deref(), Some("domain"));
+    assert_eq!(layer("backend", "Backend").as_deref(), Some("application"));
+    assert_eq!(layer("backend", "run_turn").as_deref(), Some("infrastructure"));
+    assert_eq!(layer("backend", "prompt_arg").as_deref(), Some("infrastructure"));
+    // taken from another context's front door, so the origin is followed
+    assert_eq!(layer("backend", "ProviderId").as_deref(), Some("domain"));
+    assert_eq!(layer("backend", "PermissionRequest").as_deref(), Some("domain"));
+    assert_eq!(layer("shared", "ProviderId").as_deref(), Some("domain"));
+    assert_eq!(layer("backend", "NoSuchName"), None);
+}
+
 #[test]
 fn architecture() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
     let mut files = Vec::new();
     let source_dir = root.join("src");
     assert!(fs::symlink_metadata(&source_dir).unwrap().file_type().is_dir());
+    let doors = front_doors(&source_dir);
     source_files(&source_dir, &mut files);
     files.sort();
     let mut test_paths = Vec::new();
@@ -347,10 +460,14 @@ fn architecture() {
                 violations.entry(("T1".into(), context.into(), file_name.clone(), format!("crate::{target_context}"))).or_default().push(line);
             }
             // T2: a domain file reaches only domain names, an application file only domain and
-            // application names, in its own context and in the others.
-            if let (Some(own), Some(rank)) = (module.get(1).and_then(|layer| layer_rank(layer)), parts.get(1).and_then(|layer| layer_rank(layer))) {
+            // application names, in its own context and in the others. A name taken from a
+            // context's front door (`crate::backend::TurnRequest`) counts as the layer it
+            // comes from.
+            let target_layer = parts.get(1).and_then(|name| if layer_rank(name).is_some() { Some((*name).to_owned()) } else { door_layer(&doors, target_context, name, 0) });
+            if let (Some(own), Some(layer)) = (module.get(1).and_then(|layer| layer_rank(layer)), target_layer) {
+                let rank = layer_rank(&layer).unwrap();
                 if own < 2 && rank > own && (target_context == context || allowed.contains(&target_context)) {
-                    violations.entry(("T2".into(), context.into(), file_name, format!("crate::{target_context}::{}", parts[1]))).or_default().push(line);
+                    violations.entry(("T2".into(), context.into(), file_name, format!("crate::{target_context}::{layer}"))).or_default().push(line);
                 }
             }
         }

@@ -13,7 +13,7 @@ use crate::tui::render::extension_view as view;
 use crate::approval::application::extensions::{ExtCmd, Places};
 use crate::tui::app::layered_settings as layers;
 use crate::approval::domain::profile::Profile;
-use crate::turn::application::engine::TurnStatus;
+use crate::turn::domain::turn_status::TurnStatus;
 
 /// The line for a skill name that is not one: the closest real name when there is one.
 fn no_skill(lib: &Library, name: &str, style: crate::tui::render::Style) -> String {

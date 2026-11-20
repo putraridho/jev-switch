@@ -242,7 +242,7 @@ impl Policy {
         let mut denials: BTreeMap<ProviderId, String> = BTreeMap::new();
         for rule in &self.rules {
             let Some(hit) = paths.iter().find(|p| glob_matches(rule.glob(), p)) else { continue };
-            for provider in crate::providers::application::provider_registry::ALL_PROVIDERS {
+            for provider in crate::shared::ALL_PROVIDERS {
                 let denied = match rule {
                     Rule::Block { scope, .. } => scope.covers(provider),
                     Rule::Only { providers, .. } => !providers.contains(&provider),
@@ -497,7 +497,7 @@ mod tests {
         let p = policy("block .env from all\nblock *.pem from all\nblock data? from all");
         for prompt in ["what's in .env?", ".env!", ".env,", ".env;", ".env:", "(.env)", "\".env\"", "'.env'", "`.env`", ".env.", "a.pem:", "@(.env)", ".env:42?"] {
             let verdict = check(&p, prompt);
-            assert!(crate::providers::application::provider_registry::ALL_PROVIDERS.iter().all(|provider| !verdict.permits(*provider)), "{prompt}");
+            assert!(crate::shared::ALL_PROVIDERS.iter().all(|provider| !verdict.permits(*provider)), "{prompt}");
         }
         assert!(!check(&p, "data?").permits(ProviderId::Claude));
         let raw = policy("block data! from all");
@@ -522,7 +522,7 @@ mod tests {
         ] {
             assert!(mentioned_paths(Path::new(ROOT), prompt).contains(&path.to_string()), "{prompt}");
             let verdict = check(&p, prompt);
-            assert!(crate::providers::application::provider_registry::ALL_PROVIDERS.iter().all(|provider| !verdict.permits(*provider)), "{prompt}");
+            assert!(crate::shared::ALL_PROVIDERS.iter().all(|provider| !verdict.permits(*provider)), "{prompt}");
         }
     }
 
@@ -545,7 +545,7 @@ mod tests {
         assert!(v.permits(ProviderId::Claude) && v.permits(ProviderId::Codex));
         assert_eq!(v.denial(ProviderId::Grok).as_deref(), Some("secrets/db.yml is covered by `block secrets/** from deepseek,grok`"));
         let v = check(&p, "rotate \"deploy/a.pem\".");
-        assert!(crate::providers::application::provider_registry::ALL_PROVIDERS.iter().all(|p| !v.permits(*p)));
+        assert!(crate::shared::ALL_PROVIDERS.iter().all(|p| !v.permits(*p)));
         assert!(v.refusal_line().starts_with("privacy policy: deploy/a.pem"));
         // Absolute paths, ./ and :line suffixes still hit.
         assert!(!check(&p, "see /work/app/secrets/x.rs:12").permits(ProviderId::Grok));
@@ -573,7 +573,7 @@ mod tests {
     fn local_only_refuses_every_cloud_provider() {
         let p = policy("local-only on");
         let v = check(&p, "hello");
-        assert!(crate::providers::application::provider_registry::ALL_PROVIDERS.iter().all(|p| !v.permits(*p)));
+        assert!(crate::shared::ALL_PROVIDERS.iter().all(|p| !v.permits(*p)));
         assert!(v.refusal_line().contains("local-only"));
         assert!(Policy::default().with_local_only(true).local_only());
     }
@@ -655,7 +655,7 @@ mod tests {
         let (mut p, errors) = Policy::load(Some(&state), &project);
         assert!(p.local_only());
         assert!(p.set_local_only(false).is_err());
-        assert!(crate::providers::application::provider_registry::ALL_PROVIDERS.iter().all(|provider| !check(&p, "hello").permits(*provider)));
+        assert!(crate::shared::ALL_PROVIDERS.iter().all(|provider| !check(&p, "hello").permits(*provider)));
         assert_eq!(errors.len(), 1);
         assert_eq!(errors[0].0, file);
         assert!(errors[0].1.to_string().contains("could not read privacy rules"));

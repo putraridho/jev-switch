@@ -25,6 +25,8 @@ use crate::backend::{
     self, Approver, Decision, ErrorKind, Event, McpAttachment, PermissionRequest, ProviderId, TurnError, TurnOutcome,
     TurnRequest, Usage,
 };
+use crate::turn::domain::failover_policy::MAX_ATTEMPTS;
+use crate::turn::domain::turn_status::TurnStatus;
 use crate::turn::domain::cache;
 use crate::turn::domain::cache::WarmCache;
 use crate::catalog::domain::model_table as catalog;
@@ -63,8 +65,6 @@ pub struct RouteFacts {
     pub dropped_tier: bool,
 }
 
-/// Most models tried for one user turn before giving up.
-pub const MAX_ATTEMPTS: u32 = 6;
 /// Budget for the catch-up block put in front of a prompt after a provider switch.
 const CATCH_UP_TOKENS: usize = 10_000;
 /// The Claude models of the legacy (routing off) tiers, cheapest first.
@@ -328,19 +328,6 @@ impl Default for Cancel {
     fn default() -> Self {
         Self::new()
     }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TurnStatus {
-    /// A model answered; see [`TurnReport::text`].
-    Answered,
-    /// No usable model could take the turn, so nothing was started.
-    NoRoute,
-    /// A model was started and failed in a way that ended the turn.
-    Failed,
-    /// The user stopped the turn. Nothing was retried, routing and cooldowns are
-    /// unchanged, and the next turn is told this one was interrupted.
-    Cancelled,
 }
 
 #[derive(Debug, Clone)]
@@ -648,7 +635,7 @@ impl Engine {
 
     /// Run `/budget`, `/privacy`, `/failover` or `/health` against this session's guards.
     pub fn run_guard_command(&mut self, cmd: crate::tui::repl::guard_commands::GuardCmd) -> String {
-        let plans: Vec<(String, f64)> = crate::providers::application::provider_registry::ALL_PROVIDERS
+        let plans: Vec<(String, f64)> = crate::shared::ALL_PROVIDERS
             .into_iter()
             .filter_map(|p| self.runtime.plan_utilization(p).map(|u| (p.to_string(), u)))
             .collect();
@@ -1348,7 +1335,7 @@ impl Engine {
     /// Providers whose CLI can have the delegate tool attached. A backend is cheap to
     /// build and says it itself, so no list of providers is kept here to drift.
     fn mcp_providers(&self) -> Vec<ProviderId> {
-        providers::ALL_PROVIDERS.into_iter().filter(|p| (self.backend_factory)(*p).supports_mcp()).collect()
+        crate::shared::ALL_PROVIDERS.into_iter().filter(|p| (self.backend_factory)(*p).supports_mcp()).collect()
     }
 
     /// Should this turn have a planner? The decision is [`orchestrate::choose_planner`];
@@ -1408,7 +1395,7 @@ impl Engine {
             return Vec::new();
         }
         let behind: Vec<ProviderId> =
-            crate::providers::application::provider_registry::ALL_PROVIDERS.into_iter().filter(|p| self.sessions.missed_turns(*p) > 0 && usable.has_provider(*p)).collect();
+            crate::shared::ALL_PROVIDERS.into_iter().filter(|p| self.sessions.missed_turns(*p) > 0 && usable.has_provider(*p)).collect();
         if behind.is_empty() {
             return Vec::new();
         }

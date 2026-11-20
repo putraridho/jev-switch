@@ -18,7 +18,7 @@ use crate::approval::domain::rule_policy as permissions;
 use crate::turn::domain::session_log::utc_stamp;
 use crate::tui::tty::terminal_setup as termsetup;
 use crate::tui::tty::terminal_setup::{Installed, TermEnv};
-use crate::turn::application::engine::TurnStatus;
+use crate::turn::domain::turn_status::TurnStatus;
 use crate::tui::render as uifmt;
 use crate::tui::render::{ConfigRow, ContextFacts, CostRow, TerminalSetupFacts};
 

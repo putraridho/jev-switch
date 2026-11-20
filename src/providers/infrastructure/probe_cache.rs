@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::providers::domain::availability::{Availability, State};
 use crate::backend::ProviderId;
-use crate::providers::application::provider_registry::ALL_PROVIDERS;
+use crate::shared::ALL_PROVIDERS;
 
 /// How long a probe answer may be reused.
 pub const TTL_MS: u64 = 10 * 60 * 1000;

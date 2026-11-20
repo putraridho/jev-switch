@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::shared::domain::redact::redact;
 use crate::turn::domain::session_log::{utc_stamp, TurnRecord};
-use crate::turn::application::engine::TurnStatus;
+use crate::turn::domain::turn_status::TurnStatus;
 
 /// How much of a prompt the log keeps, in characters.
 const PREVIEW_CHARS: usize = 120;

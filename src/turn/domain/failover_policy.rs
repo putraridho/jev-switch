@@ -1,7 +1,7 @@
 //! How a turn fails over, as the user can set it, and the plain-language cost of doing so.
 //!
 //! The policy file `<state>/failover` holds lines `max-attempts <n>` (how many models one
-//! turn may try, at most [`crate::turn::application::engine::MAX_ATTEMPTS`]) and `paid-fallback on|off` (whether
+//! turn may try, at most [`MAX_ATTEMPTS`]) and `paid-fallback on|off` (whether
 //! a failover may land on a model that costs money instead of using a plan). The router
 //! itself still decides which model comes next; this only fences it in.
 
@@ -13,6 +13,9 @@ const FILE: &str = "failover";
 /// Below this much context the lost cache is not worth a sentence.
 const CACHE_NOTICE_TOKENS: u64 = 5_000;
 
+/// Most models tried for one user turn before giving up.
+pub const MAX_ATTEMPTS: u32 = 6;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FailoverPolicy {
     pub max_attempts: u32,
@@ -21,7 +24,7 @@ pub struct FailoverPolicy {
 
 impl Default for FailoverPolicy {
     fn default() -> Self {
-        Self { max_attempts: crate::turn::application::engine::MAX_ATTEMPTS, paid_fallback: true }
+        Self { max_attempts: MAX_ATTEMPTS, paid_fallback: true }
     }
 }
 
@@ -31,8 +34,8 @@ impl FailoverPolicy {
         match key {
             "max-attempts" => {
                 let n: u32 = value.parse().map_err(|_| "max-attempts needs a number".to_string())?;
-                if !(1..=crate::turn::application::engine::MAX_ATTEMPTS).contains(&n) {
-                    return Err(format!("max-attempts is between 1 and {}", crate::turn::application::engine::MAX_ATTEMPTS));
+                if !(1..=MAX_ATTEMPTS).contains(&n) {
+                    return Err(format!("max-attempts is between 1 and {}", MAX_ATTEMPTS));
                 }
                 self.max_attempts = n;
             }
@@ -102,7 +105,7 @@ mod tests {
 
     #[test]
     fn the_default_changes_nothing() {
-        assert_eq!(FailoverPolicy::default(), FailoverPolicy { max_attempts: crate::turn::application::engine::MAX_ATTEMPTS, paid_fallback: true });
+        assert_eq!(FailoverPolicy::default(), FailoverPolicy { max_attempts: MAX_ATTEMPTS, paid_fallback: true });
     }
 
     #[test]

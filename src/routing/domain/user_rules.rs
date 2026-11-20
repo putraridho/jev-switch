@@ -214,7 +214,7 @@ mod tests {
     }
 
     fn providers(u: &Usable) -> Vec<ProviderId> {
-        let mut v: Vec<ProviderId> = crate::providers::application::provider_registry::ALL_PROVIDERS.into_iter().filter(|p| !u.filter(|q, _| q == *p).is_empty()).collect();
+        let mut v: Vec<ProviderId> = crate::shared::ALL_PROVIDERS.into_iter().filter(|p| !u.filter(|q, _| q == *p).is_empty()).collect();
         v.sort();
         v
     }

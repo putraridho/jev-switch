@@ -3,7 +3,7 @@
 //! last answer). Pure data and formatting; the REPL fills it after every turn.
 
 use crate::backend::Usage;
-use crate::turn::application::engine::TurnStatus;
+use crate::turn::domain::turn_status::TurnStatus;
 
 /// One turn as the REPL saw it.
 #[derive(Debug, Clone, PartialEq)]

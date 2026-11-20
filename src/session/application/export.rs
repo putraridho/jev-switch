@@ -9,7 +9,7 @@ use std::path::Path;
 
 use crate::shared::domain::redact::redact;
 use crate::turn::domain::session_log::{SessionLog, TurnRecord};
-use crate::turn::application::engine::TurnStatus;
+use crate::turn::domain::turn_status::TurnStatus;
 
 /// What a file extension asks for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

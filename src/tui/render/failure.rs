@@ -272,7 +272,8 @@ mod tests {
     use crate::tui::render::{strip_ansi, display_width};
     use crate::tui::render::test_facts::*;
     use crate::doctor::domain::diagnose::login_steps;
-    use crate::providers::application::provider_registry::{install_hint, login_command, login_instruction, ALL_PROVIDERS};
+    use crate::providers::application::provider_registry::{install_hint, login_command, login_instruction};
+    use crate::shared::ALL_PROVIDERS;
 
     #[test]
     fn doctor_steps_and_messages_use_the_same_login_command() {

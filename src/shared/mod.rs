@@ -31,6 +31,10 @@ impl ProviderId {
     }
 }
 
+/// Every provider, in the order `/providers` lists them.
+pub const ALL_PROVIDERS: [ProviderId; 5] =
+    [ProviderId::Claude, ProviderId::DeepSeek, ProviderId::Codex, ProviderId::Gemini, ProviderId::Grok];
+
 impl std::fmt::Display for ProviderId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(self.as_str())

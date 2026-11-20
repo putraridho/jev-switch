@@ -188,7 +188,7 @@ impl Repl {
         let record = TurnRecord {
             prompt: prompt.to_string(),
             answer: String::new(),
-            status: crate::turn::application::engine::TurnStatus::Cancelled,
+            status: crate::turn::domain::turn_status::TurnStatus::Cancelled,
             model: String::new(),
             route: None,
             usage: None,
