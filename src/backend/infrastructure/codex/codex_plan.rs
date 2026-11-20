@@ -111,10 +111,15 @@ pub fn latest_plan_in(sessions_dir: &Path) -> Option<(PlanUsage, SystemTime)> {
 /// Resolve Codex's session directory from its configured home or the user's
 /// home, matching the CLI's default without invoking it.
 pub fn latest_plan() -> Option<(PlanUsage, SystemTime)> {
-    let home = std::env::var_os("CODEX_HOME").filter(|s| !s.is_empty())
+    latest_plan_in(&codex_home()?.join("sessions"))
+}
+
+/// `$CODEX_HOME`, else `~/.codex`.
+pub fn codex_home() -> Option<PathBuf> {
+    std::env::var_os("CODEX_HOME")
+        .filter(|s| !s.is_empty())
         .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").filter(|s| !s.is_empty()).map(|h| PathBuf::from(h).join(".codex")))?;
-    latest_plan_in(&home.join("sessions"))
+        .or_else(|| std::env::var_os("HOME").filter(|s| !s.is_empty()).map(|h| PathBuf::from(h).join(".codex")))
 }
 
 #[cfg(test)]

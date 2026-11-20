@@ -4,6 +4,12 @@ See [docs/changelog-guide.md](docs/changelog-guide.md) for changelog formatting,
 
 ## Unreleased
 
+## 1.9.3
+
+Bug fix: the context meter no longer reads full after one busy Codex turn.
+
+- **The context meter is right after a Codex turn.** Codex reports one token count per turn, the sum over every request the turn made, and an agent turn re-sends the conversation on each tool call. jev-code took that sum as the context size, so a short session with one busy Codex turn showed 100% (878K "used" when the conversation was 51K), warned that switching away would rebuild 878K tokens, and weighed staying with Codex on that inflated cache. It now reads the last request's size from Codex's session file (`~/.codex/sessions/…/rollout-…-<thread>.jsonl`, or under `CODEX_HOME`), and falls back to the turn total only when that file has none.
+
 ## 1.9.2
 
 Bug fix: `/update` works again when a local tag differs from the one on GitHub.

@@ -44,6 +44,9 @@ pub struct CodexBackend {
     mcp: Option<McpAttachment>,
     /// `model_reasoning_effort`, when the person set one.
     effort: Option<crate::backend::Effort>,
+    /// Codex's `sessions` folder, where each thread's rollout records the size of its last
+    /// request (see `codex_context`). `None` leaves the context size at the turn's total.
+    sessions_dir: Option<std::path::PathBuf>,
 }
 
 impl CodexBackend {
@@ -54,11 +57,23 @@ impl CodexBackend {
             crate::shared::infrastructure::env_file::lookup("CODEX_BIN").unwrap_or_else(|| "codex".into()),
             crate::shared::infrastructure::env_file::lookup("CODEX_SANDBOX").unwrap_or_else(|| DEFAULT_SANDBOX.into()),
         )
+        .with_sessions_dir(super::codex_plan::codex_home().map(|h| h.join("sessions")))
     }
 
     /// Explicit binary and sandbox, for tests and callers that do not read the env.
     pub fn new(bin: impl Into<String>, sandbox: impl Into<String>) -> Self {
-        Self { bin: bin.into(), sandbox: sandbox.into(), state: Mutex::new(TurnState::default()), mcp: None, effort: None }
+        Self { bin: bin.into(), sandbox: sandbox.into(), state: Mutex::new(TurnState::default()), mcp: None, effort: None, sessions_dir: None }
+    }
+
+    /// Where to find thread rollouts, for the real context size of a turn.
+    pub fn with_sessions_dir(mut self, dir: Option<std::path::PathBuf>) -> Self {
+        self.sessions_dir = dir;
+        self
+    }
+
+    /// The size of the thread's last request, when its rollout records one.
+    fn last_request_tokens(&self, thread_id: Option<&str>) -> Option<u64> {
+        super::codex_context::context_tokens_in(self.sessions_dir.as_deref()?, thread_id?)
     }
 
     /// `-c model_reasoning_effort="<level>"`, accepted by both `exec` and `exec resume`.
@@ -187,14 +202,14 @@ fn count(v: &Value, key: &str) -> u64 {
 }
 
 /// Codex's `input_tokens` already includes the cached share, which is the scale
-/// [`Usage`] wants, and the turn's last request is not reported separately, so the
-/// whole input is the best available context size.
-fn usage_of(u: &Value) -> Usage {
+/// [`Usage`] wants. It sums every request of the turn, so it is the context size only
+/// when `last_request` (the final request alone, from the rollout) is unknown.
+fn usage_of(u: &Value, last_request: Option<u64>) -> Usage {
     Usage {
         input_tokens: count(u, "input_tokens"),
         cached_input_tokens: count(u, "cached_input_tokens"),
         output_tokens: count(u, "output_tokens"),
-        context_tokens: Some(count(u, "input_tokens")),
+        context_tokens: Some(last_request.unwrap_or_else(|| count(u, "input_tokens"))),
     }
 }
 
@@ -271,12 +286,12 @@ impl Backend for CodexBackend {
             Some("item.started") => started_events(&ev["item"]),
             Some("item.completed") => self.completed_events(&ev["item"]),
             Some("turn.completed") => {
-                let state = self.state();
-                vec![Event::Finished(Finish {
-                    text: state.answer.clone(),
-                    session_id: state.thread_id.clone(),
-                    usage: usage_of(&ev["usage"]),
-                })]
+                let (text, session_id) = {
+                    let state = self.state();
+                    (state.answer.clone(), state.thread_id.clone())
+                };
+                let last_request = self.last_request_tokens(session_id.as_deref());
+                vec![Event::Finished(Finish { text, session_id, usage: usage_of(&ev["usage"], last_request) })]
             }
             // Top-level `error` lines are retry chatter ("Reconnecting... 2/5"); only
             // `turn.failed` means codex gave up.
@@ -396,6 +411,19 @@ mod tests {
             f.usage,
             Usage { input_tokens: 44970, cached_input_tokens: 36864, output_tokens: 159, context_tokens: Some(44970) }
         );
+    }
+
+    #[test]
+    fn context_size_is_the_last_request_from_the_rollout_not_the_turn_total() {
+        let root = crate::testkit::scratch_dir::unique_scratch_dir("codex-cli-context", "t");
+        let day = root.join("2026/11/21");
+        std::fs::create_dir_all(&day).unwrap();
+        let line = r#"{"type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":44970},"last_token_usage":{"input_tokens":23500}}}}"#;
+        std::fs::write(day.join("rollout-2026-11-21T00-00-00-01a1e5a6-9f98-7c21-99f5-6468805d7543.jsonl"), line).unwrap();
+        let b = backend().with_sessions_dir(Some(root.clone()));
+        let Some(Event::Finished(f)) = parse_all(&b, TURN1).pop() else { panic!() };
+        assert_eq!((f.usage.input_tokens, f.usage.context_tokens), (44970, Some(23500)));
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
