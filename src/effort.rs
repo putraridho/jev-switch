@@ -8,7 +8,7 @@
 use std::fmt;
 use std::str::FromStr;
 
-use crate::backend::ProviderId;
+use crate::shared::ProviderId;
 use crate::catalog::{self, Tier};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

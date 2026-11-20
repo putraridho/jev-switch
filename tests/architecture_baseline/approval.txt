@@ -2,5 +2,4 @@ T1 | src/layers.rs | crate::ext | 2
 T1 | src/layers.rs | crate::uifmt | 1
 T1 | src/mode.rs | crate::handoff | 1
 T1 | src/permissions.rs | crate::gitflow | 1
-T1 | src/privacy.rs | crate::backend | 1
 T1 | src/privacy.rs | crate::providers | 1

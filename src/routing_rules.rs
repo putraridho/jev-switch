@@ -16,7 +16,7 @@
 //! strict: when none of those providers can serve, the turn is refused and says why. Rules
 //! apply in file order, each to what the earlier ones left. A `/model` pin skips them.
 
-use crate::backend::ProviderId;
+use crate::shared::ProviderId;
 use crate::catalog::{TaskType, Usable};
 use crate::privacy::{glob_matches, mentioned_paths};
 

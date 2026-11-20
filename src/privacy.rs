@@ -25,7 +25,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use crate::backend::ProviderId;
+use crate::shared::ProviderId;
 use crate::secrets::{self, SecretKind};
 
 /// Where a provider's models run.

@@ -16,7 +16,7 @@
 use std::cmp::Reverse;
 
 use crate::anthropic::{MODEL_CHEAP, MODEL_MID, MODEL_STRONG};
-use crate::backend::ProviderId;
+use crate::shared::ProviderId;
 use crate::cache::{self, WarmCache};
 use crate::catalog::{
     Allowances, ModelSpec, Overrides, Pick, TaskType, Usable, allowed_for, chain_with, find, models, pick,
@@ -502,7 +502,7 @@ fn one_step_down(cur: &'static ModelSpec, target: &'static ModelSpec, own: &[&'s
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::backend::ProviderId::{Claude, Codex, DeepSeek, Gemini, Grok};
+    use crate::shared::ProviderId::{Claude, Codex, DeepSeek, Gemini, Grok};
     use crate::catalog::{self, Billing, default_chain};
 
     const PROVIDERS: [ProviderId; 5] = [Claude, DeepSeek, Codex, Gemini, Grok];

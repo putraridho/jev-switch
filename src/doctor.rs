@@ -14,7 +14,7 @@ use std::time::Duration;
 use serde_json::json;
 
 use crate::availability::{Availability, State};
-use crate::backend::ProviderId;
+use crate::shared::ProviderId;
 use crate::cooldown::Cooldowns;
 use crate::providers::{format_left, BlockReason, Runtime, ALL_PROVIDERS};
 use crate::typesafe::TypeSafe;

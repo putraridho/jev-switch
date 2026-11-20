@@ -14,7 +14,7 @@ use std::str::FromStr;
 
 use serde_json::Value;
 
-use crate::backend::ProviderId;
+use crate::shared::ProviderId;
 
 /// Rough capability and price band. Ordered so `Light < Everyday < Top`, which lets
 /// [`pick`] tell when a fallback landed on a weaker model than the chain wanted.

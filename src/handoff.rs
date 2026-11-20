@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 
 use serde_json::{json, Value};
 
-use crate::backend::ProviderId;
+use crate::shared::ProviderId;
 
 /// One finished (or failed) turn, as the hand-off needs to remember it.
 #[derive(Debug, Clone, PartialEq, Eq)]

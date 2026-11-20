@@ -13,7 +13,7 @@ use std::time::SystemTime;
 
 use serde_json::{Map, Value};
 
-use crate::backend::ProviderId;
+use crate::shared::ProviderId;
 
 const SECOND_MS: u64 = 1000;
 const MINUTE_MS: u64 = 60_000;

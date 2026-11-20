@@ -41,7 +41,7 @@ fn make_private_dir(dir: &std::path::Path) -> std::io::Result<()> {
 /// `env_var` if set, else `file` inside [`state_dir`].
 pub fn path_from_env(env_var: &str, file: &str) -> Option<String> {
     // The environment first, then the env file, like every other setting.
-    crate::envfile::lookup(env_var)
+    super::envfile::lookup(env_var)
         .or_else(|| Some(state_dir()?.join(file).to_string_lossy().into_owned()))
 }
 

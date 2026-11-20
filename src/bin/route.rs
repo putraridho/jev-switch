@@ -30,7 +30,7 @@ use tokio::sync::Semaphore;
 use tokio::task::JoinSet;
 
 use jev_router::anthropic::{MODEL_CHEAP, MODEL_MID, MODEL_STRONG};
-use jev_router::backend::ProviderId;
+use jev_router::shared::ProviderId;
 use jev_router::catalog::{self, Allowances, Overrides, Usable};
 use jev_router::routing::{self, Pin, RouteInput, RoutingState, Signals};
 use jev_router::router::{security_level, Decision, Router, CODE_STRONG_THRESHOLD};

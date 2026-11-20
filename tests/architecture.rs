@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 
 const MODULES: &[(&str, &str)] = &[
     ("anthropic", "chat"), ("availability", "providers"), ("backend", "backend"),
+    ("shared", "shared"),
     ("catalog", "catalog"), ("changes", "changes"), ("cli", "tui"),
     ("commands", "tui"), ("console", "tui"), ("cooldown", "providers"),
     ("delegate", "orchestration"), ("doctor", "doctor"), ("envfile", "shared"),
@@ -134,6 +135,7 @@ const EXTRA_MODULES: &[(&str, &str)] = &[
 
 const DOCUMENTED_CHILDREN: &[&str] = &[
     "backend::claude", "backend::codex", "backend::gemini", "backend::grok",
+    "shared::envfile", "shared::log",
     "uifmt::ansi", "uifmt::changes", "uifmt::commands", "uifmt::complete",
     "uifmt::failure", "uifmt::markdown", "uifmt::permissions", "uifmt::provider_view",
     "uifmt::route", "uifmt::screens", "uifmt::status", "uifmt::style",
