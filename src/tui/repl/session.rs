@@ -22,7 +22,9 @@ use crate::approval::domain::rule_policy::PermissionsCmd;
 use crate::tui::views::session_picker as picker;
 use crate::routing::domain::decide::Pin as ModelPin;
 use crate::tui::tty::terminal_guard as terminal;
-use crate::turn::application::engine::{Cancel, Engine, TurnReport};
+use crate::turn::application::cancel::Cancel;
+use crate::turn::application::engine::Engine;
+use crate::turn::application::turn_report::TurnReport;
 use crate::turn::domain::turn_status::TurnStatus;
 use crate::tui::input::typeahead::TypeAhead;
 use crate::tui::render as uifmt;
@@ -801,7 +803,7 @@ pub(crate) mod tests {
     use crate::tui::console::terminal_ui::ConsoleConfig;
     use crate::providers::application::provider_registry::Runtime;
     use crate::judgment::application::judge::Router;
-    use crate::turn::application::engine::Judged;
+    use crate::turn::application::judged::Judged;
     use crate::judgment::infrastructure::typesafe_http::TypeSafe;
     use std::sync::{Arc, Mutex};
 
