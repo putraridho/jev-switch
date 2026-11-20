@@ -14,7 +14,6 @@ pub mod frontmatter;
 pub mod hooks;
 pub mod library;
 pub mod market;
-pub mod sha256;
 pub mod view;
 
 use std::path::{Path, PathBuf};

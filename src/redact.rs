@@ -13,10 +13,10 @@ pub const MASK: &str = "[REDACTED]";
 pub fn redact(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     let mut at = 0;
-    for finding in crate::secrets::scan(text) {
+    for finding in crate::shared::secrets::scan(text) {
         out.push_str(&text[at..finding.range.start]);
         out.push_str(MASK);
-        if finding.kind == crate::secrets::SecretKind::PrivateKey {
+        if finding.kind == crate::shared::secrets::SecretKind::PrivateKey {
             out.push_str(" (private key)");
         }
         at = finding.range.end;

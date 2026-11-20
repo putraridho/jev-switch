@@ -20,7 +20,7 @@ use std::path::{Component, Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use super::library::valid_name;
-use super::sha256;
+use crate::shared::sha256;
 
 pub const MANIFEST: &str = "jev-extension.json";
 const REGISTRY: &str = "extensions.json";

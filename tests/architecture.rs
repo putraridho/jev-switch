@@ -64,7 +64,6 @@ const MODULES: &[(&str, &str)] = &[
     ("routing_rules", "routing"), // not in 4.5: routing policy
     ("schedule", "tui"), // not in 4.5: scheduled interface
     ("scoreboard", "session"), // not in 4.5: session provider history
-    ("secrets", "approval"), // not in 4.5: data policy
     ("selfupdate", "tui"), // not in 4.5: update command
     ("sessionimport", "session"), // not in 4.5: session import
     ("sessionlib", "session"), // not in 4.5: saved sessions
@@ -93,7 +92,6 @@ const EXTRA_MODULES: &[(&str, &str)] = &[
     ("ext::hooks", "tui"), // not in 4.5: extension interface
     ("ext::library", "tui"), // not in 4.5: extension interface
     ("ext::market", "tui"), // not in 4.5: extension interface
-    ("ext::sha256", "tui"), // not in 4.5: extension interface
     ("ext::view", "tui"), // not in 4.5: extension interface
     ("gimmicks::autopsy", "tui"), // not in 4.5: presentation
     ("gimmicks::gauge", "tui"), // not in 4.5: presentation
@@ -137,7 +135,7 @@ const EXTRA_MODULES: &[(&str, &str)] = &[
 
 const DOCUMENTED_CHILDREN: &[&str] = &[
     "backend::claude", "backend::codex", "backend::gemini", "backend::grok",
-    "shared::envfile", "shared::limit_notice", "shared::log", "shared::private_file", "shared::text",
+    "shared::envfile", "shared::limit_notice", "shared::log", "shared::private_file", "shared::secrets", "shared::sha256", "shared::text",
     "uifmt::ansi", "uifmt::changes", "uifmt::commands", "uifmt::complete",
     "uifmt::failure", "uifmt::markdown", "uifmt::permissions", "uifmt::provider_view",
     "uifmt::route", "uifmt::screens", "uifmt::status", "uifmt::style",
