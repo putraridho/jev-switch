@@ -4,6 +4,8 @@ See [docs/changelog-guide.md](docs/changelog-guide.md) for changelog formatting,
 
 ## Unreleased
 
+- The repository's main branch is now `main` instead of `master`. A checkout that updates with `/update` keeps working as long as its upstream is set; if yours still tracks `origin/master`, run `git branch -m master main && git fetch origin && git branch -u origin/main main`.
+
 ## 1.8.1
 
 Antigravity follows `CODE_ALLOWED_TOOLS`, and a denied command no longer burns through every model.

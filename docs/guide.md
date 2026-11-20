@@ -271,7 +271,7 @@ $EDITOR ~/.jev-router.env     # put your Jev key on the JEV_API_KEY= line
 `jev-delegate-mcp` is the tool `/orchestrate` hands to a planner model; `jev-code` finds it next
 to itself (or at `JEV_DELEGATE_BIN`). Re-run `scripts/install.sh` after changing the code.
 
-To get a new version once it is on master, run `/update` in a session (or `jev-code update` in a
+To get a new version once it is on main, run `/update` in a session (or `jev-code update` in a
 shell). It updates the checkout jev-code was built from (`JEV_SOURCE_DIR` names another one):
 it fetches the branch's upstream, lists the new commits and the version change, and after you
 confirm, fast-forwards and reinstalls. It never merges or discards anything: changes to tracked
@@ -384,7 +384,7 @@ to change an accent, glyph or badge; truecolor, 256 and 16-colour terminals are 
 | `/providers [refresh]`      | what was detected and why each provider can or cannot run; `refresh` probes again                                                                                                                                  |
 | `/mcp [list\|login <srv>]`  | show configured MCP servers across ready providers, or log in (`/mcp login <server>`)                                                                                                                              |
 | `/doctor`                   | the setup check, inside the session                                                                                                                                                                                |
-| `/update`                   | update jev-code: fetches its checkout's upstream (`origin/master`), shows the new commits and version, and after a yes fast-forwards and runs `scripts/install.sh`; `jev-code update [--yes]` from the shell     |
+| `/update`                   | update jev-code: fetches its checkout's upstream (`origin/main`), shows the new commits and version, and after a yes fast-forwards and runs `scripts/install.sh`; `jev-code update [--yes]` from the shell     |
 | `/terminal-setup [install]` | make Shift-Enter insert a new line: shows the line for your terminal (kitty, Ghostty, Alacritty, foot, WezTerm, VS Code); `install` adds it, with a backup                                                         |
 | `!command`                  | run a shell command in the project; its output is shown and goes with your next message                                                                                                                            |
 

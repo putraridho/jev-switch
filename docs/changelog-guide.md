@@ -105,7 +105,7 @@ git tag -a v1.4.0 -m "jev-code 1.4.0: inline steering, delegate tool, and trimme
 ### Step 6: Push Commit & Tags to Origin
 Push the commit and the new tag to GitHub:
 ```bash
-git push origin master --tags
+git push origin main --tags
 ```
 
 ### Step 7: Publish GitHub Release
@@ -138,5 +138,5 @@ jev-code doctor
 |---|---|
 | `- Fixed bug in turn.rs` | `- **Turn steering cancellation**: A cancelled turn drops running CLI futures immediately, disarming background process groups cleanly.` |
 | `- Round 10 fixes` | `- **Settings validation**: A project's \`.claude/settings.json\` is tracked by hash; changes require explicit re-approval via \`/hooks trust\`.` |
-| `- Tag: v1.4.0` | `- **In-app updates (\`/update\`)**: Added \`/update\` to fast-forward from \`origin/master\` without losing local uncommitted work.` |
+| `- Tag: v1.4.0` | `- **In-app updates (\`/update\`)**: Added \`/update\` to fast-forward from \`origin/main\` without losing local uncommitted work.` |
 | `git tag -a v1.4.0 -m "v1.4.0"` | `git tag -a v1.4.0 -m "jev-code 1.4.0: inline steering, delegate MCP server, and trimmed hints"` |

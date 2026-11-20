@@ -1,5 +1,5 @@
 //! `/update` and `jev-code update`: bring the installed jev-code up to the newest commit of its
-//! source checkout's upstream branch (`origin/master`), and reinstall it.
+//! source checkout's upstream branch (`origin/main`), and reinstall it.
 //!
 //! jev-code is installed from a git checkout (`scripts/install.sh`), so updating is: fetch the
 //! branch's upstream, fast-forward to it, run the install script. The checkout is the one the
@@ -86,7 +86,7 @@ pub enum Plan {
 /// The decision, pure over the facts and the running version.
 pub fn plan(facts: &Facts, running: &str) -> Plan {
     let Some(upstream) = facts.upstream.clone() else {
-        return Plan::Refused("the checkout's branch has no upstream to update from (or HEAD is detached); check out master".into());
+        return Plan::Refused("the checkout's branch has no upstream to update from (or HEAD is detached); check out main".into());
     };
     if facts.ahead > 0 && facts.behind > 0 {
         return Plan::Refused(format!(
