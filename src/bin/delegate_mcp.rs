@@ -3,7 +3,7 @@
 //! child: newline-delimited JSON-RPC 2.0, one message per line.
 //!
 //! The tool has NO model parameter. Which worker model runs a piece is Jev's decision
-//! (see `jev_router::orchestration::application::delegator`); anything the planner says about models is ignored.
+//! (see `jev_router::orchestration::application::delegator::Delegator`); anything the planner says about models is ignored.
 //!
 //!   delegate_mcp [--dir <project dir>] [--planner <provider:model>]
 //!
@@ -22,7 +22,11 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::sync::{mpsc, OnceCell};
 use tokio::task::JoinSet;
 
-use jev_router::orchestration::application::delegator::{has_leftovers, router_judge, BoxFut, DelegateApi, DelegateRequest, Delegator, GitWorktrees};
+use jev_router::orchestration::application::delegator::Delegator;
+use jev_router::orchestration::application::ports::{router_judge, BoxFut, DelegateApi};
+use jev_router::orchestration::domain::delegation::DelegateRequest;
+use jev_router::orchestration::infrastructure::git_worktrees::GitWorktrees;
+use jev_router::orchestration::infrastructure::worker_file::has_leftovers;
 use jev_router::shared::infrastructure::jsonl_log as log;
 use jev_router::providers::application::provider_registry::Runtime;
 use jev_router::judgment::application::judge::Router;
@@ -433,7 +437,8 @@ mod tests {
     use super::*;
     use std::sync::Mutex;
 
-    use jev_router::orchestration::application::delegator::{DelegateResult, FileStat, Landing, ReviewReason};
+    use jev_router::orchestration::domain::delegation::{DelegateResult, Landing, ReviewReason};
+    use jev_router::orchestration::domain::file_patch::FileStat;
 
     /// The arguments of one `wait` call: task ids and timeout.
     type WaitCall = (Option<Vec<String>>, Option<Duration>);

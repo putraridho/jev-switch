@@ -15,35 +15,14 @@ use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
+use crate::orchestration::application::ports::{CheckRun, Checks};
+
 /// How long a worker's tests may run before the work goes to review instead.
 pub const TEST_TIMEOUT: Duration = Duration::from_secs(15 * 60);
 /// How much of the end of a failed run's output goes back to the planner.
 pub const OUTPUT_TAIL_CHARS: usize = 3_000;
 /// How often a running check looks at the clock and the cancel flag.
 const POLL: Duration = Duration::from_millis(200);
-
-/// How one test run ended.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum CheckRun {
-    Passed,
-    /// It exited non-zero or was killed by a signal; the end of its output.
-    Failed { output: String },
-    /// It ran past the timeout and was killed.
-    TimedOut { after: Duration },
-    /// The delegation was cancelled while it ran; it was killed.
-    Stopped,
-    /// It could not be started at all.
-    CouldNotStart { error: String },
-}
-
-/// Finds and runs a project's tests. Real: [`ProjectChecks`]; tests use a fake.
-pub trait Checks: Send + Sync {
-    /// The command that tests the project at `dir`, or `None` when there is none.
-    fn test_command(&self, dir: &Path) -> Option<String>;
-    /// Run `command` in `dir` until it ends, the timeout passes, or `stop()` says to give up.
-    /// Blocks: the caller runs it off the async threads.
-    fn run(&self, dir: &Path, command: &str, stop: &dyn Fn() -> bool) -> CheckRun;
-}
 
 /// The project's own test commands, run for real.
 pub struct ProjectChecks {

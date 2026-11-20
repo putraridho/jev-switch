@@ -273,7 +273,7 @@ fn refresh(app: &mut App, repl: &Repl) {
 fn worker_chips(state_dir: Option<&std::path::Path>, project: &std::path::Path) -> Vec<crate::tui::app::screen_state::WorkerChip> {
     let now = log::now_ms();
     state_dir
-        .map(|s| crate::orchestration::application::delegator::open_workers(s, project))
+        .map(|s| crate::orchestration::infrastructure::worker_file::open_workers(s, project))
         .unwrap_or_default()
         .into_iter()
         .map(|w| crate::tui::app::screen_state::WorkerChip { id: w.worker_id, provider: w.provider, model: w.model, running: w.running, age_ms: now.saturating_sub(w.created_ms), tools: w.tools, activity: w.activity })

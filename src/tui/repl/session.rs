@@ -274,8 +274,8 @@ impl Repl {
     }
 
     /// The worker records on disk (none without a state directory).
-    fn stored_workers(&self) -> Vec<crate::orchestration::application::delegator::StoredWorker> {
-        log::state_dir().map(|d| crate::orchestration::application::delegator::stored_workers(&d)).unwrap_or_default()
+    fn stored_workers(&self) -> Vec<crate::orchestration::infrastructure::worker_file::StoredWorker> {
+        log::state_dir().map(|d| crate::orchestration::infrastructure::worker_file::stored_workers(&d)).unwrap_or_default()
     }
 
     pub(crate) fn out_style(&self) -> Style {
@@ -586,13 +586,13 @@ impl Repl {
         let open = self
             .state_dir
             .as_deref()
-            .map(|s| crate::orchestration::application::delegator::open_workers(s, &dir))
+            .map(|s| crate::orchestration::infrastructure::worker_file::open_workers(s, &dir))
             .unwrap_or_default()
             .into_iter()
             .map(|w| uifmt::OpenWorkerRow { id: w.worker_id, provider: w.provider, model: w.model, age_ms: now.saturating_sub(w.created_ms), running: w.running, shown: w.shown, merged: w.merged })
             .collect();
         let log = log::path_from_env("JEV_DELEGATE_LOG", "orchestration.jsonl");
-        let rows = log.map(|p| crate::orchestration::application::delegator::recent_delegations(std::path::Path::new(&p), &dir, 200)).unwrap_or_default();
+        let rows = log.map(|p| crate::orchestration::infrastructure::delegation_log::recent_delegations(std::path::Path::new(&p), &dir, 200)).unwrap_or_default();
         let day_ago = now.saturating_sub(24 * 60 * 60 * 1000);
         let today: Vec<_> = rows.iter().filter(|d| d.ts_ms >= day_ago).collect();
         let day = (today.len(), today.iter().filter(|d| d.ok).count(), today.iter().map(|d| d.wall_ms).sum());

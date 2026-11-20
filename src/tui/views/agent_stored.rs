@@ -4,7 +4,7 @@
 
 use crate::tui::views::agent_orch::flow_diagram;
 use crate::tui::views::agent_workers::{agents_panel, conflict_warning, file_conflicts, WorkerInfo, WorkerState};
-use crate::orchestration::application::delegator::StoredWorker;
+use crate::orchestration::infrastructure::worker_file::StoredWorker;
 use crate::tui::render::Style;
 
 /// The panel facts of recorded workers: a running one is running, any other is done and
