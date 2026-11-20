@@ -4,6 +4,11 @@ See [docs/changelog-guide.md](docs/changelog-guide.md) for changelog formatting,
 
 ## Unreleased
 
+- jev-code's own git calls no longer run filter programs set in the repo's own `.git/config` (or its `config.worktree`). An agent edit to that file can no longer make jev-code run a command without asking. git-lfs and git-crypt filters still run when they point at the `git-lfs` or `git-crypt` on your `PATH`, and so do filters in your global git config.
+- A `.jev/team.json` pin that fails during a turn now hands the turn to automatic routing instead of ending it. The route line says the pin was skipped. A pin that cannot be used before the turn starts is still reported, as before.
+- A shell command that prints a very long line no longer shows an extra empty line after it.
+- Files the system adds on its own (`.DS_Store`, `._*`, `Thumbs.db`, `desktop.ini`) no longer stop jev from replacing an extension it installed.
+
 ## 1.8.0
 
 Delegation that does not waste the planner's time or tokens, and plan usage from the start.
@@ -15,8 +20,8 @@ Delegation that does not waste the planner's time or tokens, and plan usage from
 - The router row and `/status` show how much plan is left from the start, not only after a Claude turn. The last reading per provider is saved across restarts and dropped once its window resets. Codex usage is read from Codex's own session files, and DeepSeek shows its remaining balance (`deepseek $4.20 left`).
 - Grok works with an `XAI_API_KEY` instead of `grok login`. Set the key in your shell or in `~/.jev-router.env`: Grok shows as ready, jev-code passes the key to `grok`, and `doctor` offers it as a fix.
 - Vim `dd` on the last line of a multi-line message no longer crashes jev-code.
-- A repo's `.jev/team.json` pin now respects your own `avoid` and `only` rules for the turn's task. When they exclude the pinned provider, or it cannot do that kind of work, the turn routes automatically and the route line says why. A pinned provider or model that is logged out, cooling down, failed over or unknown before the turn starts is still reported, not swapped. If it fails during the turn, the turn fails over to automatic routing instead of ending.
-- jev-code's own git calls (status bar, doctor, completion, repo map, undo, delegate worktrees) no longer run a repo's `core.fsmonitor` program, its hooks, or filter programs set in the repo's own `.git/config`, and their diffs skip `textconv` and external diff programs. Filters that git-lfs and git-crypt set up still run, as do filters in your global git config. Merge and credential programs still run.
+- A repo's `.jev/team.json` pin now respects your own `avoid` and `only` rules for the turn's task. When they exclude the pinned provider, or it cannot do that kind of work, the turn routes automatically and the route line says why. A pinned provider or model that is logged out, cooling down, failed over or unknown is still reported, not swapped.
+- jev-code's own git calls (status bar, doctor, completion, repo map, undo, delegate worktrees) no longer run a repo's `core.fsmonitor` program or its hooks, and their diffs skip `textconv` and external diff programs. Filter, merge and credential programs still run, because git-crypt and git-lfs depend on them.
 - Privacy rules catch files mentioned with `path:line:col`, `path:10-20` or `path#L4` suffixes, also inside quotes (`` `config/.env`:12 ``).
 - Huge day counts in `/sessions clean <days>` and `since:Nd` no longer overflow; they can never delete recent sessions.
 - `since:` with a non-ASCII unit (`since:7日`) is refused instead of crashing jev-code.
