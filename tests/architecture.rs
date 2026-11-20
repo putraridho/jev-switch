@@ -32,7 +32,7 @@ const MODULES: &[(&str, &str)] = &[
     ("diffparse", "changes"), // not in 4.5: diff representation
     ("effort", "turn"), // not in 4.5: reasoning selection
     ("export", "session"), // not in 4.5: session export
-    ("ext", "tui"), // not in 4.5: extension interface
+    ("ext", "approval"), // not in 4.5: extension trust
     ("extcmds", "tui"), // not in 4.5: extension commands
     ("failover", "turn"), // not in 4.5: failover policy
     ("front", "tui"), // not in 4.5: front-end channel
@@ -89,10 +89,10 @@ const EXTRA_MODULES: &[(&str, &str)] = &[
     ("backend::effort", "backend"), // effort levels and their CLI encoding
     ("backend::turnlog", "backend"), // turn log rows
     ("ext::cli", "tui"), // not in 4.5: extension interface
-    ("ext::frontmatter", "tui"), // not in 4.5: extension interface
-    ("ext::hooks", "tui"), // not in 4.5: extension interface
-    ("ext::library", "tui"), // not in 4.5: extension interface
-    ("ext::market", "tui"), // not in 4.5: extension interface
+    ("ext::frontmatter", "approval"), // not in 4.5: extension trust
+    ("ext::hooks", "approval"), // not in 4.5: extension trust
+    ("ext::library", "approval"), // not in 4.5: extension trust
+    ("ext::market", "approval"), // not in 4.5: extension trust
     ("ext::view", "tui"), // not in 4.5: extension interface
     ("gimmicks::autopsy", "tui"), // not in 4.5: presentation
     ("gimmicks::gauge", "tui"), // not in 4.5: presentation

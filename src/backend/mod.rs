@@ -147,6 +147,10 @@ pub struct TurnRequest {
     pub session_id: Option<String>,
     /// What the turn may do without asking; used by Claude Code, DeepSeek and Antigravity.
     pub mode: crate::mode::Mode,
+    /// Whether the person trusted this project's own Claude Code settings (its hooks and
+    /// permissions); only Claude Code reads them. Decided by the caller, see
+    /// [`crate::ext::hooks::project_settings_trusted`].
+    pub trust_project_settings: bool,
 }
 
 /// The prompt with the attached images listed by path, for CLIs that take no image input
@@ -1159,7 +1163,7 @@ mod tests {
     }
 
     fn req() -> TurnRequest {
-        TurnRequest { dir: std::env::temp_dir(), model: "m".into(), prompt: "hello".into(), images: vec![], session_id: None, mode: Default::default() }
+        TurnRequest { dir: std::env::temp_dir(), model: "m".into(), prompt: "hello".into(), images: vec![], session_id: None, mode: Default::default(), trust_project_settings: false }
     }
 
     async fn run(script: &'static str, idle_ms: u64) -> (Result<TurnOutcome, TurnError>, Vec<Event>) {

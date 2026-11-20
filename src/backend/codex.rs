@@ -335,7 +335,7 @@ mod tests {
     }
 
     fn req(session: Option<&str>) -> TurnRequest {
-        TurnRequest { dir: "/tmp/proj".into(), model: "gpt-x".into(), prompt: "hi".into(), images: vec![], session_id: session.map(String::from), mode: Default::default() }
+        TurnRequest { dir: "/tmp/proj".into(), model: "gpt-x".into(), prompt: "hi".into(), images: vec![], session_id: session.map(String::from), mode: Default::default(), trust_project_settings: false }
     }
 
     #[test]

@@ -1498,6 +1498,7 @@ impl Engine {
             images: self.images.clone(),
             session_id: self.sessions.session_id(provider).map(String::from),
             mode: self.mode,
+            trust_project_settings: hooks::project_settings_trusted(&self.dir),
         };
         let mut tools: Vec<String> = Vec::new();
         let mut steered: Vec<String> = Vec::new();

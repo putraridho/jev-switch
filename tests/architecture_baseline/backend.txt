@@ -1,2 +1,1 @@
-T1 | src/backend/claude.rs | crate::ext | 2
 T1 | src/backend/gemini/acp.rs | crate::background | 1

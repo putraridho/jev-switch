@@ -217,6 +217,11 @@ pub fn claude_settings_trusted(user: &Path, project: &Path) -> bool {
     })
 }
 
+/// [`claude_settings_trusted`] for the user directory this process runs under.
+pub fn project_settings_trusted(project: &Path) -> bool {
+    super::Places::from_env(project).user.as_deref().is_some_and(|user| claude_settings_trusted(user, project))
+}
+
 /// Remember the current project's hooks. `Ok(false)`: they were already trusted.
 pub fn trust_project(user: &Path, project: &Path) -> std::io::Result<bool> {
     trust_project_with_preview(user, project).map(|(newly, _)| newly)

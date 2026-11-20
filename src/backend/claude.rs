@@ -433,9 +433,7 @@ impl Backend for ClaudeBackend {
         if let Some(id) = &req.session_id {
             cmd.args(["--resume", id]);
         }
-        let places = crate::ext::Places::from_env(&req.dir);
-        let project_trusted = places.user.as_deref().is_some_and(|user| crate::ext::hooks::claude_settings_trusted(user, &req.dir));
-        let sources = setting_sources(!permissions::local_settings_tracked(&req.dir), project_trusted);
+        let sources = setting_sources(!permissions::local_settings_tracked(&req.dir), req.trust_project_settings);
         cmd.args(["--setting-sources", sources, "--permission-mode", req.mode.claude_flag()]);
         if self.interactive || sends_image_blocks(self.provider, req) {
             cmd.args(["--input-format", "stream-json"]);
@@ -580,6 +578,7 @@ mod tests {
             images: vec![],
             session_id: session.map(String::from),
             mode: Default::default(),
+            trust_project_settings: false,
         }
     }
 
@@ -787,6 +786,17 @@ mod tests {
         assert_eq!(setting_sources(true, false), "user,local");
         assert_eq!(setting_sources(false, true), "user,project");
         assert_eq!(setting_sources(true, true), "user,project,local");
+    }
+
+    #[test]
+    fn the_callers_trust_decision_decides_whether_project_settings_are_read() {
+        let b = backend();
+        let sources = |trusted: bool| {
+            let a = args(&b.command(&TurnRequest { trust_project_settings: trusted, ..req(None) }));
+            a[a.iter().position(|x| x == "--setting-sources").unwrap() + 1].clone()
+        };
+        assert!(!sources(false).contains("project"));
+        assert!(sources(true).contains("project"));
     }
 
     fn attachment() -> McpAttachment {

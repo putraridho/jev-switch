@@ -250,6 +250,7 @@ mod tests {
             images: vec![],
             session_id: session.map(String::from),
             mode: Default::default(),
+            trust_project_settings: false,
         }
     }
 

@@ -43,7 +43,7 @@ async fn main() -> ExitCode {
     if tokio::io::stdin().read_to_string(&mut prompt).await.is_err() || prompt.trim().is_empty() {
         return usage_error("the prompt on stdin is empty or not UTF-8");
     }
-    let req = TurnRequest { dir: dir.into(), model: model.clone(), prompt, images: vec![], session_id: None, mode: Default::default() };
+    let req = TurnRequest { dir: dir.into(), model: model.clone(), prompt, images: vec![], session_id: None, mode: Default::default(), trust_project_settings: jev_router::ext::hooks::project_settings_trusted(std::path::Path::new(&dir)) };
     let started = Instant::now();
     let result = backend::run_turn(&*providers::backend_for(id), &req, idle_from_env(), &mut |_| {}).await;
     let wall_ms = started.elapsed().as_millis() as u64;
