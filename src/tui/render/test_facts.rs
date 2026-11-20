@@ -28,6 +28,7 @@ use crate::tui::render::*;
             ErrorKind::Empty,
             ErrorKind::Stalled,
             ErrorKind::UnusableHere,
+            ErrorKind::Unsupported,
             ErrorKind::Other,
         ]
     }

@@ -4,6 +4,14 @@ See [docs/changelog-guide.md](docs/changelog-guide.md) for changelog formatting,
 
 ## Unreleased
 
+## 1.9.1
+
+Bug fixes: a turn now moves on from a Gemini CLI that Google retired, and a failed tool shows a clean message.
+
+- **A retired Gemini CLI no longer ends the turn.** When Gemini answers "This client is no longer supported … migrate to Antigravity", the turn fails over to the next model, as it does for a usage limit, and gemini is skipped for the rest of the session. `/providers`, `/doctor` and the scoreboard say why and what to do (install Antigravity, `agy`, and log in there). `/new` does not clear it, since only a new CLI can.
+- **Claude is no longer sent to tools it does not have.** The note jev-code gives claude told it to use `Grep` and `Glob`, which current Claude Code builds do not offer, so it called them, failed, and fell back to `sed`. The note now says to search with them if it has them, else `grep` or `find`.
+- **A failed tool shows its message without Claude Code's `<tool_use_error>` tags.**
+
 ## 1.9.0
 
 A new look for jev-code, modelled on Grok Build: only the input box is boxed, and the conversation gets the room.

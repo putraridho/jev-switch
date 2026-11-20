@@ -43,6 +43,13 @@ fn unusable_here_hint(provider: &str) -> String {
     }
 }
 
+fn unsupported_hint(provider: &str) -> String {
+    match provider {
+        "gemini" => "Google retired this Gemini CLI login; install Antigravity (`agy`) and log in there".into(),
+        _ => "its service no longer accepts this CLI; update or replace it".into(),
+    }
+}
+
 fn quota_text(resets_at: Option<&str>, provider: &str, th: &Theme) -> KindText {
     let when = reset_label(resets_at);
     let inline = match &when {
@@ -115,6 +122,16 @@ fn unusable_here_text(provider: &str, th: &Theme) -> KindText {
     }
 }
 
+fn unsupported_text(provider: &str, th: &Theme) -> KindText {
+    let hint = unsupported_hint(provider);
+    KindText {
+        inline: format!("{} is no longer supported by its service", th.name(provider)),
+        steps: vec![capitalised(&hint), "Or use another provider: `/model auto`".into()],
+        hint: Some(hint),
+        block_title: "This CLI is no longer supported",
+    }
+}
+
 fn other_text(provider: &str, model: &str, th: &Theme) -> KindText {
     KindText {
         inline: format!("{}:{model} failed", th.name(provider)),
@@ -132,6 +149,7 @@ fn kind_text(kind: &ErrorKind, provider: &str, model: &str, th: &Theme) -> KindT
         ErrorKind::Empty => empty_text(provider, model, th),
         ErrorKind::Stalled => stalled_text(provider, model, th),
         ErrorKind::UnusableHere => unusable_here_text(provider, th),
+        ErrorKind::Unsupported => unsupported_text(provider, th),
         ErrorKind::Other => other_text(provider, model, th),
     }
 }

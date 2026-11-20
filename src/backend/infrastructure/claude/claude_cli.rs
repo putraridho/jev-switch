@@ -31,7 +31,7 @@ pub const SESSION_NOTE: &str = "You are running inside jev-code, a terminal rout
 When a tool call needs approval, jev-code asks the user in the terminal by itself: just make the call, and if it is denied, say what you need and why. \
 The user manages permission rules with jev-code's /permissions command and the permission mode (ask, edit, plan, auto) with /mode or Shift+Tab. \
 Never tell the user to use Claude Code interface features such as /config or plugin commands: jev-code does not have them. \
-Use the Read, Grep, Glob and Edit tools to look at and change files, not sed, python or heredocs, and keep shell commands plain: scripts and heredocs are asked about every time. \
+Read and change files with Read and Edit, not sed or heredocs; search with Grep or Glob if you have them, else grep or find. Keep shell commands plain: scripts are asked about every time. \
 Ask the user questions in your reply, not with a tool. \
 Wait for commands to finish before you answer: you cannot speak again until the user writes, so never promise to report back later.";
 
@@ -253,6 +253,16 @@ fn result_text(content: &Value) -> String {
     }
 }
 
+/// Claude Code wraps a failed call's message in `<tool_use_error>…</tool_use_error>`, markup
+/// meant for the model; the person reading the tool row wants the message alone.
+fn without_error_markup(text: String) -> String {
+    let t = text.trim();
+    match t.strip_prefix("<tool_use_error>") {
+        Some(inner) => inner.strip_suffix("</tool_use_error>").unwrap_or(inner).trim().to_string(),
+        None => text,
+    }
+}
+
 /// Tool results of the main conversation (a sub-agent's are its own business).
 fn user_events(ev: &Value) -> Vec<Event> {
     if !ev["parent_tool_use_id"].is_null() {
@@ -270,7 +280,7 @@ fn user_events(ev: &Value) -> Vec<Event> {
     let blocks = ev["message"]["content"].as_array().into_iter().flatten();
     blocks
         .filter(|b| b["type"] == "tool_result")
-        .map(|b| Event::ToolResult { ok: b["is_error"].as_bool() != Some(true), text: result_text(&b["content"]) })
+        .map(|b| Event::ToolResult { ok: b["is_error"].as_bool() != Some(true), text: without_error_markup(result_text(&b["content"])) })
         .collect()
 }
 
@@ -728,6 +738,8 @@ mod tests {
         assert_eq!(b.parse_line(&ok.to_string()), vec![Event::ToolResult { ok: true, text: "line one\nline two".into() }]);
         let failed = json!({"type":"user","message":{"content":[{"type":"tool_result","is_error":true,"content":[{"type":"text","text":"no such file"}]}]}});
         assert_eq!(b.parse_line(&failed.to_string()), vec![Event::ToolResult { ok: false, text: "no such file".into() }]);
+        let wrapped = json!({"type":"user","message":{"content":[{"type":"tool_result","is_error":true,"content":"<tool_use_error>Error: No such tool available: Grep</tool_use_error>"}]}});
+        assert_eq!(user_events(&wrapped), vec![Event::ToolResult { ok: false, text: "Error: No such tool available: Grep".into() }]);
         let nested = json!({"type":"user","parent_tool_use_id":"agent","message":{"content":[{"type":"tool_result","content":"x"}]}});
         assert!(b.parse_line(&nested.to_string()).is_empty(), "a sub-agent's results stay inside it");
         let edit = json!({"type":"assistant","message":{"content":[{"type":"tool_use","name":"Edit","input":{"file_path":"src/a.rs","old_string":"let a = 1;","new_string":"let a = 2;\nlet b = 3;"}}]}});

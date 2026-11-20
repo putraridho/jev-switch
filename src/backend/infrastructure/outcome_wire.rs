@@ -14,6 +14,7 @@ pub fn error_kind_name(kind: &ErrorKind) -> &'static str {
         ErrorKind::Empty => "empty",
         ErrorKind::Stalled => "stalled",
         ErrorKind::UnusableHere => "unusable_here",
+        ErrorKind::Unsupported => "unsupported",
         ErrorKind::Other => "other",
     }
 }

@@ -16,5 +16,9 @@ pub enum ErrorKind {
     /// The CLI refuses to run in this directory (Codex outside a git repo, Gemini CLI
     /// in an untrusted workspace). Another provider would work, so a turn fails over.
     UnusableHere,
+    /// The CLI itself is retired or too old for the service (Gemini CLI: "This client is no
+    /// longer supported ... migrate to Antigravity"). Every model of that provider fails the
+    /// same way, so a turn fails over and the provider is skipped for the session.
+    Unsupported,
     Other,
 }

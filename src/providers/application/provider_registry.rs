@@ -211,6 +211,18 @@ pub enum BlockReason {
     /// untrusted workspace). Probing cannot change that, so only `/new` or another
     /// project directory (a new session) clears it.
     UnusableHere,
+    /// The service no longer accepts this CLI at all (Gemini CLI migrated to Antigravity).
+    /// Neither a probe nor `/new` can change that; only an updated or replaced CLI, so it
+    /// lasts the session.
+    Unsupported,
+}
+
+/// What the user can do about [`BlockReason::Unsupported`] for `provider`.
+fn unsupported_hint(provider: ProviderId) -> &'static str {
+    match provider {
+        ProviderId::Gemini => "is retired by Google: install Antigravity (agy) and log in there, then restart jev-code",
+        _ => "is no longer accepted by its service: update or replace the CLI, then restart jev-code",
+    }
 }
 
 /// What the user can do about [`BlockReason::UnusableHere`] for `provider`.
@@ -450,6 +462,10 @@ impl Runtime {
                 self.blocked.insert(provider, BlockReason::UnusableHere);
                 Some(format!("{provider} {}: trying the next model", unusable_here_hint(provider)))
             }
+            ErrorKind::Unsupported => {
+                self.blocked.insert(provider, BlockReason::Unsupported);
+                Some(format!("{provider} {}: trying the next model", unsupported_hint(provider)))
+            }
             ErrorKind::Stalled | ErrorKind::Empty => {
                 excluded.insert((provider, model.to_string()));
                 let what = if err.kind == ErrorKind::Stalled { "stopped answering" } else { "gave an empty answer" };
@@ -599,6 +615,7 @@ impl Runtime {
                     BlockReason::UnusableHere => {
                         format!("{p} blocked this session: {} (/new clears it)", unusable_here_hint(*p))
                     }
+                    BlockReason::Unsupported => format!("{p} blocked this session: {}", unsupported_hint(*p)),
                 };
                 Some(line)
             })
@@ -852,6 +869,20 @@ mod tests {
         let mut rt = runtime();
         rt.cool_down(Claude, None, NOW);
         assert!(rt.cooldowns.active(Claude, NOW).is_some());
+    }
+
+    #[test]
+    fn a_retired_cli_blocks_the_provider_for_the_whole_session() {
+        let ready = |p| Availability { provider: p, state: State::Ready, plan: None, models: None, detail: String::new(), verified: true };
+        let mut rt = Runtime::for_tests(vec![ready(ProviderId::Claude), ready(ProviderId::Gemini)]);
+        let mut excluded = HashSet::new();
+        let err = TurnError { kind: ErrorKind::Unsupported, message: "This client is no longer supported".into() };
+        let note = rt.react(ProviderId::Gemini, "gemini-3.8-flash", &err, &mut excluded, 1_000).unwrap();
+        assert!(note.contains("Antigravity") && note.contains("trying the next model"), "{note}");
+        assert_eq!(rt.blocked.get(&ProviderId::Gemini), Some(&BlockReason::Unsupported));
+        rt.forget_unusable_here();
+        assert_eq!(rt.blocked.get(&ProviderId::Gemini), Some(&BlockReason::Unsupported), "/new does not clear it");
+        assert!(rt.render(1_000).contains("gemini blocked this session"));
     }
 
     #[test]

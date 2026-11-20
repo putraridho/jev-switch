@@ -496,6 +496,10 @@ fn block_reason_text(provider: ProviderId, reason: BlockReason) -> String {
             ProviderId::Gemini => "needs a trusted workspace here; /new or another folder clears it".to_string(),
             _ => "refuses to run in this directory; /new or another folder clears it".to_string(),
         },
+        BlockReason::Unsupported => match provider {
+            ProviderId::Gemini => "Google retired the Gemini CLI login; install Antigravity (agy) and log in there".to_string(),
+            _ => "its service no longer accepts this CLI; update or replace it".to_string(),
+        },
     }
 }
 

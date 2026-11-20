@@ -319,6 +319,8 @@ fn classify_text(message: &str) -> Option<ErrorKind> {
         Some(ErrorKind::Auth)
     } else if has(&["empty response", "empty answer"]) {
         Some(ErrorKind::Empty)
+    } else if has(&["no longer supported", "client is no longer", "migrate to the antigravity"]) {
+        Some(ErrorKind::Unsupported)
     } else if has(&["not trusted", "trust_workspace", "trust this folder", "trust this directory"]) {
         Some(ErrorKind::UnusableHere)
     } else {
@@ -705,6 +707,9 @@ mod tests {
     #[test]
     fn classifies_other_errors_and_common_ones() {
         assert_eq!(gemini().classify_error("segmentation fault"), ErrorKind::Other);
+        let retired = "An unexpected critical error occurred: This client is no longer supported for Gemini Code Assist for individuals. To continue using Gemini, please migrate to the Antigravity suite of products: https://antigravity.google";
+        assert_eq!(gemini().classify_error(retired), ErrorKind::Unsupported);
+        assert_eq!(agy().classify_error(retired), ErrorKind::Unsupported);
         assert!(matches!(gemini().classify_error("You have hit your usage limit"), ErrorKind::Quota { .. }));
         assert_eq!(gemini().classify_error("RESOURCE_EXHAUSTED"), ErrorKind::Quota { resets_at: None });
         assert_eq!(reset_after("Your quota will reset after 59s"), Some("59s".into()));

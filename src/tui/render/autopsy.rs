@@ -33,6 +33,7 @@ fn provider_cause(provider: &str, kind: &ErrorKind) -> &'static str {
         ErrorKind::UnusableHere => {
             if provider == "codex" || provider == "gemini" { "folder: the provider refuses to run in this folder" } else { "folder: the provider cannot run here" }
         }
+        ErrorKind::Unsupported => "provider: this CLI is no longer supported by the service",
         ErrorKind::Other => "provider: it failed for a reason it did not say",
     }
 }
@@ -78,6 +79,7 @@ mod tests {
             ErrorKind::Empty,
             ErrorKind::Stalled,
             ErrorKind::UnusableHere,
+            ErrorKind::Unsupported,
             ErrorKind::Other,
         ] {
             let a = autopsy(&Failure::Provider { provider: "codex".into(), kind: kind.clone() });

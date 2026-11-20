@@ -54,6 +54,7 @@ pub fn failure_label(kind: &ErrorKind) -> &'static str {
         ErrorKind::Empty => "empty answer",
         ErrorKind::Stalled => "stalled",
         ErrorKind::UnusableHere => "cannot run here",
+        ErrorKind::Unsupported => "retired CLI",
         ErrorKind::Other => "error",
     }
 }

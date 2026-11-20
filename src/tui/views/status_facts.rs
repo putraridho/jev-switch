@@ -56,6 +56,10 @@ fn avail_row(a: &Availability, rt: &Runtime, now_ms: u64) -> AvailRow {
             row.status = ProviderStatus::Unknown;
             row.detail = "can't run in this directory (/new clears it)".into();
         }
+        Some(BlockReason::Unsupported) => {
+            row.status = ProviderStatus::Unknown;
+            row.detail = "its CLI is no longer supported by the service; see /providers".into();
+        }
         None => {}
     }
     row
