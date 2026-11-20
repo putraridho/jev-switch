@@ -96,7 +96,7 @@ pub mod termsetup;
 pub mod transcript;
 pub mod tui;
 pub mod turn;
-pub mod turnlog;
+pub use backend::turnlog;
 pub mod typeahead;
 pub mod typesafe;
 pub mod uifmt;

@@ -40,7 +40,19 @@ use crate::providers::{self, Runtime};
 use crate::router::{CodeWant, ProviderWant, Router};
 use crate::routing::{self, NoRoute, Pin, PinOrigin, RouteDecision, RouteInput, RoutingState, Signals, Sticky};
 use crate::turnlog::turn_row;
-use crate::uifmt::{self, RouteFacts};
+
+/// What the router decided for one attempt, as plain strings.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RouteFacts {
+    pub provider: String,
+    pub model: String,
+    /// The task type, used when `reason` does not carry one.
+    pub task: String,
+    /// The engine's long reason, e.g. `task: explain (0.91) → claude sonnet-5-5; first turn`.
+    pub reason: String,
+    pub switched_provider: bool,
+    pub dropped_tier: bool,
+}
 
 /// Most models tried for one user turn before giving up.
 pub const MAX_ATTEMPTS: u32 = 6;
@@ -189,17 +201,17 @@ impl EngineApprover<'_> {
         // Every rule this call needs was saved before ("always"): not asked again, in any mode
         // that asks at all. Plan mode never reaches here for writes (Claude Code refuses them).
         if permissions::remembered(&req.tool, &req.input, req.blocked_path.as_deref(), &places).is_some() {
-            lock_ui(self.ui).event(&Event::Hint(uifmt::remembered_allowed(&req.summary)));
+            lock_ui(self.ui).event(&Event::Hint(permissions::remembered_allowed(&req.summary)));
             return Decision::Allow;
         }
         // What Claude Code is told with `--allowedTools`, for the CLIs that ask jev-code instead.
         // Not in plan mode, where Claude Code would still refuse anything that changes things.
         if self.mode != Mode::Plan && permissions::allowed_by(self.allowed_tools, &req.tool, &req.input) {
-            lock_ui(self.ui).event(&Event::Hint(uifmt::allowed_by_setting(&req.summary)));
+            lock_ui(self.ui).event(&Event::Hint(permissions::allowed_by_setting(&req.summary)));
             return Decision::Allow;
         }
         if self.mode == Mode::Auto {
-            lock_ui(self.ui).event(&Event::Hint(uifmt::auto_allowed(&req.summary)));
+            lock_ui(self.ui).event(&Event::Hint(permissions::auto_allowed(&req.summary)));
             return Decision::Allow;
         }
         let offer = permissions::always_plan(&req.tool, &req.input, req.blocked_path.as_deref(), &places);
@@ -210,7 +222,7 @@ impl EngineApprover<'_> {
         // A UI that cannot ask: nothing was answered, so there is nothing to settle.
         if let Some(Decision::Deny { reason }) = &asked {
             if reason == backend::NO_ONE_TO_ASK {
-                lock_ui(self.ui).event(&Event::Hint(uifmt::denied_without_asking(&req.tool)));
+                lock_ui(self.ui).event(&Event::Hint(permissions::denied_without_asking(&req.tool)));
                 return Decision::Deny { reason: reason.clone() };
             }
         }

@@ -1,4 +1,3 @@
 T1 | src/turn.rs | crate::ext | 2
 T1 | src/turn.rs | crate::gitflow | 1
 T1 | src/turn.rs | crate::guard_cmd | 2
-T1 | src/turn.rs | crate::uifmt | 6

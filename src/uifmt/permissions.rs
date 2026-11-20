@@ -152,28 +152,7 @@ pub fn permission_answered(settled: &Settled, style: Style) -> String {
     }
 }
 
-/// The hint when a tool call was denied because nobody could be asked (`-p`, a pipe).
-pub fn denied_without_asking(tool: &str) -> String {
-    format!(
-        "\u{2717} denied {} \u{2014} nobody to ask in this run; allow it with CODE_ALLOWED_TOOLS, or in an interactive session answer the question or use /permissions",
-        one_line(tool)
-    )
-}
-
-/// The line shown when auto mode allowed a call without asking.
-pub fn auto_allowed(summary: &str) -> String {
-    format!("\u{2713} auto-allowed {}", one_line(summary))
-}
-
-/// The line shown when `CODE_ALLOWED_TOOLS` allowed a call without asking.
-pub fn allowed_by_setting(summary: &str) -> String {
-    format!("\u{2713} allowed (CODE_ALLOWED_TOOLS) {}", one_line(summary))
-}
-
-/// The hint for a call every rule of which was saved before ("always"): allowed unasked.
-pub fn remembered_allowed(summary: &str) -> String {
-    format!("\u{2713} allowed (remembered) {}", one_line(summary))
-}
+pub use crate::permissions::{allowed_by_setting, auto_allowed, denied_without_asking, remembered_allowed};
 
 /// The `/permissions` screen: the project's rules and folders, then the user-level rules.
 pub fn permissions_text(l: &crate::permissions::Listing, style: Style, project_dir: &Path) -> String {

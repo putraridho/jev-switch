@@ -1,0 +1,110 @@
+//! Turning untrusted text into plain safe text; this module must not depend on any other module.
+
+/// One piece of text: an escape sequence (zero width) or a printable char.
+pub(crate) enum Seg<'a> {
+    Esc(&'a str),
+    Ch(char),
+}
+
+pub(crate) struct Segs<'a> {
+    rest: &'a str,
+}
+
+impl<'a> Iterator for Segs<'a> {
+    type Item = Seg<'a>;
+
+    fn next(&mut self) -> Option<Seg<'a>> {
+        let c = self.rest.chars().next()?;
+        if c == '\x1b' {
+            let n = escape_len(self.rest);
+            let (esc, rest) = self.rest.split_at(n);
+            self.rest = rest;
+            Some(Seg::Esc(esc))
+        } else {
+            self.rest = &self.rest[c.len_utf8()..];
+            Some(Seg::Ch(c))
+        }
+    }
+}
+
+pub(crate) fn segs(s: &str) -> Segs<'_> {
+    Segs { rest: s }
+}
+
+/// Byte length of the escape sequence at the start of `s` (which starts with ESC).
+/// Handles CSI (`ESC [ ... final`), OSC (`ESC ] ... BEL|ST`) and two-byte escapes
+/// (`ESC 7`). A malformed or unterminated sequence ends where it stops making sense,
+/// always on a char boundary.
+fn escape_len(s: &str) -> usize {
+    let b = s.as_bytes();
+    match b.get(1) {
+        None => 1,
+        Some(b'[') => {
+            let mut i = 2;
+            while i < b.len() {
+                match b[i] {
+                    0x20..=0x3f => i += 1,
+                    0x40..=0x7e => return i + 1,
+                    _ => return i,
+                }
+            }
+            b.len()
+        }
+        Some(b']') => {
+            let mut i = 2;
+            while i < b.len() {
+                match b[i] {
+                    0x07 => return i + 1,
+                    0x1b if b.get(i + 1) == Some(&b'\\') => return i + 2,
+                    _ => i += 1,
+                }
+            }
+            b.len()
+        }
+        Some(_) => 1 + s[1..].chars().next().map_or(0, char::len_utf8),
+    }
+}
+
+/// `s` without ANSI escape sequences, and without the 8-bit C1 controls (U+0080..U+009F:
+/// U+009B is a CSI and U+009D an OSC to some terminals).
+pub fn strip_ansi(s: &str) -> String {
+    segs(s)
+        .filter_map(|seg| match seg {
+            Seg::Ch(c) if ('\u{80}'..='\u{9f}').contains(&c) => None,
+            Seg::Ch(c) => Some(c),
+            Seg::Esc(_) => None,
+        })
+        .collect()
+}
+
+/// Untrusted text (model reasoning, command output, file lines) made safe to print: escape
+/// sequences and every control character removed, a tab turned into spaces. Clean text
+/// BEFORE styling it, so only our own colour codes reach the terminal.
+pub fn clean_text(s: &str) -> String {
+    strip_ansi(s)
+        .chars()
+        .flat_map(|c| match c {
+            '\t' => "    ".chars().collect::<Vec<_>>(),
+            c if c.is_control() && c != '\n' => Vec::new(),
+            c => vec![c],
+        })
+        .collect()
+}
+
+/// A single plain line from untrusted text (a CLI message, a tool summary): escapes and
+/// control characters removed, every whitespace run collapsed to one space.
+pub(crate) fn one_line(s: &str) -> String {
+    let plain: String = strip_ansi(s).chars().map(|c| if c.is_control() { ' ' } else { c }).collect();
+    plain.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn strip_ansi_drops_c1_controls_and_clean_text_drops_all_controls() {
+        assert_eq!(strip_ansi("a\u{9b}2Jb\u{9d}x"), "a2Jbx");
+        assert_eq!(clean_text("a\x1b]52;c;AAAA\x07b\x1b]8;;http://x\x1b\\c\x1b[2Jd\re\x08f\u{9b}g\th\nz"), "abcdefg    h\nz");
+    }
+}

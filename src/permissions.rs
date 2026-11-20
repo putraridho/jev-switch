@@ -14,6 +14,31 @@ use std::path::{Component, Path, PathBuf};
 
 use serde_json::{json, Map, Value};
 
+use crate::shared::text::one_line;
+
+/// The hint when a tool call was denied because nobody could be asked (`-p`, a pipe).
+pub fn denied_without_asking(tool: &str) -> String {
+    format!(
+        "\u{2717} denied {} \u{2014} nobody to ask in this run; allow it with CODE_ALLOWED_TOOLS, or in an interactive session answer the question or use /permissions",
+        one_line(tool)
+    )
+}
+
+/// The line shown when auto mode allowed a call without asking.
+pub fn auto_allowed(summary: &str) -> String {
+    format!("\u{2713} auto-allowed {}", one_line(summary))
+}
+
+/// The line shown when `CODE_ALLOWED_TOOLS` allowed a call without asking.
+pub fn allowed_by_setting(summary: &str) -> String {
+    format!("\u{2713} allowed (CODE_ALLOWED_TOOLS) {}", one_line(summary))
+}
+
+/// The hint for a call every rule of which was saved before ("always"): allowed unasked.
+pub fn remembered_allowed(summary: &str) -> String {
+    format!("\u{2713} allowed (remembered) {}", one_line(summary))
+}
+
 /// A tool call the CLI wants approval for.
 #[derive(Clone, PartialEq)]
 pub struct PermissionRequest {

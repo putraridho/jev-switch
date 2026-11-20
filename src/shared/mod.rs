@@ -4,6 +4,7 @@
 pub mod envfile;
 pub mod limit_notice;
 pub mod log;
+pub mod text;
 
 use std::str::FromStr;
 

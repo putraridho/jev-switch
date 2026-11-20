@@ -75,7 +75,7 @@ use crate::mode::Mode;
 use crate::providers::Runtime;
 use crate::router::{ProviderWant, Router, CODE_EDIT_P, CODE_SECURITY_P};
 use crate::backend::{idle_timeout_from_env, BackendFactory};
-use crate::turnlog::turn_row;
+use crate::backend::turnlog::turn_row;
 use crate::workercheck::{CheckRun, Checks, ProjectChecks};
 
 /// A worker that fails in a way another provider can fix is retried this many times in

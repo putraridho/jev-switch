@@ -1,14 +1,7 @@
 //! Small text helpers shared by the formatters: one-line cleaning, plurals, and the
 //! way counts and durations read.
 
-use super::ansi::strip_ansi;
-
-/// A single plain line from untrusted text (a CLI message, a tool summary): escapes and
-/// control characters removed, every whitespace run collapsed to one space.
-pub(super) fn one_line(s: &str) -> String {
-    let plain: String = strip_ansi(s).chars().map(|c| if c.is_control() { ' ' } else { c }).collect();
-    plain.split_whitespace().collect::<Vec<_>>().join(" ")
-}
+pub(crate) use crate::shared::text::one_line;
 
 /// A token count the way people read it: `189`, `1.2K`, `45K`, `1.2M`.
 pub fn human_count(n: u64) -> String {

@@ -87,6 +87,7 @@ const EXTRA_MODULES: &[(&str, &str)] = &[
     ("backend::codex_plan", "backend"), // not in 4.5: provider adapter
     ("backend::gemini::acp", "backend"), // not in 4.5: provider adapter
     ("backend::select", "backend"), // provider selection
+    ("backend::turnlog", "backend"), // turn log rows
     ("ext::cli", "tui"), // not in 4.5: extension interface
     ("ext::frontmatter", "tui"), // not in 4.5: extension interface
     ("ext::hooks", "tui"), // not in 4.5: extension interface
@@ -136,7 +137,7 @@ const EXTRA_MODULES: &[(&str, &str)] = &[
 
 const DOCUMENTED_CHILDREN: &[&str] = &[
     "backend::claude", "backend::codex", "backend::gemini", "backend::grok",
-    "shared::envfile", "shared::limit_notice", "shared::log",
+    "shared::envfile", "shared::limit_notice", "shared::log", "shared::text",
     "uifmt::ansi", "uifmt::changes", "uifmt::commands", "uifmt::complete",
     "uifmt::failure", "uifmt::markdown", "uifmt::permissions", "uifmt::provider_view",
     "uifmt::route", "uifmt::screens", "uifmt::status", "uifmt::style",

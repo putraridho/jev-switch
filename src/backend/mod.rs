@@ -10,6 +10,7 @@ pub mod codex_plan;
 pub mod gemini;
 pub mod grok;
 pub mod select;
+pub mod turnlog;
 #[cfg(test)]
 pub mod testing;
 
