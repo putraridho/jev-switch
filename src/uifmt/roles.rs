@@ -12,7 +12,7 @@
 
 use std::path::Path;
 
-use super::ansi::clean_text;
+use super::ansi::{clean_text, strip_ansi};
 use super::changes::relativize_paths;
 use super::route::{short_reason, RouteFacts};
 use super::style::{Style, Theme};
@@ -24,39 +24,56 @@ use super::wrap::wrap_to_width;
 pub const EDIT_PREVIEW_LINES: usize = 6;
 
 /// The message you sent, as it stays in the scrollback: with colour, a full-width shaded
-/// band with `❯` on its first row, the one block of background in the scrollback so your
-/// prompts are easy to find; without colour, `❯ text` under a rule between turns. `first`
-/// leaves out the separation above.
-pub fn sent_block(text: &str, first: bool, style: Style, width: usize) -> String {
+/// band, a blank band row above and below the text, `❯` on its first row and the time it was
+/// sent (`stamp`, `6:27 PM`) flush right; the one block of background in the scrollback, so
+/// your prompts are easy to find. Without colour, `❯ text` under a rule between turns.
+/// `first` leaves out the separation above.
+pub fn sent_block(text: &str, first: bool, stamp: Option<&str>, style: Style, width: usize) -> String {
     let width = clamp_width(width);
+    let row_w = width.saturating_sub(1);
     let mut out = Vec::new();
-    if !first {
-        out.push(if style.enabled { String::new() } else { "─".repeat(width.saturating_sub(1)) });
+    // With colour the band's own blank top row sets it apart; without, a rule does.
+    if !first && !style.enabled {
+        out.push("─".repeat(row_w));
     }
-    for (i, line) in text.split('\n').enumerate() {
-        for (j, part) in wrap_to_width(line, width.saturating_sub(5)).iter().enumerate() {
-            let lead = if i == 0 && j == 0 { "❯" } else { " " };
+    let stamp = stamp.filter(|_| style.enabled).unwrap_or("");
+    // Text wraps clear of the stamp: `  ❯ ` before it, `  6:27 PM  ` after.
+    let right = if stamp.is_empty() { 2 } else { display_width(stamp) + 4 };
+    let blank = style.band(&" ".repeat(row_w));
+    if style.enabled {
+        out.push(blank.clone());
+    }
+    let mut first_row = true;
+    for line in text.split('\n') {
+        for part in wrap_to_width(line, row_w.saturating_sub(4 + right).max(1)) {
+            let lead = if first_row { "❯" } else { " " };
             if style.enabled {
-                let fill = width.saturating_sub(1).saturating_sub(display_width(part) + 3);
-                out.push(style.band(&format!(" {} {part}{}", style.accent(lead), " ".repeat(fill))));
+                let tail = if first_row && !stamp.is_empty() { format!("{}  ", style.dim(stamp)) } else { String::new() };
+                let fill = row_w.saturating_sub(4 + display_width(&part) + display_width(&strip_ansi(&tail)));
+                out.push(style.band(&format!("  {} {}{}{tail}", style.accent(lead), style.bold(&part), " ".repeat(fill))));
             } else {
                 out.push(format!("{lead} {part}"));
             }
+            first_row = false;
         }
+    }
+    if style.enabled {
+        out.push(blank);
     }
     out.push(String::new());
     out.join("\n")
 }
 
-/// Where a turn went: `  ◆ claude · sonnet-5-5   feature · switched from codex (limit)`.
+/// Where a turn went: `  ⇄ claude · sonnet-5-5   feature · switched from codex (limit)`.
 /// The provider in its colour, the router's reason in a few words. This is the router at
-/// work, so it leads every turn.
+/// work, so it leads every turn; `⇄` is the router's mark wherever it shows.
 pub fn route_row(f: &RouteFacts, style: Style, width: usize) -> String {
     let th = Theme::new(style);
-    let who = if f.model.is_empty() { th.name(&f.provider) } else { format!("{} {} {}", th.name(&f.provider), style.dim("·"), f.model) };
+    let who = if f.model.is_empty() { th.name(&f.provider) } else { format!("{} {}", th.name(&f.provider), style.dim(&format!("· {}", f.model))) };
     let why = short_reason(&f.reason);
     let why = if why.is_empty() { f.task.clone() } else { why };
-    let line = if why.is_empty() { format!("  {} {who}", th.provider(&f.provider, "◆")) } else { format!("  {} {who}   {}", th.provider(&f.provider, "◆"), style.dim(&why)) };
+    let mark = style.dim("⇄");
+    let line = if why.is_empty() { format!("  {mark} {who}") } else { format!("  {mark} {who}   {}", style.dim(&why)) };
     truncate_to_width(&line, clamp_width(width))
 }
 
@@ -88,12 +105,140 @@ pub fn tool_row(summary: &str, project: &Path, style: Style, width: usize) -> St
     truncate_to_width(&line, clamp_width(width))
 }
 
-/// The calls of a long run held back, as one dim row: `  ⏺ 12 more tool calls · Bash ×8 · Read ×4`.
-pub fn tool_run_summary(counts: &[(String, usize)], style: Style, width: usize) -> String {
-    let total: usize = counts.iter().map(|(_, n)| n).sum();
-    let by_tool: Vec<String> = counts.iter().map(|(t, n)| format!("{} ×{n}", display_tool(t))).collect();
-    let line = format!("  {} {}", style.dim("⏺"), style.dim(&format!("{total} more tool calls · {}", by_tool.join(" · "))));
-    truncate_to_width(&line, clamp_width(width))
+/// What a tool does, for counting a run of calls in words.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ToolKind {
+    Edit,
+    File,
+    Search,
+    Directory,
+    Fetch,
+    Command,
+    Other,
+}
+
+fn tool_kind(tool: &str) -> ToolKind {
+    match display_tool(tool).to_ascii_lowercase().as_str() {
+        "edit" | "multiedit" | "write" | "notebookedit" | "apply_patch" | "replace" | "write_file" | "edit_file" => ToolKind::Edit,
+        "read" | "read_file" | "read_many_files" | "view" => ToolKind::File,
+        "grep" | "glob" | "search" | "search_file_content" | "find" | "websearch" | "web_search" | "google_web_search" => ToolKind::Search,
+        "ls" | "list_directory" | "list" => ToolKind::Directory,
+        "webfetch" | "web_fetch" | "fetch" => ToolKind::Fetch,
+        "bash" | "shell" | "exec" | "run_shell_command" | "exec_command" => ToolKind::Command,
+        _ => ToolKind::Other,
+    }
+}
+
+/// A run of tool calls between two things the model said, counted for one summary row.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ToolGroup {
+    /// Files an edit changed or created, by name, in the order first seen; `true` = created.
+    files: Vec<(String, bool)>,
+    added: usize,
+    removed: usize,
+    edit_calls: usize,
+    reads: usize,
+    searches: usize,
+    directories: usize,
+    fetches: usize,
+    commands: usize,
+    others: usize,
+    failed: usize,
+}
+
+impl ToolGroup {
+    /// One call, by its tool's name (`Read`, `Bash`, `mcp__srv__tool`).
+    pub fn call(&mut self, tool: &str) {
+        match tool_kind(tool) {
+            ToolKind::Edit => self.edit_calls += 1,
+            ToolKind::File => self.reads += 1,
+            ToolKind::Search => self.searches += 1,
+            ToolKind::Directory => self.directories += 1,
+            ToolKind::Fetch => self.fetches += 1,
+            ToolKind::Command => self.commands += 1,
+            ToolKind::Other => self.others += 1,
+        }
+    }
+
+    /// What an edit did to a file: lines taken out and put in. No lines taken out is a new file.
+    pub fn edit(&mut self, path: &str, removed: usize, added: usize) {
+        let name = Path::new(path).file_name().map_or_else(|| path.to_string(), |n| n.to_string_lossy().into_owned());
+        if !self.files.iter().any(|(f, _)| *f == name) {
+            self.files.push((name, removed == 0));
+        }
+        self.added += added;
+        self.removed += removed;
+    }
+
+    pub fn failed(&mut self) {
+        self.failed += 1;
+    }
+
+    pub fn is_empty(&self) -> bool {
+        *self == Self::default()
+    }
+
+    /// The run as phrases: `Edited a.rs`, `explored 1 directory, 3 files`, `ran 2 commands`.
+    fn phrases(&self) -> Vec<String> {
+        let mut out = Vec::new();
+        if !self.files.is_empty() || self.edit_calls > 0 {
+            let verb = if !self.files.is_empty() && self.files.iter().all(|(_, created)| *created) { "Created" } else { "Edited" };
+            let what = match self.files.len() {
+                0 => plural(self.edit_calls, "file", "files"),
+                1 | 2 => self.files.iter().map(|(f, _)| f.as_str()).collect::<Vec<_>>().join(", "),
+                n => plural(n, "file", "files"),
+            };
+            out.push(format!("{verb} {what}"));
+        }
+        let explored: Vec<String> = [(self.directories, "directory", "directories"), (self.reads, "file", "files"), (self.searches, "search", "searches"), (self.fetches, "fetch", "fetches")]
+            .into_iter()
+            .filter(|(n, _, _)| *n > 0)
+            .map(|(n, one, many)| plural(n, one, many))
+            .collect();
+        if !explored.is_empty() {
+            out.push(format!("explored {}", explored.join(", ")));
+        }
+        if self.commands > 0 {
+            out.push(format!("ran {}", plural(self.commands, "command", "commands")));
+        }
+        if self.others > 0 {
+            out.push(format!("called {}", plural(self.others, "tool", "tools")));
+        }
+        out
+    }
+}
+
+/// A run of tool calls as one row, the way it reads in a sentence:
+/// `  ◇ Edited parser.rs, explored 3 files, 1 search, ran 2 commands +12 −4`. The leading verb
+/// in bold, the rest dim, lines added green and taken out red, failures counted in red.
+pub fn tool_group_row(group: &ToolGroup, style: Style, width: usize) -> String {
+    let mut phrases = group.phrases();
+    if phrases.is_empty() {
+        return String::new();
+    }
+    let first = super::text::capitalised(&phrases.remove(0));
+    let (verb, rest) = first.split_once(' ').unwrap_or((&first, ""));
+    let mut body = style.bold(verb);
+    let tail: Vec<String> = std::iter::once(rest.to_string()).filter(|r| !r.is_empty()).chain(phrases).collect();
+    if !tail.is_empty() {
+        body.push_str(&style.dim(&format!(" {}", tail.join(", "))));
+    }
+    if group.added > 0 {
+        body.push_str(&format!(" {}", style.green(&format!("+{}", group.added))));
+    }
+    if group.removed > 0 {
+        body.push_str(&format!(" {}", style.red(&format!("−{}", group.removed))));
+    }
+    if group.failed > 0 {
+        body.push_str(&format!(" {}", style.red(&format!("· {} failed", group.failed))));
+    }
+    truncate_to_width(&format!("  {} {body}", style.dim("◇")), clamp_width(width))
+}
+
+/// Whether a call went wrong: it failed, or it is a command whose output reports a failure.
+pub fn tool_failed(tool: &str, ok: bool, text: &str) -> bool {
+    let lines: Vec<&str> = text.lines().filter(|l| !l.trim().is_empty()).collect();
+    !ok || (tool_kind(tool) == ToolKind::Command && reports_failure(&lines))
 }
 
 /// A worker's result, from the delegate tool's first lines: `worker w1 (gemini argon): done`
@@ -140,6 +285,28 @@ fn plural(n: usize, one: &str, many: &str) -> String {
 /// matches, the line of a command's output that says how it went; an error's first line in
 /// red. `None` when the line above says it all (an edit shows its own diff).
 pub fn tool_result_row(tool: &str, ok: bool, text: &str, style: Style, width: usize) -> Option<String> {
+    let (status, said) = result_parts(tool, ok, text, style)?;
+    Some(truncate_to_width(&format!("    {} {status} {said}", style.dim("⎿")), clamp_width(width)))
+}
+
+/// A call that went wrong, under the run's row: `    ✗ Bash cargo test`, the line that says
+/// what happened under it, then the output folded to its first lines.
+pub fn tool_failure_rows(summary: &str, ok: bool, text: &str, project: &Path, style: Style, width: usize) -> Vec<String> {
+    let width = clamp_width(width);
+    let tool = tool_name(summary);
+    let body = relativize_paths(&one_line(summary), project);
+    let (verb, detail) = body.split_once(' ').unwrap_or((&body, ""));
+    let mark = if ok { style.yellow("✗") } else { style.red("✗") };
+    let mut rows = vec![truncate_to_width(&format!("    {mark} {} {}", style.bold(&display_tool(verb)), style.dim(detail)).trim_end().to_string(), width)];
+    if let Some((_, said)) = result_parts(tool, ok, text, style) {
+        rows.push(truncate_to_width(&format!("      {said}"), width));
+    }
+    rows.extend(tool_output_fold(tool, ok, text, style, width).into_iter().flat_map(|f| f.lines().map(str::to_string).collect::<Vec<_>>()));
+    rows
+}
+
+/// What a result row says: its status mark and the words. `None` when an edit's own diff says it.
+fn result_parts(tool: &str, ok: bool, text: &str, style: Style) -> Option<(String, String)> {
     let lines: Vec<&str> = text.lines().filter(|l| !l.trim().is_empty()).collect();
     let tool_lc = tool.to_ascii_lowercase();
     let said = if is_delegate(&tool_lc) {
@@ -176,7 +343,7 @@ pub fn tool_result_row(tool: &str, ok: bool, text: &str, style: Style, width: us
     } else {
         style.green("✓")
     };
-    Some(truncate_to_width(&format!("    {} {status} {said}", style.dim("⎿")), clamp_width(width)))
+    Some((status, said))
 }
 
 /// How many lines of a failing command's output show before the fold.
@@ -271,7 +438,15 @@ pub fn narration(text: &str, _style: Style, width: usize) -> String {
 /// The most lines of the model's reasoning shown; the rest are counted.
 pub const THINKING_LINES: usize = 3;
 
-/// The model's reasoning: `  ✻ ` and its first lines, dim italic, the rest counted.
+/// The trace reasoning leaves in the scrollback: `  ◆ Thought · its latest line`, dim, one row.
+pub fn thought_row(latest: &str, style: Style, width: usize) -> String {
+    let latest = one_line(latest);
+    let tail = if latest.is_empty() { String::new() } else { style.dim(&style.italic(&format!(" · {latest}"))) };
+    truncate_to_width(&format!("  {} {}{tail}", style.dim("◆"), style.dim(&style.bold("Thought"))), clamp_width(width))
+}
+
+/// The model's reasoning, when asked for in full: `  ◆ Thought`, then its first lines dim
+/// italic under it, the rest counted.
 pub fn thinking_block(text: &str, style: Style, width: usize) -> String {
     let width = clamp_width(width);
     let mut lines: Vec<String> = Vec::new();
@@ -279,10 +454,9 @@ pub fn thinking_block(text: &str, style: Style, width: usize) -> String {
         lines.extend(wrap_to_width(line.trim(), width.saturating_sub(6)));
     }
     let total = lines.len();
-    let mut rows = Vec::new();
-    for (i, line) in lines.into_iter().take(THINKING_LINES).enumerate() {
-        let lead = if i == 0 { style.dim("✻") } else { " ".to_string() };
-        rows.push(format!("  {lead} {}", style.dim(&style.italic(&line))));
+    let mut rows = vec![format!("  {} {}", style.dim("◆"), style.dim(&style.bold("Thought")))];
+    for line in lines.into_iter().take(THINKING_LINES) {
+        rows.push(format!("    {}", style.dim(&style.italic(&line))));
     }
     if total > THINKING_LINES {
         let more = total - THINKING_LINES;
@@ -291,16 +465,10 @@ pub fn thinking_block(text: &str, style: Style, width: usize) -> String {
     rows.join("\n")
 }
 
-/// The answer on the interactive screen: the same block, with a thin accent bar down its left
-/// edge so it reads as one piece, apart from the tool rows around it. Without colour it is
-/// the plain indented block (no bar to misread in a pipe or a log).
-pub fn answer_panel(laid_out: &str, style: Style) -> String {
-    if !style.enabled {
-        return answer_block(laid_out, 2);
-    }
-    let bar = style.dim(&style.accent("▎"));
-    let body: Vec<String> = laid_out.trim_end_matches('\n').split('\n').map(|l| if l.is_empty() { format!(" {bar}") } else { format!(" {bar} {l}") }).collect();
-    format!("\n{}", body.join("\n"))
+/// The answer on the interactive screen: plain bright text on the margin the rows around it
+/// share, set apart by a blank line. Brightness against the dim rows is what marks it.
+pub fn answer_panel(laid_out: &str, _style: Style) -> String {
+    answer_block(laid_out, 2)
 }
 
 /// The answer: laid out text, set apart by a blank line above it and indented `margin`
@@ -319,20 +487,57 @@ mod tests {
 
     #[test]
     fn a_sent_message_is_a_shaded_band_or_a_plain_marker_without_colour() {
-        assert_eq!(sent_block("fix it", true, OFF, 40), "❯ fix it\n");
-        assert_eq!(sent_block("one\ntwo", false, OFF, 20), format!("{}\n❯ one\n  two\n", "─".repeat(19)));
-        let band = sent_block("x", false, ON, 40);
+        assert_eq!(sent_block("fix it", true, Some("6:27 PM"), OFF, 40), "❯ fix it\n", "no stamp without colour");
+        assert_eq!(sent_block("one\ntwo", false, None, OFF, 20), format!("{}\n❯ one\n  two\n", "─".repeat(19)));
+        let band = sent_block("x", false, Some("6:27 PM"), ON, 40);
         let rows: Vec<&str> = band.lines().collect();
-        assert_eq!(rows[0], "", "a blank line separates turns");
-        assert!(rows[1].contains("\x1b[48;5;236") && strip_ansi(rows[1]).contains("❯ x"));
-        assert_eq!(crate::uifmt::display_width(&strip_ansi(rows[1])), 39);
+        assert!(rows[0].contains("\x1b[48;5;236") && strip_ansi(rows[0]).trim().is_empty(), "a blank band row above the text sets it apart");
+        assert!(strip_ansi(rows[1]).starts_with("  ❯ x") && strip_ansi(rows[1]).ends_with("6:27 PM  "), "{:?}", strip_ansi(rows[1]));
+        assert!(strip_ansi(rows[2]).trim().is_empty() && rows[2].contains("\x1b[48;5;236"), "and below it");
+        for row in &rows[..3] {
+            assert_eq!(crate::uifmt::display_width(&strip_ansi(row)), 39);
+        }
+        let long = sent_block(&"word ".repeat(20), true, Some("6:27 PM"), ON, 40);
+        assert!(long.lines().all(|r| crate::uifmt::display_width(&strip_ansi(r)) <= 39), "wrapped clear of the stamp: {long}");
     }
 
     #[test]
-    fn a_long_run_of_calls_is_one_row_counting_them_by_tool() {
-        let counts = vec![("Bash".to_string(), 8), ("Read".to_string(), 3), ("mcp__jev__delegate".to_string(), 1)];
-        assert_eq!(tool_run_summary(&counts, OFF, 80), "  ⏺ 12 more tool calls · Bash ×8 · Read ×3 · Delegate ×1");
-        assert!(crate::uifmt::display_width(&tool_run_summary(&counts, OFF, 20)) <= 20);
+    fn a_run_of_calls_reads_as_one_sentence() {
+        let mut g = ToolGroup::default();
+        assert!(g.is_empty() && tool_group_row(&g, OFF, 80).is_empty());
+        for t in ["Read", "Read", "Grep", "LS", "Bash", "Bash", "WebFetch", "mcp__github__create_issue", "Edit"] {
+            g.call(t);
+        }
+        g.edit("/p/src/parser.rs", 4, 12);
+        assert_eq!(tool_group_row(&g, OFF, 120), "  ◇ Edited parser.rs, explored 1 directory, 2 files, 1 search, 1 fetch, ran 2 commands, called 1 tool +12 −4");
+        let mut new = ToolGroup::default();
+        new.call("Write");
+        new.edit("notes.txt", 0, 3);
+        new.call("Bash");
+        new.failed();
+        assert_eq!(tool_group_row(&new, OFF, 80), "  ◇ Created notes.txt, ran 1 command +3 · 1 failed");
+        let on = tool_group_row(&new, ON, 80);
+        assert!(on.contains("\x1b[1mCreated") && on.contains("\x1b[32m+3") && on.contains("\x1b[31m· 1 failed"), "{on:?}");
+        let mut reads = ToolGroup::default();
+        reads.call("Read");
+        assert_eq!(tool_group_row(&reads, OFF, 80), "  ◇ Explored 1 file");
+        let mut many = ToolGroup::default();
+        for f in ["a.rs", "b.rs", "c.rs"] {
+            many.call("Edit");
+            many.edit(f, 1, 1);
+        }
+        assert_eq!(tool_group_row(&many, OFF, 80), "  ◇ Edited 3 files +3 −3");
+        assert!(crate::uifmt::display_width(&tool_group_row(&g, OFF, 30)) <= 30);
+        assert!(tool_failed("Bash", true, "test result: FAILED. 1 failed") && tool_failed("Read", false, "") && !tool_failed("Read", true, "FAILED"));
+    }
+
+    #[test]
+    fn a_failed_call_under_the_run_says_what_and_how_it_failed() {
+        let out = "running 4 tests\ntest empty ... FAILED\n\ntest result: FAILED. 3 passed; 1 failed";
+        let rows = tool_failure_rows("Bash cargo test parser", true, out, Path::new("/p"), OFF, 80);
+        assert_eq!(rows, vec!["    ✗ Bash cargo test parser", "      test result: FAILED. 3 passed; 1 failed  (+2 lines)", "      running 4 tests", "      test empty ... FAILED"]);
+        let rows = tool_failure_rows("Read /p/a.rs", false, "no such file", Path::new("/p"), ON, 80);
+        assert!(rows[0].contains("\x1b[31m✗") && strip_ansi(&rows[0]) == "    ✗ Read a.rs" && rows.len() == 2, "{rows:?}");
     }
 
     #[test]
@@ -362,7 +567,7 @@ mod tests {
     #[test]
     fn a_route_row_leads_the_turn_with_the_provider_and_why() {
         let f = RouteFacts { provider: "codex".into(), model: "gpt-6.1-sol".into(), reason: "task: feature (0.9) → codex gpt-6.1-sol; first turn".into(), ..RouteFacts::default() };
-        assert_eq!(route_row(&f, OFF, 80), "  ◆ codex · gpt-6.1-sol   feature · first turn");
+        assert_eq!(route_row(&f, OFF, 80), "  ⇄ codex · gpt-6.1-sol   feature · first turn");
         assert!(route_row(&f, ON, 80).contains("\x1b[32mcodex"), "codex in its colour");
     }
 
@@ -441,9 +646,11 @@ mod tests {
 
     #[test]
     fn thinking_shows_its_first_lines_behind_a_mark_and_counts_the_rest() {
-        assert_eq!(thinking_block("one\n\ntwo", OFF, 80), "  ✻ one\n    two");
+        assert_eq!(thinking_block("one\n\ntwo", OFF, 80), "  ◆ Thought\n    one\n    two");
         let long = thinking_block("a\nb\nc\nd\ne", OFF, 80);
-        assert_eq!(long, "  ✻ a\n    b\n    c\n    … 2 more lines of thinking");
+        assert_eq!(long, "  ◆ Thought\n    a\n    b\n    c\n    … 2 more lines of thinking");
+        assert_eq!(thought_row("check the\ncallers", OFF, 80), "  ◆ Thought · check the callers");
+        assert_eq!(thought_row("", OFF, 80), "  ◆ Thought");
         assert!(thinking_block("a\nb\nc\nd", OFF, 80).ends_with("… 1 more line of thinking"));
     }
 

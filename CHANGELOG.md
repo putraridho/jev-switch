@@ -4,6 +4,20 @@ See [docs/changelog-guide.md](docs/changelog-guide.md) for changelog formatting,
 
 ## Unreleased
 
+A new look for jev-code, modelled on Grok Build: only the input box is boxed, and the conversation gets the room.
+
+- A header row on top names the branch, the folder and the session, and on the right how turns are routed, each subscription's plan use and how full the context window is. It replaces the side panel and the router row under the box.
+- A run of tool calls prints as one row that reads as a sentence, `◇ Edited parser.rs, explored 3 files, ran 2 commands +12 −4`, once the run is over. A call that failed still prints its own rows under it, with the output that says why. While the run goes, the working row says what is running now. `/diff` shows the edits line by line; `JEV_TOOL_ROWS=all` brings back a row, a result and a diff for every call.
+- What you sent is a padded shaded band with the time you sent it. The model's thinking leaves `◆ Thought · …`, the answer is plain bright text (no bar down its edge), and a turn ends with a quiet `Worked for 14s · ✓ codex`.
+- The input box carries the route and the permission mode in its bottom edge (`auto · edit mode`). Under it, the keys that work right now: `Enter:send │ Shift+Enter:newline │ Shift+Tab:mode │ /:commands │ @:files`, or the menu's and a running turn's keys. A hint that does not fit is left off whole.
+- The `/` menu opens above the box. It lists command names only, so descriptions fit on narrow terminals; the selected command's arguments (`/model [target]`) head the menu, and the selected row is raised.
+- An approval or a yes/no question is a raised card with a bar down its left edge and `● 1. Yes` / `○ 2. …` choices.
+- Messages queued during a turn show as `#1 then run clippy`, and the working row reads `⠹ Running cargo test 12s`, the command in the accent colour.
+- Text stays readable on light terminals. Yellow, green, cyan and magenta (warnings, the mode name, code spans, provider names) use darker shades there that measure at least 4.5:1 on white; before, some measured under 2:1. Dark terminals keep their own palette.
+- The input box's border is easier to see, so it is clear where to type.
+- The header and the banner shorten a long folder path from the front (`…/project/repo`), keeping the folder name instead of cutting it off.
+- A failed turn's message is indented like the rest of the turn and names the model as `claude · sonnet-5-5`.
+
 ## 1.8.2
 
 The repository's main branch is renamed.

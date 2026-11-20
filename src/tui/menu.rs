@@ -26,6 +26,9 @@ pub enum Then {
 pub struct Item {
     /// What the row shows on the left (`/model`, `auto`, `src/lib.rs`).
     pub label: String,
+    /// The arguments it takes (`[target]`, `[ask|edit|plan|auto]`); may be empty. Shown for the
+    /// selected row only, so the label column stays as narrow as the names.
+    pub usage: String,
     /// The dim description on the right; may be empty.
     pub detail: String,
     /// The text that replaces the word being completed.
@@ -96,8 +99,7 @@ fn commands(typed: &str) -> Vec<Item> {
         .filter_map(|(i, c)| {
             let r = rank(&c.name[1..], typed.trim_start_matches('/'))?;
             let then = if c.args.is_empty() { Then::Run } else { Then::Arguments };
-            let label = if c.args.is_empty() { c.name.to_string() } else { format!("{} {}", c.name, c.args) };
-            Some((r, i, Item { label, detail: c.about.to_string(), replacement: c.name.to_string(), then }))
+            Some((r, i, Item { label: c.name.to_string(), usage: c.args.to_string(), detail: c.about.to_string(), replacement: c.name.to_string(), then }))
         })
         .collect();
     // Letters scattered through a name are a last resort: only when nothing matches better.
@@ -122,14 +124,15 @@ fn skill_menu(before: &str, ctx: &CompleteCtx, from: usize) -> Option<Menu> {
     let index = if typing_next { words.len() } else { words.len() - 1 };
     let prefix = if typing_next { "" } else { words[words.len() - 1] };
     let skill_item = |s: &uifmt::SkillChoice, runs_now: bool| Item {
-        label: if s.hint.is_empty() || !runs_now { s.name.clone() } else { format!("{} {}", s.name, s.hint) },
+        label: s.name.clone(),
+        usage: if runs_now { s.hint.clone() } else { String::new() },
         detail: s.description.clone(),
         replacement: s.name.clone(),
         then: if runs_now && !s.hint.is_empty() { Then::Arguments } else { Then::Run },
     };
     let items: Vec<Item> = match (index, words.get(1).copied()) {
         (1, _) => {
-            let word = |w: &str, about: &str, then| Item { label: w.to_string(), detail: about.to_string(), replacement: w.to_string(), then };
+            let word = |w: &str, about: &str, then| Item { label: w.to_string(), usage: String::new(), detail: about.to_string(), replacement: w.to_string(), then };
             [word("list", "every skill, and how to use them", Then::Run), word("show", "read a skill before running it", Then::Arguments), word("new", "start a skill in this project", Then::Arguments)]
                 .into_iter()
                 .chain(ctx.skills.iter().map(|s| skill_item(s, true)))
@@ -150,13 +153,13 @@ pub fn build(before: &str, ctx: &CompleteCtx, project: &Path, tracked: &[String]
     if let Some(path) = word.strip_prefix('@') {
         let mut items: Vec<Item> = path_candidates(path, project, tracked)
             .into_iter()
-            .map(|p| Item { label: p.display, detail: String::new(), replacement: p.replacement, then: Then::Stay })
+            .map(|p| Item { label: p.display, usage: String::new(), detail: String::new(), replacement: p.replacement, then: Then::Stay })
             .collect();
         // Nothing starts with what was typed: look for its letters scattered through the paths.
         if items.is_empty() && !path.is_empty() {
             items = fuzzy::rank(path, tracked, MENU_ROWS * 2)
                 .into_iter()
-                .map(|p| Item { label: p.clone(), detail: String::new(), replacement: format!("@{}", p.replace(' ', "\\ ")), then: Then::Stay })
+                .map(|p| Item { label: p.clone(), usage: String::new(), detail: String::new(), replacement: format!("@{}", p.replace(' ', "\\ ")), then: Then::Stay })
                 .collect();
         }
         return (!items.is_empty()).then(|| Menu { items, selected: 0, from, title: "files".into(), navigated: false });
@@ -176,7 +179,7 @@ pub fn build(before: &str, ctx: &CompleteCtx, project: &Path, tracked: &[String]
         .into_iter()
         .map(|c| {
             let then = if choice_runs(command, &c.replacement) { Then::Run } else { Then::Arguments };
-            Item { label: c.display, detail: String::new(), replacement: c.replacement, then }
+            Item { label: c.display, usage: String::new(), detail: String::new(), replacement: c.replacement, then }
         })
         .collect();
     (!items.is_empty()).then(|| Menu { items, selected: 0, from, title: command.to_string(), navigated: false })
@@ -225,7 +228,7 @@ mod tests {
         assert_eq!(m.items[0].then, Then::Run);
         let m = menu("/mode").expect("a menu");
         assert_eq!(m.items[0].then, Then::Arguments);
-        assert_eq!(m.items[0].label, "/mode [ask|edit|plan|auto]");
+        assert_eq!((m.items[0].label.as_str(), m.items[0].usage.as_str()), ("/mode", "[ask|edit|plan|auto]"));
     }
 
     #[test]
@@ -245,7 +248,8 @@ mod tests {
         let m = menu("/skill ").expect("choices");
         assert_eq!(labels(&m), vec!["list", "show", "new", "db", "lint"]);
         assert_eq!(m.title, "skills");
-        assert_eq!((m.items[3].label.as_str(), m.items[3].detail.as_str(), m.items[3].then), ("db [table]", "Query the db", Then::Arguments));
+        assert_eq!((m.items[3].label.as_str(), m.items[3].usage.as_str(), m.items[3].detail.as_str(), m.items[3].then), ("db", "[table]", "Query the db", Then::Arguments));
+        assert_eq!(menu("/skill show ").expect("skills").items[0].usage, "", "only a skill run now takes arguments");
         assert_eq!(m.items[4].then, Then::Run, "a skill with no arguments runs at once");
         assert_eq!(labels(&menu("/skill l").unwrap()), vec!["list", "lint"]);
         let m = menu("/skill show ").expect("skills only");

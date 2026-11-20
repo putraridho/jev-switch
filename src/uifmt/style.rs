@@ -99,23 +99,33 @@ impl Style {
     pub fn italic(&self, s: &str) -> String {
         self.paint("3", s)
     }
+    /// A basic ANSI hue on a dark terminal, so the person's own palette applies. On a light one,
+    /// a fixed darker shade from the 256 palette instead: the stock light palettes' yellow,
+    /// green, cyan and magenta measure 1.7 to 4.1:1 on white, under the 4.5:1 text needs.
+    fn hue(&self, ansi: &str, on_light: u8, s: &str) -> String {
+        self.paint(&hue_code(ansi, on_light, light_background()), s)
+    }
     pub fn red(&self, s: &str) -> String {
         self.paint("31", s)
     }
+    /// #008700 on light: 4.7:1 on white.
     pub fn green(&self, s: &str) -> String {
-        self.paint("32", s)
+        self.hue("32", 28, s)
     }
+    /// #875f00 on light: 5.7:1 on white.
     pub fn yellow(&self, s: &str) -> String {
-        self.paint("33", s)
+        self.hue("33", 94, s)
     }
     pub fn blue(&self, s: &str) -> String {
         self.paint("34", s)
     }
+    /// #af00af on light: 6.1:1 on white.
     pub fn magenta(&self, s: &str) -> String {
-        self.paint("35", s)
+        self.hue("35", 127, s)
     }
+    /// #005f87 on light: 7.0:1 on white.
     pub fn cyan(&self, s: &str) -> String {
-        self.paint("36", s)
+        self.hue("36", 24, s)
     }
     /// 256-colour foreground.
     pub fn fg256(&self, n: u8, s: &str) -> String {
@@ -147,6 +157,12 @@ impl Style {
     pub fn chrome(&self, s: &str) -> String {
         self.paint(if light_background() { "38;5;250" } else { "38;5;240" }, s)
     }
+    /// The edge of a control the person types into (the input box). Unlike [`Style::chrome`] it
+    /// must stay visible: #808080 is 4.2:1 on a #1e1e1e terminal and 4.0:1 on white, over the
+    /// 3:1 a control's boundary needs.
+    pub fn field(&self, s: &str) -> String {
+        self.fg256(244, s)
+    }
     /// The meter's three states in soft tones (sage, amber, rose) instead of raw ANSI colours.
     pub fn level(&self, pct: u8, s: &str) -> String {
         let n = match pct {
@@ -155,6 +171,15 @@ impl Style {
             _ => 167,
         };
         self.fg256(n, s)
+    }
+}
+
+/// The SGR code for a hue: the ANSI one on a dark terminal, the 256-palette shade on a light one.
+fn hue_code(ansi: &str, on_light: u8, light: bool) -> String {
+    if light {
+        format!("38;5;{on_light}")
+    } else {
+        ansi.to_string()
     }
 }
 
@@ -174,7 +199,8 @@ impl Theme {
     pub fn provider(&self, provider: &str, text: &str) -> String {
         let s = self.style;
         match provider.to_ascii_lowercase().as_str() {
-            "claude" => s.fg256(208, text),
+            // #ff8700 is 2.4:1 on white; #af5f00 keeps the hue at 4.7:1.
+            "claude" => s.fg256(if light_background() { 130 } else { 208 }, text),
             "codex" => s.green(text),
             "gemini" => s.magenta(text),
             "grok" => s.blue(text),
@@ -280,6 +306,14 @@ mod tests {
         assert_eq!(background_from_env(Some("auto"), Some("0;default;15")), Some(true));
         assert_eq!(background_from_env(None, Some("garbage")), None);
         assert_eq!(background_from_env(None, None), None);
+    }
+
+    #[test]
+    fn a_light_terminal_gets_darker_hues_and_a_dark_one_keeps_its_own_palette() {
+        assert_eq!(hue_code("33", 94, false), "33");
+        assert_eq!(hue_code("33", 94, true), "38;5;94");
+        assert_eq!(ON.field("─"), "\x1b[38;5;244m─\x1b[0m");
+        assert_eq!(OFF.field("─"), "─");
     }
 
     #[test]

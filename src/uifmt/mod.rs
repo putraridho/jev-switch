@@ -57,14 +57,14 @@ pub use identity::{builtin_identity, ChipFacts, ColorDepth, Health, Identity, Na
 pub use markdown::answer_text;
 pub use permissions::{allowed_by_setting, auto_allowed, denied_without_asking, remembered_allowed, permission_answered, permission_prompt, permissions_text, Prompt, Question};
 pub use provider_view::{provider_glyphs, providers_table, AvailRow, ProviderStatus};
-pub use roles::{answer_block, answer_panel, display_tool, edit_preview, edit_preview_at, narration, route_row, sent_block, thinking_block, tool_name, tool_output_fold, tool_result_row, tool_row, tool_run_summary, EDIT_PREVIEW_LINES, FOLD_KEEP, THINKING_LINES};
+pub use roles::{answer_block, answer_panel, display_tool, edit_preview, edit_preview_at, narration, route_row, sent_block, thinking_block, thought_row, tool_failed, tool_failure_rows, tool_group_row, tool_name, tool_output_fold, tool_result_row, tool_row, ToolGroup, EDIT_PREVIEW_LINES, FOLD_KEEP, THINKING_LINES};
 pub use route::{route_line, short_reason, RouteFacts};
 pub use screens::{doctor_report, doctor_summary, help_text, status_text, DoctorItem, ReadyProvider, Severity, StatusFacts};
 pub use session::{config_text, context_text, cost_text, mcp_text, terminal_setup_text, why_text, ConfigRow, ContextFacts, CostRow, TerminalSetupFacts, COMPACT_SUGGEST_AT};
 pub use status::{input_row, status_line, Spinner, SPINNER_FRAMES, SPINNER_FRAME_MS};
 pub use style::{background_from_env, light_background, set_light_background, stderr_is_tty, stdout_is_tty, Style, Theme};
-pub use summary::{turn_rule, turn_summary, turn_summary_brief, SummaryFacts};
-pub use text::{human_count, human_duration};
+pub use summary::{turn_closing, turn_summary, SummaryFacts};
+pub use text::{clock_12h, human_count, human_duration, local_clock};
 pub use width::{char_width, display_width, terminal_width, truncate_to_width, width_from_env, DEFAULT_WIDTH, MIN_WIDTH};
 pub use wrap::wrap_to_width;
 pub use workflows::{workflows_text, DelegationRow, OpenWorkerRow, WorkflowFacts};

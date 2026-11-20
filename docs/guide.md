@@ -294,10 +294,9 @@ providers that are ready, named in words (`claude, codex ready`; `no provider re
 
 #### Using it
 
-Type in the box at the bottom and press Enter. jev-code fills the terminal: the chat on top,
-the input box under it, and a side panel (router, context, branch) as a full-height column on
-the right. Below 100 columns the panel moves under the box, as a single compact box (on a
-terminal shorter than 30 rows it shrinks to one summary row). Scroll the chat with the mouse
+Type in the box at the bottom and press Enter. jev-code fills the terminal: a header row on
+top, the chat under it, and the input box at the bottom. Only the input box is boxed; the rest
+is rows of text set apart by space and weight. Scroll the chat with the mouse
 wheel or PageUp/PageDown; Ctrl-Home and Ctrl-End jump to the start and the end. New output
 does not move you while you read back. Because the app draws the screen, the terminal's own
 scrollback and plain text selection do not apply: hold Shift (Option in some terminals) to
@@ -307,27 +306,27 @@ under it is redrawn. Each kind of thing in a turn has its own look, so a glance 
 apart:
 
 ```
-───────────────────────────────────────────────────────────────
-❯ fix the empty-input crash in the parser          ← what you sent (bold), turns ruled apart
+ main ±3 ~/proj                     ⇄ auto · claude 32% · codex 71%  │  context 12%   ← the header row
 
-  ◆ codex · gpt-6.1-sol   feature · switched from claude (limit)   ← where the router sent it, and why
-  ✻ The empty case returns None; callers unwrap it…                ← a one-line trace of its thinking (dim italic)
+  ❯ fix the empty-input crash in the parser                         6:27 PM   ← what you sent, on a shaded band
 
-  ⏺ Bash cargo test parser                                         ← a tool call (bold name)
-    ⎿ ✗ test result: FAILED. 3 passed; 1 failed  (+2 lines)        ← what came back: ✓ ok, ✗ yellow reported
-                                                                      failures, ✗ red failed
-  ⏺ Edit src/parser.rs
-    ⎿ +3 −1                                                        ← the edit as a small diff
-      41 - if s.is_empty() { return None; }                         ← line numbers, red and green rows
-      41 + if s.is_empty() { return Some(Token::Eof); }
-  ⇉ Delegate write tests for the empty case                        ← a piece handed to a worker
+  ⇄ codex · gpt-6.1-sol   feature · switched from claude (limit)    ← where the router sent it, and why
+  ◆ Thought · The empty case returns None; callers unwrap it…       ← a one-line trace of its thinking
+  ◇ Edited parser.rs, explored 3 files, ran 2 commands · 1 failed +3 −1   ← a run of tool calls as one row
+    ✗ Bash cargo test parser                                        ← a call that went wrong keeps its own rows
+      test result: FAILED. 3 passed; 1 failed  (+2 lines)
+  ⇉ Delegate write tests for the empty case                         ← a piece handed to a worker
     ⎿ worker w1 · gemini gemini-4-argon · done · 1 file
 
-▎ Fixed: an empty input now yields Token::Eof.                     ← the answer (an accent bar down its edge)
+  Fixed: an empty input now yields Token::Eof.                      ← the answer, plain bright text
 
-  ✓ codex · 14s · 2 files +9 −1                                    ← how it ended
+  Worked for 14s · ✓ codex · 2 files +9 −1                          ← how it ended
 ```
 
+A run of tool calls prints as one row once it is over: what was edited (with the lines added
+and taken out), how much was explored, how many commands ran, and how many failed. While it
+runs, the working row says what is running now. `/diff` shows the edits line by line, and
+`JEV_TOOL_ROWS=all` prints every call as it comes, with its result and an edit's diff.
 Between tool calls only the calls show: what the model says in between (and the last line of
 its thinking) is on the working row while it is the latest thing. `JEV_SHOW_NARRATION=1`
 prints that text into the conversation. The answer is drawn as it is written on Claude,
@@ -336,16 +335,18 @@ finished answer replaces the preview. `/thinking on` prints the model's whole re
 the turn and keeps the choice for the next session (`/thinking off` goes back to the one-line
 trace; `JEV_SHOW_THINKING=1` seeds it).
 
-Under the conversation: a working row while a model works (`⠹ Running cargo test · 12s ·
-codex · gpt-6.1-sol   esc to stop`), the input box, the router row (`⇄ auto · claude 32% ·
-codex 71% · gemini cooling 1h20m · orchestrate on`: how turns are routed, how much of each
-subscription's plan window is used, which are cooling down after a limit; 80% or more is
-yellow), and a footer with the permission mode, the git branch and how many files differ
-(`⎇ main ±3`), the session's name, and the context window once it is half full. Token counts
-are in `/cost`, the router's full reasoning in `/why`. When files changed, `/diff` shows them
-and `/undo` puts them back.
+The header row says where you are (the git branch and how many files differ, the folder, the
+session's name) and what the router has: how turns are routed, how much of each
+subscription's plan window is used, which are cooling down after a limit (80% or more is
+yellow), and how full the context window is. Under the conversation: a working row while a
+model works (`⠹ Running cargo test 12s ··· codex · gpt-6.1-sol · esc to stop`), messages
+queued for after the turn (`#1 then run clippy`), the input box with the route and the
+permission mode in its bottom edge (`auto · edit mode`), and the keys that work right now
+(`Enter:send │ Shift+Enter:newline │ Shift+Tab:mode`). Token counts are in `/cost`, the
+router's full reasoning in `/why`. When files changed, `/diff` shows them and `/undo` puts
+them back.
 
-Typing `/` opens a menu of every command with what it does; typing narrows it (`/re` →
+Typing `/` opens a menu of every command with what it does, above the box; typing narrows it (`/re` →
 `/resume`, `/review`), ↑/↓ choose, Tab completes, Enter runs, Esc closes. After a command, its
 choices are listed (`/mode ` → ask, edit, plan, auto). `@` opens the same menu over the
 project's files. `JEV_CLASSIC_UI=1` starts the previous line-editor interface instead.
@@ -359,7 +360,7 @@ to change an accent, glyph or badge; truecolor, 256 and 16-colour terminals are 
 | `/model [target]`           | pin a model or provider, or `auto` to let the router choose. `target` is `auto`, `<provider>`, `<provider>:<model>` or `sonnet`/`opus`/`haiku`; with no argument, show the pin. Pins are never silently overridden |
 | `/provider auto\|off`       | route across providers (default), or Claude only                                                                                                                                                                   |
 | `/orchestrate [on\|off]`    | let a planner split a big task across cheaper workers (below)                                                                                                                                                      |
-| `/thinking [on\|off]`       | print the model's whole reasoning for the turn, or only its one-line trace; the choice is kept for the next session                                                                                               |
+| `/thinking [on\|off]`       | print the model's whole reasoning for the turn, or only its one-line trace; the choice is kept for the next session                                                                                                |
 | `/new`                      | start a fresh session on every provider; the saved ones stay and can be resumed                                                                                                                                    |
 | `/rename [name]`            | name this session; the footer shows the name and `/resume` lists the session by it                                                                                                                                 |
 | `/resume`                   | pick up the most recent saved session of this folder other than the running one; again, the one before                                                                                                             |
@@ -384,7 +385,7 @@ to change an accent, glyph or badge; truecolor, 256 and 16-colour terminals are 
 | `/providers [refresh]`      | what was detected and why each provider can or cannot run; `refresh` probes again                                                                                                                                  |
 | `/mcp [list\|login <srv>]`  | show configured MCP servers across ready providers, or log in (`/mcp login <server>`)                                                                                                                              |
 | `/doctor`                   | the setup check, inside the session                                                                                                                                                                                |
-| `/update`                   | update jev-code: fetches its checkout's upstream (`origin/main`), shows the new commits and version, and after a yes fast-forwards and runs `scripts/install.sh`; `jev-code update [--yes]` from the shell     |
+| `/update`                   | update jev-code: fetches its checkout's upstream (`origin/main`), shows the new commits and version, and after a yes fast-forwards and runs `scripts/install.sh`; `jev-code update [--yes]` from the shell         |
 | `/terminal-setup [install]` | make Shift-Enter insert a new line: shows the line for your terminal (kitty, Ghostty, Alacritty, foot, WezTerm, VS Code); `install` adds it, with a backup                                                         |
 | `!command`                  | run a shell command in the project; its output is shown and goes with your next message                                                                                                                            |
 
@@ -396,19 +397,19 @@ conversation (including tool summaries); oversized histories retain the beginnin
 the most recent content, with omitted content marked. If no summary comes back, the
 original conversation and its saved session remain intact.
 
-| key                       | what it does                                                                                                                                                                                                             |
-| ------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `/`, `@`                  | open the command menu or the file menu (above); Tab completes the selected item, Enter runs it                                                                                                                         |
-| typing during a turn      | the box stays usable; Enter queues the message (queued ones are listed above the box, in order). On Claude the model takes it into the turn that is running, at its next step, as in Claude Code; on the other providers it runs after the turn |
-| Esc                       | while a turn runs: stop it; a message typed before Esc is sent right after (queued ones keep waiting)                                                                                                                    |
-| Ctrl-C                    | while a turn runs: stop it (the model CLI and everything it started are killed), drop the queue, and carry on; in the box: clear it; on an empty box, press again within 2 s to exit                                     |
-| Ctrl-D                    | exit (on an empty box)                                                                                                                                                                                                   |
-| Shift-Enter               | a new line inside your message (terminals with the keyboard protocol: kitty, Ghostty, WezTerm, foot, iTerm2; elsewhere after `/terminal-setup`); Alt-Enter, Ctrl-J and `\` then Enter work everywhere; pasting keeps lines |
-| Ctrl-R                    | the next earlier message containing what is typed                                                                                                                                                                         |
-| →                         | take the dim suggestion: on an empty box, the next step the last answer offered ("Want me to commit this?" suggests `commit this`, worked out locally, nothing is sent); while typing, the rest of an earlier message      |
-| Shift-Tab                 | cycle the permission mode (ask, edit, plan, auto); a change during a turn applies from the next one                                                                                                                      |
-| drag and drop             | dropping a file or image into the terminal pastes its path; images are sent as images (Claude, Codex) or by path (Gemini, Grok), other files and folders become plain paths the model opens                              |
-| ↑ / ↓                     | earlier messages, kept across runs in `<state dir>/history` (private, 2000 lines)                                                                                                                                        |
+| key                  | what it does                                                                                                                                                                                                                                    |
+| -------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `/`, `@`             | open the command menu or the file menu (above); Tab completes the selected item, Enter runs it                                                                                                                                                  |
+| typing during a turn | the box stays usable; Enter queues the message (queued ones are listed above the box, in order). On Claude the model takes it into the turn that is running, at its next step, as in Claude Code; on the other providers it runs after the turn |
+| Esc                  | while a turn runs: stop it; a message typed before Esc is sent right after (queued ones keep waiting)                                                                                                                                           |
+| Ctrl-C               | while a turn runs: stop it (the model CLI and everything it started are killed), drop the queue, and carry on; in the box: clear it; on an empty box, press again within 2 s to exit                                                            |
+| Ctrl-D               | exit (on an empty box)                                                                                                                                                                                                                          |
+| Shift-Enter          | a new line inside your message (terminals with the keyboard protocol: kitty, Ghostty, WezTerm, foot, iTerm2; elsewhere after `/terminal-setup`); Alt-Enter, Ctrl-J and `\` then Enter work everywhere; pasting keeps lines                      |
+| Ctrl-R               | the next earlier message containing what is typed                                                                                                                                                                                               |
+| →                    | take the dim suggestion: on an empty box, the next step the last answer offered ("Want me to commit this?" suggests `commit this`, worked out locally, nothing is sent); while typing, the rest of an earlier message                           |
+| Shift-Tab            | cycle the permission mode (ask, edit, plan, auto); a change during a turn applies from the next one                                                                                                                                             |
+| drag and drop        | dropping a file or image into the terminal pastes its path; images are sent as images (Claude, Codex) or by path (Gemini, Grok), other files and folders become plain paths the model opens                                                     |
+| ↑ / ↓                | earlier messages, kept across runs in `<state dir>/history` (private, 2000 lines)                                                                                                                                                               |
 
 Piped input still works (`printf 'explain src/lib.rs\n/quit\n' | jev-code`): one line per
 message, no prompt, no colours, no live line. `NO_COLOR=1` keeps the box and menus but draws them
@@ -502,7 +503,7 @@ What each needs, and how far to trust it:
 | grok     | Grok Build installed (never executed by the probe)                          | `grok` (sign in)          | your plan                                                                 | no, from documentation only                                                                 |
 | deepseek | `claude` installed and `DEEPSEEK_API_KEY` in the env or `~/.jev-router.env` | add the key               | per token; setting the key is the opt-in                                  | key check yes; that it really bypasses your Claude login and reaches DeepSeek is unverified |
 
-Provider IDs are the names of the CLIs jev-code drives. `gemini` runs Gemini CLI, or Antigravity (`agy`) when Gemini CLI isn't set up; the Router panel and `/providers` show `agy` when that is the one in use.
+Provider IDs are the names of the CLIs jev-code drives. `gemini` runs Gemini CLI, or Antigravity (`agy`) when Gemini CLI isn't set up; the header row and `/providers` show `agy` when that is the one in use.
 
 The login commands are written once (`src/doctor.rs`) and used by `doctor`, the first-run
 hint and every error message, so they cannot drift apart. `/providers` marks the unverified

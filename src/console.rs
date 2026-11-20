@@ -214,11 +214,11 @@ struct Inner {
     /// With a front: the tools called whose results have not come back, oldest first, so a
     /// result is worded for its tool.
     tools_waiting: std::collections::VecDeque<String>,
-    /// With a front: the tool calls of the run in progress, held back until it ends so a long
-    /// run can print as one summary row (see [`Inner::flush_run`]).
+    /// With a front: the tool calls of the run in progress, held back until it ends so the run
+    /// prints as one summary row (see [`Inner::flush_run`]).
     run: Vec<HeldCall>,
-    /// How many calls of the run in progress already printed as they came.
-    run_printed: usize,
+    /// The run in progress counted in words, for that row: what was edited, read, run.
+    group: uifmt::ToolGroup,
     /// With a front: nothing of this turn printed yet (the first step needs no blank line).
     fresh_turn: bool,
     /// Where messages typed during the turn go to be added to it ([`Ui::steering`]); a send
@@ -268,7 +268,7 @@ impl Console {
             live_answer: String::new(),
             tools_waiting: std::collections::VecDeque::new(),
             run: Vec::new(),
-            run_printed: 0,
+            group: uifmt::ToolGroup::default(),
             fresh_turn: true,
             steer: None,
             show_thinking: show_thinking_from_env(),
@@ -590,7 +590,7 @@ impl Console {
     pub fn turn_end(&self, summary: &SummaryFacts, files: &[FileChange]) {
         let mut g = self.lock();
         let (style, width) = (g.cfg.err_style, g.width());
-        let lines_first = if g.front.is_some() { format!("\n{}", uifmt::turn_rule(&uifmt::turn_summary_brief(summary, style), style, width)) } else { format!("  {}", uifmt::turn_summary(summary, style)) };
+        let lines_first = if g.front.is_some() { format!("\n{}", uifmt::turn_closing(summary, style)) } else { format!("  {}", uifmt::turn_summary(summary, style)) };
         let mut lines = vec![lines_first];
         if !files.is_empty() {
             lines.push(uifmt::changes_block(files, style, width));
@@ -726,7 +726,7 @@ impl Inner {
         self.fresh_turn = true;
         self.discard_preview();
         self.run.clear();
-        self.run_printed = 0;
+        self.group = uifmt::ToolGroup::default();
         if let Some(front) = &self.front {
             front.send(FrontMsg::TurnStarted);
             return;
@@ -777,26 +777,25 @@ impl Inner {
         }
     }
 
-    /// The run of tool calls is over: print what was held back as one dim row counting the
-    /// calls by tool (`⏺ 7 more tool calls · Bash ×5 · Read ×2`), then the calls among them that
-    /// failed, in full.
+    /// The run of tool calls is over: print it as one row that reads as a sentence
+    /// (`◇ Edited parser.rs, explored 3 files, ran 2 commands +12 −4`), then the calls among
+    /// it that failed, in full, so what went wrong is never folded away.
     fn flush_run(&mut self) {
-        self.run_printed = 0;
-        if self.run.is_empty() {
+        let mut group = std::mem::take(&mut self.group);
+        let run = std::mem::take(&mut self.run);
+        if group.is_empty() && run.is_empty() {
             return;
         }
-        let run = std::mem::take(&mut self.run);
         let (style, width) = (self.cfg.err_style, self.width());
-        let mut counts: Vec<(String, usize)> = Vec::new();
-        for h in &run {
-            match counts.iter_mut().find(|(t, _)| *t == h.tool) {
-                Some((_, n)) => *n += 1,
-                None => counts.push((h.tool.clone(), 1)),
-            }
+        for _ in run.iter().filter(|h| h.failed) {
+            group.failed();
         }
-        let mut rows = vec![uifmt::tool_run_summary(&counts, style, width)];
+        let mut rows = vec![uifmt::tool_group_row(&group, style, width)];
         rows.extend(run.into_iter().filter(|h| h.failed).flat_map(|h| h.rows));
-        self.emit_err(&rows.join("\n"));
+        rows.retain(|r| !r.is_empty());
+        if !rows.is_empty() {
+            self.emit_err(&rows.join("\n"));
+        }
     }
 
     /// Print the held assistant text: as narration (a tool call followed it) or as the answer.
@@ -855,14 +854,13 @@ impl Inner {
                 self.tools_waiting.push_back(name.clone());
                 let row = uifmt::tool_row(summary, &self.cfg.project, style, width);
                 self.fresh_turn = false;
-                if !fold_tool_runs() || stands_alone(&name) {
+                if !group_tool_runs() || stands_alone(&name) {
                     self.flush_run();
                     self.emit_err(&row);
-                } else if self.run_printed < FOLD_RUN_AFTER {
-                    self.run_printed += 1;
-                    self.emit_err(&row);
                 } else {
-                    self.run.push(HeldCall { tool: name, rows: vec![row], resolved: false, failed: false });
+                    // The working row says what runs now; the run prints as one row when it ends.
+                    self.group.call(&name);
+                    self.run.push(HeldCall { tool: name, summary: summary.clone(), rows: Vec::new(), resolved: false, failed: false });
                 }
             }
             Event::Thinking(t) => {
@@ -880,11 +878,16 @@ impl Inner {
                     self.set_activity(&if latest.is_empty() { "Thinking".to_string() } else { format!("Thinking · {latest}") });
                     // A one-line trace stays behind, so the scrollback shows that it thought.
                     if !latest.is_empty() {
-                        let row = uifmt::truncate_to_width(&format!("  {} {}", style.dim("✻"), style.dim(&style.italic(&latest))), width);
+                        let row = uifmt::thought_row(&latest, style, width);
                         self.fresh_turn = false;
                         self.emit_err(&row);
                     }
                 }
+            }
+            Event::Edit { path, removed, added } if group_tool_runs() => {
+                // Counted into the run's row (`Edited a.rs +3 −1`); `/diff` has the lines.
+                self.discard_preview();
+                self.group.edit(path, removed.len(), added.len());
             }
             Event::Edit { path, removed, added } => {
                 self.discard_preview();
@@ -901,8 +904,10 @@ impl Inner {
                 match self.run.iter_mut().find(|h| !h.resolved && h.tool == tool) {
                     Some(held) => {
                         held.resolved = true;
-                        held.failed = !*ok;
-                        held.rows.extend(rows);
+                        held.failed = uifmt::tool_failed(&tool, *ok, text);
+                        if held.failed {
+                            held.rows = uifmt::tool_failure_rows(&held.summary, *ok, text, &self.cfg.project, style, width);
+                        }
                     }
                     None => {
                         for row in rows {
@@ -1072,28 +1077,29 @@ fn steered_line(text: &str, style: Style) -> String {
     format!("  {} {}{more} {}", style.cyan("↳"), shown, style.dim("(taken into the running turn)"))
 }
 
-/// A tool call held back with what it printed (its row, its result, the note that it was
-/// allowed unasked), while the run it belongs to is still going.
+/// A tool call held back while the run it belongs to is still going. Only a failed call
+/// prints rows of its own (under the run's row); the rest are counted.
 struct HeldCall {
     tool: String,
+    /// The call as the CLI described it: `Bash cargo test`.
+    summary: String,
+    /// What it prints under the run's row: set when it failed.
     rows: Vec<String>,
     resolved: bool,
     failed: bool,
 }
 
-/// The first calls of a run print as they come (a long-running one must show); the ones after
-/// that are held back and fold into one summary row when the run ends.
-const FOLD_RUN_AFTER: usize = 5;
-
-/// `JEV_TOOL_ROWS=all` prints every tool call as it comes instead of folding long runs.
-fn fold_tool_runs() -> bool {
+/// `JEV_TOOL_ROWS=all` prints every tool call as it comes, with its result and an edit's diff,
+/// instead of one row per run.
+fn group_tool_runs() -> bool {
     std::env::var("JEV_TOOL_ROWS").map_or(true, |v| !v.trim().eq_ignore_ascii_case("all"))
 }
 
-/// Calls that always print on their own: what changes files, and what is handed to a worker.
+/// Calls that always print on their own: what is handed to a worker (orchestration is the
+/// thing to watch).
 fn stands_alone(tool: &str) -> bool {
     let t = tool.to_ascii_lowercase();
-    matches!(t.as_str(), "edit" | "multiedit" | "write" | "notebookedit" | "apply_patch" | "delegate") || t.ends_with("__delegate")
+    t == "delegate" || t.ends_with("__delegate")
 }
 
 /// The note that a call was allowed without asking (`✓ auto-allowed …`).
@@ -1206,9 +1212,12 @@ impl Ui for Console {
             return;
         }
         let style = g.cfg.err_style;
-        let detail = format!("{} {}: {}", f.provider, f.model, f.message.trim());
+        // `claude · sonnet-5-5`, as the turn's header names them.
+        let detail = format!("{} · {}: {}", f.provider, f.model, f.message.trim());
         let block = uifmt::error_block(f.kind, &detail, &uifmt::next_steps_for(f.kind, f.provider.as_str()), style);
-        g.emit_err(&block);
+        // Indented like the rest of the turn's rows (`  ◆ claude`, `  ⏺ Read`), so it reads as
+        // part of the turn and not as a message from outside it.
+        g.emit_err(&indented(&block));
     }
 
     fn no_route(&mut self, info: &NoRouteInfo, _text: &str) {
@@ -1530,7 +1539,7 @@ mod tests {
     }
 
     #[test]
-    fn the_calls_of_a_long_run_after_the_first_few_fold_into_one_row_and_failures_stay() {
+    fn a_run_of_calls_prints_as_one_row_and_a_failed_call_keeps_its_own() {
         let (c, _, _) = console(false, Style::off(), true);
         let (front, mut heard) = Front::channel();
         let mut c = c.with_front(front);
@@ -1541,14 +1550,12 @@ mod tests {
         c.event(&Event::Text("done".into()));
         c.end_turn();
         let e = printed(&mut heard);
-        assert!(e.contains("cmd0") && e.contains("cmd4"), "the first calls print as they come: {e}");
-        assert!(e.contains("4 more tool calls · Bash ×4"), "{e}");
-        assert!(e.contains("cmd7"), "a failed call keeps its row: {e}");
-        assert!(!e.contains("cmd5") && !e.contains("cmd8"), "later calls that went well are folded: {e}");
+        assert!(e.contains("  ◇ Ran 9 commands · 1 failed\n    ✗ Bash cmd7\n      out7\n"), "{e}");
+        assert!(!e.contains("cmd0") && !e.contains("cmd8"), "calls that went well are counted, not listed: {e}");
     }
 
     #[test]
-    fn a_short_run_prints_every_call_and_edits_always_stand_alone() {
+    fn edits_join_the_run_with_their_lines_and_a_worker_call_stands_alone() {
         let (c, _, _) = console(false, Style::off(), true);
         let (front, mut heard) = Front::channel();
         let mut c = c.with_front(front);
@@ -1557,11 +1564,14 @@ mod tests {
             c.event(&Event::ToolResult { ok: true, text: "ok".into() });
         }
         c.event(&Event::Tool("Edit src/a.rs".into()));
+        c.event(&Event::Edit { path: "/p/src/a.rs".into(), removed: vec!["x".into()], added: vec!["y".into(), "z".into()] });
+        c.event(&Event::ToolResult { ok: true, text: "updated".into() });
+        c.event(&Event::Tool("mcp__jev__delegate write the tests".into()));
         c.event(&Event::Text("done".into()));
         c.end_turn();
         let e = printed(&mut heard);
-        assert!(e.contains("Read f0") && e.contains("Read f2") && e.contains("Edit src/a.rs"), "{e}");
-        assert!(!e.contains("tool calls"), "{e}");
+        assert!(e.contains("  ◇ Edited a.rs, explored 3 files +2 −1\n  ⇉ Delegate write the tests\n"), "the run ends where the worker call starts: {e}");
+        assert!(!e.contains("Read f0"), "{e}");
     }
 
     #[test]
@@ -1846,7 +1856,7 @@ mod tests {
             text: "[error] codex gpt-6 failed: 401 Unauthorized",
         });
         let e = err.text();
-        assert!(e.starts_with("✗ Login needed\n  codex gpt-6: 401 Unauthorized\n  Try:\n    • Run `codex login`"), "{e}");
+        assert!(e.starts_with("  ✗ Login needed\n    codex · gpt-6: 401 Unauthorized\n    Try:\n      • Run `codex login`"), "indented like the turn's rows: {e}");
         assert!(!e.contains("Auth") && !e.contains("{"), "no Debug output: {e}");
     }
 

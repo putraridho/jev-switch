@@ -1,7 +1,10 @@
-//! What the live area looks like: the working row, queued messages, the input box (or an
-//! approval card in its place), the menu and the footer, as rows of styled text and the
-//! cursor's place. Pure: every screen is a snapshot test at any width, with and without
-//! colour.
+//! What the screen looks like around the conversation: the header row (where you are, what the
+//! router has), the working row, queued messages, the `/` menu, the input box (or an approval
+//! card in its place) and the key hints under it, as rows of styled text and the cursor's
+//! place. Pure: every screen is a snapshot test at any width, with and without colour.
+//!
+//! The look follows one rule: only the input box is boxed. Everything else is a row of text,
+//! set apart by space, weight and a shaded band, so the conversation keeps the room.
 //!
 //! Every row is cut to `width - 1` columns, so no row ever wraps (the screen erases the live
 //! area by counting rows).
@@ -11,14 +14,8 @@ use std::time::Instant;
 use super::app::App;
 use super::menu::MENU_ROWS;
 use crate::mode::Mode;
-use crate::workstation::panel::{compose, panel_rows, Section, PANEL_WIDTH, SPLIT_MIN_WIDTH};
-use crate::uifmt::{answer_panel, answer_text, display_width,truncate_to_width, wrap_to_width, Spinner, Style};
+use crate::uifmt::{answer_panel, answer_text, display_width, truncate_to_width, wrap_to_width, Spinner, Style};
 
-/// Below the side-by-side width, the panel stacks under the box down to this width; narrower
-/// than that, the one-row router summary is all that fits.
-const STACK_MIN_WIDTH: usize = 40;
-/// Full screen: a terminal shorter than this keeps the panel off (the chat needs the rows).
-const STACK_MIN_HEIGHT: usize = 30;
 /// The most rows of typed text the box shows; longer text scrolls with the cursor.
 pub const INPUT_ROWS: usize = 8;
 /// The most rows of a tool's input the approval card shows at once.
@@ -52,11 +49,16 @@ impl Theme {
     fn warning(&self, s: &str) -> String {
         self.0.yellow(s)
     }
-    fn border(&self, s: &str) -> String {
-        self.0.chrome(s)
+    /// The input box's edge: a control's boundary, so it stays visible.
+    fn field(&self, s: &str) -> String {
+        self.0.field(s)
+    }
+    /// A raised surface (the menu's selected row, an approval card): a step off the background.
+    fn raised(&self, s: &str) -> String {
+        self.0.band(s)
     }
     fn selected(&self, s: &str) -> String {
-        self.0.bold(&self.0.accent(s))
+        self.0.bold(s)
     }
     /// The mode's name, coloured by how much it lets the agent do.
     fn mode(&self, m: Mode) -> String {
@@ -68,39 +70,93 @@ impl Theme {
             Mode::Ask => text,
         }
     }
+    /// Key hints on one row of `width`, `  Enter:send │ Shift+Tab:mode`: the key bright, what it
+    /// does dim. The ones that do not fit are left off whole, never cut in half.
+    fn keys(&self, pairs: &[(&str, &str)], width: usize) -> String {
+        let sep = self.muted(" │ ");
+        let mut row = String::from(" ");
+        for (i, (k, does)) in pairs.iter().enumerate() {
+            let hint = format!("{}{}", self.strong(k), self.muted(&format!(":{does}")));
+            let next = if i == 0 { format!("{row} {hint}") } else { format!("{row}{sep}{hint}") };
+            if display_width(&next) > width {
+                break;
+            }
+            row = next;
+        }
+        row
+    }
 }
 
-/// `left` and `right` on one row of `width` columns, `right` flush right when both fit.
+/// `left` and `right` on one row of `width` columns, `right` flush right. When both do not
+/// fit, `left` is cut to make room, down to a few columns; past that `right` gives way.
 fn spread(left: &str, right: &str, width: usize) -> String {
     let (lw, rw) = (display_width(left), display_width(right));
-    if right.is_empty() || lw + rw + 2 > width {
+    if right.is_empty() {
         return truncate_to_width(left, width);
+    }
+    if lw + rw + 2 > width {
+        let room = width.saturating_sub(rw + 2);
+        if room < 12 {
+            return truncate_to_width(left, width);
+        }
+        let cut = truncate_to_width(left, room);
+        return format!("{cut}{}{right}", " ".repeat(width - display_width(&cut) - rw));
     }
     format!("{left}{}{right}", " ".repeat(width - lw - rw))
 }
 
-/// A box border row: `╭─ title ─────╮` (or the bottom one).
-fn border(left: char, right: char, title: &str, width: usize, th: &Theme) -> String {
+/// A box border row: `╭─ title ─────╮` (or the bottom one), its lines in `edge`.
+fn frame(left: char, right: char, title: &str, width: usize, th: &Theme, edge: impl Fn(&str) -> String) -> String {
     let inner = width.saturating_sub(2);
     if title.is_empty() {
-        return th.border(&format!("{left}{}{right}", "─".repeat(inner)));
+        return edge(&format!("{left}{}{right}", "─".repeat(inner)));
     }
     let shown = truncate_to_width(title, inner.saturating_sub(4));
     let fill = inner.saturating_sub(display_width(&shown) + 3);
-    format!("{}{}{}", th.border(&format!("{left}─ ")), th.strong(&shown), th.border(&format!(" {}{right}", "─".repeat(fill))))
+    format!("{}{}{}", edge(&format!("{left}─ ")), th.strong(&shown), edge(&format!(" {}{right}", "─".repeat(fill))))
 }
 
-/// A row inside a box: `│ content   │`, content cut or padded to fit.
-fn boxed(content: &str, width: usize, th: &Theme) -> String {
+/// The input box's bottom edge: a hint set in on the left (`→ to use`, `12 lines`) and the
+/// route and mode on the right, `╰─ → to use ──────── auto · edit mode ─╯`.
+fn bottom_edge(hint: &str, label: &str, width: usize, th: &Theme) -> String {
+    let inner = width.saturating_sub(2);
+    let label_w = display_width(label);
+    let left = if hint.is_empty() { String::new() } else { format!("{}{} ", th.field("─ "), th.muted(hint)) };
+    let left_w = display_width(&crate::uifmt::strip_ansi(&left));
+    // Too narrow for both: the label goes, the hint stays.
+    if left_w + label_w + 5 > inner {
+        let fill = inner.saturating_sub(left_w);
+        return format!("{}{left}{}", th.field("╰"), th.field(&format!("{}╯", "─".repeat(fill))));
+    }
+    let fill = inner - left_w - label_w - 3;
+    format!("{}{left}{}{label}{}", th.field("╰"), th.field(&format!("{} ", "─".repeat(fill))), th.field(" ─╯"))
+}
+
+/// A row inside a box: `│ content   │`, content cut or padded to fit, its sides in `edge`.
+fn boxed_in(content: &str, width: usize, edge: impl Fn(&str) -> String) -> String {
     let inner = width.saturating_sub(4);
     let shown = truncate_to_width(content, inner);
     let pad = inner.saturating_sub(display_width(&shown));
-    format!("{} {shown}{} {}", th.border("│"), " ".repeat(pad), th.border("│"))
+    format!("{} {shown}{} {}", edge("│"), " ".repeat(pad), edge("│"))
+}
+
+/// A row on a raised surface: shaded the whole `width`, an accent bar `▌` on its left edge.
+fn raised_row(content: &str, width: usize, th: &Theme) -> String {
+    let inner = width.saturating_sub(4);
+    let shown = truncate_to_width(content, inner);
+    let pad = inner.saturating_sub(display_width(&shown));
+    th.raised(&format!("{} {shown}{}  ", th.accent("▌"), " ".repeat(pad)))
 }
 
 /// What the model is doing, said as an action: `Bash cargo test` → `Running cargo test`.
 pub fn doing(activity: Option<&str>) -> String {
-    let Some(a) = activity.map(str::trim).filter(|a| !a.is_empty()) else { return "Thinking".to_string() };
+    let (verb, rest) = doing_parts(activity);
+    if rest.is_empty() { verb } else { format!("{verb} {rest}") }
+}
+
+/// [`doing`] in its two parts, the verb and what it acts on, so they can be weighted apart.
+fn doing_parts(activity: Option<&str>) -> (String, String) {
+    let Some(a) = activity.map(str::trim).filter(|a| !a.is_empty()) else { return ("Thinking".to_string(), String::new()) };
     let (tool, rest) = a.split_once(' ').unwrap_or((a, ""));
     let verb = match tool.to_ascii_lowercase().as_str() {
         "bash" | "shell" => "Running",
@@ -110,29 +166,28 @@ pub fn doing(activity: Option<&str>) -> String {
         "grep" | "glob" | "ls" => "Searching",
         "webfetch" | "websearch" => "Looking up",
         "task" | "agent" => "Delegating",
-        _ => return a.to_string(),
+        _ => return (a.to_string(), String::new()),
     };
-    if rest.is_empty() { verb.to_string() } else { format!("{verb} {rest}") }
+    (verb.to_string(), rest.to_string())
 }
 
-/// The working row: `⠹ Running cargo test · 12s · claude · sonnet-5-5`. What is happening
-/// comes first, then how long, then who is doing it. Without colour the spinner is a still
-/// mark (no colour means no animation either).
+/// The working row: `⠹ Running cargo test 12s`, the verb dim and what it acts on in the accent,
+/// then how long. Without colour the spinner is a still mark (no colour means no animation).
 pub fn working_line(work: &super::app::Working, elapsed: std::time::Duration, width: usize, style: Style) -> String {
     let spinner = if style.enabled { Spinner::frame_for(elapsed) } else { "•" };
     let secs = elapsed.as_secs();
     let time = if secs >= 60 { format!("{}m{:02}s", secs / 60, secs % 60) } else { format!("{secs}s") };
-    let what = doing(work.activity.as_deref());
-    let who = if work.label == "thinking" { String::new() } else { format!(" · {}", work.label) };
-    truncate_to_width(&format!("{} {} {}", style.accent(spinner), style.bold(&what), style.dim(&format!("· {time}{who}"))), width)
+    let (verb, rest) = doing_parts(work.activity.as_deref());
+    let what = if rest.is_empty() { style.bold(&verb) } else { format!("{} {}", style.dim(&verb), style.accent(&rest)) };
+    truncate_to_width(&format!("{} {what} {}", style.accent(spinner), style.dim(&time)), width)
 }
 
 /// The most workers listed by name above the box; the rest are counted.
 const WORKER_ROWS: usize = 4;
 
-/// What the planner's workers are doing, above the box, in a titled box of their own:
-/// `╭─ ⇉ Workers · 1 running · 1 to review ─╮`, then a row each (`▶ w1  gemini · argon
-/// running 0:42`, `✓ w2  codex  ready to review`). Nothing when no worker is open.
+/// What the planner's workers are doing, above the box: a heading row,
+/// `▾ Workers · 1 running · 1 to review`, then a row each (`▶ w1  gemini · argon  running 0:42`,
+/// `✓ w2  codex  ready to review`). Nothing when no worker is open.
 fn workers_rows(app: &App, w: usize, style: Style) -> Vec<String> {
     if app.workers.is_empty() {
         return Vec::new();
@@ -141,14 +196,14 @@ fn workers_rows(app: &App, w: usize, style: Style) -> Vec<String> {
     let names = Theme::provider_theme(style);
     let running = app.workers.iter().filter(|x| x.running).count();
     let waiting = app.workers.len() - running;
-    let mut title = String::from("⇉ Workers");
+    let mut title = String::from("Workers");
     if running > 0 {
         title.push_str(&format!(" · {running} running"));
     }
     if waiting > 0 {
         title.push_str(&format!(" · {waiting} to review"));
     }
-    let mut rows = vec![border('╭', '╮', &title, w, &th)];
+    let mut rows = vec![truncate_to_width(&format!("  {} {}", th.muted("▾"), th.muted(&th.strong(&title))), w)];
     for wk in app.workers.iter().take(WORKER_ROWS) {
         let (glyph, state) = if wk.running {
             (style.accent("▶"), style.dim(&format!("running {}", clock(wk.age_ms))))
@@ -157,16 +212,15 @@ fn workers_rows(app: &App, w: usize, style: Style) -> Vec<String> {
         };
         let who = if wk.model.is_empty() { names.name(&wk.provider) } else { format!("{} {} {}", names.name(&wk.provider), style.dim("·"), wk.model) };
         let calls = if wk.running && wk.tools > 0 { style.dim(&format!(" · {} tool calls", wk.tools)) } else { String::new() };
-        rows.push(boxed(&format!("{glyph} {}  {who}   {state}{calls}", style.bold(&wk.id)), w, &th));
+        rows.push(truncate_to_width(&format!("  {glyph} {}  {who}   {state}{calls}", style.bold(&wk.id)), w));
         // What a running worker is doing right now, under it.
         if let Some(doing) = wk.activity.as_deref().filter(|_| wk.running) {
-            rows.push(boxed(&format!("  {}", th.muted(&format!("⎿ {doing}"))), w, &th));
+            rows.push(truncate_to_width(&format!("      {}", th.muted(&format!("⎿ {doing}"))), w));
         }
     }
     if app.workers.len() > WORKER_ROWS {
-        rows.push(boxed(&style.dim(&format!("… and {} more", app.workers.len() - WORKER_ROWS)), w, &th));
+        rows.push(truncate_to_width(&format!("    {}", style.dim(&format!("… and {} more", app.workers.len() - WORKER_ROWS))), w));
     }
-    rows.push(border('╰', '╯', "", w, &th));
     rows
 }
 
@@ -176,156 +230,105 @@ fn clock(ms: u64) -> String {
     format!("{}:{:02}", s / 60, s % 60)
 }
 
-/// Where the side panel goes relative to the live area.
+/// Where the live area is drawn.
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum Side {
-    /// Inline: beside the box when wide, under it when narrow.
-    Auto,
-    /// Full screen, wide: the panel is its own column, so the live area leaves it out.
-    Separate,
-    /// Too short a terminal to stack the panel: only the one-row router summary.
-    Compact,
+enum Place {
+    /// Under the conversation in the terminal's own scrollback: the header rides on top of it.
+    Inline,
+    /// Full screen: the header is pinned to the top row instead.
+    Full,
 }
 
 /// Draw the live area for `width` terminal columns at time `now`.
 pub fn render(app: &App, width: usize, now: Instant, style: Style) -> Frame {
-    live(app, width, now, style, Side::Auto)
+    live(app, width, now, style, Place::Inline)
 }
 
-fn live(app: &App, width: usize, now: Instant, style: Style, place: Side) -> Frame {
+fn live(app: &App, width: usize, now: Instant, style: Style, place: Place) -> Frame {
     let th = Theme(style);
     // One column short of the terminal, so a full row never wraps.
     let w = width.saturating_sub(1).max(20);
     let mut rows: Vec<String> = Vec::new();
     let mut cursor = None;
+    if place == Place::Inline {
+        rows.push(header_row(app, w, &th));
+    }
 
     // The working row steps aside while a question waits: one thing to look at.
     if let Some(work) = app.working.as_ref().filter(|_| app.approval.is_none()) {
         let hint = "esc to stop";
-        let budget = w.saturating_sub(display_width(hint) + 2);
         let elapsed = now.duration_since(work.started);
-        let line = working_line(work, elapsed, budget, style);
-        rows.push(spread(&line, &th.muted(hint), w));
+        // Who is working goes first when the row is short: what runs and how to stop it stay.
+        let who = if work.label == "thinking" { String::new() } else { format!("{} · ", work.label) };
+        let full = display_width(&working_line(work, elapsed, usize::MAX, style)) + 2;
+        let right = if full + display_width(&who) + display_width(hint) + 2 <= w { format!("{who}{hint}") } else { hint.to_string() };
+        let line = working_line(work, elapsed, w.saturating_sub(display_width(&right) + 4), style);
+        rows.push(spread(&format!("  {line}"), &th.muted(&right), w));
     }
     rows.extend(workers_rows(app, w, style));
     for (i, queued) in app.queue.iter().take(3).enumerate() {
         let first = queued.lines().next().unwrap_or_default();
         let more = if queued.lines().count() > 1 { " …" } else { "" };
-        let tag = if i == 0 && app.working.is_none() { "(next)" } else { "(queued)" };
-        rows.push(truncate_to_width(&format!("  {} {first}{more} {}", th.accent("↳"), th.muted(tag)), w));
+        rows.push(truncate_to_width(&format!("  {} {first}{more}", th.muted(&format!("#{}", i + 1))), w));
     }
     if app.queue.len() > 3 {
         rows.push(th.muted(&format!("  … and {} more queued", app.queue.len() - 3)));
     }
 
     if let Some(c) = &app.confirm {
-        rows.push(border('╭', '╮', &c.question, w, &th));
+        rows.push(raised_row(&th.strong(&c.question), w, &th));
+        rows.push(raised_row("", w, &th));
         for (i, label) in ["Yes", "No"].iter().enumerate() {
-            let line = if i == c.selected { th.selected(&format!("› {}. {label}", i + 1)) } else { format!("  {}. {label}", i + 1) };
-            rows.push(boxed(&line, w, &th));
+            rows.push(raised_row(&choice(i, label, i == c.selected, &th), w, &th));
         }
-        rows.push(border('╰', '╯', "", w, &th));
-        rows.push(th.muted("  y yes · n or esc no · ↑↓ and enter"));
+        rows.push(th.keys(&[("y", "yes"), ("n/Esc", "no"), ("↑↓", "move"), ("Enter", "choose")], w));
     } else if let Some(a) = &app.approval {
         rows.extend(approval_card(a, w, &th));
     } else {
-        // On a wide terminal the side panel (router, changed files) sits beside the box.
-        let side = if place == Side::Auto && w >= SPLIT_MIN_WIDTH { panel_rows(&panel_sections(app, style), PANEL_WIDTH, style) } else { Vec::new() };
-        let main_w = if side.is_empty() { w } else { w - PANEL_WIDTH - 3 };
-        let (box_rows, at) = input_box(app, main_w, &th);
-        let top = rows.len();
-        let mut main = box_rows;
-        cursor = Some((top + at.0, at.1));
         if let Some(m) = &app.menu {
-            main.extend(menu_rows(m, main_w, &th));
+            rows.extend(menu_rows(m, w, &th));
         }
-        if side.is_empty() {
-            rows.extend(main);
-            // Too narrow to sit beside the box, the panel moves under it, as wide as the
-            // box; it says what the router row would, so that row steps aside.
-            let stacked = if place == Side::Auto && w >= STACK_MIN_WIDTH { panel_rows(&[stacked_section(app, style)], w, style) } else { Vec::new() };
-            if stacked.is_empty() {
-                // Beside it in its own column, the panel says what this row would.
-                if place != Side::Separate {
-                    rows.push(router_row(app, w, &th));
-                }
-            } else {
-                rows.extend(stacked);
-            }
-            rows.push(footer(app, w, now, &th));
-        } else {
-            // Beside the panel, the router row and footer sit right under the box: the panel is
-            // taller than the box, and at the bottom of it they left a gap.
-            main.push(router_row(app, main_w, &th));
-            main.push(footer(app, main_w, now, &th));
-            rows.extend(compose(&main, &side, w, style));
-        }
+        let (box_rows, at) = input_box(app, w, &th);
+        cursor = Some((rows.len() + at.0, at.1));
+        rows.extend(box_rows);
+        rows.push(footer(app, w, now, &th));
     }
     Frame { rows, cursor }
 }
 
-/// The panel's sections as one box, for under the input box: the router's rows, then the
-/// context meter and the branch on one row. Fewer rows than three boxes of their own.
-fn stacked_section(app: &App, style: Style) -> Section {
-    let mut sections = panel_sections(app, style).into_iter();
-    let mut rows = sections.next().map(|s| s.rows).unwrap_or_default();
-    let rest: Vec<String> = sections.flat_map(|s| s.rows).collect();
-    if !rest.is_empty() {
-        rows.push(rest.join(&style.dim("  ·  ")));
+/// One numbered choice on a card: `● 1. Yes` when selected, `○ 2. No` otherwise.
+fn choice(i: usize, label: &str, selected: bool, th: &Theme) -> String {
+    let text = format!("{}. {label}", i + 1);
+    if selected {
+        format!("{} {}", th.accent("●"), th.selected(&text))
+    } else {
+        format!("{} {}", th.muted("○"), th.muted(&text))
     }
-    Section { title: "Router".into(), rows }
 }
 
-/// The sidebar at full height: its boxes from the top, the last one stretched down to the
-/// bottom row, so the column reads as one tall pane beside the chat. Exactly `height` rows.
-fn sidebar(app: &App, width: usize, height: usize, style: Style) -> Vec<String> {
-    let mut rows = panel_rows(&panel_sections(app, style), width, style);
-    if rows.is_empty() {
-        let empty = [Section { title: "jev-code".into(), rows: vec![String::new()] }];
-        rows = panel_rows(&empty, width, style);
-    }
-    rows.truncate(height);
-    // The last row of the last box is its bottom border: stretch it.
-    if rows.len() < height {
-        let bottom = rows.pop().unwrap_or_default();
-        let inner = width.saturating_sub(4);
-        let blank = format!("{} {} {}", style.chrome("│"), " ".repeat(inner), style.chrome("│"));
-        while rows.len() + 1 < height {
-            rows.push(blank.clone());
-        }
-        rows.push(bottom);
-    }
-    rows
-}
-
-/// The whole terminal, `cols` by `height`: the chat on top, the input box under it, and the
-/// side panel as a full-height column on the right. Below [`SPLIT_MIN_WIDTH`] columns the
-/// panel moves under the input box instead. Returns the frame (exactly `height` rows) and how
-/// many rows the chat pane has.
+/// The whole terminal, `cols` by `height`: the header pinned on top, the chat under it, and
+/// the input box with its key hints at the bottom. Returns the frame (exactly `height` rows)
+/// and how many rows the chat pane has.
 pub fn render_full(app: &App, cols: usize, height: usize, now: Instant, style: Style) -> (Frame, usize) {
     let w = cols.saturating_sub(1).max(20);
-    let wide = w >= SPLIT_MIN_WIDTH;
-    let main_w = if wide { w - PANEL_WIDTH - 3 } else { w };
-    let mut live = live(app, main_w, now, style, if wide { Side::Separate } else if height >= STACK_MIN_HEIGHT { Side::Auto } else { Side::Compact });
-    // A terminal too short for the live area keeps its bottom rows (the box and the footer).
+    let mut live = live(app, cols, now, style, Place::Full);
+    // A terminal too short for the live area keeps its bottom rows (the box and the keys).
     if live.rows.len() > height {
         let cut = live.rows.len() - height;
         live.rows.drain(..cut);
         live.cursor = live.cursor.and_then(|(r, c)| r.checked_sub(cut).map(|r| (r, c)));
     }
-    let chat_h = height - live.rows.len();
-    let mut left = chat_rows(app, main_w, chat_h, style);
-    left.extend(live.rows);
-    let cursor = live.cursor.map(|(r, c)| (r + chat_h, c));
-    let rows = if wide {
-        let side = sidebar(app, PANEL_WIDTH, height, style);
-        left.iter()
-            .zip(side.iter().chain(std::iter::repeat(&String::new())))
-            .map(|(l, r)| format!("{l}{}   {r}", " ".repeat(main_w.saturating_sub(display_width(l)))))
-            .collect()
-    } else {
-        left
-    };
+    // The header takes the top row once there is a row to spare for it.
+    let header = usize::from(height > live.rows.len());
+    let chat_h = height - live.rows.len() - header;
+    let mut rows = Vec::with_capacity(height);
+    if header == 1 {
+        rows.push(header_row(app, w, &Theme(style)));
+    }
+    rows.extend(chat_rows(app, w, chat_h, style));
+    let top = rows.len();
+    rows.extend(live.rows);
+    let cursor = live.cursor.map(|(r, c)| (r + top, c));
     (Frame { rows, cursor }, chat_h)
 }
 
@@ -349,153 +352,41 @@ fn chat_rows(app: &App, width: usize, height: usize, style: Style) -> Vec<String
     all
 }
 
-/// A usage meter, `▰▰▰▱▱▱▱▱`, filled in proportion to `pct` and coloured by how close to the
-/// limit it is (green, then yellow, then red). The shapes differ, so it reads without colour.
-fn meter(pct: u8, cells: usize, style: Style) -> String {
-    let pct = pct.min(100);
-    let filled = (usize::from(pct) * cells + 50) / 100;
-    let on = "▰".repeat(filled);
-    let on = style.level(pct, &on);
-    format!("{on}{}", style.chrome(&"▱".repeat(cells - filled)))
+/// The header row: where you are on the left, `main ±3 ~/Playground/jev-switch “name”`, the
+/// branch dim and the folder bright; what the router has on the right,
+/// `⇄ auto · claude 32% · codex 71%  │  context 12%`.
+fn header_row(app: &App, w: usize, th: &Theme) -> String {
+    let mut right = router_text(app, th);
+    if let Some(pct) = app.context {
+        let text = format!("context {pct}%");
+        let shown = if pct >= 80 { th.warning(&format!("{text} · /compact")) } else { th.muted(&text) };
+        right.push_str(&format!("{}{shown}", th.muted("  │  ")));
+    }
+    let branch = app.git.as_ref().map(|g| format!("{} ", th.muted(g))).unwrap_or_default();
+    let name = app.session_name.as_ref().map(|n| th.muted(&format!(" \u{201c}{n}\u{201d}"))).unwrap_or_default();
+    // The folder gives way first, from its front (`…/project`): the branch, the session's
+    // name and the router's side are what a glance looks for.
+    let room = w.saturating_sub(display_width(&right) + 3 + display_width(&branch) + display_width(&name));
+    let place = if room >= 8 { crate::views::keep_tail(&app.place, room) } else { app.place.clone() };
+    spread(&format!(" {branch}{place}{name}"), &right, w)
 }
 
-/// What the side panel lists: each subscription's plan use as a meter (or its cooldown), how
-/// full the context window is, and the git state.
-fn panel_sections(app: &App, style: Style) -> Vec<Section> {
-    let th = Theme::provider_theme(style);
-    let router = app
-        .providers
-        .iter()
-        .map(|p| {
-            let name = format!("{}{}", th.name(&p.name), " ".repeat(8usize.saturating_sub(display_width(&p.name))));
-            match (&p.cooling, p.used) {
-                (Some(left), _) => format!("{name} {}", style.yellow(&format!("cooling {left}"))),
-                (None, Some(u)) => format!("{name} {} {u:>3}%", meter(u, 8, style)),
-                (None, None) => match (&p.credit, p.via.as_deref().filter(|v| *v != p.name)) {
-                    (Some(c), _) => format!("{name} {}", style.dim(c)),
-                    (None, Some(v)) => format!("{name} {}", style.dim(&format!("ready · {v}"))),
-                    (None, None) => format!("{name} {}", style.dim("ready")),
-                },
-            }
-        })
-        .collect();
-    let context = app.context.map(|c| vec![format!("{} {c:>3}%", meter(c, 14, style))]).unwrap_or_default();
-    vec![
-        Section { title: "Router".into(), rows: router },
-        Section { title: "Context".into(), rows: context },
-        Section { title: "Branch".into(), rows: app.git.iter().cloned().collect() },
-    ]
-}
-
-/// The input box and where the cursor is in its rows.
-fn input_box(app: &App, w: usize, th: &Theme) -> (Vec<String>, (usize, usize)) {
-    // Inside the borders: `│ › ` before the text, ` │` after.
-    let text_w = w.saturating_sub(6).max(1);
-    let mut rows = vec![border('╭', '╮', "", w, th)];
-    let ghost = app.ghost();
-    if app.editor.is_empty() {
-        // A suggested next prompt takes the placeholder's place; the border says how to take it.
-        let (shown, hint) = match &ghost {
-            Some(suggestion) => (truncate_to_width(suggestion, text_w), "→ to use"),
-            None if app.working.is_some() => ("Type to queue a message for after this turn".to_string(), ""),
-            None => ("Ask anything · / for commands · @ for files".to_string(), ""),
-        };
-        rows.push(boxed(&format!("{} {}", th.accent("›"), th.muted(&shown)), w, th));
-        rows.push(border('╰', '╯', hint, w, th));
-        return (rows, (1, 4));
-    }
-    let (lines, (cr, cc)) = app.editor.layout(text_w);
-    let first = cr.saturating_sub(INPUT_ROWS - 1);
-    for (i, line) in lines.iter().enumerate().skip(first).take(INPUT_ROWS) {
-        let lead = if i == 0 { th.accent("›") } else { " ".to_string() };
-        // The ghost text follows the cursor, on its row, cut to what is left of it.
-        let rest = match &ghost {
-            Some(g) if i == cr => truncate_to_width(g, text_w.saturating_sub(display_width(line))),
-            _ => String::new(),
-        };
-        let rest = if rest.is_empty() { rest } else { th.muted(&rest) };
-        rows.push(boxed(&format!("{lead} {line}{rest}"), w, th));
-    }
-    let hidden = lines.len().saturating_sub(first + INPUT_ROWS);
-    let bottom = if first > 0 || hidden > 0 { format!("{} lines", lines.len()) } else { String::new() };
-    rows.push(border('╰', '╯', &bottom, w, th));
-    (rows, (1 + cr - first, 4 + cc))
-}
-
-fn menu_rows(m: &super::menu::Menu, w: usize, th: &Theme) -> Vec<String> {
-    let first = m.first_shown();
-    // The label column fits the rows on screen, not the longest label anywhere.
-    let label_w = m.items.iter().skip(first).take(MENU_ROWS).map(|i| display_width(&i.label)).max().unwrap_or(0).min(w / 2).max(8);
-    let mut rows = Vec::new();
-    for (i, item) in m.items.iter().enumerate().skip(first).take(MENU_ROWS) {
-        let label = truncate_to_width(&item.label, label_w);
-        let pad = " ".repeat(label_w.saturating_sub(display_width(&label)) + 2);
-        let detail = truncate_to_width(&item.detail, w.saturating_sub(label_w + 6));
-        let row = if i == m.selected {
-            format!("  {} {}{pad}{}", th.accent("›"), th.selected(&label), detail)
-        } else {
-            format!("    {label}{pad}{}", th.muted(&detail))
-        };
-        rows.push(truncate_to_width(&row, w));
-    }
-    let more = m.items.len().saturating_sub(first + MENU_ROWS);
-    let position = if m.items.len() > MENU_ROWS { format!("{}/{} · ", m.selected + 1, m.items.len()) } else { String::new() };
-    let keys = if more > 0 || first > 0 { "↑↓ more · tab complete · enter run · esc close" } else { "↑↓ select · tab complete · enter run · esc close" };
-    rows.push(truncate_to_width(&th.muted(&format!("    {position}{keys}")), w));
-    rows
-}
-
-fn approval_card(a: &super::app::Approval, w: usize, th: &Theme) -> Vec<String> {
-    let inner = w.saturating_sub(4).max(1);
-    let mut rows = vec![border('╭', '╮', &format!("Allow {}?", a.tool), w, th)];
-    let mut body: Vec<String> = Vec::new();
-    for line in &a.lines {
-        body.extend(wrap_to_width(line, inner));
-    }
-    let first = a.scroll.min(body.len().saturating_sub(1));
-    for line in body.iter().skip(first).take(CARD_INPUT_ROWS) {
-        rows.push(boxed(line, w, th));
-    }
-    let below = body.len().saturating_sub(first + CARD_INPUT_ROWS);
-    if first > 0 || below > 0 {
-        rows.push(boxed(&th.muted(&format!("… {} more lines · pgup/pgdn to scroll", first + below)), w, th));
-    }
-    for note in &a.notes {
-        rows.push(boxed(&th.muted(note), w, th));
-    }
-    rows.push(boxed("", w, th));
-    for (i, (_, label)) in a.choices().iter().enumerate() {
-        let text = format!("{}. {label}", i + 1);
-        let line = if i == a.selected { format!("{} {}", th.accent("›"), th.selected(&text)) } else { format!("  {text}") };
-        rows.push(boxed(&line, w, th));
-    }
-    rows.push(border('╰', '╯', "", w, th));
-    if let Some(note) = &a.note {
-        for line in wrap_to_width(note, w.saturating_sub(2)) {
-            rows.push(format!("  {}", th.warning(&line)));
-        }
-    }
-    let n = a.choices().len();
-    rows.push(truncate_to_width(&th.muted(&format!("  1–{n} or ↑↓ enter · esc no · ctrl-c stops the turn")), w));
-    rows
-}
-
-/// The router row: how turns are routed and what each subscription has left:
-/// `  ⇄ auto · claude 32% · codex 71% · gemini cooling 1h20m · orchestrate on`. A plan window
+/// How turns are routed and what each subscription has left:
+/// `⇄ auto · claude 32% · codex 71% · gemini cooling 1h20m · orchestrate on`. A plan window
 /// at 80% or more is yellow (the router will move off it soon).
-fn router_row(app: &App, w: usize, th: &Theme) -> String {
-    let style = th.0;
-    let names = Theme::provider_theme(style);
+fn router_text(app: &App, th: &Theme) -> String {
+    let names = Theme::provider_theme(th.0);
     let mut parts = vec![format!("{} {}", th.accent("⇄"), app.route)];
     for p in &app.providers {
         let name = names.name(&p.name);
+        let via = p.via.as_deref().filter(|v| *v != p.name).map(|v| th.muted(&format!(" ({v})"))).unwrap_or_default();
         let chip = match (&p.cooling, p.used) {
-            (Some(left), _) => format!("{name} {}", th.muted(&format!("cooling {left}"))),
-            (None, Some(u)) if u >= 80 => format!("{name} {}", th.warning(&format!("{u}%"))),
-            (None, Some(u)) => format!("{name} {}", th.muted(&format!("{u}%"))),
+            (Some(left), _) => format!("{name}{via} {}", th.muted(&format!("cooling {left}"))),
+            (None, Some(u)) if u >= 80 => format!("{name}{via} {}", th.warning(&format!("{u}%"))),
+            (None, Some(u)) => format!("{name}{via} {}", th.muted(&format!("{u}%"))),
             (None, None) => match &p.credit {
-                Some(c) => format!("{name} {}", th.muted(c)),
-                None => name,
+                Some(c) => format!("{name}{via} {}", th.muted(c)),
+                None => format!("{name}{via}"),
             },
         };
         parts.push(chip);
@@ -506,31 +397,131 @@ fn router_row(app: &App, w: usize, th: &Theme) -> String {
     if app.orchestrate {
         parts.push(th.muted("orchestrate on"));
     }
-    truncate_to_width(&format!("  {}", parts.join(&th.muted(" · "))), w)
+    parts.join(&th.muted(" · "))
 }
 
-fn footer(app: &App, w: usize, now: Instant, th: &Theme) -> String {
-    let mut left = format!("  {} {}", th.mode(app.mode), th.muted("(shift-tab)"));
+/// The input box and where the cursor is in its rows. Its bottom edge carries the mode.
+fn input_box(app: &App, w: usize, th: &Theme) -> (Vec<String>, (usize, usize)) {
+    // Inside the borders: `│ ❯ ` before the text, ` │` after.
+    let text_w = w.saturating_sub(6).max(1);
+    let edge = |s: &str| th.field(s);
+    let mut rows = vec![frame('╭', '╮', "", w, th, edge)];
+    let label = box_label(app, th);
+    let ghost = app.ghost();
+    if app.editor.is_empty() {
+        // A suggested next prompt takes the placeholder's place; the edge says how to take it.
+        let (shown, hint) = match &ghost {
+            Some(suggestion) => (truncate_to_width(suggestion, text_w), "→ to use"),
+            None if app.working.is_some() => ("Type to queue a message for after this turn".to_string(), ""),
+            None => ("Ask anything · / for commands · @ for files".to_string(), ""),
+        };
+        rows.push(boxed_in(&format!("{} {}", th.accent("❯"), th.muted(&shown)), w, edge));
+        rows.push(bottom_edge(hint, &label, w, th));
+        return (rows, (1, 4));
+    }
+    let (lines, (cr, cc)) = app.editor.layout(text_w);
+    let first = cr.saturating_sub(INPUT_ROWS - 1);
+    for (i, line) in lines.iter().enumerate().skip(first).take(INPUT_ROWS) {
+        let lead = if i == 0 { th.accent("❯") } else { " ".to_string() };
+        // The ghost text follows the cursor, on its row, cut to what is left of it.
+        let rest = match &ghost {
+            Some(g) if i == cr => truncate_to_width(g, text_w.saturating_sub(display_width(line))),
+            _ => String::new(),
+        };
+        let rest = if rest.is_empty() { rest } else { th.muted(&rest) };
+        rows.push(boxed_in(&format!("{lead} {line}{rest}"), w, edge));
+    }
+    let hidden = lines.len().saturating_sub(first + INPUT_ROWS);
+    let hint = if first > 0 || hidden > 0 { format!("{} lines", lines.len()) } else { String::new() };
+    rows.push(bottom_edge(&hint, &label, w, th));
+    (rows, (1 + cr - first, 4 + cc))
+}
+
+/// What the box's edge says: `NORMAL · auto · edit mode`, the mode in its colour.
+fn box_label(app: &App, th: &Theme) -> String {
+    let mut parts = Vec::new();
     if let Some(label) = app.vim.as_ref().and_then(|v| v.label()) {
-        left.push_str(&th.strong(&format!(" · {label}")));
+        parts.push(th.strong(&label));
     }
-    if let Some(git) = &app.git {
-        left.push_str(&th.muted(&format!(" · ⎇ {git}")));
+    parts.push(th.muted(&app.route));
+    parts.push(th.mode(app.mode));
+    parts.join(&th.muted(" · "))
+}
+
+/// The `/` menu, above the box: a heading row with the selected command's arguments and the
+/// position (`/model [target]            1/59`), then the rows, the selected one raised.
+fn menu_rows(m: &super::menu::Menu, w: usize, th: &Theme) -> Vec<String> {
+    let first = m.first_shown();
+    // The label column fits the rows on screen, not the longest label anywhere.
+    let label_w = m.items.iter().skip(first).take(MENU_ROWS).map(|i| display_width(&i.label)).max().unwrap_or(0).min(w / 2).max(8);
+    let usage = m.items.get(m.selected).filter(|i| !i.usage.is_empty()).map(|i| format!("{} {}", th.accent(&i.label), th.muted(&i.usage))).unwrap_or_default();
+    let position = if m.items.len() > MENU_ROWS { th.muted(&format!("{}/{}", m.selected + 1, m.items.len())) } else { String::new() };
+    let mut rows = vec![spread(&format!("  {usage}"), &position, w)];
+    for (i, item) in m.items.iter().enumerate().skip(first).take(MENU_ROWS) {
+        let label = truncate_to_width(&item.label, label_w);
+        let pad = " ".repeat(label_w.saturating_sub(display_width(&label)) + 2);
+        let detail = truncate_to_width(&item.detail, w.saturating_sub(label_w + 8));
+        if i == m.selected {
+            let row = format!(" {} {}{pad}{detail}", th.accent("❯"), th.selected(&label));
+            let fill = w.saturating_sub(display_width(&row));
+            rows.push(th.raised(&format!("{row}{}", " ".repeat(fill))));
+        } else {
+            rows.push(truncate_to_width(&format!("   {label}{pad}{}", th.muted(&detail)), w));
+        }
     }
-    if let Some(name) = &app.session_name {
-        left.push_str(&th.muted(&format!(" · \u{201c}{name}\u{201d}")));
+    rows
+}
+
+/// A tool waiting for an answer, in place of the box: a raised card with the question, the
+/// tool's input, the numbered choices, and the keys under it.
+fn approval_card(a: &super::app::Approval, w: usize, th: &Theme) -> Vec<String> {
+    let inner = w.saturating_sub(4).max(1);
+    let mut rows = vec![raised_row(&th.strong(&format!("Allow {}?", a.tool)), w, th)];
+    let mut body: Vec<String> = Vec::new();
+    for line in &a.lines {
+        body.extend(wrap_to_width(line, inner));
     }
-    // The context window only shows once it starts to matter.
-    if let Some(pct) = app.context.filter(|p| *p >= 50) {
-        let text = format!(" · context {pct}%");
-        left.push_str(&if pct >= 80 { th.warning(&format!("{text} · /compact")) } else { th.muted(&text) });
+    let first = a.scroll.min(body.len().saturating_sub(1));
+    for line in body.iter().skip(first).take(CARD_INPUT_ROWS) {
+        rows.push(raised_row(line, w, th));
     }
-    let right = match &app.notice {
-        Some((text, at)) if now.duration_since(*at) < super::app::NOTICE_FOR => th.warning(text),
-        _ if app.working.is_some() => th.muted("enter queue · esc stop"),
-        _ => th.muted("enter send · shift-enter newline"),
+    let below = body.len().saturating_sub(first + CARD_INPUT_ROWS);
+    if first > 0 || below > 0 {
+        rows.push(raised_row(&th.muted(&format!("… {} more lines · pgup/pgdn to scroll", first + below)), w, th));
+    }
+    for note in &a.notes {
+        rows.push(raised_row(&th.muted(note), w, th));
+    }
+    rows.push(raised_row("", w, th));
+    for (i, (_, label)) in a.choices().iter().enumerate() {
+        rows.push(raised_row(&choice(i, label, i == a.selected, th), w, th));
+    }
+    if let Some(note) = &a.note {
+        for line in wrap_to_width(note, w.saturating_sub(2)) {
+            rows.push(format!("  {}", th.warning(&line)));
+        }
+    }
+    let n = a.choices().len();
+    let range = format!("1–{n}");
+    rows.push(th.keys(&[(&range, "choose"), ("↑↓", "move"), ("Enter", "confirm"), ("Esc", "no"), ("Ctrl+C", "stop the turn")], w));
+    rows
+}
+
+/// The key hints under the box, for what the keys do right now; a notice takes their place
+/// for a moment.
+fn footer(app: &App, w: usize, now: Instant, th: &Theme) -> String {
+    if let Some((text, _)) = app.notice.as_ref().filter(|(_, at)| now.duration_since(*at) < super::app::NOTICE_FOR) {
+        return truncate_to_width(&format!("  {}", th.warning(text)), w);
+    }
+    let keys: &[(&str, &str)] = if app.menu.is_some() {
+        &[("↑↓", "select"), ("Tab", "complete"), ("Enter", "run"), ("Esc", "close")]
+    } else if app.working.is_some() {
+        // The working row above already says `esc to stop`.
+        &[("Enter", "queue"), ("Shift+Enter", "newline"), ("Shift+Tab", "mode")]
+    } else {
+        &[("Enter", "send"), ("Shift+Enter", "newline"), ("Shift+Tab", "mode"), ("/", "commands"), ("@", "files")]
     };
-    spread(&left, &right, w)
+    th.keys(keys, w)
 }
 
 #[cfg(test)]
@@ -560,17 +551,18 @@ mod tests {
     }
 
     #[test]
-    fn the_idle_box_has_a_placeholder_and_a_footer_with_the_mode() {
+    fn the_idle_screen_is_the_header_the_box_with_the_mode_in_its_edge_and_the_keys() {
         let a = app();
         let f = render(&a, 70, Instant::now(), OFF);
-        let rule = "─".repeat(67);
-        assert_eq!(
-            &f.rows[..3],
-            &[format!("╭{rule}╮"), format!("│ › Ask anything · / for commands · @ for files{}│", " ".repeat(21)), format!("╰{rule}╯")]
-        );
-        assert!(f.rows[3].starts_with("  ⇄ auto"), "the router row: {}", f.rows[3]);
-        assert!(f.rows[4].starts_with("  edit mode (shift-tab)") && f.rows[4].ends_with("enter send · shift-enter newline"), "{}", f.rows[4]);
-        assert_eq!(f.cursor, Some((1, 4)));
+        assert!(f.rows[0].starts_with(" /nonexistent") && f.rows[0].ends_with("⇄ auto · no provider ready · /doctor"), "the header: {}", f.rows[0]);
+        assert_eq!(f.rows[1], format!("╭{}╮", "─".repeat(67)));
+        assert_eq!(f.rows[2], format!("│ ❯ Ask anything · / for commands · @ for files{}│", " ".repeat(21)));
+        assert!(f.rows[3].starts_with("╰──") && f.rows[3].ends_with(" auto · edit mode ─╯"), "the mode in the box's edge: {}", f.rows[3]);
+        assert_eq!(display_width(&f.rows[3]), 69);
+        assert_eq!(f.rows[4], "  Enter:send │ Shift+Enter:newline │ Shift+Tab:mode │ /:commands", "a hint that does not fit is left off whole");
+        assert_eq!(render(&a, 90, Instant::now(), OFF).rows[4], "  Enter:send │ Shift+Enter:newline │ Shift+Tab:mode │ /:commands │ @:files");
+        assert_eq!(f.rows.len(), 5, "nothing else is boxed or listed: {:?}", f.rows);
+        assert_eq!(f.cursor, Some((2, 4)));
     }
 
     #[test]
@@ -578,29 +570,36 @@ mod tests {
         let mut a = app();
         a.suggestion = Some("commit this and tag v1.1.0".into());
         let f = render(&a, 70, Instant::now(), OFF);
-        assert!(f.rows[1].starts_with("│ › commit this and tag v1.1.0 "), "{}", f.rows[1]);
-        assert!(f.rows[2].contains("→ to use"), "{}", f.rows[2]);
-        assert_eq!(f.cursor, Some((1, 4)), "the cursor sits before the suggestion");
+        assert!(f.rows[2].starts_with("│ ❯ commit this and tag v1.1.0 "), "{}", f.rows[2]);
+        assert!(f.rows[3].starts_with("╰─ → to use ") && f.rows[3].ends_with("edit mode ─╯"), "{}", f.rows[3]);
+        assert_eq!(f.cursor, Some((2, 4)), "the cursor sits before the suggestion");
 
         let mut typing = App::new(Path::new("/nonexistent").into(), History::from_entries(&["fix the parser"]), crate::mode::Mode::Edit, "auto".into(), Vec::new());
         typed(&mut typing, "fix t");
         let f = render(&typing, 70, Instant::now(), OFF);
-        assert!(f.rows[1].starts_with("│ › fix the parser "), "{}", f.rows[1]);
-        assert_eq!(f.cursor, Some((1, 9)), "the cursor stays after what was typed");
+        assert!(f.rows[2].starts_with("│ ❯ fix the parser "), "{}", f.rows[2]);
+        assert_eq!(f.cursor, Some((2, 9)), "the cursor stays after what was typed");
     }
 
     #[test]
-    fn typing_a_slash_shows_the_command_menu_with_descriptions() {
+    fn typing_a_slash_opens_the_menu_above_the_box_with_names_and_descriptions() {
         let mut a = app();
         typed(&mut a, "/");
-        let s = screen(&a, 80);
-        assert!(s.contains("│ › /"), "{s}");
-        assert!(s.contains("  › /model [target]"), "the first command is selected: {s}");
-        assert!(s.contains("Pin a model or provider"), "{s}");
-        assert!(s.contains(&format!("1/{} · ↑↓ more", crate::uifmt::COMMANDS.len())), "{s}");
-        assert!(s.contains(" · ↑↓ more · tab complete · enter run · esc close"), "{s}");
-        assert!(s.contains(&format!("1/{} · ↑↓ more · tab complete · enter run · esc close", crate::uifmt::COMMANDS.len())), "{s}");
-        assert_eq!(s.lines().filter(|l| l.starts_with("    /") || l.starts_with("  › /")).count(), MENU_ROWS);
+        let f = render(&a, 80, Instant::now(), OFF);
+        let s = f.rows.join("\n");
+        let box_top = f.rows.iter().position(|r| r.starts_with('╭')).unwrap_or(0);
+        let selected = f.rows.iter().position(|r| r.starts_with(" ❯ /model  ")).unwrap_or(usize::MAX);
+        assert!(selected < box_top, "the menu sits above the box, the first command selected: {s}");
+        assert!(f.rows[1].starts_with("  /model [target]") && f.rows[1].ends_with(&format!("1/{}", crate::uifmt::COMMANDS.len())), "the heading row: {}", f.rows[1]);
+        assert!(s.contains("Pin a model or provider, or `auto` to let the router choose"), "names only, so the description fits at 80 columns: {s}");
+        assert!(!s.contains("/effort ["), "arguments stay out of the list: {s}");
+        assert_eq!(f.rows.iter().filter(|r| r.starts_with("   /") || r.starts_with(" ❯ /")).count(), MENU_ROWS);
+        assert!(f.rows.last().is_some_and(|r| r == "  ↑↓:select │ Tab:complete │ Enter:run │ Esc:close"), "the keys say what they do in the menu: {s}");
+        a.on_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE), Instant::now());
+        assert!(screen(&a, 80).contains("  /provider auto|off"), "the heading follows the selection");
+        // With colour the selected row is raised the width of the row.
+        let on = render(&a, 80, Instant::now(), ON);
+        assert!(on.rows.iter().any(|r| r.contains("\x1b[48;5;236") && strip_ansi(r).starts_with(" ❯ /provider")), "{:?}", on.rows);
     }
 
     #[test]
@@ -611,7 +610,7 @@ mod tests {
         let inside: Vec<_> = f.rows.iter().filter(|r| r.starts_with('│')).collect();
         assert!(inside.len() >= 3, "{:?}", f.rows);
         let (row, col) = f.cursor.unwrap_or_default();
-        assert!(row >= 3 && col >= 4, "{:?}", f.cursor);
+        assert!(row >= 4 && col >= 4, "{:?}", f.cursor);
     }
 
     #[test]
@@ -621,7 +620,7 @@ mod tests {
         let chip = |id: &str, running: bool, age_ms: u64| WorkerChip { id: id.into(), provider: "gemini".into(), model: "argon".into(), running, age_ms, tools: 0, activity: None };
         a.workers = vec![chip("w1", true, 42_000), chip("w2", false, 90_000)];
         let text = screen(&a, 80);
-        assert!(text.contains("⇉ Workers · 1 running · 1 to review"), "{text}");
+        assert!(text.contains("▾ Workers · 1 running · 1 to review"), "{text}");
         assert!(text.contains("▶ w1  gemini · argon   running 0:42"), "{text}");
         assert!(text.contains("✓ w2  gemini · argon   ready to review"), "{text}");
         a.workers[0].tools = 7;
@@ -635,18 +634,21 @@ mod tests {
     }
 
     #[test]
-    fn a_running_turn_shows_the_working_row_queue_and_stop_hint() {
+    fn a_running_turn_shows_the_working_row_the_queue_and_the_keys_for_now() {
         let mut a = app();
         a.on_front(FrontMsg::TurnStarted);
         a.on_front(FrontMsg::Label("claude · sonnet-5-5".into()));
         a.on_front(FrontMsg::Activity("Bash cargo test".into()));
         a.queue.push_back("then run clippy".into());
         let s = screen(&a, 80);
-        let first = s.lines().next().unwrap_or_default();
-        assert!(first.starts_with("• Running cargo test · 0s · claude · sonnet-5-5") && first.ends_with("esc to stop"), "a still mark without colour: {first}");
-        assert!(s.contains("↳ then run clippy (queued)"), "{s}");
+        let work = s.lines().nth(1).unwrap_or_default();
+        assert!(work.starts_with("  • Running cargo test 0s") && work.ends_with("claude · sonnet-5-5 · esc to stop"), "a still mark without colour: {work}");
+        assert!(s.contains("\n  #1 then run clippy\n"), "{s}");
         assert!(s.contains("Type to queue a message for after this turn"), "{s}");
-        assert!(s.contains("enter queue · esc stop"), "{s}");
+        assert_eq!(s.lines().last(), Some("  Enter:queue │ Shift+Enter:newline │ Shift+Tab:mode"), "Esc is said once, on the working row: {s}");
+        assert_eq!(s.matches("esc").count(), 1, "{s}");
+        let on = render(&a, 80, Instant::now(), ON).rows[1].clone();
+        assert!(on.contains("\x1b[2mRunning") && on.contains("cargo test"), "the verb dim, what it acts on in the accent: {on:?}");
     }
 
     #[test]
@@ -659,7 +661,7 @@ mod tests {
     }
 
     #[test]
-    fn an_approval_replaces_the_box_with_numbered_choices() {
+    fn an_approval_replaces_the_box_with_a_raised_card_of_numbered_choices() {
         let mut a = app();
         let (reply, _rx) = tokio::sync::oneshot::channel();
         a.on_front(FrontMsg::Approval(Box::new(ApprovalAsk {
@@ -672,13 +674,16 @@ mod tests {
         })));
         let f = render(&a, 70, Instant::now(), OFF);
         let s = f.rows.join("\n");
-        assert!(s.starts_with("╭─ Allow Bash? ─"), "{s}");
-        assert!(s.contains("│ cargo test --quiet"), "{s}");
-        assert!(s.contains("│ › 1. Yes "), "{s}");
-        assert!(s.contains("│   2. Yes, and don't ask again (Bash(cargo test:*))"), "{s}");
-        assert!(s.contains("│   3. No, and tell the model what to do instead"), "{s}");
-        assert!(s.contains("1–3 or ↑↓ enter · esc no"), "{s}");
+        assert!(f.rows[1].starts_with("▌ Allow Bash?"), "{s}");
+        assert!(s.contains("▌ cargo test --quiet"), "{s}");
+        assert!(s.contains("▌ ● 1. Yes "), "{s}");
+        assert!(s.contains("▌ ○ 2. Yes, and don't ask again (Bash(cargo test:*))"), "{s}");
+        assert!(s.contains("▌ ○ 3. No, and tell the model what to do instead"), "{s}");
+        assert!(f.rows.last().is_some_and(|r| r.starts_with("  1–3:choose │ ↑↓:move │ Enter:confirm │ Esc:no")), "{s}");
+        assert!(!s.contains('╭'), "no box while the card is up: {s}");
         assert_eq!(f.cursor, None, "no text cursor on a card");
+        let on = render(&a, 70, Instant::now(), ON);
+        assert!(on.rows[1..7].iter().all(|r| r.contains("\x1b[48;5;236")), "the card is one raised surface: {:?}", on.rows);
     }
 
     #[test]
@@ -687,6 +692,8 @@ mod tests {
         typed(&mut a, "/");
         a.on_front(FrontMsg::TurnStarted);
         a.queue.push_back("日本語のメッセージ ".repeat(10));
+        a.git = Some("main ±3".into());
+        a.context = Some(91);
         for width in [1, 10, 20, 21, 40, 79, 80, 200] {
             for style in [ON, OFF] {
                 let f = render(&a, width, Instant::now(), style);
@@ -701,26 +708,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn a_wide_terminal_shows_the_side_panel_beside_the_box_and_a_narrow_one_does_not() {
-        let mut a = app();
-        a.git = Some("main ±3".into());
-        a.providers = vec![crate::tui::app::ProviderChip { name: "codex".into(), used: Some(71), cooling: None, via: None, credit: None }];
-        let wide = render(&a, 140, Instant::now(), OFF);
-        let text = wide.rows.join("\n");
-        assert!(wide.rows[0].contains("Router"), "{text}");
-        assert!(text.contains("codex 71%") && text.contains("main ±3"), "{text}");
-        assert!(wide.rows.iter().all(|r| display_width(r) < 140));
-        // Too narrow to sit beside the box, the panel stacks under it.
-        let narrow = screen(&a, 80);
-        let (box_end, router) = (narrow.lines().position(|l| l.starts_with('╰')), narrow.lines().position(|l| l.contains("╭─ Router")));
-        assert!(box_end.is_some() && router > box_end, "{narrow}");
-        assert!(narrow.contains("codex    ▰▰▰▰▰▰▱▱  71%") && narrow.contains("main ±3"), "{narrow}");
-        assert!(!narrow.contains("⇄ auto"), "the panel replaces the router row: {narrow}");
-        // Narrower than that, the one-row router summary is what fits.
-        assert!(screen(&a, 30).contains("⇄ auto") && !screen(&a, 30).contains("Router"));
-    }
-
     fn full_app() -> App {
         let mut a = app();
         a.fullscreen = true;
@@ -731,20 +718,21 @@ mod tests {
     }
 
     #[test]
-    fn full_screen_is_exactly_the_terminal_with_the_sidebar_at_full_height_beside_the_chat() {
+    fn full_screen_is_the_header_on_top_the_chat_full_width_and_the_box_at_the_bottom() {
         let a = full_app();
         let (f, pane) = render_full(&a, 140, 40, Instant::now(), OFF);
         assert_eq!(f.rows.len(), 40);
         assert!(f.rows.iter().all(|r| display_width(r) < 140), "no row reaches the last column");
-        // The chat's newest lines sit just above the box, the sidebar spans every row.
-        assert_eq!(f.rows[pane - 1].trim_end().split("   ").next().unwrap_or_default().trim_end(), "three");
-        assert!(f.rows[0].contains("╭─ Router") && f.rows[0].starts_with(' '), "{}", f.rows[0]);
-        assert!(f.rows[39].ends_with('╯'), "the sidebar's last box ends on the last row: {}", f.rows[39]);
+        assert!(f.rows[0].starts_with(" main ±3 /nonexistent") && f.rows[0].ends_with("⇄ auto · codex 71%"), "{}", f.rows[0]);
+        // The chat's newest lines sit just above the box, nothing beside them.
+        assert_eq!(f.rows[pane], "three");
+        assert!(!f.rows.join("\n").contains("Router"));
         // The cursor is in the box, under the chat.
         let (row, col) = f.cursor.unwrap_or_default();
-        assert_eq!(row, pane + 1);
+        assert_eq!(row, pane + 2);
         assert_eq!(col, 4);
-        assert!(f.rows[row].contains("Ask anything") || f.rows[row].contains('›'), "{}", f.rows[row]);
+        assert!(f.rows[row].contains("Ask anything"), "{}", f.rows[row]);
+        assert!(f.rows[39].starts_with("  Enter:send"), "{}", f.rows[39]);
     }
 
     #[test]
@@ -762,23 +750,6 @@ mod tests {
         a.live_answer = None;
         let (f, _) = render_full(&a, 140, 40, Instant::now(), OFF);
         assert!(!f.rows.join("\n").contains("Hel"));
-    }
-
-    #[test]
-    fn full_screen_below_the_split_width_puts_the_panel_under_the_box_when_there_is_height() {
-        let a = full_app();
-        let (tall, pane_tall) = render_full(&a, 80, 40, Instant::now(), OFF);
-        let text = tall.rows.join("\n");
-        assert_eq!(tall.rows.len(), 40);
-        assert!(text.contains("╭─ Router") && !text.contains("⇄ auto"), "{text}");
-        let box_row = tall.rows.iter().position(|r| r.contains("Ask anything")).unwrap_or(0);
-        let router_row = tall.rows.iter().position(|r| r.contains("╭─ Router")).unwrap_or(0);
-        assert!(router_row > box_row && box_row >= pane_tall, "{text}");
-        // A short terminal keeps the rows for the chat: the one-row summary instead.
-        let (short, _) = render_full(&a, 80, 20, Instant::now(), OFF);
-        assert_eq!(short.rows.len(), 20);
-        let text = short.rows.join("\n");
-        assert!(text.contains("⇄ auto") && !text.contains("╭─ Router"), "{text}");
     }
 
     #[test]
@@ -800,66 +771,64 @@ mod tests {
         a.show(&(0..60).map(|i| format!("line {i}")).collect::<Vec<_>>().join("\n"));
         let (f, pane) = render_full(&a, 140, 30, Instant::now(), OFF);
         a.pane_rows = pane;
-        assert!(f.rows[pane - 1].contains("line 59"));
+        assert!(f.rows[pane].contains("line 59"));
         a.on_key(KeyEvent::new(KeyCode::PageUp, KeyModifiers::NONE), Instant::now());
         let (f, _) = render_full(&a, 140, 30, Instant::now(), OFF);
-        assert!(!f.rows[pane - 1].contains("line 59"), "{}", f.rows[pane - 1]);
+        assert!(!f.rows[pane].contains("line 59"), "{}", f.rows[pane]);
         a.show("a new line");
         let (f, _) = render_full(&a, 140, 30, Instant::now(), OFF);
         assert!(!f.rows.join("\n").contains("a new line"), "the view stays where it was");
         a.on_key(KeyEvent::new(KeyCode::End, KeyModifiers::CONTROL), Instant::now());
         let (f, _) = render_full(&a, 140, 30, Instant::now(), OFF);
-        assert!(f.rows[pane - 1].contains("a new line"));
+        assert!(f.rows[pane].contains("a new line"));
     }
 
     #[test]
-    fn the_router_row_shows_each_subscription_and_what_it_has_left() {
+    fn the_header_shows_each_subscription_and_what_it_has_left() {
         use crate::tui::app::ProviderChip;
         let mut a = app();
         a.providers = vec![
             ProviderChip { name: "claude".into(), used: Some(32), cooling: None, via: None, credit: None },
             ProviderChip { name: "codex".into(), used: Some(85), cooling: None, via: None, credit: None },
-            ProviderChip { name: "gemini".into(), used: None, cooling: Some("1h20m".into()), via: None, credit: None },
-            ProviderChip { name: "deepseek".into(), used: None, cooling: None, via: None, credit: Some("$4.20 left".into()) },
+            ProviderChip { name: "gemini".into(), used: None, cooling: Some("1h20m".into()), via: Some("agy".into()), credit: None },
+            ProviderChip { name: "deepseek".into(), used: None, cooling: None, via: Some("deepseek".into()), credit: Some("$4.20 left".into()) },
         ];
         a.orchestrate = true;
-        let s = screen(&a, 140);
-        assert!(s.contains("  ⇄ auto · claude 32% · codex 85% · gemini cooling 1h20m · deepseek $4.20 left · orchestrate on"), "{s}");
-        a.providers.clear();
-        assert!(screen(&a, 120).contains("⇄ auto · no provider ready · /doctor"));
+        let header = render(&a, 140, Instant::now(), OFF).rows[0].clone();
+        assert!(header.ends_with("⇄ auto · claude 32% · codex 85% · gemini (agy) cooling 1h20m · deepseek $4.20 left · orchestrate on"), "the CLI is named only when it differs: {header}");
+        let on = render(&a, 140, Instant::now(), ON).rows[0].clone();
+        assert!(on.contains("\x1b[33m85%"), "a plan window at 80% or more is yellow: {on:?}");
     }
 
     #[test]
-    fn a_ready_row_names_the_cli_only_when_it_differs_from_the_provider() {
-        use crate::tui::app::ProviderChip;
-        let style = crate::uifmt::Style::off();
-        let rows = |via: Option<&str>| {
-            let mut a = app();
-            a.providers = vec![ProviderChip { name: "gemini".into(), used: None, cooling: None, via: via.map(String::from), credit: None }];
-            panel_sections(&a, style).remove(0).rows.join("\n")
-        };
-        assert!(rows(Some("agy")).contains("ready · agy"));
-        assert!(!rows(Some("gemini")).contains('·'));
-        assert!(!rows(None).contains('·'));
-    }
-
-    #[test]
-    fn the_footer_shows_the_branch_and_a_filling_context_window() {
+    fn the_header_names_the_branch_the_folder_and_the_context_window() {
         let mut a = app();
         a.git = Some("main ±3".into());
+        a.session_name = Some("parser".into());
         a.context = Some(30);
-        let s = screen(&a, 120);
-        assert!(s.contains("edit mode (shift-tab) · ⎇ main ±3  "), "{s}");
-        assert!(!s.contains("context"), "30% does not matter yet: {s}");
+        let header = render(&a, 140, Instant::now(), OFF).rows[0].clone();
+        assert!(header.starts_with(" main ±3 /nonexistent \u{201c}parser\u{201d}"), "{header}");
+        assert!(header.ends_with("  │  context 30%"), "{header}");
         a.context = Some(85);
-        assert!(screen(&a, 120).contains("· context 85% · /compact"));
+        assert!(render(&a, 140, Instant::now(), OFF).rows[0].ends_with("context 85% · /compact"));
+        // Narrow, the folder is cut before the router's side gives way.
+        let narrow = render(&a, 80, Instant::now(), OFF).rows[0].clone();
+        assert!(narrow.contains('…') && narrow.contains("⇄ auto"), "{narrow}");
+        // A long folder gives way from its front; the session's name stays.
+        a.place = "/private/var/folders/n0/j5fhc3d939n_f150v/T/jevux-rename/repo".into();
+        a.context = None;
+        let long = render(&a, 100, Instant::now(), OFF).rows[0].clone();
+        assert!(long.contains(" …/") && long.contains("/jevux-rename/repo \u{201c}parser\u{201d}") && long.ends_with("⇄ auto · no provider ready · /doctor"), "{long}");
     }
 
     #[test]
-    fn a_notice_shows_in_the_footer_and_the_mode_is_named_not_only_coloured() {
+    fn a_notice_takes_the_place_of_the_keys_and_the_mode_is_named_not_only_coloured() {
         let mut a = app();
         a.notice = Some(("Press Ctrl-C again to exit".into(), Instant::now()));
         let s = screen(&a, 80);
-        assert!(s.lines().last().is_some_and(|l| l.contains("edit mode") && l.ends_with("Press Ctrl-C again to exit")), "{s}");
+        assert_eq!(s.lines().last(), Some("  Press Ctrl-C again to exit"), "{s}");
+        assert!(s.contains("edit mode ─╯"), "{s}");
+        a.mode = crate::mode::Mode::Plan;
+        assert!(screen(&a, 80).contains(" auto · plan mode ─╯"));
     }
 }

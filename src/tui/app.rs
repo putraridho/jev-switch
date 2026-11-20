@@ -146,6 +146,8 @@ pub struct App {
     pub route: String,
     pub ctx: CompleteCtx,
     project: PathBuf,
+    /// The project folder as the header shows it: `~/Playground/jev-switch`.
+    pub place: String,
     tracked: Vec<String>,
     last_ctrl_c: Option<Instant>,
     /// A short note in the footer (`Press Ctrl-C again to exit`) and when it was set.
@@ -209,7 +211,9 @@ fn alt(k: &KeyEvent) -> bool {
 
 impl App {
     pub fn new(project: PathBuf, history: History, mode: Mode, route: String, tracked: Vec<String>) -> Self {
+        let place = crate::views::display_path(&project, std::env::var("HOME").ok().as_deref());
         Self {
+            place,
             editor: Editor::default(),
             history,
             menu: None,

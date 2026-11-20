@@ -46,14 +46,12 @@ pub fn turn_summary(f: &SummaryFacts, style: Style) -> String {
         parts.push(format!("in {}{cached}", human_count(f.in_tokens)));
         parts.push(format!("out {}", human_count(f.out_tokens)));
     }
-    if let Some((p, used)) = &f.plan {
-        let pct = (used.clamp(0.0, 1.0) * 100.0).round() as u32;
-        let text = format!("{p} plan {pct}%");
+    if let Some((p, pct)) = plan_pct(f) {
+        let text = plan_text(p, pct);
         parts.push(if pct >= 80 { style.yellow(&text) } else { text });
     }
-    if let Some((n, added, removed)) = f.files_changed.filter(|(n, _, _)| *n > 0) {
-        let lines = if added == 0 && removed == 0 { String::new() } else { format!(" +{added} −{removed}") };
-        parts.push(format!("{}{lines}", plural(n, "file", "files")));
+    if let Some(files) = files_text(f) {
+        parts.push(files);
     }
     // Keep the outcome and model legible; usage is supporting information.
     let mut parts = parts.into_iter();
@@ -66,21 +64,45 @@ pub fn turn_summary(f: &SummaryFacts, style: Style) -> String {
     }
 }
 
-/// The line after a turn on the interactive screen, with only what a person looks for:
-/// `✓ codex · 14s · 3 files +12 −4`. The model is on the route row that led the turn; token
-/// counts live in `/cost`; the plan window shows only once it is 80% used or more.
-/// The turn's closing row: its summary set into a dim rule that runs to the edge,
-/// `── ✓ codex · 14s ────────────`, so the end of one turn and the start of the next
-/// (the shaded prompt) are plain to see. Without colour the rule is just dashes.
-pub fn turn_rule(summary: &str, style: Style, width: usize) -> String {
-    let width = super::width::clamp_width(width);
-    let fill = width.saturating_sub(1).saturating_sub(super::width::display_width(&super::ansi::strip_ansi(summary)) + 6);
-    format!("  {} {summary} {}", style.dim("──"), style.dim(&"─".repeat(fill)))
+/// The turn's closing row on the interactive screen, with only what a person looks for and
+/// quiet so the next prompt's band stands out: `  Worked for 14s · ✓ codex · 3 files +12 −4`;
+/// `  ■ Stopped after 3s` when cancelled. The model is on the route row that led the turn;
+/// token counts live in `/cost`; the plan window shows only once it is 80% used or more.
+pub fn turn_closing(f: &SummaryFacts, style: Style) -> String {
+    let time = human_duration(f.elapsed_ms);
+    if f.cancelled {
+        return format!("  {} {}", style.yellow("■"), style.dim(&format!("Stopped after {time}")));
+    }
+    let mark = if f.ok { style.green("✓") } else { style.red("✗") };
+    let mut parts = vec![style.dim(&format!("Worked for {time}"))];
+    if !f.provider.is_empty() {
+        parts.push(format!("{mark} {}", Theme::new(style).name(&f.provider)));
+    } else if !f.ok {
+        parts.push(format!("{mark} {}", style.dim("failed")));
+    }
+    if let Some((p, pct)) = plan_pct(f).filter(|(_, pct)| *pct >= 80) {
+        parts.push(style.yellow(&plan_text(p, pct)));
+    }
+    if let Some(files) = files_text(f) {
+        parts.push(style.dim(&files));
+    }
+    format!("  {}", parts.join(&style.dim(" · ")))
 }
 
-pub fn turn_summary_brief(f: &SummaryFacts, style: Style) -> String {
-    let plan = f.plan.clone().filter(|(_, used)| *used >= 0.8);
-    turn_summary(&SummaryFacts { in_tokens: 0, cached_tokens: 0, out_tokens: 0, plan, model: String::new(), ..f.clone() }, style)
+/// The plan window's provider and how full it is, in whole percent (at most 100).
+fn plan_pct(f: &SummaryFacts) -> Option<(&str, u32)> {
+    f.plan.as_ref().map(|(p, used)| (p.as_str(), (used.clamp(0.0, 1.0) * 100.0).round() as u32))
+}
+
+fn plan_text(provider: &str, pct: u32) -> String {
+    format!("{provider} plan {pct}%")
+}
+
+/// `3 files +12 −4`, or `None` when no file changed.
+fn files_text(f: &SummaryFacts) -> Option<String> {
+    let (n, added, removed) = f.files_changed.filter(|(n, _, _)| *n > 0)?;
+    let lines = if added == 0 && removed == 0 { String::new() } else { format!(" +{added} −{removed}") };
+    Some(format!("{}{lines}", plural(n, "file", "files")))
 }
 
 #[cfg(test)]
@@ -88,13 +110,6 @@ mod tests {
     use super::*;
     use crate::uifmt::strip_ansi;
     use crate::uifmt::testutil::*;
-
-    #[test]
-    fn the_brief_summary_keeps_what_a_person_looks_for() {
-        assert_eq!(turn_summary_brief(&facts(), OFF), "✓ codex · 14s");
-        let busy = SummaryFacts { plan: Some(("claude".into(), 0.91)), files_changed: Some((2, 5, 1)), ..facts() };
-        assert_eq!(turn_summary_brief(&busy, OFF), "✓ codex · 14s · claude plan 91% · 2 files +5 −1");
-    }
 
     #[test]
     fn turn_summaries() {
@@ -127,11 +142,16 @@ mod tests {
     }
 
     #[test]
-    fn the_turn_rule_runs_to_the_edge_around_the_summary() {
-        let row = turn_rule("✓ codex · 14s", OFF, 40);
-        assert!(row.starts_with("  ── ✓ codex · 14s ─"), "{row}");
-        assert_eq!(crate::uifmt::display_width(&row), 39);
-        assert!(crate::uifmt::display_width(&turn_rule(&"x".repeat(80), OFF, 40)) <= 90);
+    fn the_closing_row_says_how_long_it_worked_and_who() {
+        assert_eq!(turn_closing(&facts(), OFF), "  Worked for 14s · ✓ codex");
+        let busy = SummaryFacts { plan: Some(("claude".into(), 0.91)), files_changed: Some((2, 5, 1)), ..facts() };
+        assert_eq!(turn_closing(&busy, OFF), "  Worked for 14s · ✓ codex · claude plan 91% · 2 files +5 −1");
+        let failed = SummaryFacts { ok: false, elapsed_ms: 850, ..facts() };
+        assert_eq!(turn_closing(&failed, OFF), "  Worked for 850ms · ✗ codex");
+        assert_eq!(turn_closing(&SummaryFacts { ok: false, elapsed_ms: 2_000, ..Default::default() }, OFF), "  Worked for 2s · ✗ failed");
+        assert_eq!(turn_closing(&SummaryFacts { cancelled: true, elapsed_ms: 3_000, ..facts() }, OFF), "  ■ Stopped after 3s");
+        let on = turn_closing(&facts(), ON);
+        assert!(on.contains("\x1b[2mWorked for 14s") && on.contains("\x1b[32m✓"), "{on:?}");
     }
 
     #[test]

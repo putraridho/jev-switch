@@ -152,8 +152,7 @@ fn size() -> (usize, usize) {
 fn text_width(app: &App) -> usize {
     let cols = size().0;
     if app.fullscreen {
-        let w = cols.saturating_sub(1).max(20);
-        if w >= crate::workstation::panel::SPLIT_MIN_WIDTH { w - crate::workstation::panel::PANEL_WIDTH - 3 } else { w }
+        cols.saturating_sub(1).max(20)
     } else {
         cols
     }
@@ -511,7 +510,8 @@ fn start(idle: &mut Option<(Repl, Stops)>, line: &str, style: Style, screen: &mu
     app.suggestion = None;
     let first = app.sent == 0;
     app.sent += 1;
-    let block = crate::uifmt::sent_block(line, first, style, text_width(app));
+    let stamp = crate::uifmt::local_clock();
+    let block = crate::uifmt::sent_block(line, first, stamp.as_deref(), style, text_width(app));
     show(screen, app, &block, style);
     let line = line.to_string();
     Some(tokio::spawn(async move {

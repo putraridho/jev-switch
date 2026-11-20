@@ -688,15 +688,18 @@ MODES = ("ask mode", "edit mode", "plan mode", "auto mode")
 
 
 def footer(p):
-    """The last row of the live area: the footer with the mode, or a card's key hint."""
+    """The last row of the live area: the key hints under the box, a notice, or a card's keys."""
     rows = [r for r in p.vt.screen() if r.strip()]
     return rows[-1] if rows else ""
 
 
 def idle_now(p):
-    """The input box is up and no turn runs: the footer names the mode and offers send."""
-    last = footer(p).lstrip()
-    return last.startswith(MODES) and "esc stop" not in last
+    """The input box is up and no turn runs: the box's bottom edge names the mode, and neither
+    the working row nor the keys of a running turn are there."""
+    rows = [r for r in p.vt.screen() if r.strip()][-12:]
+    boxed = any(r.rstrip().endswith(tuple(f"{m} ─╯" for m in MODES)) for r in rows)
+    busy = any("esc to stop" in r for r in rows) or footer(p).lstrip().startswith("Enter:queue")
+    return boxed and not busy
 
 
 def wait_prompt(p, timeout=15, what="the prompt"):
@@ -795,8 +798,8 @@ def the_banner_is_one_line_naming_the_ready_providers(w):
             raise Fail(f"the banner should start with the name and version:\n{p.screen_tail()}")
         if "claude ready" not in line:
             raise Fail(f"the banner should name the ready provider in words:\n{p.screen_tail()}")
-        if "╭" not in rows[1]:
-            raise Fail(f"the input box should follow the one banner line:\n{p.screen_tail()}")
+        if "⇄ auto" not in rows[1] or "╭" not in rows[2]:
+            raise Fail(f"the header row and the input box should follow the one banner line:\n{p.screen_tail()}")
         if "checking providers" in p.visible().replace("checking providers...", "", 1):
             raise Fail("the progress notice must be erased, not left as a banner line")
         quit_with_ctrl_d(p)
@@ -811,13 +814,13 @@ def an_answer_that_offers_a_next_step_suggests_it_and_right_takes_it(w):
         prompt_ready(p)
         ask(p, "please offernext", answer="Want me to commit this and tag v9.9.9?")
         rows = p.vt.screen()
-        box = [r for r in rows if "│ › commit this and tag v9.9.9" in r]
+        box = [r for r in rows if "│ ❯ commit this and tag v9.9.9" in r]
         if not box or not any("→ to use" in r for r in rows):
             raise Fail(f"the empty box should show the offered step and how to take it:\n{p.screen_tail()}")
         p.send("\x1b[C")  # Right
         p.settle(0.3)
         p.send("\r")
-        p.expect("› commit this and tag v9.9.9", 15, "the suggestion, sent as typed")
+        p.expect("❯ commit this and tag v9.9.9", 15, "the suggestion, sent as typed")
         p.expect(ANSWER, 15, "its answer")
         wait_prompt(p, 15, "the next prompt")
         if any("→ to use" in r for r in p.vt.screen()):
@@ -825,7 +828,7 @@ def an_answer_that_offers_a_next_step_suggests_it_and_right_takes_it(w):
         # What is typed is completed from earlier messages, dim; Right takes the rest.
         p.send("please off")
         p.settle(0.3)
-        if not any("│ › please offernext" in r for r in p.vt.screen()):
+        if not any("│ ❯ please offernext" in r for r in p.vt.screen()):
             raise Fail(f"the typed text should be followed by the rest of the earlier message:\n{p.screen_tail()}")
         p.send("\x1b[C")
         p.settle(0.2)
@@ -833,7 +836,7 @@ def an_answer_that_offers_a_next_step_suggests_it_and_right_takes_it(w):
         # A message queued during the turn answers the offer: once it has run, even a command
         # that brings no answer, the offer is gone.
         p.send("please offernextpause\r")
-        p.expect("› please offernextpause", 15, "the sent message")
+        p.expect("❯ please offernextpause", 15, "the sent message")
         p.settle(0.3)
         p.send("/keys\r")
         p.expect("Want me to commit this and tag v9.9.9?", 15, "the answer with its offer")
@@ -904,20 +907,18 @@ def a_typed_prompt_runs_a_turn_with_tools_answer_and_summary(w):
     try:
         prompt_ready(p)
         p.send("explain the code quick\r")
-        p.expect("› explain the code quick", 15, "the sent message, kept in the scrollback")
-        p.expect("⏺ Read a.txt", 15, "the tool line")
+        p.expect("❯ explain the code quick", 15, "the sent message, kept in the scrollback")
+        p.expect("◇ Explored 1 file", 15, "the run of tool calls as one row")
         p.expect(ANSWER, 15, "the answer")
         p.expect("✓ claude", 15, "the turn summary")
         summary = wait_prompt(p, 15, "the next prompt")
         line = [l for l in summary.split("\n") if "✓ claude" in l][-1]
-        if "◆ claude · claude-sonnet-5-5" not in summary:
+        if "⇄ claude · claude-sonnet-5-5" not in summary:
             raise Fail(f"the route row should lead the turn with the provider and model:\n{p.screen_tail()}")
         for part in ("in 15", "out 3"):
             if part in line:
                 raise Fail(f"token counts belong to /cost, not every turn: {line!r}")
-        if "⎿ ✓ read 1 line" not in summary:
-            raise Fail(f"what the tool returned should show under it:\n{p.screen_tail()}")
-        if not re.search(r"· \d+(ms|s)\b", line):
+        if not re.search(r"Worked for \d+(ms|s)\b", line):
             raise Fail(f"summary line should have the elapsed time: {line!r}")
         quit_with_ctrl_d(p)
     finally:
@@ -948,8 +949,8 @@ def status_line_shows_during_a_slow_turn_and_is_erased_after(w):
         if turn.rfind("\x1b[?25h") < turn.find("\x1b[?25l"):
             raise Fail("the cursor was hidden for the status line and never shown again")
         # The line carries the model and what is running.
-        if "Bash cargo test" not in strip_known_escapes(turn):
-            raise Fail("the tool call should show in the status line / tool lines")
+        if "Running cargo test" not in strip_known_escapes(turn):
+            raise Fail("the tool call should show on the working row")
         quit_with_ctrl_d(p)
     finally:
         p.close()
@@ -961,12 +962,12 @@ def ctrl_c_stops_the_turn_not_the_program_and_leaves_no_process_behind(w):
     try:
         prompt_ready(p)
         p.send("please stall forever\r")
-        p.expect("⏺ Bash", 15, "the tool line of the stalled turn")
+        p.expect("Running sleep 300", 15, "the working row of the stalled turn")
         cli, child = w.pid_file("cli.pid"), w.pid_file("child.pid")
         if not (alive(cli) and alive(child)):
             raise Fail("the fake CLI and its child should be running before Ctrl-C")
         p.send("\x03")
-        p.expect("stopped", 10, "the `stopped` summary after Ctrl-C")
+        p.expect("Stopped after", 10, "the `stopped` summary after Ctrl-C")
         wait_prompt(p, 10, "the prompt after the stopped turn")
         if not p.still_running():
             raise Fail(f"Ctrl-C during a turn must not exit the program (exit {p.exit}):\n{p.tail()}")
@@ -1638,7 +1639,7 @@ def ctrl_c_at_the_question_denies_stops_the_turn_and_leaves_no_process_behind(w)
         cli = w.pid_file("cli.pid")
         p.settle(0.3)
         p.send("\x03")
-        p.expect("stopped", 10, "the `stopped` summary after Ctrl-C")
+        p.expect("Stopped after", 10, "the `stopped` summary after Ctrl-C")
         wait_prompt(p, 10, "the prompt after the stopped turn")
         if not p.still_running():
             raise Fail(f"Ctrl-C at the question must not exit the program (exit {p.exit}):\n{p.tail()}")
@@ -1668,7 +1669,7 @@ def keys_typed_ahead_never_answer_a_card_and_arrows_only_move_the_choice(w):
         p.settle(0.4)
         if "✓" in p.visible().split(QUESTION)[-1] or "denied" in p.visible().split(QUESTION)[-1]:
             raise Fail(f"an arrow key or a stray letter must not answer:\n{p.tail()}")
-        if "› 3. No" not in screen_text(p.vt):
+        if "● 3. No" not in screen_text(p.vt):
             raise Fail(f"↑ from the first choice should select the last:\n{screen_text(p.vt)}")
         if settings_rules(w) is not None:
             raise Fail("an arrow key must not save a rule")
@@ -1708,7 +1709,7 @@ def a_question_the_cli_withdraws_is_erased_and_the_keyboard_stays_with_the_box(w
         screen = screen_text(p.vt)
         if QUESTION in screen or "1. Yes" in screen:
             raise Fail(f"the withdrawn question should be gone from the screen:\n{screen}")
-        if "✓" in screen.split("withdrawn")[-1] or "denied" in screen or "stopped" in screen:
+        if "✓" in screen.split("withdrawn")[-1] or "denied" in screen or "Stopped after" in screen:
             raise Fail(f"a withdrawn question is not an answer:\n{screen}")
         # A key typed now goes into the box, not to a stale question.
         p.send("z")
@@ -1718,11 +1719,11 @@ def a_question_the_cli_withdraws_is_erased_and_the_keyboard_stays_with_the_box(w
             raise Fail("a withdrawn question must never be answered")
         if settings_rules(w) is not None:
             raise Fail("a withdrawn question must not save a rule")
-        if "│ › z" not in screen_text(p.vt):
+        if "│ ❯ z" not in screen_text(p.vt):
             raise Fail(f"the key typed after the withdrawal should be in the box:\n{screen_text(p.vt)}")
         p.send("yz")
         p.settle(0.4)
-        if "│ › zyz" not in screen_text(p.vt):
+        if "│ ❯ zyz" not in screen_text(p.vt):
             raise Fail(f"typing in the box should show:\n{screen_text(p.vt)}")
         p.send("\x15")  # clear the box
         ask(p, "explain quick")
@@ -1796,7 +1797,7 @@ def a_long_command_scrolls_inside_its_card_and_a_withdrawal_takes_the_card_away(
         p.expect("(the tool call was withdrawn)", 10, "the withdrawal line")
         p.expect("FAKE CARRIED ON", 10, "the turn going on")
         wait_prompt(p, 10, "the next prompt")
-        if "Allow Bash?" in screen_text(p.vt) or "stopped" in p.visible().split("pagewithdraw please")[-1]:
+        if "Allow Bash?" in screen_text(p.vt) or "Stopped after" in p.visible().split("pagewithdraw please")[-1]:
             raise Fail(f"a withdrawn card is gone and the turn was not stopped:\n{screen_text(p.vt)}")
         if os.path.exists(os.path.join(w.pids, "reply.json")):
             raise Fail("a withdrawn question must never be answered")
@@ -1901,7 +1902,7 @@ def continue_resumes_the_saved_session(w):
 
 
 @scenario
-def rename_names_the_session_in_the_footer_and_in_resume(w):
+def rename_names_the_session_in_the_header_and_in_resume(w):
     p = Pty(w, [w.repo], "rename-1")
     try:
         prompt_ready(p)
@@ -1912,8 +1913,8 @@ def rename_names_the_session_in_the_footer_and_in_resume(w):
         p.send("/rename parser   fix\r")
         p.expect("this session is now called \u201cparser fix\u201d", 10, "the confirmation")
         wait_prompt(p, 5)
-        if "\u201cparser fix\u201d" not in footer(p):
-            raise Fail(f"the footer should show the session's name:\n{p.screen_tail()}")
+        if not any("\u201cparser fix\u201d" in r and "\u21c4" in r for r in p.vt.screen()):
+            raise Fail(f"the header row should show the session's name:\n{p.screen_tail()}")
         quit_with_ctrl_d(p)
     finally:
         p.close()
@@ -1924,8 +1925,8 @@ def rename_names_the_session_in_the_footer_and_in_resume(w):
         q.send("/resume\r")
         q.expect("resumed 1 turn", 10, "the named session resumed")
         wait_prompt(q, 5)
-        if "\u201cparser fix\u201d" not in footer(q):
-            raise Fail(f"a resumed session keeps its name:\n{q.screen_tail()}")
+        if not any("\u201cparser fix\u201d" in r and "\u21c4" in r for r in q.vt.screen()):
+            raise Fail(f"a resumed session keeps its name in the header row:\n{q.screen_tail()}")
         quit_with_ctrl_d(q)
     finally:
         q.close()
@@ -1995,8 +1996,12 @@ def the_permission_mode_carries_over_to_the_next_session(w):
         return p
 
     def hint(p):
-        m = re.match(r"\s*(ask|edit|plan|auto) mode", footer(p))
-        return m.group(1) if m else None
+        """The mode the input box's bottom edge names."""
+        for row in reversed(p.vt.screen()):
+            m = re.search(r"(ask|edit|plan|auto) mode ─╯", row)
+            if m:
+                return m.group(1)
+        return None
 
     # /mode is kept: the next session starts in it, with no flag.
     p = start([], "mode-1")
@@ -2110,11 +2115,11 @@ def the_terminal_is_restored_when_the_program_ends(w):
 
 
 @scenario
-def full_screen_draws_chat_box_and_sidebar_and_leaves_the_terminal_clean(w):
-    """Without JEV_INLINE the app takes the alternate screen: the chat on top, the box under
-    it, the side panel as a full-height column (beside it when wide); the wheel and PageUp are
-    read; and the alternate screen and the mouse are given back at exit. The tiny emulator
-    does not know absolute cursor moves, so this reads the bytes written."""
+def full_screen_draws_header_chat_and_box_and_leaves_the_terminal_clean(w):
+    """Without JEV_INLINE the app takes the alternate screen: the header row on top, the chat
+    under it, the box at the bottom; the wheel and PageUp are read; and the alternate screen
+    and the mouse are given back at exit. The tiny emulator does not know absolute cursor
+    moves, so this reads the bytes written."""
     p = Pty(w, [w.repo], "fullscreen", env=w.env(JEV_INLINE=None), cols=130, rows=34)
     try:
         p.expect("Ask anything", 15, "the box")
@@ -2122,7 +2127,7 @@ def full_screen_draws_chat_box_and_sidebar_and_leaves_the_terminal_clean(w):
         p.expect(ANSWER, 20, "the answer in the chat pane")
         p.settle(0.5)
         raw = p.raw.decode("utf-8", "replace")
-        for needle, what in (("\x1b[?1049h", "the alternate screen"), ("\x1b[?1000h", "mouse reporting"), ("\x1b[1;1H", "rows drawn in place"), ("Router", "the side panel")):
+        for needle, what in (("\x1b[?1049h", "the alternate screen"), ("\x1b[?1000h", "mouse reporting"), ("\x1b[1;1H", "rows drawn in place"), ("orchestrate on", "the header row")):
             if needle not in raw:
                 raise Fail(f"full screen should use {what} ({needle!r}):\n{p.tail()}")
         # PageUp and the wheel are keys the app reads, not text in the box.
@@ -2237,9 +2242,9 @@ def expect_one_row_status_then_nothing_left(p, label):
     left = p.vt.status_rows()
     if left:
         raise Fail(f"{label}: fragments of the status line are left on screen after the turn:\n" + "\n".join(f"      | {r}" for r in left))
-    tool_rows = [r for r in p.vt.screen() if "⏺ Bash" in r]
+    tool_rows = [r for r in p.vt.screen() if "◇ Ran 1 command" in r]
     if len(tool_rows) != 1:
-        raise Fail(f"{label}: the long tool call should print as ONE row, found {len(tool_rows)}: {tool_rows}")
+        raise Fail(f"{label}: the run with the long tool call should print as ONE row, found {len(tool_rows)}: {tool_rows}")
     if any("[31m" in r or "\x07" in r for r in p.vt.screen()):
         raise Fail(f"{label}: the control characters of the tool command leaked to the screen")
 
@@ -2252,7 +2257,7 @@ def the_status_line_is_one_row_on_a_narrow_terminal_whatever_columns_says(w):
         prompt_ready(p)
         watch_status_rows(p)
         p.send("longcmd please\r")
-        p.expect("⏺ Bash", 15, "the tool line")
+        p.expect("Running ls", 15, "the working row of the long command")
         p.settle(2.0)
         width = status_width(p.vt)
         if not 20 < width <= 59:
@@ -2280,7 +2285,7 @@ def the_status_line_follows_a_resize_in_the_middle_of_a_turn(w):
         prompt_ready(p)
         watch_status_rows(p)
         p.send("longcmd please\r")
-        p.expect("⏺ Bash", 15, "the tool line")
+        p.expect("Running ls", 15, "the working row of the long command")
         p.settle(0.5)
         if not 60 < status_width(p.vt) <= 99:
             raise Fail("at 100 columns the long status line should use most of the row")
@@ -2330,7 +2335,7 @@ def a_slow_provider_probe_is_retried_in_the_background_applied_after_the_turn_an
             raise Fail(f"a probe that timed out is not named ready in the banner:\n{banner_line(p)}")
         watch_status_rows(p)
         p.send("please stall forever\r")
-        p.expect("⏺ Bash", 15, "the tool line of the stalled turn")
+        p.expect("Running sleep 300", 15, "the working row of the stalled turn")
         # The retry answers ~7 s after the banner, mid-turn. Routing never changes under a
         # running turn, and the notice only reports what was applied, so it must NOT appear
         # yet, and the live status line must stay one row.
@@ -2340,7 +2345,7 @@ def a_slow_provider_probe_is_retried_in_the_background_applied_after_the_turn_an
         if len(p.vt.status_rows()) != 1:
             raise Fail("the live status line must stay a single row")
         p.send("\x03")
-        p.expect("stopped", 10, "the `stopped` summary")
+        p.expect("Stopped after", 10, "the `stopped` summary")
         # As soon as the turn ends the answer is applied and reported, before the next prompt.
         p.expect("codex is ready now", 10, "the notice right after the turn ends")
         wait_prompt(p, 10, "the prompt")
@@ -2369,7 +2374,7 @@ def a_slow_provider_probe_that_finishes_at_the_prompt_is_reported_at_the_next_in
         p.send("x")
         p.expect("codex is ready now", 10, "the notice at the next key")
         p.settle(0.3)
-        if "│ › typed x" not in screen_text(p.vt):
+        if "│ ❯ typed x" not in screen_text(p.vt):
             raise Fail(f"the notice must not disturb what is being typed:\n{screen_text(p.vt)}")
         p.send("\x15")  # clear the box
         line = providers_line(p, "codex")
@@ -2402,11 +2407,11 @@ def typing_during_a_turn_queues_a_message_that_runs_after_it(w):
         p.expect("esc to stop", 15, "the working row of the slow turn")
         p.settle(0.3)
         p.send("and then hello")
-        p.expect("│ › and then hello", 5, "the typed message in the box")
+        p.expect("│ ❯ and then hello", 5, "the typed message in the box")
         p.send("\r")
-        p.expect("↳ and then hello (queued)", 5, "the queued message above the box")
+        p.expect("#1 and then hello", 5, "the queued message above the box")
         p.expect("✓ claude", 20, "the end of the slow turn")
-        p.expect("› and then hello", 10, "the queued message run as the next one")
+        p.expect("❯ and then hello", 10, "the queued message run as the next one")
         p.expect(ANSWER, 20, "the answer to the queued message")
         wait_prompt(p, 10, "the next prompt")
         quit_with_ctrl_d(p)
@@ -2428,12 +2433,16 @@ def the_input_box_stays_under_the_working_row_for_the_whole_turn(w):
         box = [i for i, r in enumerate(rows) if r.startswith("╭")]
         if not work or not box or [b for b in box if b > work[-1]][:1] != [work[-1] + 1]:
             raise Fail(f"the box should sit right under the working row:\n{p.screen_tail()}")
-        if "enter queue · esc stop" not in rows[-1]:
-            raise Fail(f"the footer should say what Enter and Esc do now:\n{p.screen_tail()}")
+        # Under load a frame can be read half drawn: wait for the footer rather than read it once.
+        deadline = time.time() + 5
+        while not footer(p).lstrip().startswith("Enter:queue") and time.time() < deadline:
+            p.pump(0.1)
+        if not footer(p).lstrip().startswith("Enter:queue") or "Esc" in footer(p):
+            raise Fail(f"the footer should say what Enter does now, and leave Esc to the working row:\n{p.screen_tail()}")
         p.send("and then hello")
-        p.expect("│ › and then hello", 5, "what is typed in the box")
+        p.expect("│ ❯ and then hello", 5, "what is typed in the box")
         p.send("\r")
-        p.expect("↳ and then hello (queued)", 5, "the waiting message above the box")
+        p.expect("#1 and then hello", 5, "the waiting message above the box")
         p.expect("✓ claude", 20, "the end of the turn")
         p.expect(ANSWER, 20, "the answer to the queued message")
         wait_prompt(p, 10, "the next prompt")
@@ -2453,10 +2462,10 @@ def esc_stops_the_turn_and_sends_what_was_typed_right_after(w):
         p.expect("esc to stop", 15, "the working row of the slow turn")
         p.settle(0.3)
         p.send("do this now")
-        p.expect("│ › do this now", 5, "the typed message in the box")
+        p.expect("│ ❯ do this now", 5, "the typed message in the box")
         p.send("\x1b")
-        p.expect("stopped", 10, "the stopped turn")
-        p.expect("› do this now", 10, "the message run at once")
+        p.expect("Stopped after", 10, "the stopped turn")
+        p.expect("❯ do this now", 10, "the message run at once")
         p.expect(ANSWER, 20, "its answer")
         quit_with_ctrl_d(p)
     finally:

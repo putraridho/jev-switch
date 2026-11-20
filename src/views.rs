@@ -198,10 +198,35 @@ pub fn banner(dir: &Path, home: Option<&str>, routing_on: bool, rows: &[AvailRow
         providers.push_str(&style.dim(&format!(" · {} cooling down", cooling.join(", "))));
     }
     let routing = if routing_on { String::new() } else { format!(" {} {}", style.dim("·"), style.yellow("Claude only")) };
-    let brand = format!("{} {}", style.bold(&style.cyan("jev-code")), style.dim(env!("CARGO_PKG_VERSION")));
+    let brand = format!("{} {}", style.bold(&style.accent("jev-code")), style.dim(env!("CARGO_PKG_VERSION")));
     let sep = style.dim("·");
     // What can run comes before the folder: a long path is what gets cut, never the providers.
-    uifmt::truncate_to_width(&format!("{brand} {sep} {providers}{routing} {sep} {}", display_path(dir, home)), width)
+    let head = format!("{brand} {sep} {providers}{routing} {sep} ");
+    let room = width.saturating_sub(uifmt::display_width(&head));
+    uifmt::truncate_to_width(&format!("{head}{}", keep_tail(&display_path(dir, home), room)), width)
+}
+
+/// `path` cut from the front to `width` columns, `…/project/src`: the end of a path is the part
+/// that names the folder, so that is what stays. Cut at a `/` when the last folder fits whole.
+pub fn keep_tail(path: &str, width: usize) -> String {
+    if uifmt::display_width(path) <= width {
+        return path.to_string();
+    }
+    let mut tail = Vec::new();
+    let mut used = 1; // the `…`
+    for c in path.chars().rev() {
+        used += uifmt::char_width(c);
+        if used > width {
+            break;
+        }
+        tail.push(c);
+    }
+    let tail: String = tail.into_iter().rev().collect();
+    let tail = match tail.find('/') {
+        Some(i) if i > 0 => &tail[i..],
+        _ => tail.as_str(),
+    };
+    format!("…{tail}")
 }
 
 /// "just now", "5m ago", "2h ago", "3d ago".
@@ -497,6 +522,18 @@ mod tests {
         assert!(long.contains(" ready") || long.contains("no provider ready"), "a long path never hides the providers: {long}");
         let narrow = banner(Path::new("/a/very/long/project/directory"), None, true, &rows, Style::off(), 40);
         assert!(uifmt::display_width(&narrow) <= 40, "{narrow}");
+        // A path too long for the row loses its front, never the folder it names.
+        let deep = banner(Path::new("/private/var/folders/n0/j5fhc3d939n_f150v/T/jevux-shot/repo"), None, true, &[], Style::off(), 80);
+        assert!(deep.contains(" · …/") && deep.ends_with("/jevux-shot/repo") && uifmt::display_width(&deep) <= 80, "{deep}");
+    }
+
+    #[test]
+    fn a_path_is_cut_from_the_front_at_a_folder_boundary() {
+        assert_eq!(keep_tail("~/proj", 20), "~/proj");
+        assert_eq!(keep_tail("/a/b/c/project/src", 13), "…/project/src");
+        assert_eq!(keep_tail("/a/b/c/project/src", 12), "…/src");
+        assert_eq!(keep_tail("/averyveryverylongname", 8), "…ongname", "a last folder too long for the row keeps its end");
+        assert_eq!(keep_tail("/a/b", 0), "…");
     }
 
     #[test]
