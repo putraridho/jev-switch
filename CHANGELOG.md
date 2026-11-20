@@ -4,6 +4,10 @@ See [docs/changelog-guide.md](docs/changelog-guide.md) for changelog formatting,
 
 ## Unreleased
 
+## 1.8.2
+
+The repository's main branch is renamed.
+
 - The repository's main branch is now `main` instead of `master`. A checkout that updates with `/update` keeps working as long as its upstream is set; if yours still tracks `origin/master`, run `git branch -m master main && git fetch origin && git branch -u origin/main main`.
 
 ## 1.8.1
