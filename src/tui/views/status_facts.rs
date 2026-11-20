@@ -45,7 +45,7 @@ fn avail_row(a: &Availability, rt: &Runtime, now_ms: u64) -> AvailRow {
     row.verified = a.verified;
     row.cooldown = rt.cooldown_left(a.provider, now_ms).map(format_left);
     if a.provider == ProviderId::Gemini {
-        row.via = Some(crate::providers::application::provider_registry::gemini_via().to_string());
+        row.via = Some(crate::providers::infrastructure::backend_factory::gemini_via().to_string());
     }
     match rt.blocked.get(&a.provider) {
         Some(BlockReason::Auth) => {

@@ -1,6 +1,6 @@
-T2 | src/providers/application/provider_registry.rs | crate::backend::infrastructure | 11
+T2 | src/providers/application/provider_registry.rs | crate::backend::infrastructure | 1
 T2 | src/providers/application/provider_registry.rs | crate::providers::infrastructure | 9
-T2 | src/providers/application/provider_registry.rs | crate::shared::infrastructure | 9
+T2 | src/providers/application/provider_registry.rs | crate::shared::infrastructure | 8
 T2 | src/providers/domain/availability.rs | crate::backend::infrastructure | 3
 T2 | src/providers/domain/availability.rs | crate::shared::infrastructure | 1
 T2 | src/providers/domain/reset_time.rs | crate::shared::infrastructure | 1

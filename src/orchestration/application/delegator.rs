@@ -1483,7 +1483,7 @@ impl Delegator {
             runtime: Mutex::new(runtime),
             judge,
             worktrees: Arc::from(worktrees),
-            backend_factory: Box::new(crate::providers::application::provider_registry::backend_for),
+            backend_factory: Box::new(crate::providers::infrastructure::backend_factory::backend_for),
             live: Mutex::new(HashMap::new()),
             records: None,
             gate: Arc::new(tokio::sync::Mutex::new(())),

@@ -45,7 +45,6 @@ use crate::orchestration::domain::orchestration_gate as orchestrate;
 use crate::orchestration::domain::orchestration_gate::{Outcome, Setup};
 use crate::approval::domain::rule_policy as permissions;
 use crate::approval::domain::rule_policy::{Offer, Places, Settled};
-use crate::providers::application::provider_registry as providers;
 use crate::providers::application::provider_registry::Runtime;
 use crate::judgment::application::judge::{CodeWant, ProviderWant, Router};
 use crate::routing::domain::decide as routing;
@@ -580,7 +579,7 @@ impl Engine {
             hooks: Arc::new(Hooks::none(&dir)),
             dir,
             enabled: true,
-            backend_factory: Box::new(providers::session_backend_for),
+            backend_factory: Box::new(crate::providers::infrastructure::backend_factory::session_backend_for),
             git_status: Box::new(git_status_short),
             now: Box::new(log::now_ms),
             idle_timeout: idle_timeout_from_env(),
@@ -2056,8 +2055,8 @@ mod tests {
         // A login problem is not a usage limit: it is kept out of the persisted cooldowns,
         // blocked for this session, and cleared by `/providers refresh`.
         assert!(r.engine.runtime.cooldowns.active(a, NOW).is_none());
-        assert_eq!(r.engine.runtime.blocked.get(&a), Some(&providers::BlockReason::Auth));
-        assert!(r.ui.notes.iter().any(|n| n.contains("log in to") && n.contains(providers::login_target(a))), "{:?}", r.ui.notes);
+        assert_eq!(r.engine.runtime.blocked.get(&a), Some(&crate::providers::application::provider_registry::BlockReason::Auth));
+        assert!(r.ui.notes.iter().any(|n| n.contains("log in to") && n.contains(crate::providers::application::provider_registry::login_target(a))), "{:?}", r.ui.notes);
     }
 
     #[tokio::test]
@@ -2073,7 +2072,7 @@ mod tests {
         assert_eq!(report.provider, Some(b));
         assert_eq!(report.attempts, 2);
         assert_eq!(r.started().iter().map(|x| x.provider).collect::<Vec<_>>(), vec![a, b], "rerun on the other provider");
-        assert_eq!(r.engine.runtime.blocked.get(&a), Some(&providers::BlockReason::UnusableHere));
+        assert_eq!(r.engine.runtime.blocked.get(&a), Some(&crate::providers::application::provider_registry::BlockReason::UnusableHere));
         assert!(r.engine.runtime.cooldowns.active(a, NOW).is_none(), "not a usage limit");
         assert!(r.ui.notes.iter().any(|n| n.contains("trying the next model") && n.contains(&a.to_string())), "{:?}", r.ui.notes);
 

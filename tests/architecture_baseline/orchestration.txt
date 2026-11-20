@@ -2,6 +2,7 @@ T1 | src/orchestration/application/delegator.rs | crate::approval | 2
 T1 | src/orchestration/application/delegator.rs | crate::turn | 4
 T2 | src/orchestration/application/delegator.rs | crate::backend::infrastructure | 2
 T2 | src/orchestration/application/delegator.rs | crate::orchestration::infrastructure | 3
+T2 | src/orchestration/application/delegator.rs | crate::providers::infrastructure | 1
 T2 | src/orchestration/application/delegator.rs | crate::shared::infrastructure | 2
 T2 | src/orchestration/domain/orchestration_gate.rs | crate::backend::infrastructure | 1
 T2 | src/orchestration/domain/orchestration_gate.rs | crate::judgment::application | 2

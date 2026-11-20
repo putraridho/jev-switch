@@ -14,7 +14,6 @@ use std::time::{Duration, Instant};
 use tokio::io::AsyncReadExt;
 
 use jev_router::backend::{self, ProviderId, TurnRequest};
-use jev_router::providers::application::provider_registry as providers;
 use jev_router::backend::infrastructure::outcome_wire as turnlog;
 
 const DEFAULT_IDLE_SECS: u64 = 600;
@@ -46,7 +45,7 @@ async fn main() -> ExitCode {
     }
     let req = TurnRequest { dir: dir.into(), model: model.clone(), prompt, images: vec![], session_id: None, mode: Default::default(), trust_project_settings: jev_router::approval::application::extension_hooks::project_settings_trusted(std::path::Path::new(&dir)) };
     let started = Instant::now();
-    let result = backend::run_turn(&*providers::backend_for(id), &req, idle_from_env(), &mut |_| {}).await;
+    let result = backend::run_turn(&*jev_router::providers::infrastructure::backend_factory::backend_for(id), &req, idle_from_env(), &mut |_| {}).await;
     let wall_ms = started.elapsed().as_millis() as u64;
     println!("{}", turnlog::ask_json(id.as_str(), model, &result, wall_ms));
     ExitCode::SUCCESS

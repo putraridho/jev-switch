@@ -33,7 +33,6 @@ use jev_router::tui::app::preferences::Saved;
 use jev_router::providers::domain::probe_source::ProbeSource;
 use jev_router::tui::app::startup_timeline::{Phase, Timeline};
 use jev_router::providers::infrastructure::probe_cache as probecache;
-use jev_router::providers::application::provider_registry as providers;
 use jev_router::providers::application::provider_registry::{ProbeCache, Runtime};
 use jev_router::tui::repl::session::{Confirm, Flow, Interrupt, Io, Repl, SigInt};
 use jev_router::judgment::application::judge::{Router, CODE_STRONG_THRESHOLD};
@@ -318,7 +317,7 @@ fn engine_for(args: &Args, runtime: Runtime, router: Router, dir: PathBuf, can_a
     let orchestrate = orchestrate::start(saved.orchestrate, envfile::lookup("JEV_ORCHESTRATE").as_deref(), session.is_some());
     let hooks = std::sync::Arc::new(jev_router::approval::application::extension_hooks::Hooks::load(&jev_router::approval::application::extensions::Places::from_env(&dir)));
     let engine = Engine::new(runtime, router, dir)
-        .with_backend_factory(Box::new(providers::run_backends(can_ask)))
+        .with_backend_factory(Box::new(jev_router::providers::infrastructure::backend_factory::run_backends(can_ask)))
         .with_enabled(routing)
         .with_mode(mode)
         .with_orchestrate(orchestrate)

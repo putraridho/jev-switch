@@ -2,6 +2,7 @@ T1 | src/turn/application/engine.rs | crate::tui | 2
 T1 | src/turn/domain/cache.rs | crate::tui | 1
 T2 | src/turn/application/engine.rs | crate::backend::infrastructure | 3
 T2 | src/turn/application/engine.rs | crate::changes::infrastructure | 6
+T2 | src/turn/application/engine.rs | crate::providers::infrastructure | 1
 T2 | src/turn/application/engine.rs | crate::shared::infrastructure | 4
 T2 | src/turn/application/guards.rs | crate::shared::infrastructure | 1
 T2 | src/turn/domain/budget.rs | crate::shared::infrastructure | 2
