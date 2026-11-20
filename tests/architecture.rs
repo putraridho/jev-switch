@@ -136,7 +136,7 @@ const EXTRA_MODULES: &[(&str, &str)] = &[
 
 const DOCUMENTED_CHILDREN: &[&str] = &[
     "backend::claude", "backend::codex", "backend::gemini", "backend::grok",
-    "shared::envfile", "shared::limit_notice", "shared::log", "shared::private_file", "shared::secrets", "shared::sha256", "shared::text", "shared::wording",
+    "shared::envfile", "shared::git_guard", "shared::limit_notice", "shared::log", "shared::private_file", "shared::secrets", "shared::sha256", "shared::text", "shared::wording",
     "uifmt::ansi", "uifmt::changes", "uifmt::commands", "uifmt::complete",
     "uifmt::failure", "uifmt::markdown", "uifmt::permissions", "uifmt::provider_view",
     "uifmt::route", "uifmt::screens", "uifmt::status", "uifmt::style",

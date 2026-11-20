@@ -2,6 +2,7 @@
 //! any other module of this crate.
 
 pub mod envfile;
+pub mod git_guard;
 pub mod limit_notice;
 pub mod log;
 pub mod private_file;

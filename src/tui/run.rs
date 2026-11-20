@@ -192,7 +192,7 @@ fn show(screen: &mut Screen<std::io::Stdout>, app: &mut App, text: &str, style: 
 
 fn git_command(dir: &std::path::Path, args: &[&str]) -> std::process::Command {
     let mut command = std::process::Command::new("git");
-    command.args(crate::gitflow::no_repo_programs(dir)).args(args).current_dir(dir).stderr(std::process::Stdio::null());
+    command.args(crate::shared::git_guard::no_repo_programs(dir)).args(args).current_dir(dir).stderr(std::process::Stdio::null());
     command
 }
 
@@ -218,7 +218,7 @@ mod git_tests {
         for args in [&["rev-parse", "--abbrev-ref", "HEAD"][..], &["status", "--porcelain"][..]] {
             let command = git_command(dir, args);
             let actual: Vec<_> = command.get_args().collect();
-            let hardening = crate::gitflow::no_repo_programs(dir);
+            let hardening = crate::shared::git_guard::no_repo_programs(dir);
             let expected: Vec<_> = hardening.iter().map(String::as_str).chain(args.iter().copied()).map(std::ffi::OsStr::new).collect();
             assert_eq!(actual, expected);
         }
@@ -229,7 +229,7 @@ mod git_tests {
     fn status_bar_does_not_run_repo_fsmonitor() {
         use std::os::unix::fs::PermissionsExt;
 
-        let repo = crate::gitflow::scratch::Repo::new("fsmonitor");
+        let repo = crate::shared::git_guard::scratch::Repo::new("fsmonitor");
         repo.git(&["commit", "--allow-empty", "-qm", "init"]);
         let (script, marker) = (repo.path.join(".git/fsmonitor-test.sh"), repo.marker());
         std::fs::write(&script, format!("#!/bin/sh\nprintf x > {}\n", marker.display())).unwrap();

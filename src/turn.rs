@@ -396,7 +396,7 @@ pub fn git_status_short(dir: &Path) -> String {
     std::process::Command::new("git")
         .arg("-C")
         .arg(dir)
-        .args(crate::gitflow::no_repo_programs(dir))
+        .args(crate::shared::git_guard::no_repo_programs(dir))
         .args(["status", "--short"])
         .output()
         .ok()

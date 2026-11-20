@@ -419,7 +419,7 @@ async fn jev_status() -> (bool, Option<bool>) {
 /// `Some(true/false)` from `git rev-parse`; `None` when git cannot be run at all.
 async fn in_git_repo(dir: &Path) -> Option<bool> {
     let run = tokio::process::Command::new("git")
-        .args(crate::gitflow::no_repo_programs(dir))
+        .args(crate::shared::git_guard::no_repo_programs(dir))
         .args(["rev-parse", "--is-inside-work-tree"])
         .current_dir(dir)
         .stdin(std::process::Stdio::null())
