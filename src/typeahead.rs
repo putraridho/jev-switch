@@ -433,7 +433,7 @@ mod tests {
 
     #[test]
     fn a_chunk_through_the_console_queues_and_reports_esc() {
-        use crate::console::testing::Buf;
+        use crate::testkit::capture::Buf;
         use crate::console::ConsoleConfig;
         let console = Console::new(
             Box::new(Buf::default()),

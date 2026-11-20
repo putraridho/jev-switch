@@ -9,6 +9,8 @@ pub mod codex;
 pub mod codex_plan;
 pub mod gemini;
 pub mod grok;
+#[cfg(test)]
+pub mod testing;
 
 use std::collections::VecDeque;
 use std::future::Future;
@@ -1220,35 +1222,8 @@ mod tests {
     /// A backend whose "CLI" is a shell script printing canned lines, so the runner
     /// is tested without any real CLI. Line grammar: `FIN:text`, `FAIL:message`,
     /// `TOOL:summary`, `TEXT:text`.
-    struct Fake(&'static str);
-
-    impl Backend for Fake {
-        fn provider(&self) -> ProviderId {
-            ProviderId::Claude
-        }
-        fn command(&self, req: &TurnRequest) -> Command {
-            let mut c = Command::new("sh");
-            c.arg("-c").arg(self.0).current_dir(&req.dir);
-            c
-        }
-        fn parse_line(&self, line: &str) -> Vec<Event> {
-            let line = line.trim_end();
-            let ev = match line.split_once(':') {
-                Some(("FIN", t)) => Event::Finished(Finish {
-                    text: t.into(),
-                    session_id: Some("s1".into()),
-                    usage: Usage { output_tokens: 7, ..Usage::default() },
-                }),
-                Some(("FAIL", m)) => Event::Failed { message: m.into() },
-                Some(("TOOL", t)) => Event::Tool(t.into()),
-                Some(("TEXT", t)) => Event::Text(t.into()),
-                _ => return vec![],
-            };
-            vec![ev]
-        }
-        fn classify_error(&self, message: &str) -> ErrorKind {
-            classify_common(message).unwrap_or(ErrorKind::Other)
-        }
+    fn fake_cli(script: &'static str) -> super::testing::ScriptedCli {
+        super::testing::ScriptedCli::new(ProviderId::Claude, script)
     }
 
     fn req() -> TurnRequest {
@@ -1258,7 +1233,7 @@ mod tests {
     async fn run(script: &'static str, idle_ms: u64) -> (Result<TurnOutcome, TurnError>, Vec<Event>) {
         let mut seen = Vec::new();
         let mut on_event = |e: &Event| seen.push(e.clone());
-        let r = run_turn(&Fake(script), &req(), Duration::from_millis(idle_ms), &mut on_event).await;
+        let r = run_turn(&fake_cli(script), &req(), Duration::from_millis(idle_ms), &mut on_event).await;
         (r, seen)
     }
 
@@ -1897,7 +1872,7 @@ mod tests {
         tx.send("hello".to_string()).unwrap();
         let mut on_event = |_: &Event| {};
         let prepare = |t: &str| Some(t.to_string());
-        let out = run_turn_steered(&Fake("echo FIN:ok"), &req(), Duration::from_secs(5), &mut on_event, &NoApprover, Some(Steering { rx, prepare: &prepare })).await;
+        let out = run_turn_steered(&fake_cli("echo FIN:ok"), &req(), Duration::from_secs(5), &mut on_event, &NoApprover, Some(Steering { rx, prepare: &prepare })).await;
         assert_eq!(out.unwrap().text, "ok");
     }
 

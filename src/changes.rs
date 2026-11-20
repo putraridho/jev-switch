@@ -1119,28 +1119,15 @@ mod tests {
         }
     }
 
-    fn run_git(dir: &Path, args: &[&str]) -> String {
-        let out = Command::new("git")
-            .arg("-C")
-            .arg(dir)
-            .args(["-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false"])
-            .args(args)
-            .output()
-            .expect("git runs");
-        assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
-        String::from_utf8_lossy(&out.stdout).into_owned()
-    }
+    use crate::testkit::git_repo::git as run_git;
 
     /// A repo with a.txt (3 lines), b.txt, c.txt committed and `*.log` ignored.
     fn repo() -> Scratch {
         let s = Scratch::new("repo");
-        run_git(s.path(), &["init", "-q"]);
-        s.write(".gitignore", "*.log\n");
-        s.write("a.txt", "one\ntwo\nthree\n");
-        s.write("b.txt", "bee\n");
-        s.write("src/c.txt", "see\n");
-        run_git(s.path(), &["add", "-A"]);
-        run_git(s.path(), &["commit", "-q", "-m", "init"]);
+        crate::testkit::git_repo::init_with_commit(
+            s.path(),
+            &[(".gitignore", "*.log\n"), ("a.txt", "one\ntwo\nthree\n"), ("b.txt", "bee\n"), ("src/c.txt", "see\n")],
+        );
         s
     }
 

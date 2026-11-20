@@ -1740,7 +1740,8 @@ mod tests {
     use tokio::process::Command;
 
     use crate::availability::{Availability, State};
-    use crate::backend::{classify_common, ErrorKind, Finish};
+    use crate::backend::testing::{Attached, ScriptedCli, SessionId};
+    use crate::backend::{classify_common, ErrorKind};
     use crate::catalog::{default_chain, pick, Allowances, TaskType, Usable};
     use crate::router::Security;
     use crate::typesafe::TypeSafe;
@@ -1761,14 +1762,33 @@ mod tests {
     const ANSWER_ALREADY_SAID: &str = "printf 'TEXT:thinking\\nTEXT:done\\nFIN:done\\n'";
 
     /// A "CLI" that is a shell script, with a grammar of canned lines (see backend tests).
-    struct Fake {
+    /// `clock` is the rig's clock, and `attempt_ms` how long (ms) an attempt takes before it
+    /// reports a failure. Like the real CLIs, claude, deepseek (through claude) and codex can
+    /// take an MCP server; gemini and grok cannot.
+    fn fake_cli(
         provider: ProviderId,
         script: &'static str,
-        started: Arc<Mutex<Vec<Started>>>,
-        attached: Arc<Mutex<Vec<(ProviderId, McpAttachment)>>>,
-        /// The rig's clock, and how long (ms) an attempt takes before it reports a failure.
-        clock: Arc<AtomicU64>,
-        attempt_ms: Arc<AtomicU64>,
+        started: &Arc<Mutex<Vec<Started>>>,
+        attached: &Attached,
+        clock: &Arc<AtomicU64>,
+        attempt_ms: &Arc<AtomicU64>,
+    ) -> ScriptedCli {
+        let (started, clock, attempt_ms) = (started.clone(), clock.clone(), attempt_ms.clone());
+        ScriptedCli::new(provider, script)
+            .session_id(SessionId::PerProvider)
+            .usage(Usage { output_tokens: 7, context_tokens: Some(1000), ..Usage::default() })
+            .recording_mcp(attached.clone())
+            .on_start(move |req| {
+                started.lock().unwrap().push(Started {
+                    provider,
+                    model: req.model.clone(),
+                    prompt: req.prompt.clone(),
+                    session: req.session_id.clone(),
+                });
+            })
+            .on_fail(move || {
+                clock.fetch_add(attempt_ms.load(Ordering::SeqCst), Ordering::SeqCst);
+            })
     }
 
     #[derive(Debug, Clone)]
@@ -1777,51 +1797,6 @@ mod tests {
         model: String,
         prompt: String,
         session: Option<String>,
-    }
-
-    impl Backend for Fake {
-        fn provider(&self) -> ProviderId {
-            self.provider
-        }
-        fn command(&self, req: &TurnRequest) -> Command {
-            self.started.lock().unwrap().push(Started {
-                provider: self.provider,
-                model: req.model.clone(),
-                prompt: req.prompt.clone(),
-                session: req.session_id.clone(),
-            });
-            let mut c = Command::new("sh");
-            c.arg("-c").arg(self.script).current_dir(&req.dir);
-            c
-        }
-        fn parse_line(&self, line: &str) -> Vec<Event> {
-            let line = line.trim_end();
-            let ev = match line.split_once(':') {
-                Some(("FIN", t)) => Event::Finished(Finish {
-                    text: t.into(),
-                    session_id: Some(format!("sess-{}", self.provider)),
-                    usage: Usage { output_tokens: 7, context_tokens: Some(1000), ..Usage::default() },
-                }),
-                Some(("FAIL", m)) => {
-                    self.clock.fetch_add(self.attempt_ms.load(Ordering::SeqCst), Ordering::SeqCst);
-                    Event::Failed { message: m.into() }
-                }
-                Some(("TOOL", t)) => Event::Tool(t.into()),
-                Some(("TEXT", t)) => Event::Text(t.into()),
-                _ => return vec![],
-            };
-            vec![ev]
-        }
-        fn classify_error(&self, message: &str) -> ErrorKind {
-            classify_common(message).unwrap_or(ErrorKind::Other)
-        }
-        /// Like the real CLIs: claude, deepseek (through claude) and codex can; gemini and grok cannot.
-        fn supports_mcp(&self) -> bool {
-            matches!(self.provider, Claude | DeepSeek | Codex)
-        }
-        fn attach_mcp(&mut self, mcp: &McpAttachment) {
-            self.attached.lock().unwrap().push((self.provider, mcp.clone()));
-        }
     }
 
     #[derive(Default)]
@@ -1914,14 +1889,7 @@ mod tests {
             .with_backend_factory(Box::new(move |p| {
                 fc.lock().unwrap().push(p);
                 let script = s.lock().unwrap()[&p];
-                Box::new(Fake {
-                    provider: p,
-                    script,
-                    started: st.clone(),
-                    attached: at.clone(),
-                    clock: fk.clone(),
-                    attempt_ms: am.clone(),
-                })
+                Box::new(fake_cli(p, script, &st, &at, &fk, &am))
             }))
             .with_git_status(Box::new(|_| " M src/a.rs\n".to_string()))
             .with_clock(Box::new(move || ck.load(Ordering::SeqCst)))
@@ -2834,18 +2802,7 @@ mod tests {
 
     // ------------------------------------------------------------------ changes and undo
 
-    fn git(dir: &Path, args: &[&str]) {
-        let ok = std::process::Command::new("git")
-            .arg("-C")
-            .arg(dir)
-            .args(["-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false"])
-            .args(args)
-            .output()
-            .unwrap()
-            .status
-            .success();
-        assert!(ok, "git {args:?}");
-    }
+    use crate::testkit::git_repo::git;
 
     struct Repo(PathBuf);
 

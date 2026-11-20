@@ -179,7 +179,7 @@ mod tests {
     use super::*;
     use crate::availability::{Availability, State};
     use crate::backend::ProviderId;
-    use crate::console::testing::Buf;
+    use crate::testkit::capture::Buf;
     use crate::console::{Console, ConsoleConfig};
     use crate::handoff::{Sessions, TurnRecord};
     use crate::providers::Runtime;

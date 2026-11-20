@@ -912,14 +912,7 @@ mod tests {
     #[tokio::test]
     async fn a_stalled_jev_connection_keeps_the_current_model_instead_of_hanging() {
         // Accepts the connection, then never answers.
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let url = format!("http://{}/v1/systemone", listener.local_addr().unwrap());
-        tokio::spawn(async move {
-            let mut held = Vec::new();
-            while let Ok((sock, _)) = listener.accept().await {
-                held.push(sock);
-            }
-        });
+        let url = stalled_jev().await;
         let router = Router::new(TypeSafe::with_url("test-key", &url), 1.0)
             .with_jev_timeout(std::time::Duration::from_millis(200))
             .with_top_threshold(Some(0.9));
@@ -983,59 +976,7 @@ mod tests {
 
     // ---- provider_want, against a local fake Jev ----
 
-    use std::sync::{Arc, Mutex};
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
-
-    /// The bodies of the requests a fake Jev received, in order.
-    type Seen = Arc<Mutex<Vec<Value>>>;
-
-    /// Read one HTTP request off `sock` and return its JSON body.
-    async fn read_json_request(sock: &mut tokio::net::TcpStream) -> Option<Value> {
-        let mut buf = Vec::new();
-        let mut chunk = [0u8; 4096];
-        loop {
-            let n = sock.read(&mut chunk).await.ok()?;
-            if n == 0 {
-                return None;
-            }
-            buf.extend_from_slice(&chunk[..n]);
-            let Some(head_end) = buf.windows(4).position(|w| w == b"\r\n\r\n") else { continue };
-            let head = String::from_utf8_lossy(&buf[..head_end]).to_lowercase();
-            let len = head
-                .lines()
-                .find_map(|l| l.strip_prefix("content-length:"))
-                .and_then(|v| v.trim().parse::<usize>().ok())
-                .unwrap_or(0);
-            if buf.len() >= head_end + 4 + len {
-                return serde_json::from_slice(&buf[head_end + 4..head_end + 4 + len]).ok();
-            }
-        }
-    }
-
-    /// A fake Jev: for each request, `reply` makes (status, body). Returns its URL and
-    /// the request bodies seen so far.
-    async fn fake_jev(reply: fn(&Value) -> (u16, String)) -> (String, Seen) {
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let url = format!("http://{}/v1/systemone", listener.local_addr().unwrap());
-        let seen: Seen = Arc::default();
-        let log = seen.clone();
-        tokio::spawn(async move {
-            while let Ok((mut sock, _)) = listener.accept().await {
-                let log = log.clone();
-                tokio::spawn(async move {
-                    let Some(req) = read_json_request(&mut sock).await else { return };
-                    let (status, body) = reply(&req);
-                    log.lock().unwrap().push(req);
-                    let resp = format!(
-                        "HTTP/1.1 {status} X\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
-                        body.len()
-                    );
-                    let _ = sock.write_all(resp.as_bytes()).await;
-                });
-            }
-        });
-        (url, seen)
-    }
+    use crate::testkit::fake_jev::{fake_jev, stalled_jev};
 
     /// Answers every question that was asked: `frontend` at 0.8 for the choice, and a
     /// distinct probability per noul so a decoding mix-up shows.
@@ -1198,14 +1139,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_stalled_jev_gives_no_provider_want_within_the_timeout() {
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let url = format!("http://{}/v1/systemone", listener.local_addr().unwrap());
-        tokio::spawn(async move {
-            let mut held = Vec::new();
-            while let Ok((sock, _)) = listener.accept().await {
-                held.push(sock);
-            }
-        });
+        let url = stalled_jev().await;
         let started = std::time::Instant::now();
         let w = router_at(&url, 200).provider_want("why does the upload hang", "", None, true).await;
         assert!(w.is_none());

@@ -166,17 +166,10 @@ mod tests {
     use std::path::PathBuf;
 
     fn temp(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("jev-diffcmd-{}-{name}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        dir
+        crate::testkit::scratch_dir::scratch_dir("diffcmd", name)
     }
 
-    fn git(dir: &Path, args: &[&str]) -> String {
-        let out = Command::new("git").arg("-C").arg(dir).args(args).output().unwrap();
-        assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
-        String::from_utf8_lossy(&out.stdout).into_owned()
-    }
+    use crate::testkit::git_repo::git;
 
     #[test]
     fn arguments_mix_flags_and_a_path_with_spaces() {

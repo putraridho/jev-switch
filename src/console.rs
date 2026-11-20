@@ -1487,39 +1487,10 @@ pub fn provider_name(provider: &str, style: Style) -> String {
 }
 
 #[cfg(test)]
-pub(crate) mod testing {
-    use std::io::Write;
-    use std::sync::{Arc, Mutex};
-
-    /// A writer whose bytes can be read back.
-    #[derive(Clone, Default)]
-    pub struct Buf(pub Arc<Mutex<Vec<u8>>>);
-
-    impl Buf {
-        pub fn text(&self) -> String {
-            String::from_utf8_lossy(&self.0.lock().unwrap()).into_owned()
-        }
-        pub fn clear(&self) {
-            self.0.lock().unwrap().clear();
-        }
-    }
-
-    impl Write for Buf {
-        fn write(&mut self, b: &[u8]) -> std::io::Result<usize> {
-            self.0.lock().unwrap().extend_from_slice(b);
-            Ok(b.len())
-        }
-        fn flush(&mut self) -> std::io::Result<()> {
-            Ok(())
-        }
-    }
-}
-
-#[cfg(test)]
 mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
-    use super::testing::Buf;
+    use crate::testkit::capture::Buf;
     use super::*;
     use crate::backend::{ErrorKind, ProviderId};
 
@@ -2135,10 +2106,7 @@ mod tests {
     }
 
     fn tmp_project(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("jev-console-{name}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        dir
+        crate::testkit::scratch_dir::scratch_dir("console", name)
     }
 
     #[test]

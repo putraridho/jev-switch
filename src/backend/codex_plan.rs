@@ -120,16 +120,12 @@ pub fn latest_plan() -> Option<(PlanUsage, SystemTime)> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::Duration;
 
     const SAMPLE: &str = r#"{"type":"event_msg","payload":{"type":"token_count","rate_limits":{"limit_id":"codex","primary":{"used_percent":15.0,"window_minutes":300,"resets_at":1795124089},"secondary":{"used_percent":21.0,"window_minutes":10080,"resets_at":1795508228}}}}"#;
 
     fn temp_dir() -> PathBuf {
-        static NEXT: AtomicU64 = AtomicU64::new(0);
-        let path = std::env::temp_dir().join(format!("jev-codex-plan-{}-{}", std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed)));
-        fs::create_dir_all(&path).unwrap();
-        path
+        crate::testkit::scratch_dir::unique_scratch_dir("codex-plan", "t")
     }
 
     #[test]

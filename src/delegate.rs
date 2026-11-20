@@ -2349,10 +2349,10 @@ mod tests {
     use super::*;
     use std::sync::atomic::AtomicUsize;
 
-    use tokio::process::Command as TokioCommand;
 
     use crate::availability::{Availability, State};
-    use crate::backend::{classify_common, Backend, ErrorKind, Finish, Usage};
+    use crate::backend::testing::{ScriptedCli, SessionId};
+    use crate::backend::{ErrorKind, Usage};
     use crate::router::Security;
     use ProviderId::{Claude, Codex, DeepSeek, Gemini, Grok};
 
@@ -2536,44 +2536,17 @@ mod tests {
     // ---------------------------------------------------------------- the Delegator
 
     /// A "CLI" that is a shell script with canned lines: `FIN:text`, `FAIL:message`.
-    struct Fake {
-        provider: ProviderId,
-        script: &'static str,
-        started: Started,
-        /// The permission mode of every turn started, in order.
-        modes: Modes,
+    /// `started` gets (provider, model, dir, prompt) and `modes` the permission mode of every
+    /// turn started, in order.
+    fn fake_cli(provider: ProviderId, script: &'static str, started: &Started, modes: &Modes) -> ScriptedCli {
+        let (started, modes) = (started.clone(), modes.clone());
+        ScriptedCli::new(provider, script).session_id(SessionId::Absent).on_start(move |req| {
+            started.lock().unwrap().push((provider, req.model.clone(), req.dir.clone(), req.prompt.clone()));
+            modes.lock().unwrap().push(req.mode);
+        })
     }
 
     type Modes = Arc<Mutex<Vec<Mode>>>;
-
-    impl Backend for Fake {
-        fn provider(&self) -> ProviderId {
-            self.provider
-        }
-        fn command(&self, req: &TurnRequest) -> TokioCommand {
-            self.started.lock().unwrap().push((self.provider, req.model.clone(), req.dir.clone(), req.prompt.clone()));
-            self.modes.lock().unwrap().push(req.mode);
-            let mut c = TokioCommand::new("sh");
-            c.arg("-c").arg(self.script).current_dir(&req.dir);
-            c
-        }
-        fn parse_line(&self, line: &str) -> Vec<Event> {
-            let line = line.trim_end();
-            match line.split_once(':') {
-                Some(("FIN", t)) => vec![Event::Finished(Finish {
-                    text: t.into(),
-                    session_id: None,
-                    usage: Usage { output_tokens: 7, ..Usage::default() },
-                })],
-                Some(("FAIL", m)) => vec![Event::Failed { message: m.into() }],
-                Some(("TOOL", t)) => vec![Event::Tool(t.into())],
-                _ => vec![],
-            }
-        }
-        fn classify_error(&self, message: &str) -> ErrorKind {
-            classify_common(message).unwrap_or(ErrorKind::Other)
-        }
-    }
 
     const OK: &str = "printf 'TOOL:Edit a.rs\\nFIN:did the piece\\n'";
     const QUOTA: &str = "printf 'FAIL:usage limit reached|1794853451\\n'";
@@ -2596,13 +2569,8 @@ mod tests {
         patch: Mutex<Option<String>>,
     }
 
-    static UNIQUE: AtomicUsize = AtomicUsize::new(0);
-
     fn temp_dir(tag: &str) -> PathBuf {
-        let n = UNIQUE.fetch_add(1, Ordering::SeqCst);
-        let d = std::env::temp_dir().join(format!("jev-delegate-{tag}-{}-{n}", std::process::id()));
-        std::fs::create_dir_all(&d).unwrap();
-        d
+        crate::testkit::scratch_dir::unique_scratch_dir("delegate", tag)
     }
 
     impl FakeWorktrees {
@@ -2749,7 +2717,7 @@ mod tests {
         Delegator::new(Runtime::for_tests(avail), judge, Box::new(wt.clone()))
             .with_backend_factory(Box::new(move |p| {
                 let script = sc.lock().unwrap()[&p];
-                Box::new(Fake { provider: p, script, started: st.clone(), modes: md.clone() })
+                Box::new(fake_cli(p, script, &st, &md))
             }))
             .with_clock(Box::new(|| NOW))
             .with_idle_timeout(Duration::from_millis(500))
@@ -2875,7 +2843,7 @@ mod tests {
         let judge: Judge = Box::new(|_| Box::pin(async { Some(want(TaskType::Feature)) }));
         let st = Arc::new(Mutex::new(Vec::new()));
         let d = Delegator::new(Runtime::for_tests(avail), judge, Box::new(wt.clone()))
-            .with_backend_factory(Box::new(move |p| Box::new(Fake { provider: p, script: OK, started: st.clone(), modes: Modes::default() })))
+            .with_backend_factory(Box::new(move |p| Box::new(fake_cli(p, OK, &st, &Modes::default()))))
             .with_idle_timeout(Duration::from_millis(500));
         let res = d.delegate(brief("x")).await;
         let err = d.merge(&res.worker_id, None).await.unwrap_err();
@@ -3139,10 +3107,7 @@ mod tests {
     /// A repository with one commit holding `f.txt` (five lines).
     fn temp_repo() -> PathBuf {
         let d = temp_dir("repo");
-        run_git(&d, &["init", "-q"]);
-        std::fs::write(d.join("f.txt"), "a\nb\nc\nd\ne\n").unwrap();
-        run_git(&d, &["add", "."]);
-        run_git(&d, &["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "init"]);
+        crate::testkit::git_repo::init_with_commit(&d, &[("f.txt", "a\nb\nc\nd\ne\n")]);
         d
     }
 
@@ -3523,10 +3488,7 @@ mod tests {
     /// A repository with `big.txt` of 30 numbered lines, committed.
     fn numbered_repo() -> PathBuf {
         let d = temp_dir("repo");
-        run_git(&d, &["init", "-q"]);
-        std::fs::write(d.join("big.txt"), (1..=30).map(|n| format!("line{n}\n")).collect::<String>()).unwrap();
-        run_git(&d, &["add", "."]);
-        run_git(&d, &["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "init"]);
+        crate::testkit::git_repo::init_with_commit(&d, &[("big.txt", &(1..=30).map(|n| format!("line{n}\n")).collect::<String>())]);
         d
     }
 

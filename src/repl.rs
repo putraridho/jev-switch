@@ -799,50 +799,23 @@ pub fn page(text: &str) -> bool {
 mod tests {
     use super::*;
     use crate::availability::{Availability, State};
-    use crate::backend::{classify_common, Backend, ErrorKind, Event, Finish, ProviderId, TurnRequest, Usage};
-    use crate::console::testing::Buf;
+    use crate::backend::{ProviderId, Usage};
+    use crate::backend::testing::ScriptedCli;
+    use crate::testkit::capture::Buf;
     use crate::console::ConsoleConfig;
     use crate::providers::Runtime;
     use crate::router::Router;
     use crate::turn::Judged;
     use crate::typesafe::TypeSafe;
     use std::sync::{Arc, Mutex};
-    use tokio::process::Command as TokioCommand;
 
     mod project_tests;
 
     /// A model CLI that is a shell script printing canned lines: `TOOL:x`, `TEXT:x`, `FIN:x`.
-    struct Fake {
-        provider: ProviderId,
-        script: String,
-    }
-
-    impl Backend for Fake {
-        fn provider(&self) -> ProviderId {
-            self.provider
-        }
-        fn command(&self, req: &TurnRequest) -> TokioCommand {
-            let mut c = TokioCommand::new("sh");
-            c.args(["-c", &self.script]).current_dir(&req.dir).env("FAKE_PROMPT", &req.prompt)
-                .env("FAKE_SESSION_ID", req.session_id.as_deref().unwrap_or(""));
-            c
-        }
-        fn parse_line(&self, line: &str) -> Vec<Event> {
-            match line.trim_end().split_once(':') {
-                Some(("FIN", t)) => vec![Event::Finished(Finish {
-                    text: t.into(),
-                    session_id: Some("s1".into()),
-                    usage: Usage { input_tokens: 2000, cached_input_tokens: 1000, output_tokens: 50, context_tokens: Some(2000) },
-                })],
-                Some(("TOOL", t)) => vec![Event::Tool(t.into())],
-                Some(("TEXT", t)) => vec![Event::Text(t.into())],
-                Some(("FAIL", m)) => vec![Event::Failed { message: m.into() }],
-                _ => vec![],
-            }
-        }
-        fn classify_error(&self, message: &str) -> ErrorKind {
-            classify_common(message).unwrap_or(ErrorKind::Other)
-        }
+    fn fake_cli(provider: ProviderId, script: &str) -> ScriptedCli {
+        ScriptedCli::new(provider, script)
+            .usage(Usage { input_tokens: 2000, cached_input_tokens: 1000, output_tokens: 50, context_tokens: Some(2000) })
+            .with_prompt_env()
     }
 
     /// An interrupt that never fires, or fires after a delay, once or twice.
@@ -879,31 +852,14 @@ mod tests {
         pub(super) dir: std::path::PathBuf,
     }
 
-    fn git(dir: &std::path::Path, args: &[&str]) {
-        let ok = std::process::Command::new("git")
-            .args(["-c", "user.email=t@t", "-c", "user.name=t"])
-            .args(args)
-            .current_dir(dir)
-            .output()
-            .unwrap()
-            .status
-            .success();
-        assert!(ok, "git {args:?}");
-    }
-
     pub(super) fn rig(name: &str, script: &str) -> Rig {
-        let dir = std::env::temp_dir().join(format!("jev-repl-{name}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        git(&dir, &["init", "-q"]);
-        std::fs::write(dir.join("a.txt"), "one\n").unwrap();
-        git(&dir, &["add", "."]);
-        git(&dir, &["commit", "-qm", "init"]);
+        let dir = crate::testkit::scratch_dir::scratch_dir("repl", name);
+        crate::testkit::git_repo::init_with_commit(&dir, &[("a.txt", "one\n")]);
         let avail = vec![Availability { provider: ProviderId::Claude, state: State::Ready, plan: None, models: None, detail: String::new(), verified: true }];
         let script = script.to_string();
         let engine = Engine::new(Runtime::for_tests(avail), Router::new(TypeSafe::with_url("k", "http://127.0.0.1:1"), 1.0), dir.clone())
             .with_turn_log(None)
-            .with_backend_factory(Box::new(move |p| Box::new(Fake { provider: p, script: script.clone() })));
+            .with_backend_factory(Box::new(move |p| Box::new(fake_cli(p, &script))));
         let (out, err) = (Buf::default(), Buf::default());
         let cfg = ConsoleConfig { out_style: Style::off(), err_style: Style::off(), width: 80, live: false, project: dir.clone(), stream_answers: true };
         let console = Console::new(Box::new(out.clone()), Box::new(err.clone()), cfg);
