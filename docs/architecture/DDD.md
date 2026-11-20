@@ -1,13 +1,14 @@
 # jev-router: target architecture (DDD) and migration plan
 
-Status: proposal. Scope: the Rust crate `jev-router` as of commit `296bd5b` on `fix-orch-trigger`
-(60 `.rs` files, 32,695 lines: 19,337 production lines and 13,358 test lines, 769 tests).
-This document moves no code. Every `file:line` and every count below refers to that commit
-(`git show 296bd5b:src/turn.rs` shows the cited line). The branch has moved since: fixes merged
-later change `permissions.rs`, `console.rs`, `turn.rs`, `router.rs`, `orchestrate.rs`,
-`availability.rs` and others, so line numbers at the branch tip differ. The module-to-module
-import graph was derived again at the tip and is unchanged, so the context map of 1.3 holds.
-Step P0-0 pins the whole document again at the frozen commit before any code moves.
+Status: proposal. Scope: the Rust crate `jev-router` at tag `ddd-start` on `refactor/ddd`,
+before merging to `main`. `find src -name '*.rs'` finds 173 files with 71,093 lines.
+Counting from the first `#[cfg(test)]` in each file as test code gives 42,557 production
+lines and 28,536 test lines. The task reports 1,543 passing library tests; this count has
+not been verified in this worktree. This document moves no code.
+
+The migration audit is not yet fully pinned to `ddd-start`. Unless updated below, file
+locations, line numbers, counts, the file table and the import graph refer to commit
+`296bd5b`. They must be checked before relying on them. Step P0-0 completes that audit.
 
 The refactor is **pure**: no behaviour change, no change to binary names, flags, environment
 variables, on-disk state, log rows or what any CLI receives on its command line or stdin.
@@ -123,6 +124,9 @@ several contexts. It has no `domain/`.
 
 ### 1.3 Context map
 
+The current import graph still needs to be derived for `ddd-start`. The examples below are
+from `296bd5b`, except for the extension trust dependency listed after them.
+
 The levels below are the whole picture: lower levels are upstream. A context may import only
 the contexts listed in its row of the table. The table is each crate's `[dependencies]`, so
 Cargo refuses a cycle; check C1 (section 3.4) holds the manifests to the table.
@@ -172,6 +176,11 @@ imports `turnlog::turn_row`); `turn -> uifmt` (`turn.rs:38`, the engine formats 
 `uifmt -> doctor` (`uifmt/failure.rs:33` calls `doctor::login_instruction`; the way back,
 `doctor.rs:943`, is in a test only); `commands -> uifmt -> backend` for a module documented as
 pure.
+
+At `ddd-start`, `backend/claude.rs` also reads `ext::Places` and
+`ext::hooks::claude_settings_trusted` while constructing a command. Extension management has
+no exact home in 1.2; the closest home for this trust decision is `approval`. P1a-13 moves the
+decision out of the backend command builder. The rest of the graph remains to be checked.
 
 **Placements that keep the map acyclic.** Each of these was checked against the call graph;
 the obvious home would have closed a cycle or reached into another context's adapter.
@@ -435,9 +444,9 @@ run see the same machine:
 | `GIT_CONFIG_GLOBAL=/dev/null`, `GIT_CONFIG_NOSYSTEM=1`                                                                                                                    | the developer's git identity, signing and hooks settings cannot change a test                                      |
 | `CARGO_TARGET_DIR` unset                                                                                                                                                  | `scripts/test_pty_ux.py`, `scripts/install.sh` and `scripts/provider_eval.py` look for binaries in `<root>/target` |
 
-Tried on this tree: `cargo test` passes all tests with exactly these settings.
+As of `296bd5b`, `cargo test` passed with exactly these settings; recheck at `ddd-start`.
 
-Facts checked on this tree (toolchain 1.97, clippy 0.1.97):
+Facts checked as of `296bd5b`; they need checking again on toolchain 1.95.0 and clippy 0.1.95:
 
 - `cargo clippy -- -D warnings` already turns rustc warnings into errors, so there is no
   separate `RUSTFLAGS=-D warnings` build. Setting `RUSTFLAGS` for one command and not the next
@@ -446,9 +455,12 @@ Facts checked on this tree (toolchain 1.97, clippy 0.1.97):
   fails under `-I` (`No module named 'scripts'`); running the file directly passes its 30 tests.
 - Cost of one run with a warm build: clippy about 30 s, `cargo test` about 5 s, the PTY suite
   74 s (35 scenarios), the Python tests under 1 s. About two minutes per commit.
-- Today's tree is not clippy-clean: 23 findings at the default level (11 lints, one of them
+- As of `296bd5b`, the tree was not clippy-clean: 23 findings at the default level (11 lints, one of them
   `items_after_test_module` for `anthropic.rs`). P0-1 fixes them, so the gate can deny
   warnings from its first commit.
+
+The P0-0 task reports about 35 warnings across about 30 lints on clippy 0.1.95. That
+report has not been verified here.
 
 None of these starts a real provider CLI or spends quota: the Rust tests use fake `sh` scripts
 and a fake Jev server, the PTY test uses a fake `claude`.
@@ -460,7 +472,7 @@ and a fake Jev server, the PTY test uses a fake `claude`.
 | Item                      | Value                                                                                                                                                                                                                                                                                                                                                                                    |
 | ------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Triggers                  | `push` and `pull_request`                                                                                                                                                                                                                                                                                                                                                                |
-| Job                       | one job on `ubuntu-latest`: check out with `fetch-depth: 0` (the ratchet reads the previous commit, `move_check.py` reads the diff), let `rustup` install the toolchain named in `rust-toolchain.toml` (`channel = "1.97.0"`, `components = ["clippy"]`; pinned, so a new clippy release cannot fail an old commit, decision U10), restore the cargo cache, run `scripts/check.sh`       |
+| Job                       | one job on `ubuntu-latest`: check out with `fetch-depth: 0` (the ratchet reads the previous commit, `move_check.py` reads the diff), let `rustup` install the toolchain named in `rust-toolchain.toml` (`channel = "1.95.0"`, `components = ["clippy"]`; pinned, so a new clippy release cannot fail an old commit, decision U10), restore the cargo cache, run `scripts/check.sh`       |
 | Secrets                   | none. The workflow reads no secret and declares `permissions: contents: read`. No `JEV_API_KEY`, no provider key                                                                                                                                                                                                                                                                         |
 | Provider CLIs and Jev     | not installed and not reachable. This is the test of hermeticity: a test that would need `claude`, `codex`, `gemini`, `agy`, `grok` or the Jev service fails in CI, and is then faked like the others, never skipped silently. `check.sh` makes a developer's machine look the same: it clears every key variable and points the env file at an empty file before it runs anything (3.5) |
 | What the runner must have | `git`, `python3`, `sh`, `date`: all present on `ubuntu-latest`. Tests that commit pass `-c user.name=... -c user.email=...` themselves (`turn.rs:2125`, `delegate.rs:2166`)                                                                                                                                                                                                              |
@@ -485,7 +497,7 @@ and a fake Jev server, the PTY test uses a fake `claude`.
 | Unit tests                      | In the file, `#[cfg(test)] mod tests`, when the file stays within the size budget. Otherwise in `<name>_tests.rs` beside it (`#[cfg(test)] #[path = "<name>_tests.rs"] mod tests;`), which keeps access to private items.                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
 | Use-case tests                  | `application/tests/` in the context (`mod.rs` holds the fakes, one file per behaviour).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
 | Test doubles shared by contexts | `crates/testkit/` for helpers that know no context (scratch directory, temporary git repository, fake Jev server, capture writer); a context's own fakes in its `testing` module behind the `testing` feature (3.3). Together they replace the private copies listed in 7.2, D16.                                                                                                                                                                                                                                                                                                                                                                                                                      |
-| Fixtures                        | `tests/fixtures/<cli>/` stays at the repository root, where it is today. The 24 `include_str!("../../tests/fixtures/...")` paths are relative to the source file and break on every move, so tests load fixtures with `fixture!("claude/turn1.jsonl")` from `jev-testkit`. It expands to `include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../tests/fixtures/", ...))`; `CARGO_MANIFEST_DIR` is evaluated in the calling crate (tried), and every engine crate sits two levels below the root (check C1 requires `crates/<name>/`). No other path in the code depends on where a crate lives: the only other `env!` uses are `CARGO_PKG_VERSION` in four binaries (see "Version" below the tree). |
+| Fixtures                        | `tests/fixtures/<cli>/` stays at the repository root, where it is today. The 24 fixture `include_str!` paths are relative to the source file and break on every move, so tests load fixtures with `fixture!("claude/turn1.jsonl")` from `jev-testkit`. It expands to `include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../tests/fixtures/", ...))`; `CARGO_MANIFEST_DIR` is evaluated in the calling crate (tried), and every engine crate sits two levels below the root (check C1 requires `crates/<name>/`). A 25th relative `include_str!` in `learn.rs` loads `docs/CHANGELOG.md` and also needs a path that survives the move. |
 | Workspace-level tests           | `tests/architecture.rs` at the root, registered in `crates/cli/Cargo.toml` (`[[test]] name = "architecture"`, `path = "../../tests/architecture.rs"`; tried in a scratch workspace, a virtual root cannot own a test). `crates/embed/tests/embed_api.rs` belongs to the facade. An integration test sees only `pub` items, so it cannot reach a wire struct.                                                                                                                                                                                                                                                                                                                                           |
 | Golden bytes                    | The expected bytes of every file, log and wire format are data files in `tests/golden/<context>/<format>.txt`, written once in P0-3 and never edited afterwards (`git diff ddd-base -- tests/golden` stays empty). The test that compares is a unit test named `golden_<format>` beside the code that writes the format, so it moves with that code and keeps access to private items; it loads the file with `golden!("turn/turn_log_row.txt")`, built like `fixture!`. Values that differ per run (`ts_ms`, process ids, temporary paths) are replaced by a fixed token in the test before comparing; each golden's first comment line lists what is masked.                                         |
 
@@ -493,7 +505,7 @@ and a fake Jev server, the PTY test uses a fake `claude`.
 
 | Concern                                | One home                                                                                                                                                                                                                                            | Replaces                                                                                                                        |
 | -------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
-| Environment variables and the env file | `shared/infrastructure/env.rs`: the only caller of `std::env`. A closed `EnvVar` enum lists every variable the program reads (about 57 names today). Each context has a `config.rs` that turns `&dyn Env` into its typed `Config` once, at startup. | 44 direct `std::env` reads in 16 files and 31 `envfile::lookup` calls in 16 files                                               |
+| Environment variables and the env file | `shared/infrastructure/env.rs`: the only caller of `std::env`. A closed `EnvVar` enum lists every variable the program reads (about 57 names today). Each context has a `config.rs` that turns `&dyn Env` into its typed `Config` once, at startup. | 96 `std::env::` occurrences in production code across 38 files, counting before the first `#[cfg(test)]` per file; this does not count `env::` aliases                                               |
 | Secrets                                | `shared/domain/secret.rs`: `Secret` wraps a key; `Debug` and `Display` print `[redacted]`; it has no `Serialize`; `expose()` is callable only from `infrastructure/` (check A9). Every API key travels as `Secret`.                                 | bare `String` keys (`providers.rs:43`, `typesafe.rs:151`)                                                                       |
 | State directory                        | `shared/infrastructure/state_dir.rs` behind the `StateDir` port.                                                                                                                                                                                    | `log::state_dir()` called from 8 modules                                                                                        |
 | Clock                                  | `shared/application/ports.rs`: `trait Clock { fn now(&self) -> UnixMillis; }`, `shared/infrastructure/system_clock.rs`.                                                                                                                             | `log::now_ms` (`log.rs:28`), `doctor::now_ms` (`doctor.rs:543`), two `Clock` closure aliases (`turn.rs:300`, `delegate.rs:979`) |
@@ -816,6 +828,8 @@ Those are the only edits this refactor makes under `dashboard/`, and only in Pat
 
 ### 4.5 Every current file and where it goes
 
+This table is as of `296bd5b`. It does not yet list every file at `ddd-start`.
+
 "Split" means the file becomes several files in the listed folder; the first file named keeps
 the `git mv` history (it holds the largest part). New paths are under `crates/`, with `src/`
 left out as in the tree.
@@ -1038,7 +1052,7 @@ Production code today has 11 panic sites, `unsafe` in 3 files, and 1 downcast.
 | `lineedit.rs:318-384`        | `unsafe` `poll`, `read`, `tcgetattr`, `tcsetattr` (8 blocks)      | `sys_unix::RawMode` guard, `sys_unix::read_byte`                                                                           |
 | `terminal.rs:36-136`         | `unsafe` termios save and restore, `ioctl(TIOCGWINSZ)` (6 blocks) | `sys_unix::saved_termios`, `restore_termios`, `set_echo`, `window_size`                                                    |
 | `backend/mod.rs:1173`        | `unsafe { libc::kill(child, SIGKILL) }` in a test                 | `sys_unix::signal_process`: `forbid(unsafe_code)` holds in test code too, and `libc` leaves `backend`'s manifest           |
-| `terminal.rs:169-171`        | `payload().downcast_ref::<&str>()` and `::<String>()`             | `PanicHookInfo::payload_as_str()` (stable since Rust 1.81; the toolchain here is 1.97), same result for both payload kinds |
+| `terminal.rs:169-171`        | `payload().downcast_ref::<&str>()` and `::<String>()`             | `PanicHookInfo::payload_as_str()` (stable since Rust 1.81; the toolchain here is 1.95.0), same result for both payload kinds |
 
 `shared/infrastructure/sys_unix.rs` is the only file with `unsafe`. Each block gets a
 `// SAFETY:` comment; `clippy::undocumented_unsafe_blocks` is denied. Every crate root except
@@ -1061,7 +1075,7 @@ workspace = true
 ```
 
 (check C1). Tried on this toolchain in a scratch workspace: every lint name below exists in
-clippy 0.1.97, a member that opts in is held to the tables, and a `[workspace.lints]` table
+clippy (as of `296bd5b`; recheck with clippy 0.1.95), a member that opts in is held to the tables, and a `[workspace.lints]` table
 that no package opts into is silently ignored, which is why C1 exists. `clippy.toml` is read
 from the workspace root for every member.
 
@@ -1216,7 +1230,30 @@ CI is section 3.6.
 
 ### 7.3 How the big files split
 
-Line ranges are today's; each destination file is within the 400-line budget.
+These splits and line ranges are as of `296bd5b`. They need a new audit at `ddd-start`.
+
+New files that need a split at `ddd-start` include:
+
+- `privacy.rs`: privacy policy has no exact home in 1.2; use the closest, `approval`.
+  Put `Policy`, `Scope` and `Verdict` in `approval/domain/privacy_policy.rs`; path and glob
+  matching in `approval/domain/privacy_paths.rs`; `AuditLog` in
+  `approval/infrastructure/privacy_audit.rs`.
+- `ext/hooks.rs`: extension hooks have no exact home in 1.2; use `approval` for tool-call
+  refusal and settings trust. Put trust checks and settings preview in
+  `approval/infrastructure/settings_trust.rs`, and hook execution in
+  `approval/infrastructure/hooks.rs`. The remaining turn-event hooks need a separate home.
+- `sessionlib.rs`: put `Query`, `Hit` and `search` in `session/domain/library_search.rs`;
+  scanning and imports in `session/infrastructure/session_library.rs`; `render_hits` in
+  `tui/render/session_library.rs`.
+- `uifmt/diffview.rs`: put word matching in `tui/render/word_diff.rs`, unified and split
+  rows in `tui/render/diff_rows.rs`, and `render_diff` in `tui/render/diff_view.rs`.
+- `uifmt/identity.rs`: put colour depth and RGB conversion in `tui/render/color.rs`, identity
+  and overrides in `tui/render/identity.rs`, and `ProviderTheme` in
+  `tui/render/provider_theme.rs`.
+- `uifmt/roles.rs`: put sent, narration and answer blocks in `tui/render/roles.rs`; tool
+  grouping and results in `tui/render/tool_rows.rs`; previews in `tui/render/edit_preview.rs`.
+
+The proposed destination files must each fit within the 400-line budget after the split.
 
 **`turn.rs` (2,835: 1,144 production, 1,690 tests)**
 
@@ -1390,12 +1427,12 @@ how data is parsed or written, needs the oracle or golden tests named in the ste
 | Step | What                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        | Risk | Verification beyond the gate                                                                                                         |
 | ---- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---- | ------------------------------------------------------------------------------------------------------------------------------------ |
 | P0-0 | Tag `ddd-start`. Pin this document to it: every `file:line`, the figures of the header, 3.2, 5.4-5.6, 7.1-7.3 and 9.2, and the import graph behind 1.3 (derived from the `use` items, as for this version). The splits of 7.3 are rewritten for the files changed since `296bd5b`.                                                                                                                                                                                                                                                                                                          | L    | A reviewer checks 30 citations chosen at random; the derived graph has no edge outside the table of 1.3 other than those P1a removes |
-| P0-1 | `scripts/check.sh` (3.5), `rust-toolchain.toml`, `.github/workflows/check.yml` (3.6). Fix today's 23 default clippy findings and move the code that follows the test module in `anthropic.rs`, one lint per commit.                                                                                                                                                                                                                                                                                                                                                                         | L    | The script passes locally and in CI                                                                                                  |
-| P0-2 | Add `fixture!` (in a new test-only module `src/testkit/fixture.rs`) and replace the 24 relative `include_str!` paths (6 in `backend/claude.rs`, 3 in `codex.rs`, 10 in `gemini.rs`, 4 in `grok.rs`, `permissions.rs:1145`).                                                                                                                                                                                                                                                                                                                                                                 | L    | Same tests pass                                                                                                                      |
+| P0-1 | `scripts/check.sh` (3.5), `rust-toolchain.toml`, `.github/workflows/check.yml` (3.6). Fix the default clippy findings (23 as of `296bd5b`) and move the code that follows the test module in `anthropic.rs`, one lint per commit.                                                                                                                                                                                                                                                                                                                                                                         | L    | The script passes locally and in CI                                                                                                  |
+| P0-2 | Add `fixture!` (in a new test-only module `src/testkit/fixture.rs`) and replace the 24 relative fixture `include_str!` paths (6 in `backend/claude.rs`, 3 in `codex.rs`, 10 in `gemini.rs`, 4 in `grok.rs`, one in `permissions.rs`). Also preserve the relative `docs/CHANGELOG.md` include in `learn.rs`.                                                                                                                                                                                                                                                                                                                                                                 | L    | Same tests pass                                                                                                                      |
 | P0-3 | Goldens (4.1), written from today's code: turn log row, delegate log row, `jev-ask` line, gateway request/turn/decision/check records, `cooldowns.json`, saved session file, worker record, MCP config file, `settings.local.json` after each kind of edit, the Jev request body, Claude `control_response` lines, the forwarded gateway body on both `set_model` paths, the usage log's `prefix` field (5.2), and each backend's argument list. Two cases each (5.3).                                                                                                                      | L    | Each golden is read by a reviewer; each test fails when one byte of its golden is changed                                            |
 | P0-4 | `tests/architecture.rs` with its lexer tests, check T1 (flat modules against the map) and the baseline.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     | L    | Passes with the baseline; removing any baseline line fails; a planted violation fails                                                |
 | P0-5 | `scripts/budget.py` in report mode, `scripts/move_check.py`, `scripts/parity.py`: checks out `ddd-start` into a temporary directory outside the repository, builds it and HEAD each in its own `target/`, and compares, in a hermetic `HOME` with fake CLIs on `PATH`, the stdout, stderr and exit code of `jev-code --help`, `jev-code doctor`, `jev-code -p` against the fake `claude`, `--version` of each binary that has it, `jev-delegate-mcp` `initialize` and `tools/list`, `jev-ask` against a fake CLI, and the files each run leaves in the state directory (timestamps masked). | L    | Parity of the tree against itself is empty; a planted text change is reported                                                        |
-| P0-6 | Gather the duplicated test scaffolding of D16: context-free helpers into `src/testkit/`, the scripted fake backend into `src/backend/testing.rs`. One helper kind per commit (4 commits).                                                                                                                                                                                                                                                                                                                                                                                                   | M    | Test count unchanged (769)                                                                                                           |
+| P0-6 | Gather the duplicated test scaffolding of D16: context-free helpers into `src/testkit/`, the scripted fake backend into `src/backend/testing.rs`. One helper kind per commit (4 commits).                                                                                                                                                                                                                                                                                                                                                                                                   | M    | Test count unchanged (769 as of `296bd5b`)                                                                                                           |
 | P0-7 | Tag `ddd-base`: the tree with the safety net in place. Goldens, fixtures and scripts are compared with this tag from here on; behaviour is compared with `ddd-start`, so the code edits of P0-1 and P0-6 are covered too.                                                                                                                                                                                                                                                                                                                                                                   | L    | `parity.py ddd-start` prints no difference                                                                                           |
 
 **Phase 1a: untangle in place (serial, still one crate)**
@@ -1421,6 +1458,7 @@ flat modules already form the map of 1.3, and every later extraction is a file m
 | P1a-10 | `Sticky`                                                                                                                                                    | `router.rs:157-200`         | `routing`                                 | a hold rule leaves `judgment`                            |
 | P1a-11 | `RouteFacts` (a plain struct) to `turn`; `denied_without_asking` (approval wording, `turn.rs:142`) to `permissions`                                         | `uifmt`                     | `turn`, `permissions`                     | `turn -> uifmt`                                          |
 | P1a-12 | the test at `doctor.rs:943`                                                                                                                                 | `doctor`                    | `uifmt/failure.rs` tests                  | `doctor -> uifmt` (test only)                            |
+| P1a-13 | Project settings trust decision and the configuration path it needs | `ext/hooks.rs`, `ext/mod.rs`, `backend/claude.rs` | `approval` and a trust fact on the backend request | `backend -> ext` for settings trust |
 
 Tag `ddd-p1a`. Verification for every step: `move_check.py`, and the T1 baseline shrinks.
 
@@ -1561,7 +1599,7 @@ line keeps the main checkout from claiming them. The integrator rebases lanes on
 
 | After             | Run                                                                                                                                                                                                                                                            |
 | ----------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| every commit      | `scripts/check.sh` (3.5): clippy with warnings denied, 769+ Rust tests including the architecture and golden tests, PTY UX test, three Python test files; the same in CI                                                                                       |
+| every commit      | `scripts/check.sh` (3.5): clippy with warnings denied, Rust tests including the architecture and golden tests, PTY UX test, three Python test files; the same in CI                                                                                       |
 | every move commit | `scripts/move_check.py HEAD`                                                                                                                                                                                                                                   |
 | every phase       | `scripts/parity.py ddd-start`: empty diff; the sum of passed tests over all crates is not lower than before; `python3 -I scripts/budget.py` offender count not higher than before; `git diff ddd-base -- tests/golden tests/fixtures scripts/install.sh` empty |
 | P4 lanes          | the differential oracle and golden tests named in the step                                                                                                                                                                                                     |
@@ -1572,7 +1610,7 @@ are fixed and the review repeats until a round finds nothing, as for all work on
 
 ### 8.5 Rollback
 
-- All work is on `refactor/ddd`; `master` and the installed binaries are untouched until the
+- All work is on `refactor/ddd`; `main` and the installed binaries are untouched until the
   final merge.
 - Every commit is green, so any single step is undone with `git revert <sha>`: a move commit
   reverts to the old location, an extraction reverts to the unsplit file. A crate extraction
@@ -1614,13 +1652,13 @@ done includes ten such questions with their expected answers, for example:
 
 | Budget                                                                                                                   | Limit | Today                                                             |
 | ------------------------------------------------------------------------------------------------------------------------ | ----: | ----------------------------------------------------------------- |
-| Lines per `.rs` file, including inline tests                                                                             |   400 | 16 files exceed it on production code alone; the largest is 2,856 |
+| Lines per `.rs` file, including inline tests                                                                             |   400 | 29 files exceed it on production code alone; the largest file is 3,911 lines |
 | Lines per test-only file (`*_tests.rs`, `tests/*.rs`)                                                                    |   600 | n/a                                                               |
-| Lines per function (also `clippy::too_many_lines`)                                                                       |    60 | 12 production functions exceed it; the largest is 145             |
+| Lines per function (also `clippy::too_many_lines`)                                                                       |    60 | 12 production functions exceed it; the largest is 145 (as of `296bd5b`)             |
 | Function parameters                                                                                                      |     6 | 2 `#[allow(clippy::too_many_arguments)]`                          |
 | `pub use` names in a crate's `lib.rs`, grouped under the four headings of the README (types, use cases, ports, adapters) |    40 | n/a                                                               |
-| Files in one folder (`crates/` holds 19 crates)                                                                          |    20 | `src/` has 30 modules side by side                                |
-| `crates/cli/src/bin/*.rs` lines                                                                                          |    30 | up to 1,063                                                       |
+| Files in one folder (`crates/` holds 19 crates)                                                                          |    20 | `src/` has 85 `.rs` files side by side                                |
+| `crates/cli/src/bin/*.rs` lines                                                                                          |    30 | up to 1,265                                                       |
 | Lines in a member `Cargo.toml` (the eight `[[bin]]` entries of `cli` aside)                                              |    25 | n/a                                                               |
 
 The script prints every offender with its size and exits non-zero when one exists (report mode
@@ -1786,7 +1824,7 @@ run by `scripts/dod.sh` (added in P5-6), which exits non-zero on the first failu
 **No behaviour change**
 
 - [ ] `scripts/check.sh` passes locally and the CI run of the final commit is green: all Rust
-      tests (at least the 769 that exist today), `scripts/test_pty_ux.py` (35 scenarios), the
+      tests (at least the baseline count), `scripts/test_pty_ux.py` (35 scenarios), the
       three Python test files.
 - [ ] `git diff ddd-base -- tests/golden tests/fixtures` is empty and the golden tests pass.
 - [ ] `scripts/parity.py ddd-start` prints no difference.
@@ -1822,7 +1860,7 @@ run by `scripts/dod.sh` (added in P5-6), which exits non-zero on the first failu
 | U7  | Budgets                                                                                                                  | Taken as recommended: 400 lines per file, 60 per function                                                                   | The export budget is 40 names per crate, not 25: `backend` exports its types, ports, adapters and the CLI facts the probes read                                                                                                                                                           |
 | U8  | Timing                                                                                                                   | Taken as recommended: merge all open branches first, then freeze feature work from P1a to `ddd-p1`                          | P1a and P1b touch every file. Flashboard's first task may run before or after the refactor; 4.4 covers both orders                                                                                                                                                                        |
 | U9  | The package that holds the binaries keeps the name `jev-router` (`crates/cli`), and the repository folder keeps its name | Taken as recommended (default): keep                                                                                        | Nothing a user sees depends on it. Facts for keeping: `Cargo.lock` stays free of a renamed package (the P1b-0 check), and a Flashboard built before the refactor names `package = "jev-router"` (4.4). No fact argues for a rename                                                        |
-| U10 | Pin the toolchain in `rust-toolchain.toml`                                                                               | Taken as recommended (default): `channel = "1.97.0"`, `components = ["clippy"]`, raised deliberately in a commit of its own | CI and every developer use one clippy, so a new release cannot turn an old green commit red. 1.97.0 is the toolchain the dashboard design verified too. Its nightly-only fuzz crate is outside the workspace and asks for `+nightly` explicitly, which a toolchain file does not override |
+| U10 | Pin the toolchain in `rust-toolchain.toml`                                                                               | Taken as recommended (default): `channel = "1.95.0"`, `components = ["clippy"]`, raised deliberately in a commit of its own | CI and every developer use one clippy, so a new release cannot turn an old green commit red. Its nightly-only fuzz crate is outside the workspace and asks for `+nightly` explicitly, which a toolchain file does not override |
 
 U2 and U5 to U10 are defaults taken from this document's recommendation; the user can still
 change any of them before P0 starts.
