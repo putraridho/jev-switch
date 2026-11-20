@@ -6,6 +6,8 @@ pub mod agent_workers;
 pub mod frontend_view;
 pub mod gimmicks;
 pub mod learn;
+pub mod mcp_picker;
+pub mod raw_keys;
 pub mod session_picker;
 pub mod status_facts;
 pub mod transcript;

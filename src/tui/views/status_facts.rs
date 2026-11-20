@@ -86,7 +86,15 @@ pub fn complete_ctx(engine: &Engine, now_ms: u64) -> CompleteCtx {
         models: usable.iter().map(|(p, m)| format!("{p}:{m}")).collect(),
         changed_files: engine.last_changes().map(|c| c.files.iter().map(|f| f.path.clone()).collect()).unwrap_or_default(),
         skills: skill_choices(engine.dir()),
+        mcp_servers: mcp_server_names(engine),
     }
+}
+
+/// Every configured MCP server once, for `/mcp login` completion.
+fn mcp_server_names(engine: &Engine) -> Vec<String> {
+    let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
+    let rows = crate::backend::infrastructure::mcp_discovery::discover(engine.dir(), home.as_deref(), engine.orchestrate());
+    crate::backend::infrastructure::mcp_server::group(&rows).into_iter().map(|s| s.name).collect()
 }
 
 /// The skills of this project and the user, for `/skill` completion.

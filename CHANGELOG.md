@@ -4,6 +4,13 @@ See [docs/changelog-guide.md](docs/changelog-guide.md) for changelog formatting,
 
 ## Unreleased
 
+## 1.10.0
+
+`/mcp` becomes a list you can navigate: one row per server, live status, a card per server, and login from the list.
+
+- **`/mcp` is a list you can move around in.** Each server shows once, however many providers have it, with a status dot that fills in while you look: `●` connected, `◐` needs login, `✗` failed, `○` off, `·` not checked. The dots come from `claude mcp list` (which connects to each server) and `codex mcp list --json` (which says whether a sign-in is missing), run in the background. ↑↓ move, typing narrows the list (by name, URL, transport or provider), Enter or → opens a server's card with its full target, how each provider sees it (and why one failed), and a `Log in with claude` / `Log in with codex` action. ← or Esc goes back; Esc clears a search before it closes the list.
+- **`/mcp login` without a name opens the same list**, and Tab completes server names after `/mcp login`. `/mcp list` still prints the plain table, as does `/mcp` when there is no terminal.
+
 ## 1.9.3
 
 Bug fix: the context meter no longer reads full after one busy Codex turn.

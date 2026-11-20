@@ -7,6 +7,7 @@ pub mod guard_commands;
 pub mod headless;
 pub mod library_cmds;
 pub mod library_command;
+pub mod mcp_cmds;
 pub mod project_cmds;
 pub mod project_command;
 pub mod session;

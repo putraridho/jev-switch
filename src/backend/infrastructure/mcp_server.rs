@@ -89,15 +89,16 @@ impl McpServer {
     }
 }
 
-/// Fold per-provider rows into servers, in the order each name first appears. Claude and
-/// Codex servers start as [`McpHealth::Checking`] (a check will answer), the rest as
-/// [`McpHealth::Unknown`].
+/// Fold per-provider rows into servers, in the order each name first appears. Claude,
+/// Codex and project servers start as [`McpHealth::Checking`] (a check will answer), the
+/// rest as [`McpHealth::Unknown`].
 pub fn group(rows: &[McpRow]) -> Vec<McpServer> {
     let mut servers: Vec<McpServer> = Vec::new();
     for row in rows {
+        // Claude answers for its own and the project's servers, Codex for its own.
         let health = match row.scope {
-            McpScope::Claude | McpScope::Codex => McpHealth::Checking,
-            _ => McpHealth::Unknown,
+            McpScope::Claude | McpScope::Codex | McpScope::Project => McpHealth::Checking,
+            McpScope::Gemini | McpScope::Orchestrate => McpHealth::Unknown,
         };
         let presence = McpPresence { scope: row.scope, health };
         match servers.iter_mut().find(|s| s.name == row.name) {

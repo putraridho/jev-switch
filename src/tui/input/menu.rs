@@ -191,7 +191,7 @@ mod tests {
     use super::*;
 
     fn menu(before: &str) -> Option<Menu> {
-        let ctx = CompleteCtx { ready_providers: vec!["claude".into(), "codex".into()], models: vec!["claude:claude-opus-5-5".into()], changed_files: vec!["src/a.rs".into()], skills: vec![uifmt::SkillChoice { name: "db".into(), description: "Query the db".into(), hint: "[table]".into() }, uifmt::SkillChoice { name: "lint".into(), ..Default::default() }] };
+        let ctx = CompleteCtx { ready_providers: vec!["claude".into(), "codex".into()], models: vec!["claude:claude-opus-5-5".into()], changed_files: vec!["src/a.rs".into()], skills: vec![uifmt::SkillChoice { name: "db".into(), description: "Query the db".into(), hint: "[table]".into() }, uifmt::SkillChoice { name: "lint".into(), ..Default::default() }], mcp_servers: Vec::new() };
         build(before, &ctx, Path::new("/nonexistent-project"), &["src/lib.rs".into(), "src/tui/menu.rs".into()])
     }
 
