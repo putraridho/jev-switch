@@ -860,7 +860,7 @@ def update_shows_the_new_commits_asks_then_pulls_and_reinstalls(w):
     with open(os.path.join(up, "scripts", "install.sh"), "w") as f:
         f.write("#!/bin/sh\necho FAKE INSTALL RAN\n: > installed\n")
     os.chmod(os.path.join(up, "scripts", "install.sh"), 0o755)
-    git(up, "init", "-q", "-b", "master")
+    git(up, "init", "-q", "-b", "main")
     git(up, "add", "-A")
     git(up, "commit", "-qm", "first")
     git(w.tmp, "clone", "-q", up, clone)
@@ -872,7 +872,7 @@ def update_shows_the_new_commits_asks_then_pulls_and_reinstalls(w):
     try:
         prompt_ready(p)
         p.send("/update\r")
-        p.expect("→ 9.9.9: 1 new commit on origin/master", 15, "the version change and the commit count")
+        p.expect("→ 9.9.9: 1 new commit on origin/main", 15, "the version change and the commit count")
         p.expect("release 9.9.9", 5, "the incoming commit")
         p.expect("Pull it and reinstall jev-code now?", 10, "the confirmation card")
         p.settle(0.3)

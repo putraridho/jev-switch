@@ -81,7 +81,7 @@ pub const COMMANDS: [Cmd; 59] = [
     Cmd { name: "/keys", args: "", group: Group::Info, about: "Show the key cheat sheet (also ? on an empty box)", example: "", hint: "" },
     Cmd { name: "/whatsnew", args: "[all]", group: Group::Info, about: "Show what changed in this version, or in every version", example: "/whatsnew all", hint: "[all]" },
     Cmd { name: "/doctor", args: "", group: Group::Info, about: "Check the setup and show how to fix problems", example: "", hint: "" },
-    Cmd { name: "/update", args: "", group: Group::Info, about: "Update jev-code to the newest version on master and reinstall it", example: "", hint: "" },
+    Cmd { name: "/update", args: "", group: Group::Info, about: "Update jev-code to the newest version on main and reinstall it", example: "", hint: "" },
     Cmd { name: "/terminal-setup", args: "[install]", group: Group::Info, about: "Make Shift-Enter insert a new line in your terminal", example: "/terminal-setup install", hint: "[install]" },
 ];
 

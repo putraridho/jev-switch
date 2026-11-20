@@ -4,6 +4,14 @@ See [docs/changelog-guide.md](docs/changelog-guide.md) for changelog formatting,
 
 ## Unreleased
 
+## 1.9.2
+
+Bug fix: `/update` works again when a local tag differs from the one on GitHub.
+
+- **`/update` no longer fails on a clashing tag.** It fetched with `--tags`, so one local tag that differed from the remote one (`! [rejected] v1.0.0 -> v1.0.0 (would clobber existing tag)`) failed the whole check with only "failed" to show. It now does a plain fetch, which still picks up new release tags but leaves your existing tags alone.
+- **Update failures show Git's diagnostics and exit status.** `/update` keeps messages from Git and its transport helpers, including helpers that write to standard output, so fetch failures are easier to diagnose.
+- **`/update`'s help says `main`.** It still named `master`, the branch's old name; the update follows `origin/main`.
+
 ## 1.9.1
 
 Bug fixes: a turn now moves on from a Gemini CLI that Google retired, and a failed tool shows a clean message.

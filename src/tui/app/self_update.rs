@@ -57,7 +57,7 @@ pub fn cargo_version(toml: &str) -> Option<String> {
 /// What the checkout and its upstream say, read from git.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Facts {
-    /// `origin/master`, or `None` when the branch has no upstream (or HEAD is detached).
+    /// `origin/main`, or `None` when the branch has no upstream (or HEAD is detached).
     pub upstream: Option<String>,
     /// Tracked files with changes, as `git status --porcelain` lists them.
     pub changed: Vec<String>,
@@ -134,9 +134,22 @@ fn git(dir: &Path, args: &[&str]) -> Result<String, String> {
     if out.status.success() {
         Ok(String::from_utf8_lossy(&out.stdout).into_owned())
     } else {
-        let said = String::from_utf8_lossy(&out.stderr).trim().to_string();
-        Err(format!("git {}: {}", args.join(" "), if said.is_empty() { "failed".to_string() } else { said }))
+        Err(git_failure(args, &out))
     }
+}
+
+/// Preserve diagnostics from git and its transports, including helpers that write to stdout
+/// or exit without a message. Clean external output before it reaches the terminal.
+fn git_failure(args: &[&str], out: &std::process::Output) -> String {
+    let diagnostics = [&out.stderr, &out.stdout]
+        .into_iter()
+        .map(|bytes| crate::tui::render::clean_text(&String::from_utf8_lossy(bytes)))
+        .filter(|text| !text.trim().is_empty())
+        .map(|text| text.trim().to_string())
+        .collect::<Vec<_>>()
+        .join("\n");
+    let status = format!("git {} failed ({})", args.join(" "), out.status);
+    if diagnostics.is_empty() { status } else { format!("{status}: {diagnostics}") }
 }
 
 /// Fetch the upstream and read the facts. The only network call; it changes no file of the
@@ -149,9 +162,13 @@ pub fn check(dir: &Path) -> Result<Facts, String> {
     let Some(up) = upstream.clone() else {
         return Ok(Facts { upstream: None, changed, ahead: 0, behind: 0, incoming: Vec::new(), upstream_version: None, local_version });
     };
-    // `origin/master` → fetch `origin`, with its tags (a release is a tag).
+    // `origin/main` → fetch `origin`. No `--tags`: the check reads the branch, not tags, and
+    // `--tags` fails the whole fetch when a local tag differs from the remote one ("would
+    // clobber existing tag"). A plain fetch still follows new tags on the fetched history.
     let remote = up.split_once('/').map_or(up.as_str(), |(r, _)| r);
-    git(dir, &["fetch", "--quiet", "--tags", remote])?;
+    // Output is captured, so successful fetches remain quiet in the UI. Do not ask git to
+    // suppress diagnostics: a failed transport may otherwise leave only "failed" to show.
+    git(dir, &["fetch", remote])?;
     let counts = git(dir, &["rev-list", "--left-right", "--count", "HEAD...@{upstream}"])?;
     let mut parts = counts.split_whitespace().map(|n| n.parse::<usize>().unwrap_or(0));
     let (ahead, behind) = (parts.next().unwrap_or(0), parts.next().unwrap_or(0));
@@ -217,9 +234,28 @@ fn plan_lines(plan: &Plan) -> Vec<String> {
 mod tests {
     use super::*;
 
+    #[test]
+    fn failed_git_reports_status_even_without_diagnostics() {
+        let out = Command::new("sh").args(["-c", "exit 42"]).output().unwrap();
+        let message = git_failure(&["fetch", "--tags", "origin"], &out);
+        assert!(message.contains("git fetch --tags origin failed"), "{message}");
+        assert!(message.contains("42"), "{message}");
+    }
+
+    #[test]
+    fn failed_git_preserves_both_diagnostic_streams_without_terminal_controls() {
+        let mut out = Command::new("sh").args(["-c", "exit 1"]).output().unwrap();
+        out.stderr = b"fatal: Could not read from remote repository.\n".to_vec();
+        out.stdout = b"\x1b[31mSSH helper failed\x1b[0m\n".to_vec();
+        let message = git_failure(&["fetch"], &out);
+        assert!(message.contains("fatal: Could not read from remote repository."), "{message}");
+        assert!(message.contains("SSH helper failed"), "{message}");
+        assert!(!message.contains('\x1b'), "{message:?}");
+    }
+
     fn facts() -> Facts {
         Facts {
-            upstream: Some("origin/master".into()),
+            upstream: Some("origin/main".into()),
             changed: Vec::new(),
             ahead: 0,
             behind: 0,
@@ -249,10 +285,10 @@ mod tests {
         let p = plan(&f, "1.2.0");
         assert_eq!(
             p,
-            Plan::Update { from: "1.2.0".into(), to: "1.3.0".into(), pull: true, incoming: vec!["abc feat".into(), "def fix".into()], behind: 3, upstream: "origin/master".into() }
+            Plan::Update { from: "1.2.0".into(), to: "1.3.0".into(), pull: true, incoming: vec!["abc feat".into(), "def fix".into()], behind: 3, upstream: "origin/main".into() }
         );
         let text = plan_text(&p).join("\n");
-        assert!(text.starts_with("jev-code 1.2.0 → 1.3.0: 3 new commits on origin/master"), "{text}");
+        assert!(text.starts_with("jev-code 1.2.0 → 1.3.0: 3 new commits on origin/main"), "{text}");
         assert!(text.contains("  abc feat") && text.contains("… and 1 more"), "{text}");
         assert!(text.ends_with(&format!("({INSTALL_NOTE})")), "the gateway restart is said before asking: {text}");
         assert!(!plan_text(&Plan::UpToDate { version: "1.2.0".into() }).join("\n").contains("jev-gateway"));
@@ -295,7 +331,7 @@ mod tests {
         };
         std::fs::write(upstream.join("Cargo.toml"), "[package]\nversion = \"1.0.0\"\n").unwrap();
         std::fs::write(upstream.join(INSTALL_SCRIPT), "#!/bin/sh\necho installing\ntouch installed\n").unwrap();
-        sh(&upstream, "chmod +x scripts/install.sh && git init -q -b master && git add -A && git -c user.email=t@t -c user.name=t commit -qm one");
+        sh(&upstream, "chmod +x scripts/install.sh && git init -q -b main && git add -A && git -c user.email=t@t -c user.name=t commit -qm one");
         sh(&root, "git clone -q upstream clone");
         std::fs::write(upstream.join("Cargo.toml"), "[package]\nversion = \"1.1.0\"\n").unwrap();
         sh(&upstream, "git -c user.email=t@t -c user.name=t commit -qam 'bump to 1.1.0'");
