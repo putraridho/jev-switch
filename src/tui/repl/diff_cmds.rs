@@ -4,7 +4,7 @@
 
 use crate::tui::repl::session::{page, Io, Repl};
 use crate::changes::infrastructure::git_working_tree as changes;
-use crate::changes::infrastructure::git_working_tree::UndoError;
+use crate::changes::domain::undo_report::UndoError;
 use crate::changes::application::diff_command as diffcmd;
 use crate::changes::application::diff_command::DiffArgs;
 use crate::changes::domain::diff_parse as diffparse;

@@ -8,7 +8,8 @@ use std::path::Path;
 use crate::providers::domain::availability::{Availability, State};
 use crate::backend::ProviderId;
 use crate::catalog::domain::model_table as catalog;
-use crate::changes::infrastructure::git_working_tree::{ChangeStatus, ChangeSummary};
+use crate::changes::domain::change_set::ChangeSummary;
+use crate::changes::domain::file_change::ChangeStatus;
 use crate::doctor::domain::diagnose as doctor;
 use crate::session::domain::catch_up::SessionInfo;
 use crate::providers::application::provider_registry::{format_left, BlockReason, Runtime};
@@ -371,7 +372,7 @@ pub fn should_page(text: &str, rows: Option<usize>, stdout_is_tty: bool) -> bool
 mod tests {
     use super::*;
     use crate::backend::Usage;
-    use crate::changes::infrastructure::git_working_tree::FileChange as GitChange;
+    use crate::changes::domain::file_change::FileChange as GitChange;
     use std::path::PathBuf;
     use ProviderId::{Claude, Codex, DeepSeek, Gemini, Grok};
 

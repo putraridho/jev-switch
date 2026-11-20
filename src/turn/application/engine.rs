@@ -33,7 +33,12 @@ use crate::catalog::domain::model_table as catalog;
 use crate::catalog::domain::model_table::{find, ModelSpec};
 use crate::turn::domain::effort::EffortSetting;
 use crate::changes::infrastructure::git_working_tree as changes;
-use crate::changes::infrastructure::git_working_tree::{ChangeSummary, Snapshot, TurnActivity, UndoError, UndoReport};
+use crate::changes::application::track_turn::{snapshot_until, summarize_until};
+use crate::changes::application::undo_turn::undo;
+use crate::changes::domain::change_set::ChangeSummary;
+use crate::changes::domain::snapshot::Snapshot;
+use crate::changes::domain::turn_activity::TurnActivity;
+use crate::changes::domain::undo_report::{UndoError, UndoReport};
 use crate::turn::application::guards::{Guards, TurnFacts};
 use crate::approval::application::extension_hooks as hooks;
 use crate::approval::application::extension_hooks::Hooks;
@@ -472,7 +477,7 @@ pub struct Engine {
     orchestrate: bool,
     /// Where the delegate tool is; `None` means orchestration cannot attach it.
     orch_setup: Option<Setup>,
-    /// Snapshot the working tree around every turn (see [`crate::changes::infrastructure::git_working_tree`]).
+    /// Snapshot the working tree around every turn (see [`crate::changes::infrastructure::git_working_tree`] and [`crate::changes::application::track_turn`]).
     track_changes: bool,
     /// What the last turn that started a model changed; consumed by an undo.
     last_changes: Option<ChangeSummary>,
@@ -863,12 +868,12 @@ impl Engine {
     }
 
     /// Put back what the last turn changed, and only that, if nothing it touched was
-    /// edited since (see [`changes::undo`]). One level: the summary is consumed on
+    /// edited since (see [`undo`]). One level: the summary is consumed on
     /// success. The conversation is told, so the next catch-up is truthful. Blocking
     /// (a few git runs), like any user command.
     pub fn undo_last(&mut self) -> Result<UndoReport, UndoError> {
         let summary = self.last_changes.clone().ok_or(UndoError::NothingToUndo)?;
-        let report = changes::undo(&self.dir, &summary)?;
+        let report = undo(&self.dir, &summary)?;
         self.last_changes = None;
         self.change_history.pop();
         self.sessions.record_undo();
@@ -1065,7 +1070,7 @@ impl Engine {
         if !self.track_changes {
             return None;
         }
-        changes::snapshot_until(self.dir.clone(), stop_signal(cancel, honor_cancel)).await
+        snapshot_until(self.dir.clone(), stop_signal(cancel, honor_cancel)).await
     }
 
     /// What differs from the `before` snapshot now; `None` if there is no `before`, git
@@ -1073,7 +1078,7 @@ impl Engine {
     async fn changes_since(&self, before: Option<Snapshot>, activity: TurnActivity, cancel: &Cancel, honor_cancel: bool) -> Option<ChangeSummary> {
         let before = before?;
         let after = self.snapshot_tree(cancel, honor_cancel).await?;
-        let summary = changes::summarize_until(self.dir.clone(), before, after, activity, stop_signal(cancel, honor_cancel)).await?;
+        let summary = summarize_until(self.dir.clone(), before, after, activity, stop_signal(cancel, honor_cancel)).await?;
         (!summary.is_empty()).then_some(summary)
     }
 
@@ -2851,7 +2856,7 @@ mod tests {
         let sum = report.changes.clone().expect("a git repo");
         let mut paths: Vec<_> = sum.files.iter().map(|f| (f.path.as_str(), f.status)).collect();
         paths.sort_by_key(|p| p.0);
-        use crate::changes::infrastructure::git_working_tree::ChangeStatus::{Added, Deleted, Modified};
+        use crate::changes::domain::file_change::ChangeStatus::{Added, Deleted, Modified};
         assert_eq!(paths, [("a.txt", Modified), ("b.txt", Deleted), ("new.txt", Added)], "ignored files are not changes");
         assert_eq!(r.engine.last_changes(), Some(&sum));
         let diff = r.engine.last_diff(None).unwrap();

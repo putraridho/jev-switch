@@ -8,7 +8,8 @@ use std::path::Path;
 use std::process::{Command, Stdio};
 
 use crate::changes::infrastructure::git_working_tree as changes;
-use crate::changes::infrastructure::git_working_tree::{ChangeSummary, FileChange};
+use crate::changes::domain::change_set::ChangeSummary;
+use crate::changes::domain::file_change::FileChange;
 use crate::changes::domain::diff_parse::FileDiff;
 use crate::tui::render::{Fold, Layout, Style};
 
@@ -164,6 +165,7 @@ pub fn export_patch(dir: &Path, files: &[FileDiff], dest: &str) -> Result<std::p
 mod tests {
     use super::*;
     use crate::changes::domain::diff_parse::parse;
+    use crate::changes::domain::file_change::ChangeStatus;
     use std::path::PathBuf;
 
     fn temp(name: &str) -> PathBuf {
@@ -191,7 +193,7 @@ mod tests {
     }
 
     fn summary(before: &str, after: &str, file: &str) -> ChangeSummary {
-        let f = FileChange { path: file.into(), status: changes::ChangeStatus::Modified, added: 2, removed: 1, old_path: None };
+        let f = FileChange { path: file.into(), status: ChangeStatus::Modified, added: 2, removed: 1, old_path: None };
         ChangeSummary { files: vec![f], before: before.into(), after: after.into(), ..ChangeSummary::default() }
     }
 
