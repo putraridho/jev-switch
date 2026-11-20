@@ -198,11 +198,7 @@ pub fn attachment(bin: &Path, project: &Path, planner: &ModelSpec, config_dir: &
     }
 }
 
-/// Write the JSON file Claude Code's `--mcp-config` reads. Harmless for other CLIs.
-pub fn write_mcp_config(mcp: &McpAttachment) -> std::io::Result<()> {
-    let json = crate::backend::claude::mcp_config_json(mcp);
-    std::fs::write(&mcp.config_path, json.to_string())
-}
+pub use crate::backend::claude::write_mcp_config;
 
 /// Put in front of the prompt of an orchestrated turn so the planner uses the tool
 /// instead of doing every piece itself. It says nothing about models: Jev picks them.
@@ -378,32 +374,5 @@ mod tests {
     #[test]
     fn the_planner_note_does_not_let_the_planner_pick_models() {
         assert!(PLANNER_NOTE.contains("cannot choose the worker's model"));
-    }
-
-    #[test]
-    fn golden_mcp_config() {
-        let dir = std::env::temp_dir().join(format!("jev-golden-mcp-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        let written = |name: &str, command: &str, args: &[&str]| {
-            let mcp = McpAttachment {
-                name: name.into(),
-                command: command.into(),
-                args: args.iter().map(|a| a.to_string()).collect(),
-                config_path: dir.join("mcp.json"),
-            };
-            write_mcp_config(&mcp).unwrap();
-            std::fs::read_to_string(&mcp.config_path).unwrap()
-        };
-        let real = attachment(Path::new("/opt/jev/bin/delegate_mcp"), Path::new("/work/app"), spec(Claude, "claude-opus-5-5"), &dir, 1);
-        write_mcp_config(&real).unwrap();
-        let typical = std::fs::read_to_string(&real.config_path).unwrap();
-        let actual = format!(
-            "## typical: the delegate server as `attachment` builds it\n{typical}\n## unusual: no arguments, spaces, quotes and non-ASCII text\n{}\n",
-            written("j\"ev é", "/opt/my tools/é \\ delegate", &[]),
-        );
-        let _ = std::fs::remove_dir_all(&dir);
-        let golden = golden!("backend/mcp_config.txt");
-        assert_eq!(golden.split_once('\n').unwrap().1, actual);
     }
 }

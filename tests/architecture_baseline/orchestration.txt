@@ -2,5 +2,4 @@ T1 | src/delegate.rs | crate::gitflow | 1
 T1 | src/delegate.rs | crate::guard | 3
 T1 | src/delegate.rs | crate::mode | 1
 T1 | src/delegate.rs | crate::privacy | 1
-T1 | src/delegate.rs | crate::turn | 2
 T1 | src/delegate.rs | crate::uifmt | 2

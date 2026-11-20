@@ -112,6 +112,12 @@ pub fn mcp_config_json(mcp: &McpAttachment) -> Value {
     json!({ "mcpServers": { mcp.name.as_str(): { "command": mcp.command, "args": mcp.args } } })
 }
 
+/// Write the JSON file Claude Code's `--mcp-config` reads. Harmless for other CLIs.
+pub fn write_mcp_config(mcp: &McpAttachment) -> std::io::Result<()> {
+    let json = crate::backend::claude::mcp_config_json(mcp);
+    std::fs::write(&mcp.config_path, json.to_string())
+}
+
 /// The input field that says most about a tool call: a path, a command, a pattern.
 pub fn telling_field(input: &Value) -> Option<&str> {
     ["file_path", "command", "pattern", "path", "url", "description", "brief", "worker_id"].iter().find_map(|k| input.get(*k).and_then(Value::as_str))
@@ -1084,5 +1090,39 @@ mod tests {
         let b = args(&session().command(&req(None)));
         let note = |v: &[String]| v[v.iter().position(|x| x == "--append-system-prompt").unwrap() + 1].clone();
         assert_eq!(note(&a), note(&b), "byte-identical every turn");
+    }
+
+    fn spec(p: ProviderId, id: &str) -> &'static crate::catalog::ModelSpec {
+        crate::catalog::find(p, id).unwrap()
+    }
+
+    #[test]
+    fn golden_mcp_config() {
+        use crate::orchestrate::attachment;
+        use std::path::Path;
+        use ProviderId::Claude;
+        let dir = std::env::temp_dir().join(format!("jev-golden-mcp-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let written = |name: &str, command: &str, args: &[&str]| {
+            let mcp = McpAttachment {
+                name: name.into(),
+                command: command.into(),
+                args: args.iter().map(|a| a.to_string()).collect(),
+                config_path: dir.join("mcp.json"),
+            };
+            write_mcp_config(&mcp).unwrap();
+            std::fs::read_to_string(&mcp.config_path).unwrap()
+        };
+        let real = attachment(Path::new("/opt/jev/bin/delegate_mcp"), Path::new("/work/app"), spec(Claude, "claude-opus-5-5"), &dir, 1);
+        write_mcp_config(&real).unwrap();
+        let typical = std::fs::read_to_string(&real.config_path).unwrap();
+        let actual = format!(
+            "## typical: the delegate server as `attachment` builds it\n{typical}\n## unusual: no arguments, spaces, quotes and non-ASCII text\n{}\n",
+            written("j\"ev é", "/opt/my tools/é \\ delegate", &[]),
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+        let golden = golden!("backend/mcp_config.txt");
+        assert_eq!(golden.split_once('\n').unwrap().1, actual);
     }
 }

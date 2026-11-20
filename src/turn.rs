@@ -22,7 +22,7 @@ use tokio::sync::watch;
 
 use crate::anthropic::{MODEL_CHEAP, MODEL_MID, MODEL_STRONG};
 use crate::backend::{
-    self, Approver, Backend, Decision, ErrorKind, Event, McpAttachment, PermissionRequest, ProviderId, TurnError, TurnOutcome,
+    self, Approver, Decision, ErrorKind, Event, McpAttachment, PermissionRequest, ProviderId, TurnError, TurnOutcome,
     TurnRequest, Usage,
 };
 use crate::cache::{self, WarmCache};
@@ -37,8 +37,8 @@ use crate::mode::Mode;
 use crate::orchestrate::{self, Outcome, Setup};
 use crate::permissions::{self, Offer, Places, Settled};
 use crate::providers::{self, Runtime};
-use crate::router::{CodeWant, ProviderWant, Router, Sticky};
-use crate::routing::{self, NoRoute, Pin, PinOrigin, RouteDecision, RouteInput, RoutingState, Signals};
+use crate::router::{CodeWant, ProviderWant, Router};
+use crate::routing::{self, NoRoute, Pin, PinOrigin, RouteDecision, RouteInput, RoutingState, Signals, Sticky};
 use crate::turnlog::turn_row;
 use crate::uifmt::{self, RouteFacts};
 
@@ -375,7 +375,7 @@ impl Judged {
     }
 }
 
-pub type BackendFactory = Box<dyn Fn(ProviderId) -> Box<dyn Backend> + Send + Sync>;
+pub use crate::backend::BackendFactory;
 type GitStatus = Box<dyn Fn(&Path) -> String + Send + Sync>;
 type Clock = Box<dyn Fn() -> u64 + Send + Sync>;
 
@@ -393,18 +393,7 @@ pub fn git_status_short(dir: &Path) -> String {
         .unwrap_or_default()
 }
 
-/// Longest silence from a CLI before its turn is cut off, so a hung CLI cannot
-/// freeze the session (`CODE_IDLE_TIMEOUT_SECS`, default 900).
-pub fn idle_timeout_from_env() -> Duration {
-    idle_timeout(crate::envfile::lookup("CODE_IDLE_TIMEOUT_SECS").as_deref())
-}
-
-/// The pure half of [`idle_timeout_from_env`]: seconds as text; anything that is not a
-/// positive number leaves the default.
-pub fn idle_timeout(value: Option<&str>) -> Duration {
-    let secs = value.and_then(|s| s.trim().parse::<u64>().ok()).filter(|s| *s > 0).unwrap_or(900);
-    Duration::from_secs(secs)
-}
+pub use crate::backend::{idle_timeout, idle_timeout_from_env};
 
 /// The model chosen for one attempt.
 struct Chosen {
@@ -1741,6 +1730,7 @@ mod tests {
 
     use crate::availability::{Availability, State};
     use crate::backend::testing::{Attached, ScriptedCli, SessionId};
+    use crate::backend::Backend;
     use crate::backend::{classify_common, ErrorKind};
     use crate::catalog::{default_chain, pick, Allowances, TaskType, Usable};
     use crate::router::Security;
