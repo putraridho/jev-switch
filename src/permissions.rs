@@ -14,6 +14,39 @@ use std::path::{Component, Path, PathBuf};
 
 use serde_json::{json, Map, Value};
 
+/// A tool call the CLI wants approval for.
+#[derive(Clone, PartialEq)]
+pub struct PermissionRequest {
+    /// The CLI's id for the question; the answer must carry it back.
+    pub id: String,
+    pub tool: String,
+    /// One line for the person: the command, or the path (and size) for a file write.
+    pub summary: String,
+    /// The tool's input exactly as the CLI sent it. It can hold secrets: it is only ever
+    /// echoed back to the CLI, never logged or shown.
+    pub input: serde_json::Value,
+    /// The path outside the allowed folders that made the CLI ask, when it said.
+    pub blocked_path: Option<String>,
+}
+
+impl std::fmt::Debug for PermissionRequest {
+    /// Leaves out the summary and the input: both can hold a secret, and `{:?}` ends up in logs.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PermissionRequest").field("id", &self.id).field("tool", &self.tool).finish_non_exhaustive()
+    }
+}
+
+/// What happens to a [`PermissionRequest`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Decision {
+    /// Run it this once.
+    Allow,
+    /// Run it, and the approver has remembered a rule so the CLI does not ask again.
+    AllowAlways,
+    /// Do not run it; the model is told `reason`.
+    Deny { reason: String },
+}
+
 /// Where the project's own rules live, relative to the project folder.
 pub const LOCAL_SETTINGS: &str = ".claude/settings.local.json";
 

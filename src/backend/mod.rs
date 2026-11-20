@@ -26,7 +26,7 @@ use tokio::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command};
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
-use crate::anthropic::{is_limit_message, is_limit_phrase};
+use crate::shared::limit_notice::{is_limit_message, is_limit_phrase};
 pub use crate::shared::{ProviderId, Usage};
 
 /// Why a turn failed, as far as the caller needs to react differently.
@@ -105,38 +105,7 @@ pub enum Event {
     Steered(String),
 }
 
-/// A tool call the CLI wants approval for.
-#[derive(Clone, PartialEq)]
-pub struct PermissionRequest {
-    /// The CLI's id for the question; the answer must carry it back.
-    pub id: String,
-    pub tool: String,
-    /// One line for the person: the command, or the path (and size) for a file write.
-    pub summary: String,
-    /// The tool's input exactly as the CLI sent it. It can hold secrets: it is only ever
-    /// echoed back to the CLI, never logged or shown.
-    pub input: serde_json::Value,
-    /// The path outside the allowed folders that made the CLI ask, when it said.
-    pub blocked_path: Option<String>,
-}
-
-impl std::fmt::Debug for PermissionRequest {
-    /// Leaves out the summary and the input: both can hold a secret, and `{:?}` ends up in logs.
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("PermissionRequest").field("id", &self.id).field("tool", &self.tool).finish_non_exhaustive()
-    }
-}
-
-/// What happens to a [`PermissionRequest`].
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Decision {
-    /// Run it this once.
-    Allow,
-    /// Run it, and the approver has remembered a rule so the CLI does not ask again.
-    AllowAlways,
-    /// Do not run it; the model is told `reason`.
-    Deny { reason: String },
-}
+pub use crate::permissions::{PermissionRequest, Decision};
 
 /// Why a request is denied when nobody can be asked.
 pub const NO_ONE_TO_ASK: &str = "no one to ask: this session has no terminal to approve tool calls";

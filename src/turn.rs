@@ -20,7 +20,7 @@ use std::time::{Duration, Instant};
 use serde_json::{json, Value};
 use tokio::sync::watch;
 
-use crate::anthropic::{MODEL_CHEAP, MODEL_MID, MODEL_STRONG};
+use crate::catalog::{MODEL_CHEAP, MODEL_MID, MODEL_STRONG};
 use crate::backend::{
     self, Approver, Decision, ErrorKind, Event, McpAttachment, PermissionRequest, ProviderId, TurnError, TurnOutcome,
     TurnRequest, Usage,

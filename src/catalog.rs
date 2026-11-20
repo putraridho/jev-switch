@@ -16,6 +16,15 @@ use serde_json::Value;
 
 use crate::shared::ProviderId;
 
+/// Cheap model for confidently-simple turns.
+pub const MODEL_CHEAP: &str = "claude-haiku-5-5";
+/// Mid model for everyday coding, and for anything simple-but-uncertain or unclear.
+pub const MODEL_MID: &str = "claude-sonnet-5-5";
+/// Strong model for planning, tradeoffs, hard debugging, and security-sensitive work.
+pub const MODEL_STRONG: &str = "claude-opus-5-5";
+/// Top model for the hardest turns, used by the gateway only (`Router::with_top_threshold`).
+pub const MODEL_TOP: &str = "claude-fable-5-2";
+
 /// Rough capability and price band. Ordered so `Light < Everyday < Top`, which lets
 /// [`pick`] tell when a fallback landed on a weaker model than the chain wanted.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]

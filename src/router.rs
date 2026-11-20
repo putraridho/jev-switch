@@ -6,7 +6,7 @@
 use anyhow::Result;
 use serde_json::{json, Value};
 
-use crate::anthropic::{MODEL_CHEAP, MODEL_MID, MODEL_STRONG};
+use crate::catalog::{MODEL_CHEAP, MODEL_MID, MODEL_STRONG};
 use crate::catalog::TaskType;
 use crate::typesafe::{choice_question, decode_choice, decode_noul, noul_question, ChoiceAnswer, TypeSafe};
 

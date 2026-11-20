@@ -15,7 +15,7 @@
 
 use std::cmp::Reverse;
 
-use crate::anthropic::{MODEL_CHEAP, MODEL_MID, MODEL_STRONG};
+use crate::catalog::{MODEL_CHEAP, MODEL_MID, MODEL_STRONG};
 use crate::shared::ProviderId;
 use crate::cache::{self, WarmCache};
 use crate::catalog::{

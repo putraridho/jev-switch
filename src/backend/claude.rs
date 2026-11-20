@@ -22,7 +22,7 @@ use super::{
     classify_common, Backend, Decision, ErrorKind, Event, Finish, McpAttachment, PermissionRequest, PlanUsage, ProviderId,
     TurnRequest, Usage,
 };
-use crate::anthropic::is_limit_message;
+use crate::shared::limit_notice::is_limit_message;
 use crate::permissions;
 
 /// What the model is told about where it runs. A constant, so the text is byte-identical
