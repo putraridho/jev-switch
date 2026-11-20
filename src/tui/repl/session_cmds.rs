@@ -65,7 +65,7 @@ fn compact_excerpt(text: &str, budget: usize) -> String {
     format!("{}{marker}{}", &text[..head], &text[tail..])
 }
 
-fn compact_prompt(focus: Option<&str>, sessions: &crate::session::domain::catch_up::Sessions) -> String {
+fn compact_prompt(focus: Option<&str>, sessions: &crate::session::domain::session::Sessions) -> String {
     let mut prompt = "Summarise our conversation so far so it can continue in a fresh session that sees only your \
 summary. Keep: the goal, decisions made and why, what was changed (files and what in them), what was tried and failed, \
 open questions, and the next steps. Keep exact names, paths, commands and error messages. Be complete but dense. Do not \
@@ -573,7 +573,7 @@ mod tests {
     fn canned_prompts_say_what_to_do_and_take_a_focus() {
         assert!(review_prompt(None).contains("Do not edit any file"));
         assert!(review_prompt(Some("the parser")).ends_with("Focus on: the parser."));
-        assert!(compact_prompt(Some("API"), &crate::session::domain::catch_up::Sessions::new()).contains("Pay special attention to: API."));
+        assert!(compact_prompt(Some("API"), &crate::session::domain::session::Sessions::new()).contains("Pay special attention to: API."));
         assert!(compact_note(" s \n").ends_with("not sent again):\n\ns"));
         assert!(INIT_PROMPT.contains("AGENTS.md") && INIT_PROMPT.contains("`@AGENTS.md`"));
     }

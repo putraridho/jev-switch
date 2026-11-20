@@ -1,7 +1,7 @@
 //! Saving a session after every turn, and resuming one.
 
 use super::*;
-use crate::session::domain::catch_up as handoff;
+use crate::session::infrastructure::session_file;
 
 #[tokio::test]
 async fn new_session_forgets_the_conversation_but_not_the_pin_or_cooldowns() {
@@ -51,7 +51,7 @@ async fn a_session_is_saved_after_every_turn_and_resumed_by_a_new_engine() {
     r.turn("first request", want(TaskType::Feature)).await;
     r.turn("second request", want(TaskType::Feature)).await;
     let file = r.engine.session_path().unwrap().to_path_buf();
-    assert!(file.starts_with(handoff::project_sessions_dir(&state.0, &repo.0)) && file.exists(), "{file:?}");
+    assert!(file.starts_with(session_file::project_sessions_dir(&state.0, &repo.0)) && file.exists(), "{file:?}");
 
     // A fresh process: nothing in memory, same folder.
     let mut again = persisting(&repo, &state, &[Claude]);
@@ -62,7 +62,7 @@ async fn a_session_is_saved_after_every_turn_and_resumed_by_a_new_engine() {
     assert_eq!(again.engine.routing.current, r.engine.routing.current);
     assert_eq!(again.engine.sessions.session_id(Claude), Some("sess-claude"));
     assert_eq!(again.engine.sessions.recent_context(2, 50), r.engine.sessions.recent_context(2, 50));
-    assert_eq!(handoff::saved_session_info_in(&state.0, &repo.0, NOW).unwrap().turns, 2);
+    assert_eq!(session_file::saved_session_info_in(&state.0, &repo.0, NOW).unwrap().turns, 2);
 
     // The CLI session is continued, not restarted.
     again.turn("third request", want(TaskType::Feature)).await;
@@ -127,7 +127,7 @@ async fn session_of(repo: &Repo, state: &StateDir, prompts: &[&str], at: u64) ->
 async fn a_new_sessions_first_turn_does_not_overwrite_the_previous_one() {
     let (repo, state) = (Repo::new("persist-keep", false), StateDir::new("persist-keep"));
     let first = session_of(&repo, &state, &["one", "two", "three"], NOW).await;
-    assert_eq!(handoff::saved_session_info_in(&state.0, &repo.0, NOW).unwrap().turns, 3);
+    assert_eq!(session_file::saved_session_info_in(&state.0, &repo.0, NOW).unwrap().turns, 3);
 
     // The startup offer was `previous session: 3 turns`; the user ignores it and types.
     let second = session_of(&repo, &state, &["a new topic"], NOW + 1000).await;
@@ -197,8 +197,8 @@ async fn only_the_ten_newest_sessions_of_a_project_are_kept() {
         let r = session_of(&repo, &state, &["hello"], NOW + i * 1000).await;
         files.push(r.engine.session_path().unwrap().to_path_buf());
     }
-    let dir = handoff::project_sessions_dir(&state.0, &repo.0);
-    assert_eq!(std::fs::read_dir(&dir).unwrap().count(), handoff::SAVED_KEEP);
+    let dir = session_file::project_sessions_dir(&state.0, &repo.0);
+    assert_eq!(std::fs::read_dir(&dir).unwrap().count(), session_file::SAVED_KEEP);
     assert!(!files[0].exists() && !files[1].exists(), "the oldest went");
     assert!(files[2..].iter().all(|f| f.exists()));
 }
@@ -208,14 +208,14 @@ async fn a_session_saved_by_an_older_version_in_one_file_is_still_resumed() {
     let (repo, state) = (Repo::new("persist-legacy", false), StateDir::new("persist-legacy"));
     let donor = session_of(&repo, &state, &["from before"], NOW).await;
     // Move that session to where the old version kept it.
-    let legacy = handoff::legacy_session_file(&state.0, &repo.0);
+    let legacy = session_file::legacy_session_file(&state.0, &repo.0);
     std::fs::rename(donor.engine.session_path().unwrap(), &legacy).unwrap();
-    assert_eq!(handoff::saved_session_info_in(&state.0, &repo.0, NOW).unwrap().turns, 1);
+    assert_eq!(session_file::saved_session_info_in(&state.0, &repo.0, NOW).unwrap().turns, 1);
     let mut r = persisting(&repo, &state, &[Claude]);
     assert_eq!(r.engine.resume().unwrap().turns, 1);
     r.turn("carry on", want(TaskType::Feature)).await;
     assert_eq!(r.engine.sessions.turns(), 2);
-    assert_eq!(std::fs::read_dir(handoff::project_sessions_dir(&state.0, &repo.0)).map_or(0, Iterator::count), 0);
+    assert_eq!(std::fs::read_dir(session_file::project_sessions_dir(&state.0, &repo.0)).map_or(0, Iterator::count), 0);
 }
 
 #[tokio::test]
@@ -238,7 +238,7 @@ async fn old_sessions_are_not_resumed_and_projects_do_not_see_each_other() {
 async fn a_garbage_saved_file_is_reported_and_a_new_session_saves_beside_it() {
     let (repo, state) = (Repo::new("persist-bad", false), StateDir::new("persist-bad"));
     let mut r = persisting(&repo, &state, &[Claude]);
-    let dir = handoff::project_sessions_dir(&state.0, &repo.0);
+    let dir = session_file::project_sessions_dir(&state.0, &repo.0);
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(dir.join("1-1.json"), "{ this is not json").unwrap();
     assert!(matches!(r.engine.resume(), Err(ResumeError::Corrupt(_))));

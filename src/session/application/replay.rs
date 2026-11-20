@@ -2,7 +2,7 @@
 //! asked, which model answered, the tools it used and the answer. Redacted like an export,
 //! because a replay is what people paste into a chat.
 
-use crate::session::domain::catch_up::TurnRecord;
+use crate::session::domain::turn_record::TurnRecord;
 use crate::shared::domain::redact::redact;
 
 /// How many tool summaries one turn shows before "and N more".

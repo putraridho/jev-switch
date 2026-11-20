@@ -7,8 +7,10 @@ use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
 use crate::backend::ProviderId;
-use crate::session::domain::catch_up as handoff;
-use crate::session::domain::catch_up::SavedSession;
+use crate::session::infrastructure::session_file;
+use crate::shared::infrastructure::private_file::write_atomic;
+use crate::session::domain::saved_session::SavedSession;
+use crate::session::domain::session::Sessions;
 use crate::session::infrastructure::session_meta::{Meta, MetaStore};
 use crate::tui::render::Style;
 use crate::tui::views::status_facts::human_ago;
@@ -265,7 +267,7 @@ pub fn export_to(entry: &LibraryEntry, dest: &Path) -> std::io::Result<()> {
     }
     let mut value = entry.saved.to_json();
     redact_export(&mut value);
-    handoff::write_atomic(dest, &value.to_string())
+    write_atomic(dest, &value.to_string())
 }
 
 /// Mask strings before serializing, so escaping cannot hide secrets or break JSON.
@@ -308,18 +310,18 @@ pub fn adopt(state_dir: &Path, project_dir: &Path, mut saved: SavedSession, now_
     if saved.sessions.turns() == 0 {
         return Err(ImportError::Empty);
     }
-    saved.project = handoff::project_key(project_dir);
+    saved.project = session_file::project_key(project_dir);
     // Another machine's CLI sessions mean nothing here.
     saved.sessions = strip_cli_ids(saved.sessions);
-    let path = handoff::new_session_file(state_dir, project_dir, now_ms);
-    handoff::write_atomic(&path, &saved.render()).map_err(|e| ImportError::Unreadable(e.to_string()))?;
+    let path = session_file::new_session_file(state_dir, project_dir, now_ms);
+    write_atomic(&path, &saved.render()).map_err(|e| ImportError::Unreadable(e.to_string()))?;
     Ok(path)
 }
 
 /// The same dialogue with no provider CLI session ids and nobody marked as caught up, so
 /// the first turn on any provider is handed the whole conversation.
-fn strip_cli_ids(old: handoff::Sessions) -> handoff::Sessions {
-    let mut fresh = handoff::Sessions::new();
+fn strip_cli_ids(old: Sessions) -> Sessions {
+    let mut fresh = Sessions::new();
     fresh.set_name(old.name());
     for turn in old.log() {
         fresh.push_unseen(turn.clone());
@@ -415,9 +417,9 @@ pub fn migrate_legacy(state_dir: &Path) -> usize {
             continue;
         }
         let Some(saved) = std::fs::read_to_string(&path).ok().and_then(|t| SavedSession::parse(&t).ok()) else { continue };
-        let dest_dir = handoff::project_sessions_dir(state_dir, Path::new(&saved.project));
+        let dest_dir = session_file::project_sessions_dir(state_dir, Path::new(&saved.project));
         let dest = dest_dir.join(format!("{}-legacy.json", saved.saved_ms));
-        let written = dest.exists() || handoff::write_atomic(&dest, &saved.render()).is_ok();
+        let written = dest.exists() || write_atomic(&dest, &saved.render()).is_ok();
         if written && std::fs::remove_file(&path).is_ok() {
             moved += 1;
         }
@@ -428,7 +430,8 @@ pub fn migrate_legacy(state_dir: &Path) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::session::domain::catch_up::{Sessions, TurnRecord};
+    use crate::session::domain::session::Sessions;
+    use crate::session::domain::turn_record::TurnRecord;
 
     const NOW: u64 = 100 * DAY_MS;
 
@@ -448,9 +451,9 @@ mod tests {
         for t in turns {
             sessions.record(t);
         }
-        let saved = SavedSession { project: handoff::project_key(project), saved_ms: NOW - at_days_ago * DAY_MS, sessions, current: None };
-        let path = handoff::new_session_file(state, project, saved.saved_ms);
-        handoff::write_atomic(&path, &saved.render()).unwrap();
+        let saved = SavedSession { project: session_file::project_key(project), saved_ms: NOW - at_days_ago * DAY_MS, sessions, current: None };
+        let path = session_file::new_session_file(state, project, saved.saved_ms);
+        write_atomic(&path, &saved.render()).unwrap();
         path
     }
 
@@ -568,13 +571,13 @@ mod tests {
         let other = state.join("proj-c");
         std::fs::create_dir_all(&other).unwrap();
         let moved = import_file(&state, &other, &file, NOW).unwrap();
-        let listed = handoff::list_sessions(&state, &other, NOW, None);
+        let listed = session_file::list_sessions(&state, &other, NOW, None);
         assert_eq!(listed.len(), 1);
         assert_eq!(listed[0].path, moved);
         assert_eq!(listed[0].title, "fix the lexer");
         // The original stays where it was.
         // (The 20-day-old one is past the 14 days `/resume` offers.)
-        assert_eq!(handoff::list_sessions(&state, &a, NOW, None).len(), 1);
+        assert_eq!(session_file::list_sessions(&state, &a, NOW, None).len(), 1);
         assert!(matches!(import_file(&state, &other, &state.join("nope.json"), NOW), Err(ImportError::Unreadable(_))));
         std::fs::write(state.join("junk.json"), "{}").unwrap();
         assert!(matches!(import_file(&state, &other, &state.join("junk.json"), NOW), Err(ImportError::NotASession(_))));
@@ -644,13 +647,13 @@ mod tests {
         std::fs::create_dir_all(&project).unwrap();
         let mut sessions = Sessions::new();
         sessions.record(turn(ProviderId::Claude, "old work", "ok", &[]));
-        let saved = SavedSession { project: handoff::project_key(&project), saved_ms: NOW - DAY_MS, sessions, current: None };
-        let legacy = handoff::legacy_session_file(&state, &project);
-        handoff::write_atomic(&legacy, &saved.render()).unwrap();
+        let saved = SavedSession { project: session_file::project_key(&project), saved_ms: NOW - DAY_MS, sessions, current: None };
+        let legacy = session_file::legacy_session_file(&state, &project);
+        write_atomic(&legacy, &saved.render()).unwrap();
         std::fs::write(state.join("sessions").join("zzz.json"), "not a session").unwrap();
         assert_eq!(migrate_legacy(&state), 1);
         assert!(!legacy.exists());
-        let listed = handoff::list_sessions(&state, &project, NOW, None);
+        let listed = session_file::list_sessions(&state, &project, NOW, None);
         assert_eq!(listed.len(), 1);
         assert_eq!(listed[0].title, "old work");
         assert_eq!(migrate_legacy(&state), 0);
@@ -660,7 +663,7 @@ mod tests {
     fn rendered_hits_show_marks_and_the_matching_line() {
         let (state, a, _) = library("render");
         let hits = search(scan_all(&state), &Query::parse("lexer").unwrap(), NOW);
-        let text = render_hits(&hits, NOW, &handoff::project_key(&a), Style::off()).join("\n");
+        let text = render_hits(&hits, NOW, &session_file::project_key(&a), Style::off()).join("\n");
         assert!(text.contains("  1. fix the lexer") && text.contains("24h ago") && text.contains("claude"), "{text}");
         assert!(!text.contains("proj-a"), "the current project is not repeated: {text}");
         let elsewhere = render_hits(&hits, NOW, "/other", Style::off()).join("\n");

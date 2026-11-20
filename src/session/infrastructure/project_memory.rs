@@ -5,7 +5,9 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::session::domain::catch_up::{project_hash, write_atomic};
+use crate::session::infrastructure::session_file::project_hash;
+
+use crate::shared::infrastructure::private_file::write_atomic;
 
 /// Longest note kept, in characters; a note is a reminder, not a document.
 pub const MAX_NOTE_CHARS: usize = 300;

@@ -30,7 +30,7 @@ use crate::turn::domain::turn_status::TurnStatus;
 use crate::catalog::domain::model_table as catalog;
 use crate::catalog::domain::model_table::find;
 use crate::changes::domain::undo_report::UndoError;
-use crate::session::domain::catch_up::ResumeError;
+use crate::session::domain::saved_session::ResumeError;
 use crate::approval::domain::mode::Mode;
 use crate::orchestration::domain::orchestration_gate::Setup;
 use crate::approval::domain::always_plan::{Offer, Settled};

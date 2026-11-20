@@ -1,6 +1,6 @@
 //! Commands on the session itself: `/rename` and `/resume`.
 
-use crate::session::domain::catch_up::ResumeError;
+use crate::session::domain::saved_session::ResumeError;
 use crate::tui::render as uifmt;
 use crate::tui::repl::session::Repl;
 use crate::tui::views::session_picker as picker;

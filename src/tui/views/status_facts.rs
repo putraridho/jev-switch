@@ -11,7 +11,7 @@ use crate::catalog::domain::model_table as catalog;
 use crate::changes::domain::change_set::ChangeSummary;
 use crate::changes::domain::file_change::ChangeStatus;
 use crate::doctor::domain::diagnose as doctor;
-use crate::session::domain::catch_up::SessionInfo;
+use crate::session::domain::saved_session::SessionInfo;
 use crate::providers::application::provider_registry::{format_left, BlockReason, Runtime};
 use crate::shared::ALL_PROVIDERS;
 use crate::routing::domain::decide::Pin;

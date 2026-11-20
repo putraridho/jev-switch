@@ -2,8 +2,8 @@
 
 use std::path::Path;
 
-use crate::session::domain::catch_up as handoff;
-use crate::session::domain::catch_up::{ResumeError, SavedSession};
+use crate::session::infrastructure::session_file;
+use crate::session::domain::saved_session::{ResumeError, SavedSession, SessionEntry, SessionInfo};
 use crate::routing::domain::decide::{RoutingState, Sticky};
 use super::Engine;
 
@@ -42,7 +42,7 @@ impl Engine {
     }
 
     /// Save the session now and say why not on failure. A session with no turns is not
-    /// written. Each session has its own file (see [`handoff::new_session_file`]), so
+    /// written. Each session has its own file (see [`session_file::new_session_file`]), so
     /// saving never touches an earlier session; the oldest beyond ten are deleted.
     /// Turns save themselves best-effort; the binary calls this once more on exit.
     pub fn save_now(&mut self) -> std::io::Result<()> {
@@ -53,16 +53,16 @@ impl Engine {
         let saved_ms = (self.now)();
         let path = match &self.session_file {
             Some(p) => p.clone(),
-            None => handoff::new_session_file(&state, &self.dir, saved_ms),
+            None => session_file::new_session_file(&state, &self.dir, saved_ms),
         };
         let saved = SavedSession {
-            project: handoff::project_key(&self.dir),
+            project: session_file::project_key(&self.dir),
             saved_ms,
             sessions: self.sessions.clone(),
             current: self.routing.current.clone(),
         };
         crate::shared::infrastructure::private_file::write_atomic(&path, &saved.to_json().to_string())?;
-        handoff::prune(&state, &self.dir, &path);
+        session_file::prune(&state, &self.dir, &path);
         self.session_file = Some(path);
         Ok(())
     }
@@ -76,26 +76,26 @@ impl Engine {
     /// conversation, each provider's CLI session, and where routing stood. Replaces the
     /// current conversation, and from then on saves into the file it came from. Asking
     /// again steps back to the one before.
-    pub fn resume(&mut self) -> Result<handoff::SessionInfo, ResumeError> {
+    pub fn resume(&mut self) -> Result<SessionInfo, ResumeError> {
         let state = self.persist.as_ref().ok_or(ResumeError::Disabled)?;
-        let (path, saved) = handoff::load_latest(state, &self.dir, (self.now)(), self.session_file.as_deref())?;
+        let (path, saved) = session_file::load_latest(state, &self.dir, (self.now)(), self.session_file.as_deref())?;
         Ok(self.adopt(path, saved))
     }
 
     /// The saved sessions of this folder that `/resume` can pick up, newest first, without
     /// the one that is running.
-    pub fn resumable(&self) -> Result<Vec<handoff::SessionEntry>, ResumeError> {
+    pub fn resumable(&self) -> Result<Vec<SessionEntry>, ResumeError> {
         let state = self.persist.as_ref().ok_or(ResumeError::Disabled)?;
-        Ok(handoff::list_sessions(state, &self.dir, (self.now)(), self.session_file.as_deref()))
+        Ok(session_file::list_sessions(state, &self.dir, (self.now)(), self.session_file.as_deref()))
     }
 
     /// Resume the session saved in `path`, one of [`Engine::resumable`].
-    pub fn resume_from(&mut self, path: &std::path::Path) -> Result<handoff::SessionInfo, ResumeError> {
-        let saved = handoff::load_path(&self.dir, path)?;
+    pub fn resume_from(&mut self, path: &std::path::Path) -> Result<SessionInfo, ResumeError> {
+        let saved = session_file::load_path(&self.dir, path)?;
         Ok(self.adopt(path.to_path_buf(), saved))
     }
 
-    pub(super) fn adopt(&mut self, path: std::path::PathBuf, saved: handoff::SavedSession) -> handoff::SessionInfo {
+    pub(super) fn adopt(&mut self, path: std::path::PathBuf, saved: SavedSession) -> SessionInfo {
         self.session_file = Some(path);
         let info = saved.info();
         self.previous = saved.sessions.last_answered().map(|(p, r)| (p.to_string(), r.to_string()));

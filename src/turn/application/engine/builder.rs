@@ -8,7 +8,7 @@ use crate::turn::domain::effort::EffortSetting;
 use crate::changes::domain::turn_activity::TurnActivity;
 use crate::turn::application::guards::Guards;
 use crate::approval::application::extension_hooks::Hooks;
-use crate::session::domain::catch_up::Sessions;
+use crate::session::domain::session::Sessions;
 use crate::shared::infrastructure::jsonl_log as log;
 use crate::approval::domain::mode::Mode;
 use crate::orchestration::domain::orchestration_gate::Setup;
