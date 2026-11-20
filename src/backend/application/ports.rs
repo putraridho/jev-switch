@@ -7,7 +7,7 @@ use std::pin::Pin;
 use tokio::process::Command;
 use tokio::sync::mpsc;
 
-use crate::approval::domain::rule_policy::{Decision, PermissionRequest};
+use crate::approval::domain::permission_request::{Decision, PermissionRequest};
 use crate::backend::domain::effort::Effort;
 use crate::backend::domain::error_kind::ErrorKind;
 use crate::backend::domain::event::Event;

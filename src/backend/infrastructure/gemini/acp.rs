@@ -219,7 +219,7 @@ impl Acp {
                 if raw.as_object().is_some_and(|o| !o.is_empty()) { raw.clone() } else { json!({ "title": call["title"] }) },
             ),
         };
-        let summary = crate::approval::domain::rule_policy::describe(&tool, &input);
+        let summary = crate::approval::domain::review::describe(&tool, &input);
         vec![Event::PermissionRequest(PermissionRequest { id, tool, input, summary, blocked_path: None })]
     }
 
@@ -479,8 +479,8 @@ mod tests {
         let events = acp.parse(&ev);
         let [Event::PermissionRequest(req)] = &events[..] else { panic!("{events:?}") };
         assert_eq!(req.tool, "acp_WebFetch");
-        let places = crate::approval::domain::rule_policy::Places::from_env(std::path::Path::new("/tmp"));
-        assert!(crate::approval::domain::rule_policy::always_plan(&req.tool, &req.input, None, &places).is_err());
+        let places = crate::approval::domain::grantable::Places::from_env(std::path::Path::new("/tmp"));
+        assert!(crate::approval::domain::always_plan::always_plan(&req.tool, &req.input, None, &places).is_err());
     }
 
     #[test]

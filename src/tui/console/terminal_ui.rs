@@ -17,12 +17,14 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::task::{Context, Poll};
 use std::time::{Duration, Instant};
 
+use crate::approval::domain::always_plan;
+use crate::approval::domain::review;
 use crate::backend::{self, Decision, Event, PermissionRequest};
 use crate::tui::console::front::{ApprovalAsk, Front, FrontMsg};
 use crate::tui::input::line_editor as lineedit;
 use crate::tui::input::line_editor::AnswerKey;
-use crate::approval::domain::rule_policy as permissions;
-use crate::approval::domain::rule_policy::{Offer, Review, Settled};
+use crate::approval::domain::always_plan::{Offer, Settled};
+use crate::approval::domain::review::Review;
 use crate::tui::tty::terminal_guard as terminal;
 use crate::tui::tty::terminal_guard::{Screen, StdScreen};
 use crate::turn::application::ports::{Answer, Ui};
@@ -1345,12 +1347,12 @@ impl Console {
         };
         let offered = offer.is_ok();
         let note = match offer {
-            Ok(permissions::Always { folder: Some(dir), .. }) => Some(format!("[a] also lets Claude Code use everything in the folder {}", dir.display())),
+            Ok(always_plan::Always { folder: Some(dir), .. }) => Some(format!("[a] also lets Claude Code use everything in the folder {}", dir.display())),
             Ok(_) => None,
             Err(refusal) => Some(refusal.line()),
         };
         let project = self.lock().cfg.project.clone();
-        let review = permissions::review(&req.tool, &req.input, Some(&project));
+        let review = review::review(&req.tool, &req.input, Some(&project));
         let question = PendingQuestion { tool: req.tool.clone(), review, offered, note };
 
         let full = {
@@ -1413,7 +1415,7 @@ impl Console {
     fn ask_front(&self, front: &Front, req: &PermissionRequest, offer: &Offer) -> Answer {
         let offered = offer.is_ok();
         let note = match offer {
-            Ok(permissions::Always { folder: Some(dir), .. }) => Some(format!("\"don't ask again\" also lets Claude Code use everything in the folder {}", dir.display())),
+            Ok(always_plan::Always { folder: Some(dir), .. }) => Some(format!("\"don't ask again\" also lets Claude Code use everything in the folder {}", dir.display())),
             Ok(_) => None,
             Err(refusal) => Some(refusal.line()),
         };
@@ -1422,13 +1424,13 @@ impl Console {
             g.asking = Some(0);
             g.cfg.project.clone()
         };
-        let review = permissions::review(&req.tool, &req.input, Some(&project));
+        let review = review::review(&req.tool, &req.input, Some(&project));
         let (reply, answer) = tokio::sync::oneshot::channel();
         front.send(FrontMsg::Approval(Box::new(ApprovalAsk {
             tool: req.tool.clone(),
             notes: review.notes,
             lines: review.lines,
-            always: offer.as_ref().ok().map(permissions::Always::label),
+            always: offer.as_ref().ok().map(always_plan::Always::label),
             note,
             reply,
         })));
@@ -1497,6 +1499,7 @@ mod tests {
 
     use crate::testkit::capture::Buf;
     use super::*;
+    use crate::approval::domain::{grantable, refusal, settings_document};
     use crate::backend::{ErrorKind, ProviderId};
 
     /// Everything the front was asked to print, without colour.
@@ -2071,8 +2074,8 @@ mod tests {
     /// What the engine offers for `req` in this console's project, with home `/home/u` and
     /// the temp folder `/tmp`.
     fn offer_for(c: &Console, req: &PermissionRequest) -> Offer {
-        let places = permissions::Places { project: c.lock().cfg.project.clone(), home: Some("/home/u".into()), temp: "/tmp".into() };
-        permissions::always_plan(&req.tool, &req.input, req.blocked_path.as_deref(), &places)
+        let places = grantable::Places { project: c.lock().cfg.project.clone(), home: Some("/home/u".into()), temp: "/tmp".into() };
+        always_plan::always_plan(&req.tool, &req.input, req.blocked_path.as_deref(), &places)
     }
 
     /// What the engine does with an answer: settle (save) it, then tell the console.
@@ -2186,7 +2189,7 @@ mod tests {
 
     /// Ask a question nobody answers, look at it once (it is waiting), and drop it.
     fn ask_and_drop(c: &mut Console, req: &PermissionRequest) {
-        let mut answer = c.ask_permission(req, &Err(permissions::Refusal::NoRule));
+        let mut answer = c.ask_permission(req, &Err(refusal::Refusal::NoRule));
         let mut cx = Context::from_waker(std::task::Waker::noop());
         assert!(answer.as_mut().poll(&mut cx).is_pending(), "nobody pressed a key");
         drop(answer);
@@ -2220,7 +2223,7 @@ mod tests {
         let (c, _, err) = console(false, Style::on(), true);
         let (keys, _) = never_pressed();
         let mut c = c.with_key_reader(keys);
-        let mut answer = c.ask_permission(&request("Bash", "cargo test"), &Err(permissions::Refusal::NoRule));
+        let mut answer = c.ask_permission(&request("Bash", "cargo test"), &Err(refusal::Refusal::NoRule));
         assert!(answer.as_mut().poll(&mut Context::from_waker(std::task::Waker::noop())).is_pending());
         c.err("[jev] a notice that arrived meanwhile");
         drop(answer);
@@ -2363,7 +2366,7 @@ mod tests {
         let req = request("Bash", &command);
         let (pager, opened, close) = held_pager();
         // `ask_with_pager` returns at once: the pager is part of the answer, not of the call.
-        let answer = tokio::spawn(c.ask_with_pager(&req, &Err(permissions::Refusal::NoRule), pager));
+        let answer = tokio::spawn(c.ask_with_pager(&req, &Err(refusal::Refusal::NoRule), pager));
         tokio::task::spawn_blocking(move || opened.recv_timeout(Duration::from_secs(5))).await.unwrap().expect("the pager opened");
         assert!(c.is_paging());
         // The engine keeps working: output and the withdrawal arrive while the pager is open.
@@ -2389,7 +2392,7 @@ mod tests {
         let c = c.with_key_reader(presses(AnswerKey::Yes).0);
         let command: String = (1..=60).map(|i| format!("echo line-{i}\n")).collect::<String>() + "rm -rf ~";
         let (pager, opened, close) = held_pager();
-        let answer = tokio::spawn(c.ask_with_pager(&request("Bash", &command), &Err(permissions::Refusal::NoRule), pager));
+        let answer = tokio::spawn(c.ask_with_pager(&request("Bash", &command), &Err(refusal::Refusal::NoRule), pager));
         tokio::task::spawn_blocking(move || opened.recv_timeout(Duration::from_secs(5))).await.unwrap().expect("opened");
         assert!(!err.text().contains("[y]es"), "the choices come after the pager");
         close.send(()).unwrap();
@@ -2488,9 +2491,9 @@ mod tests {
         assert!(e.contains("[a]lways in this project"), "{e}");
         assert!(e.contains("[a] also lets Claude Code use everything in the folder /tmp/spike"), "{e}");
         assert!(e.trim_end().ends_with("✓ allowed, and always in this project: Bash(touch:*) and folder /tmp/spike"), "{e}");
-        let saved = crate::approval::domain::rule_policy::load(&crate::approval::domain::rule_policy::local_settings_path(&dir)).unwrap();
-        assert_eq!(saved.list(crate::approval::domain::rule_policy::List::Directories), ["/tmp/spike"]);
-        assert_eq!(saved.list(crate::approval::domain::rule_policy::List::Allow), ["Bash(touch:*)"], "rule and folder in one write");
+        let saved = crate::approval::application::claude_settings_file::load(&crate::approval::domain::settings_document::local_settings_path(&dir)).unwrap();
+        assert_eq!(saved.list(crate::approval::domain::settings_document::List::Directories), ["/tmp/spike"]);
+        assert_eq!(saved.list(crate::approval::domain::settings_document::List::Allow), ["Bash(touch:*)"], "rule and folder in one write");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -2504,8 +2507,8 @@ mod tests {
         assert_eq!(*offered.lock().unwrap(), vec![true]);
         assert_eq!(d, Some(Decision::AllowAlways));
         assert!(err.text().trim_end().ends_with("✓ allowed, and always in this project: folder /tmp/spike"), "{}", err.text());
-        let saved = crate::approval::domain::rule_policy::load(&crate::approval::domain::rule_policy::local_settings_path(&dir)).unwrap();
-        assert_eq!(saved.list(crate::approval::domain::rule_policy::List::Directories), ["/tmp/spike"]);
+        let saved = crate::approval::application::claude_settings_file::load(&crate::approval::domain::settings_document::local_settings_path(&dir)).unwrap();
+        assert_eq!(saved.list(crate::approval::domain::settings_document::List::Directories), ["/tmp/spike"]);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -2514,7 +2517,7 @@ mod tests {
         let dir = tmp_project("blocked-yes");
         let (mut c, _) = console_in(&dir, AnswerKey::Yes);
         assert_eq!(ask(&mut c, &blocked_touch("touch /tmp/spike/outside.txt")), Some(Decision::Allow));
-        assert!(!crate::approval::domain::rule_policy::local_settings_path(&dir).exists());
+        assert!(!crate::approval::domain::settings_document::local_settings_path(&dir).exists());
         let (c, err) = console_in(&dir, AnswerKey::Yes);
         let (keys, offered) = presses(AnswerKey::Yes);
         let mut c = c.with_key_reader(keys);
@@ -2533,9 +2536,9 @@ mod tests {
         let offer = offer_for(&c, &req);
         assert_eq!(wait(c.ask_permission(&req, &offer)), Some(Decision::AllowAlways));
         assert!(!err.text().contains('\u{2713}'), "no answer line before the save: {}", err.text());
-        assert!(!crate::approval::domain::rule_policy::local_settings_path(&dir).exists(), "the console saves nothing itself");
+        assert!(!crate::approval::domain::settings_document::local_settings_path(&dir).exists(), "the console saves nothing itself");
         // The engine could not write the file: the screen says so, never "always".
-        c.permission_settled(&req, &Settled::NotSaved(permissions::SettingsError("settings: cannot write it".into())));
+        c.permission_settled(&req, &Settled::NotSaved(settings_document::SettingsError("settings: cannot write it".into())));
         let e = err.text();
         assert!(e.contains("✓ allowed\n") && e.contains("nothing was saved") && !e.contains("always in this project:"), "{e}");
         let _ = std::fs::remove_dir_all(&dir);
