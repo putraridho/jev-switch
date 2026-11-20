@@ -1,1 +1,11 @@
 pub mod effort;
+pub mod error_kind;
+pub mod error_text;
+pub mod event;
+pub mod mcp_attachment;
+pub mod outcome_judge;
+pub mod plan_usage;
+pub mod prompt_arg;
+pub mod turn_error;
+pub mod turn_outcome;
+pub mod turn_request;
