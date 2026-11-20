@@ -4,6 +4,12 @@ See [docs/changelog-guide.md](docs/changelog-guide.md) for changelog formatting,
 
 ## Unreleased
 
+## 1.8.1
+
+Antigravity follows `CODE_ALLOWED_TOOLS`, and a denied command no longer burns through every model.
+
+- `CODE_ALLOWED_TOOLS` now also covers Antigravity, which asks jev-code about each command instead of reading the rules itself. A command your rules allow (for example `Bash(python3 *)`) runs without a question, also in `-p` and scheduled runs, and the screen shows `✓ allowed (CODE_ALLOWED_TOOLS)`. Rules apply in every mode except plan. Each command in a chain must match, and commands with `$`, backticks, subshells or redirects to a file never match.
+- When a run has nobody to approve a command and the model then stops with an empty answer, the turn now ends with one message saying which tool was denied and how to allow it. Before, jev-code counted it as a failed model and tried the same prompt on other models, which all hit the same denial.
 - jev-code's own git calls no longer run filter programs set in the repo's own `.git/config` (or its `config.worktree`). An agent edit to that file can no longer make jev-code run a command without asking. git-lfs and git-crypt filters still run when they point at the `git-lfs` or `git-crypt` on your `PATH`, and so do filters in your global git config.
 - A `.jev/team.json` pin that fails during a turn now hands the turn to automatic routing instead of ending it. The route line says the pin was skipped. A pin that cannot be used before the turn starts is still reported, as before.
 - A shell command that prints a very long line no longer shows an extra empty line after it.

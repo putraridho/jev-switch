@@ -170,6 +170,8 @@ struct EngineApprover<'a> {
     mode: Mode,
     /// `pre_tool` hooks may refuse a call before anyone is asked.
     hooks: &'a Arc<Hooks>,
+    /// `CODE_ALLOWED_TOOLS`: calls these rules allow are not asked about.
+    allowed_tools: &'a [String],
 }
 
 impl EngineApprover<'_> {
@@ -188,6 +190,12 @@ impl EngineApprover<'_> {
         // that asks at all. Plan mode never reaches here for writes (Claude Code refuses them).
         if permissions::remembered(&req.tool, &req.input, req.blocked_path.as_deref(), &places).is_some() {
             lock_ui(self.ui).event(&Event::Hint(uifmt::remembered_allowed(&req.summary)));
+            return Decision::Allow;
+        }
+        // What Claude Code is told with `--allowedTools`, for the CLIs that ask jev-code instead.
+        // Not in plan mode, where Claude Code would still refuse anything that changes things.
+        if self.mode != Mode::Plan && permissions::allowed_by(self.allowed_tools, &req.tool, &req.input) {
+            lock_ui(self.ui).event(&Event::Hint(uifmt::allowed_by_setting(&req.summary)));
             return Decision::Allow;
         }
         if self.mode == Mode::Auto {
@@ -498,6 +506,8 @@ pub struct Engine {
     effort: EffortSetting,
     /// Shell commands run on tool calls and turn events ([`crate::ext::hooks`]).
     hooks: Arc<Hooks>,
+    /// `CODE_ALLOWED_TOOLS`, split into rules: what a turn may do without asking, on every CLI.
+    allowed_tools: Vec<String>,
 }
 
 pub(crate) struct SummaryContext<'a> {
@@ -585,6 +595,7 @@ impl Engine {
             session_file: None,
             mode: Mode::default(),
             effort: EffortSetting::default(),
+            allowed_tools: permissions::split_rules(&crate::envfile::lookup("CODE_ALLOWED_TOOLS").unwrap_or_default()),
         }
     }
 
@@ -659,6 +670,12 @@ impl Engine {
 
     pub fn with_clock(mut self, f: Clock) -> Self {
         self.now = f;
+        self
+    }
+
+    /// The rules allowed without asking, in place of `CODE_ALLOWED_TOOLS`.
+    pub fn with_allowed_tools(mut self, list: &str) -> Self {
+        self.allowed_tools = permissions::split_rules(list);
         self
     }
 
@@ -1487,7 +1504,7 @@ impl Engine {
         let runtime = &mut self.runtime;
         let result = {
             let shared_ui: SharedUi = Mutex::new(&mut *ui);
-            let approver = EngineApprover { ui: &shared_ui, cancel, dir: &self.dir, mode: self.mode, hooks: &self.hooks };
+            let approver = EngineApprover { ui: &shared_ui, cancel, dir: &self.dir, mode: self.mode, hooks: &self.hooks, allowed_tools: &self.allowed_tools };
             let hooks = &self.hooks;
             let (guards, now, dir, model) = (&self.guards, &self.now, &self.dir, chosen.spec.id);
             let prepare = move |text: &str| guards.steer_text(dir, text, provider, model, now());
@@ -3529,6 +3546,22 @@ mod tests {
         assert!(ui.hints.iter().any(|t| t.contains("denied Bash") && t.contains("CODE_ALLOWED_TOOLS")), "{:?}", ui.hints);
         assert!(ui.texts.iter().all(|t| !t.contains("denied Bash")), "a hint is never answer text: {:?}", ui.texts);
         assert!(!permissions::local_settings_path(&dir).exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn code_allowed_tools_answers_a_cli_that_asks_the_host_even_with_nobody_to_ask() {
+        let (engine, dir) = ask_engine("allowed-setting");
+        let mut engine = engine.with_allowed_tools("Bash(cargo test:*)");
+        let mut ui = Mute::default();
+        let report = ask_turn(&mut engine, &mut ui).await;
+        assert_eq!((report.status, report.text.as_str()), (TurnStatus::Answered, "ran"));
+        assert!(ui.hints.iter().any(|t| t.contains("allowed (CODE_ALLOWED_TOOLS)") && t.contains("cargo test")), "{:?}", ui.hints);
+        // Plan mode changes nothing, so the rules do not apply there: still denied.
+        let mut plan = engine.with_allowed_tools("Bash(cargo test:*)");
+        plan.set_mode(Mode::Plan);
+        let report = ask_turn(&mut plan, &mut Mute::default()).await;
+        assert!(report.text.starts_with("refused no one to ask"), "{}", report.text);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

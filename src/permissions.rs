@@ -1283,6 +1283,85 @@ pub fn validate_rule(rule: &str) -> Result<String, String> {
     Ok(rule.to_string())
 }
 
+// ------------------------------------------------------- rules given on the command line
+
+/// The rules of a `CODE_ALLOWED_TOOLS` list, as Claude Code's `--allowedTools` reads it:
+/// separated by spaces or commas, except inside parentheses (`Bash(cargo test) Edit`).
+pub fn split_rules(list: &str) -> Vec<String> {
+    let (mut rules, mut rule, mut depth) = (Vec::new(), String::new(), 0usize);
+    for c in list.chars() {
+        match c {
+            '(' => depth += 1,
+            ')' => depth = depth.saturating_sub(1),
+            _ => {}
+        }
+        if depth == 0 && (c == ',' || c.is_whitespace()) {
+            if !rule.is_empty() {
+                rules.push(std::mem::take(&mut rule));
+            }
+        } else {
+            rule.push(c);
+        }
+    }
+    if !rule.is_empty() {
+        rules.push(rule);
+    }
+    rules
+}
+
+/// Whether `rules` (Claude Code's allow-rule syntax, e.g. from `CODE_ALLOWED_TOOLS`) allow this
+/// call without asking. Claude Code applies such rules itself; a CLI that asks jev-code about
+/// every call instead (Antigravity) gets the same answer here. Only forms whose meaning is
+/// certain match: a bare tool name (`Edit`), and for Bash an exact command (`Bash(cargo test)`),
+/// a prefix (`Bash(git status:*)`) or a `*` wildcard (`Bash(python3 *)`). Every simple command
+/// of a chain must match, and a command [`split_chain`] refuses (`$`, backticks, subshells, a
+/// redirection to a file) never does. Anything else (`Edit(src/**)`) is left to asking.
+pub fn allowed_by(rules: &[String], tool: &str, input: &Value) -> bool {
+    if rules.iter().any(|r| r == tool) {
+        return true;
+    }
+    if tool != "Bash" {
+        return false;
+    }
+    let specs: Vec<&str> = rules.iter().filter_map(|r| r.strip_prefix("Bash(")?.strip_suffix(')')).collect();
+    let Some(command) = str_field(input, "command") else { return false };
+    let Ok(segments) = split_chain(command) else { return false };
+    !specs.is_empty()
+        && segments.iter().all(|segment| {
+            let words: Vec<&str> = segment.iter().map(|w| w.text.as_str()).collect();
+            specs.iter().any(|spec| bash_spec_matches(spec, &words))
+        })
+}
+
+/// One simple command's words against the part of a `Bash(...)` rule in parentheses.
+fn bash_spec_matches(spec: &str, words: &[&str]) -> bool {
+    if let Some(prefix) = spec.strip_suffix(":*") {
+        let want: Vec<&str> = prefix.split_whitespace().collect();
+        return !want.is_empty() && words.len() >= want.len() && words[..want.len()] == want[..];
+    }
+    if spec.contains('*') {
+        return wildcard_matches(spec, &words.join(" "));
+    }
+    spec.split_whitespace().eq(words.iter().copied())
+}
+
+/// `*` matches any run of characters (spaces too); everything else matches itself.
+fn wildcard_matches(pattern: &str, text: &str) -> bool {
+    let parts: Vec<&str> = pattern.split('*').collect();
+    let (first, last) = (parts[0], parts[parts.len() - 1]);
+    if !text.starts_with(first) || text.len() < first.len() + last.len() || !text[first.len()..].ends_with(last) {
+        return false;
+    }
+    let mut rest = &text[first.len()..text.len() - last.len()];
+    for part in &parts[1..parts.len() - 1] {
+        match rest.find(part) {
+            Some(at) => rest = &rest[at + part.len()..],
+            None => return false,
+        }
+    }
+    true
+}
+
 // ----------------------------------------------------------------- the settings file
 
 /// Why a settings file could not be read or written. The text names the file, so it can
@@ -1545,6 +1624,34 @@ pub fn parse_args(rest: &str) -> Result<PermissionsCmd, String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn command_line_rules_split_outside_parentheses_only() {
+        assert_eq!(super::split_rules("Bash(cargo test) Edit,Bash(git status:*)"), ["Bash(cargo test)", "Edit", "Bash(git status:*)"]);
+        assert!(super::split_rules("  ").is_empty());
+    }
+
+    #[test]
+    fn command_line_rules_allow_what_they_name_and_nothing_more() {
+        use super::{allowed_by, split_rules};
+        let bash = |c: &str| serde_json::json!({ "command": c });
+        let rules = split_rules("Bash(python3 *) Bash(git status:*) Bash(cargo test) Edit");
+        // The command from a real Antigravity run: `;` and parentheses inside quotes are text.
+        assert!(allowed_by(&rules, "Bash", &bash("python3 -c 'import m; print(m.add(2,3))'")));
+        assert!(allowed_by(&rules, "Bash", &bash("git status --short")));
+        assert!(allowed_by(&rules, "Bash", &bash("cargo test")));
+        assert!(allowed_by(&rules, "Bash", &bash("cargo test && git status")));
+        assert!(allowed_by(&rules, "Edit", &serde_json::json!({ "file_path": "m.py" })));
+        // Not named, or more than named.
+        assert!(!allowed_by(&rules, "Bash", &bash("cargo test --release")));
+        assert!(!allowed_by(&rules, "Bash", &bash("git statusx")));
+        assert!(!allowed_by(&rules, "Bash", &bash("python3 x.py && rm -rf build")));
+        assert!(!allowed_by(&rules, "Bash", &bash("python3 $(cat cmd)")));
+        assert!(!allowed_by(&rules, "Bash", &bash("python3 x.py > out.txt")));
+        assert!(!allowed_by(&rules, "Write", &serde_json::json!({ "file_path": "m.py" })));
+        assert!(!allowed_by(&[], "Bash", &bash("ls")));
+        assert!(allowed_by(&split_rules("Bash"), "Bash", &bash("anything at all")));
+    }
+
     #[test]
     fn git_failures_do_not_trust_the_local_settings() {
         assert!(tracked_from_git(Some(0), ""));

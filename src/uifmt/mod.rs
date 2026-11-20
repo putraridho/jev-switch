@@ -55,7 +55,7 @@ pub use diffview::{render_diff, render_hunk, word_diff, DiffOpts, Fold, Layout, 
 pub use failure::{error_block, failover_note, next_steps_for, no_route_message, problem_block};
 pub use identity::{builtin_identity, ChipFacts, ColorDepth, Health, Identity, NativeEvent, OverrideError, Palette, ProviderTheme, Rgb, ThemeOverrides};
 pub use markdown::answer_text;
-pub use permissions::{auto_allowed, denied_without_asking, remembered_allowed, permission_answered, permission_prompt, permissions_text, Prompt, Question};
+pub use permissions::{allowed_by_setting, auto_allowed, denied_without_asking, remembered_allowed, permission_answered, permission_prompt, permissions_text, Prompt, Question};
 pub use provider_view::{provider_glyphs, providers_table, AvailRow, ProviderStatus};
 pub use roles::{answer_block, answer_panel, display_tool, edit_preview, edit_preview_at, narration, route_row, sent_block, thinking_block, tool_name, tool_output_fold, tool_result_row, tool_row, tool_run_summary, EDIT_PREVIEW_LINES, FOLD_KEEP, THINKING_LINES};
 pub use route::{route_line, short_reason, RouteFacts};

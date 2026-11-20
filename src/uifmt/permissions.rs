@@ -165,6 +165,11 @@ pub fn auto_allowed(summary: &str) -> String {
     format!("\u{2713} auto-allowed {}", one_line(summary))
 }
 
+/// The line shown when `CODE_ALLOWED_TOOLS` allowed a call without asking.
+pub fn allowed_by_setting(summary: &str) -> String {
+    format!("\u{2713} allowed (CODE_ALLOWED_TOOLS) {}", one_line(summary))
+}
+
 /// The hint for a call every rule of which was saved before ("always"): allowed unasked.
 pub fn remembered_allowed(summary: &str) -> String {
     format!("\u{2713} allowed (remembered) {}", one_line(summary))

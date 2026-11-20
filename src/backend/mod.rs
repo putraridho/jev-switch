@@ -712,6 +712,9 @@ struct Pump<'a> {
     /// Messages written to the CLI that it has not reported picking up yet, oldest first: what
     /// the person typed, and what was sent of it.
     sent: VecDeque<(String, String)>,
+    /// Tools denied because nobody could be asked ([`NO_ONE_TO_ASK`]), in order: an empty
+    /// answer after one is that denial, not a model failure (see [`judge`]).
+    denied_unasked: Vec<String>,
 }
 
 /// Messages the person types while a turn runs, and how one is made fit to send.
@@ -899,6 +902,9 @@ impl Pump<'_> {
         };
         match answer {
             Some(d) => {
+                if matches!(&d, Decision::Deny { reason } if reason == NO_ONE_TO_ASK) {
+                    self.denied_unasked.push(req.tool.clone());
+                }
                 if let Some(line) = self.backend.permission_response(&req, &d) {
                     self.feed.send(format!("{line}\n"));
                 }
@@ -969,6 +975,31 @@ fn judge(finish: Finish, plan: Option<PlanUsage>) -> Result<TurnOutcome, TurnErr
         ));
     }
     Ok(TurnOutcome { text: finish.text, session_id: finish.session_id, usage: finish.usage, plan })
+}
+
+/// An empty answer after a tool was denied because nobody could be asked is that denial, however
+/// the CLI reports it (an empty result, or its own "empty response" failure): every model would
+/// hit it, so it is not [`ErrorKind::Empty`] (which tries the next model) but a failure that ends
+/// the turn and says how to allow the tool.
+fn empty_after_denial(err: TurnError, denied_unasked: &[String]) -> TurnError {
+    if err.kind == ErrorKind::Empty && !denied_unasked.is_empty() {
+        return TurnError::new(ErrorKind::Other, denied_unasked_message(denied_unasked));
+    }
+    err
+}
+
+/// Why a turn ended empty after denials nobody could answer, and how to allow the tools.
+fn denied_unasked_message(tools: &[String]) -> String {
+    let mut names: Vec<&str> = Vec::new();
+    for t in tools {
+        if !names.contains(&t.as_str()) {
+            names.push(t);
+        }
+    }
+    format!(
+        "stopped without an answer after {} was denied: nobody could be asked in this run; allow it with CODE_ALLOWED_TOOLS (e.g. \"Bash(python3 *)\"), or run in an interactive session",
+        names.join(", ")
+    )
 }
 
 /// Wait for the child to be reaped, killing it if it will not exit.
@@ -1116,15 +1147,17 @@ async fn run_child(
         queue: VecDeque::new(),
         steer: steer.filter(|_| backend.steerable()),
         sent: VecDeque::new(),
+        denied_unasked: Vec::new(),
     };
     let ended = pump.run().await;
     // Messages written to the CLI that it never took before the answer: they are still the
     // person's to run, so the CLI must not start on them now (it would read them from the pipe
     // and the next turn would run them a second time).
     let not_taken = !pump.sent.is_empty();
+    let denied_unasked = std::mem::take(&mut pump.denied_unasked);
     drop(pump);
     let classified = |message: String| TurnError::new(backend.classify_error(&message), message);
-    match ended {
+    let result = match ended {
         Err(Idle) => {
             let _ = child.start_kill();
             let secs = idle_timeout.as_secs_f32();
@@ -1147,7 +1180,8 @@ async fn run_child(
             judge(finish, plan)
         }
         Ok(Ended::Eof) => Err(classified(explain_eof(&mut child, stderr).await)),
-    }
+    };
+    result.map_err(|e| empty_after_denial(e, &denied_unasked))
 }
 
 /// Alive means running: a killed process that nobody has reaped yet is a zombie, which
@@ -2026,6 +2060,8 @@ mod tests {
                 Some(("TEXT", t)) => vec![Event::Text(t.into())],
                 Some(("TOOL", t)) => vec![Event::Tool(t.into())],
                 Some(("FIN", text)) => vec![Event::Finished(Finish { text: text.into(), session_id: None, usage: Usage::default() })],
+                // How Gemini and Antigravity end an empty answer: their own failure, not a result.
+                Some(("FAIL", message)) => vec![Event::Failed { message: message.into() }],
                 _ => vec![],
             }
         }
@@ -2035,8 +2071,12 @@ mod tests {
                 Decision::Deny { reason } => format!("{}:DENY:{reason}", req.id),
             })
         }
-        fn classify_error(&self, _: &str) -> ErrorKind {
-            ErrorKind::Other
+        fn classify_error(&self, message: &str) -> ErrorKind {
+            if message.contains("empty response") {
+                ErrorKind::Empty
+            } else {
+                ErrorKind::Other
+            }
         }
     }
 
@@ -2137,6 +2177,23 @@ mod tests {
         let r = run_turn(&Asking(ASK_AND_REPORT.into()), &req(), Duration::from_secs(5), &mut on_event).await;
         assert_eq!(r.unwrap().text, format!("refused {NO_ONE_TO_ASK}"));
         assert!(started.elapsed() < Duration::from_secs(3));
+    }
+
+    #[tokio::test]
+    async fn an_empty_answer_after_a_denial_nobody_could_answer_ends_the_turn_instead_of_failing_over() {
+        let mut on_event = |_: &Event| {};
+        let script = r#"read prompt; echo "ASK:Bash:x"; read ans; echo "FIN:""#;
+        let err = run_turn(&Asking(script.into()), &req(), Duration::from_secs(5), &mut on_event).await.unwrap_err();
+        assert_eq!(err.kind, ErrorKind::Other, "{}", err.message);
+        assert!(err.message.contains("Bash was denied") && err.message.contains("CODE_ALLOWED_TOOLS"), "{}", err.message);
+        // The person said no: an empty answer then is still the model's, and the next one may do better.
+        let (r, _) = run_asking(script, &Scripted::new(0, Decision::Deny { reason: "no".into() }), 5000).await;
+        assert_eq!(r.unwrap_err().kind, ErrorKind::Empty);
+        // The same when the CLI reports the empty answer as its own failure (Antigravity does).
+        let failing = r#"read prompt; echo "ASK:Bash:x"; read ans; echo "FAIL:empty response""#;
+        let err = run_turn(&Asking(failing.into()), &req(), Duration::from_secs(5), &mut on_event).await.unwrap_err();
+        assert_eq!(err.kind, ErrorKind::Other, "{}", err.message);
+        assert!(err.message.contains("Bash was denied"), "{}", err.message);
     }
 
     #[tokio::test]
