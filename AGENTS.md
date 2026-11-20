@@ -13,6 +13,7 @@ jev-router: a Rust crate (edition 2021, Rust 1.83+) with two products. `jev-code
 ## Commands
 
 ```bash
+scripts/check.sh                   # full gate
 cargo build --all-targets
 scripts/cached-test.sh changed     # quick check: lib tests for files changed since HEAD
 scripts/cached-test.sh             # full cargo test (skipped if inputs unchanged since last pass)

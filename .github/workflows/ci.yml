@@ -5,9 +5,11 @@ on:
     branches: [main]
   pull_request:
 
+permissions:
+  contents: read
+
 env:
   CARGO_TERM_COLOR: never
-  RUSTFLAGS: -D warnings
 
 jobs:
   test:
@@ -19,16 +21,14 @@ jobs:
         os: [ubuntu-latest, macos-latest]
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.95.0
+          components: clippy
       - uses: Swatinem/rust-cache@v2
-      # git needs an identity for the tests that make commits in temp repositories.
-      - run: git config --global user.email ci@example.invalid && git config --global user.name ci
-      - run: cargo build --all-targets
-      - run: cargo test
-      # The terminal UX suite drives the real binary over a pseudo-terminal with a fake model
-      # CLI and a fake Jev: no accounts, no quota.
-      - run: cargo build --bin code
-      - run: python3 -I scripts/test_pty_ux.py
+      - run: scripts/check.sh
 
   windows:
     name: build (windows, no pty suite)
