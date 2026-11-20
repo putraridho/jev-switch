@@ -20,6 +20,10 @@ use std::time::{Duration, Instant};
 use serde_json::{json, Value};
 use tokio::sync::watch;
 
+use crate::approval::application::claude_settings_file;
+use crate::approval::domain::always_plan;
+use crate::approval::domain::permission_request;
+use crate::approval::domain::permission_rule;
 use crate::catalog::domain::model_table::{MODEL_CHEAP, MODEL_MID, MODEL_STRONG};
 use crate::backend::{
     self, Approver, Decision, ErrorKind, Event, McpAttachment, PermissionRequest, ProviderId, TurnError, TurnOutcome,
@@ -43,8 +47,8 @@ use crate::shared::infrastructure::jsonl_log as log;
 use crate::approval::domain::mode::Mode;
 use crate::orchestration::domain::orchestration_gate as orchestrate;
 use crate::orchestration::domain::orchestration_gate::{Outcome, Setup};
-use crate::approval::domain::rule_policy as permissions;
-use crate::approval::domain::rule_policy::{Offer, Places, Settled};
+use crate::approval::domain::always_plan::{Offer, Settled};
+use crate::approval::domain::grantable::Places;
 use crate::providers::application::provider_registry::Runtime;
 use crate::judgment::application::judge::{CodeWant, ProviderWant, Router};
 use crate::routing::domain::decide as routing;
@@ -158,7 +162,7 @@ pub fn settle(answer: Option<Decision>, offer: &Offer, project: &Path) -> Settle
         None => Settled::Stopped,
         Some(Decision::Allow) => Settled::Allowed,
         Some(Decision::AllowAlways) => match offer {
-            Ok(always) => match permissions::save_always(project, always) {
+            Ok(always) => match claude_settings_file::save_always(project, always) {
                 Ok(_) => Settled::Remembered(always.clone()),
                 Err(e) => Settled::NotSaved(e),
             },
@@ -208,21 +212,21 @@ impl EngineApprover<'_> {
         let places = Places::from_env(self.dir);
         // Every rule this call needs was saved before ("always"): not asked again, in any mode
         // that asks at all. Plan mode never reaches here for writes (Claude Code refuses them).
-        if permissions::remembered(&req.tool, &req.input, req.blocked_path.as_deref(), &places).is_some() {
-            lock_ui(self.ui).event(&Event::Hint(permissions::remembered_allowed(&req.summary)));
+        if claude_settings_file::remembered(&req.tool, &req.input, req.blocked_path.as_deref(), &places).is_some() {
+            lock_ui(self.ui).event(&Event::Hint(permission_request::remembered_allowed(&req.summary)));
             return Decision::Allow;
         }
         // What Claude Code is told with `--allowedTools`, for the CLIs that ask jev-code instead.
         // Not in plan mode, where Claude Code would still refuse anything that changes things.
-        if self.mode != Mode::Plan && permissions::allowed_by(self.allowed_tools, &req.tool, &req.input) {
-            lock_ui(self.ui).event(&Event::Hint(permissions::allowed_by_setting(&req.summary)));
+        if self.mode != Mode::Plan && permission_rule::allowed_by(self.allowed_tools, &req.tool, &req.input) {
+            lock_ui(self.ui).event(&Event::Hint(permission_request::allowed_by_setting(&req.summary)));
             return Decision::Allow;
         }
         if self.mode == Mode::Auto {
-            lock_ui(self.ui).event(&Event::Hint(permissions::auto_allowed(&req.summary)));
+            lock_ui(self.ui).event(&Event::Hint(permission_request::auto_allowed(&req.summary)));
             return Decision::Allow;
         }
-        let offer = permissions::always_plan(&req.tool, &req.input, req.blocked_path.as_deref(), &places);
+        let offer = always_plan::always_plan(&req.tool, &req.input, req.blocked_path.as_deref(), &places);
         // The question goes up under the lock; the wait for the person does not hold it, so
         // the turn's own events can still be shown, and dropping this future ends the wait.
         let question = lock_ui(self.ui).ask_permission(req, &offer);
@@ -230,7 +234,7 @@ impl EngineApprover<'_> {
         // A UI that cannot ask: nothing was answered, so there is nothing to settle.
         if let Some(Decision::Deny { reason }) = &asked {
             if reason == backend::NO_ONE_TO_ASK {
-                lock_ui(self.ui).event(&Event::Hint(permissions::denied_without_asking(&req.tool)));
+                lock_ui(self.ui).event(&Event::Hint(permission_request::denied_without_asking(&req.tool)));
                 return Decision::Deny { reason: reason.clone() };
             }
         }
@@ -602,7 +606,7 @@ impl Engine {
             session_file: None,
             mode: Mode::default(),
             effort: EffortSetting::default(),
-            allowed_tools: permissions::split_rules(&crate::shared::infrastructure::env_file::lookup("CODE_ALLOWED_TOOLS").unwrap_or_default()),
+            allowed_tools: permission_rule::split_rules(&crate::shared::infrastructure::env_file::lookup("CODE_ALLOWED_TOOLS").unwrap_or_default()),
         }
     }
 
@@ -682,7 +686,7 @@ impl Engine {
 
     /// The rules allowed without asking, in place of `CODE_ALLOWED_TOOLS`.
     pub fn with_allowed_tools(mut self, list: &str) -> Self {
-        self.allowed_tools = permissions::split_rules(list);
+        self.allowed_tools = permission_rule::split_rules(list);
         self
     }
 
@@ -1730,6 +1734,7 @@ mod tests {
     }
 
     use super::*;
+    use crate::approval::domain::settings_document;
     use std::collections::HashMap;
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::sync::{Arc, Mutex};
@@ -3404,7 +3409,7 @@ mod tests {
         let report = ask_turn(&mut engine, &mut ui).await;
         assert_eq!((report.status, report.text.as_str()), (TurnStatus::Answered, "ran"));
         assert_eq!(ui.questions, vec![("Bash".to_string(), "cargo test --quiet".to_string(), Some("Bash(cargo test:*)".to_string()))]);
-        assert!(!permissions::local_settings_path(&dir).exists(), "a plain yes saves nothing");
+        assert!(!settings_document::local_settings_path(&dir).exists(), "a plain yes saves nothing");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -3417,7 +3422,7 @@ mod tests {
         assert_eq!((report.status, report.text.as_str()), (TurnStatus::Answered, "ran"));
         assert!(ui.questions.is_empty(), "nobody was asked: {:?}", ui.questions);
         assert!(ui.hints.iter().any(|h| h.contains("auto-allowed") && h.contains("cargo test --quiet")), "{:?}", ui.hints);
-        assert!(!permissions::local_settings_path(&dir).exists());
+        assert!(!settings_document::local_settings_path(&dir).exists());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -3431,7 +3436,7 @@ mod tests {
         assert_eq!((report.status, report.text.as_str()), (TurnStatus::Answered, "ran"));
         assert!(ui.questions.is_empty());
         assert!(ui.hints.iter().any(|h| h.contains("auto-allowed") && h.contains("git push")));
-        assert!(!permissions::local_settings_path(&dir).exists());
+        assert!(!settings_document::local_settings_path(&dir).exists());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -3453,10 +3458,10 @@ mod tests {
         let mut ui = Asked { answers: [Some(Decision::AllowAlways)].into(), ..Asked::default() };
         let report = ask_turn(&mut engine, &mut ui).await;
         assert_eq!(report.text, "ran");
-        let saved = permissions::load(&permissions::local_settings_path(&dir)).unwrap();
-        assert_eq!(saved.list(permissions::List::Allow), ["Bash(cargo test:*)"]);
+        let saved = claude_settings_file::load(&settings_document::local_settings_path(&dir)).unwrap();
+        assert_eq!(saved.list(settings_document::List::Allow), ["Bash(cargo test:*)"]);
         assert!(ui.notes.is_empty(), "{:?}", ui.notes);
-        let always = permissions::Always { rules: vec!["Bash(cargo test:*)".into()], folder: None };
+        let always = always_plan::Always { rules: vec!["Bash(cargo test:*)".into()], folder: None };
         assert_eq!(ui.settled, [Settled::Remembered(always)], "the UI hears what was saved, after the save");
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -3481,7 +3486,7 @@ mod tests {
         let mut ui = Asked { answers: [Some(denial)].into(), ..Asked::default() };
         let report = ask_turn(&mut engine, &mut ui).await;
         assert_eq!((report.status, report.text.as_str()), (TurnStatus::Answered, "refused the user denied this tool call"));
-        assert!(!permissions::local_settings_path(&dir).exists());
+        assert!(!settings_document::local_settings_path(&dir).exists());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -3511,7 +3516,7 @@ mod tests {
         assert!(report.text.starts_with("refused no one to ask"), "{}", report.text);
         assert!(ui.hints.iter().any(|t| t.contains("denied Bash") && t.contains("CODE_ALLOWED_TOOLS")), "{:?}", ui.hints);
         assert!(ui.texts.iter().all(|t| !t.contains("denied Bash")), "a hint is never answer text: {:?}", ui.texts);
-        assert!(!permissions::local_settings_path(&dir).exists());
+        assert!(!settings_document::local_settings_path(&dir).exists());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -3598,7 +3603,7 @@ mod tests {
         assert_eq!(ui.asked, 1);
         assert!(ui.dropped.load(Ordering::SeqCst), "the wait for a key was abandoned");
         assert_eq!(ui.withdrawn, vec!["q1".to_string()], "the UI was told which question went away");
-        assert!(!permissions::local_settings_path(&dir).exists());
+        assert!(!settings_document::local_settings_path(&dir).exists());
 
         let report = ask_turn(&mut engine, &mut ui).await;
         assert_eq!((report.status, report.text.as_str()), (TurnStatus::Answered, "ran"));

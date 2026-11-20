@@ -3,7 +3,7 @@
 use crate::approval::application::extension_hooks::{HookDef, Hooks};
 use crate::approval::application::extension_library::{Entry, Kind, Library};
 use crate::approval::application::extension_market::{Listing, State};
-use crate::approval::domain::rule_policy::visible;
+use crate::approval::domain::visible_text::visible;
 use crate::tui::render::Style;
 
 fn entry_row(e: &Entry, style: Style) -> String {
@@ -97,7 +97,7 @@ pub fn skill_text(e: &Entry, style: Style) -> String {
     lines.push(style.dim(&format!("  {}", facts.join(" · "))));
     lines.push(String::new());
     let body = e.steps.first().map_or("", |s| s.body.as_str());
-    lines.extend(body.lines().map(|l| if l.is_empty() { String::new() } else { format!("  {}", crate::approval::domain::rule_policy::visible(l)) }));
+    lines.extend(body.lines().map(|l| if l.is_empty() { String::new() } else { format!("  {}", crate::approval::domain::visible_text::visible(l)) }));
     lines.push(String::new());
     lines.push(style.dim(format!("  run it: /skill {} {}", e.name, if e.meta.hint.is_empty() { "" } else { &e.meta.hint }).trim_end()));
     lines.join("\n")

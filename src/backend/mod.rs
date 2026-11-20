@@ -5,7 +5,7 @@ pub mod infrastructure;
 pub mod testing;
 
 // The front door: what the rest of the crate says as `crate::backend::Name`.
-pub use crate::approval::domain::rule_policy::{Decision, PermissionRequest};
+pub use crate::approval::domain::permission_request::{Decision, PermissionRequest};
 pub use crate::shared::{ProviderId, Usage};
 pub use application::ports::*;
 pub use domain::effort::Effort;

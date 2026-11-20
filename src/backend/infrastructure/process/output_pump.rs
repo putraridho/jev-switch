@@ -8,7 +8,7 @@ use tokio::process::ChildStdout;
 use tokio::sync::mpsc;
 
 use super::stdin_feed::StdinFeed;
-use crate::approval::domain::rule_policy::{Decision, PermissionRequest};
+use crate::approval::domain::permission_request::{Decision, PermissionRequest};
 use crate::backend::application::ports::{Approver, Backend, Steering, NO_ONE_TO_ASK};
 use crate::backend::domain::event::{Event, Finish};
 use crate::backend::domain::plan_usage::PlanUsage;

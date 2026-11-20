@@ -6,6 +6,7 @@
 use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 
+use crate::approval::domain::settings_document;
 use crate::tui::repl::session::{run_turn, Flow, Io, Repl, TurnEnd};
 use crate::turn::application::attach;
 use crate::catalog::domain::model_table as catalog;
@@ -14,7 +15,6 @@ use crate::tui::app::host;
 use crate::tui::app::host::Copied;
 use crate::shared::infrastructure::jsonl_log as log;
 use crate::approval::domain::mode::Mode;
-use crate::approval::domain::rule_policy as permissions;
 use crate::turn::domain::session_log::utc_stamp;
 use crate::tui::tty::terminal_setup as termsetup;
 use crate::tui::tty::terminal_setup::{Installed, TermEnv};
@@ -366,7 +366,7 @@ impl Repl {
         if let Some(f) = env_file {
             files.push(("settings".into(), tilde(&f)));
         }
-        files.push(("permissions".into(), tilde(&self.engine.dir().join(permissions::LOCAL_SETTINGS))));
+        files.push(("permissions".into(), tilde(&self.engine.dir().join(settings_document::LOCAL_SETTINGS))));
         if let Some(s) = &state {
             files.push(("history".into(), tilde(&crate::tui::input::line_editor::history_path(s))));
             files.push(("logs".into(), tilde(s)));

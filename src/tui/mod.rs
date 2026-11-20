@@ -4,6 +4,7 @@ pub mod command;
 pub mod command_table;
 pub mod console;
 pub mod input;
+pub mod permissions_command;
 pub mod render;
 pub mod repl;
 pub mod tty;

@@ -3,12 +3,12 @@
 //! unit test. The names come from the one command table in [`crate::tui::render`], which also
 //! drives `/help` and Tab completion.
 
+use crate::tui::permissions_command;
 use crate::tui::repl::guard_commands::GuardCmd;
 use crate::approval::application::extensions as ext;
 use crate::approval::application::extensions::ExtCmd;
 use crate::approval::domain::mode::Mode;
-use crate::approval::domain::rule_policy as permissions;
-use crate::approval::domain::rule_policy::PermissionsCmd;
+use crate::tui::permissions_command::PermissionsCmd;
 use crate::routing::domain::decide::Pin;
 use crate::tui::render as uifmt;
 
@@ -258,7 +258,7 @@ pub fn parse(line: &str) -> Command {
             let path = line[head.len()..].trim();
             Command::Diff((!path.is_empty()).then(|| path.to_string()))
         }
-        "/permissions" => permissions::parse_args(&line[head.len()..]).map_or_else(Command::Invalid, Command::Permissions),
+        "/permissions" => permissions_command::parse_args(&line[head.len()..]).map_or_else(Command::Invalid, Command::Permissions),
         "/model" => match (arg, extra) {
             (None, _) => Command::ShowModel,
             (Some(a), false) => Pin::parse(a).map_or_else(Command::Invalid, Command::SetPin),

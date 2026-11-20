@@ -1,7 +1,7 @@
 //! What a backend finds in one line of a CLI's output.
 
 use super::plan_usage::PlanUsage;
-use crate::approval::domain::rule_policy::PermissionRequest;
+use crate::approval::domain::permission_request::PermissionRequest;
 use crate::shared::Usage;
 
 /// The terminal success event of a CLI's stream.

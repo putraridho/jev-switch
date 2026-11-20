@@ -5,7 +5,7 @@ use std::path::Path;
 
 use crate::tui::render::changes::relativize_paths;
 use crate::tui::render::diffview::paint_edit_lines;
-use crate::approval::domain::rule_policy::Settled;
+use crate::approval::domain::always_plan::Settled;
 use crate::tui::render::style::Style;
 use crate::tui::render::text::one_line;
 use crate::tui::render::width::{char_width, clamp_width, display_width};
@@ -152,10 +152,10 @@ pub fn permission_answered(settled: &Settled, style: Style) -> String {
     }
 }
 
-pub use crate::approval::domain::rule_policy::{allowed_by_setting, auto_allowed, denied_without_asking, remembered_allowed};
+pub use crate::approval::domain::permission_request::{allowed_by_setting, auto_allowed, denied_without_asking, remembered_allowed};
 
 /// The `/permissions` screen: the project's rules and folders, then the user-level rules.
-pub fn permissions_text(l: &crate::approval::domain::rule_policy::Listing, style: Style, project_dir: &Path) -> String {
+pub fn permissions_text(l: &crate::approval::domain::listing::Listing, style: Style, project_dir: &Path) -> String {
     let show = |path: &Path| relativize_paths(&path.display().to_string(), project_dir);
     let mut lines = vec![style.bold("Permissions"), format!("  {}", style.dim(&format!("project rules ({})", show(&l.local_path))))];
     if l.allow.is_empty() {
@@ -296,7 +296,7 @@ mod tests {
 
     #[test]
     fn answered_questions_and_the_non_interactive_hint_read_plainly() {
-        use crate::approval::domain::rule_policy::{Always, SettingsError};
+        use crate::approval::domain::{always_plan::Always, settings_document::SettingsError};
         assert_eq!(permission_answered(&Settled::Allowed, OFF), "✓ allowed");
         let always = Always { rules: vec!["Bash(ls:*)".into()], folder: None };
         assert_eq!(permission_answered(&Settled::Remembered(always), OFF), "✓ allowed, and always in this project: Bash(ls:*)");
@@ -311,7 +311,7 @@ mod tests {
 
     #[test]
     fn the_permissions_screen_lists_rules_folders_user_rules_and_problems() {
-        let l = crate::approval::domain::rule_policy::Listing {
+        let l = crate::approval::domain::listing::Listing {
             local_path: "/proj/.claude/settings.local.json".into(),
             allow: vec!["Bash(cargo test:*)".into()],
             directories: vec!["/opt/data".into()],
@@ -324,7 +324,7 @@ mod tests {
                      "read only", "    Bash(git status:*)", "⚠ /x: not valid JSON", "Codex, Gemini and Grok decide"] {
             assert!(text.contains(want), "{want}: {text}");
         }
-        let empty = permissions_text(&crate::approval::domain::rule_policy::Listing { allow: vec![], directories: vec![], user_allow: vec![], problems: vec![], ..l }, OFF, Path::new("/proj"));
+        let empty = permissions_text(&crate::approval::domain::listing::Listing { allow: vec![], directories: vec![], user_allow: vec![], problems: vec![], ..l }, OFF, Path::new("/proj"));
         assert!(empty.contains("none yet") && !empty.contains("additional folders") && !empty.contains("read only"), "{empty}");
     }
 

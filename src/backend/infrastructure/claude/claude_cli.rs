@@ -18,12 +18,13 @@ use std::path::PathBuf;
 use serde_json::{json, Value};
 use tokio::process::Command;
 
+use crate::approval::domain::review;
+use crate::approval::domain::rule_policy;
 use crate::backend::{
     classify_common, Backend, Decision, ErrorKind, Event, Finish, McpAttachment, PermissionRequest, PlanUsage, ProviderId,
     TurnRequest, Usage,
 };
 use crate::shared::domain::limit_notice::is_limit_message;
-use crate::approval::domain::rule_policy as permissions;
 
 /// What the model is told about where it runs. A constant, so the text is byte-identical
 /// on every turn and the prompt cache holds.
@@ -142,7 +143,7 @@ fn permission_request(ev: &Value) -> Option<PermissionRequest> {
     Some(PermissionRequest {
         id: ev["request_id"].as_str()?.to_string(),
         tool: tool.to_string(),
-        summary: permissions::describe(tool, &input),
+        summary: review::describe(tool, &input),
         blocked_path: request["blocked_path"].as_str().map(String::from),
         input,
     })
@@ -443,7 +444,7 @@ impl Backend for ClaudeBackend {
         if let Some(id) = &req.session_id {
             cmd.args(["--resume", id]);
         }
-        let sources = setting_sources(!permissions::local_settings_tracked(&req.dir), req.trust_project_settings);
+        let sources = setting_sources(!rule_policy::local_settings_tracked(&req.dir), req.trust_project_settings);
         cmd.args(["--setting-sources", sources, "--permission-mode", req.mode.claude_flag()]);
         if self.interactive || sends_image_blocks(self.provider, req) {
             cmd.args(["--input-format", "stream-json"]);
