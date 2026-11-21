@@ -1,3 +1,3 @@
 T2 | src/doctor/domain/diagnose.rs | crate::judgment::infrastructure | 1
-T2 | src/doctor/domain/diagnose.rs | crate::providers::application | 8
+T2 | src/doctor/domain/diagnose.rs | crate::providers::application | 2
 T2 | src/doctor/domain/diagnose.rs | crate::shared::infrastructure | 3
