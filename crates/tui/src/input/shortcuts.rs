@@ -16,6 +16,9 @@ pub enum Shortcut {
 
 /// `!ls` is a shell command and `# remember x` a note; a bare `!` or `#` (nothing after
 /// it), `!!` and `#!` lines (shebang-like or Markdown headings the user pasted) are plain.
+/// A note needs a space after the `#` and a single line: `#995 is merged`, `#2, I allow`
+/// and a pasted block that starts with `#` are messages that refer to something, and
+/// writing them into the team's AGENTS.md instead of sending them loses the message.
 pub fn parse(line: &str) -> Shortcut {
     let line = line.trim_start();
     if let Some(rest) = line.strip_prefix('!') {
@@ -24,7 +27,9 @@ pub fn parse(line: &str) -> Shortcut {
     }
     if let Some(rest) = line.strip_prefix('#') {
         let note = rest.trim();
-        return if note.is_empty() || rest.starts_with(['#', '!']) { Shortcut::Plain } else { Shortcut::Note(note.to_string()) };
+        let spaced = rest.starts_with([' ', '\t']);
+        let one_line = !note.contains('\n');
+        return if note.is_empty() || !spaced || !one_line { Shortcut::Plain } else { Shortcut::Note(note.to_string()) };
     }
     Shortcut::Plain
 }
@@ -83,7 +88,13 @@ mod tests {
             ("!ls -la", Shortcut::Shell("ls -la".into())),
             ("  ! git status ", Shortcut::Shell("git status".into())),
             ("# remember: use tabs", Shortcut::Note("remember: use tabs".into())),
-            ("#todo", Shortcut::Note("todo".into())),
+            ("#\ttodo", Shortcut::Note("todo".into())),
+            ("#todo", Shortcut::Plain),
+            ("#995 is mergede already", Shortcut::Plain),
+            ("#2, I allow", Shortcut::Plain),
+            ("#V2", Shortcut::Plain),
+            ("#1. <div class=\"x\">", Shortcut::Plain),
+            ("# Title\n\nbody of a pasted document", Shortcut::Plain),
             ("!", Shortcut::Plain),
             ("#", Shortcut::Plain),
             ("!!", Shortcut::Plain),

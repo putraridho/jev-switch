@@ -36,6 +36,7 @@ fn unknown_slash_command_is_reported_not_sent() {
 fn a_bang_runs_a_shell_command() {
     assert_eq!(parse("# remember x"), Command::Note("remember x".into()));
     assert_eq!(parse("## Heading"), Command::Prompt("## Heading".into()));
+    assert_eq!(parse("#995 is merged already"), Command::Prompt("#995 is merged already".into()));
     assert_eq!(parse("!git status"), Command::Shell("git status".into()));
     assert_eq!(parse("  ! ls -la "), Command::Shell("ls -la".into()));
     assert!(matches!(parse("!"), Command::Invalid(m) if m.contains("!git status")));

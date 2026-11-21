@@ -4,6 +4,12 @@ See [docs/changelog-guide.md](docs/changelog-guide.md) for changelog formatting,
 
 ## Unreleased
 
+## 1.11.5
+
+A message that starts with `#` reaches the model instead of landing in AGENTS.md.
+
+- **Only `# note` (a space after the `#`, one line) is a note.** Any message that started with `#` was appended to the project's AGENTS.md and never sent, so `#995 is merged already`, `#2, I allow` or a pasted block beginning with `#` vanished into the team's instructions file. A note now needs a space after the `#` and fits on one line; everything else is sent as a message.
+
 ## 1.11.4
 
 Gemini 4 Neon joins the model catalog.
