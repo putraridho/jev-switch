@@ -32,3 +32,24 @@ pub fn render_hits(hits: &[Hit], now_ms: u64, current_project: &str, style: Styl
         })
         .collect()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::session::application::session_library::query::Query;
+    use crate::session::application::session_library::scan_all;
+    use crate::session::application::session_library::search::search;
+    use crate::session::infrastructure::library_fixtures::{library, NOW};
+    use crate::session::infrastructure::session_file::{self, FileSessions};
+
+    #[test]
+    fn rendered_hits_show_marks_and_the_matching_line() {
+        let (state, a, _) = library("render");
+        let hits = search(scan_all(&FileSessions, &state), &Query::parse("lexer").unwrap(), NOW);
+        let text = render_hits(&hits, NOW, &session_file::project_key(&a), Style::off()).join("\n");
+        assert!(text.contains("  1. fix the lexer") && text.contains("24h ago") && text.contains("claude"), "{text}");
+        assert!(!text.contains("proj-a"), "the current project is not repeated: {text}");
+        let elsewhere = render_hits(&hits, NOW, "/other", Style::off()).join("\n");
+        assert!(elsewhere.contains("proj-a"), "{elsewhere}");
+    }
+}

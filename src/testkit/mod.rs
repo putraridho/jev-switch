@@ -10,3 +10,4 @@ pub mod fake_jev;
 pub mod git_repo;
 pub mod scratch_dir;
 pub mod unified_patch;
+pub mod temp_folder;

@@ -1,8 +1,6 @@
 use super::marks::{mark, Mark};
 use super::query::Query;
 use super::search::search;
-use crate::tui::render::Style;
-use crate::tui::views::session_hits::render_hits;
 use super::*;
 
 #[test]
@@ -92,15 +90,4 @@ fn pinned_come_first_archived_hide_and_tags_filter() {
     assert_eq!(run("pinned"), ["write docs"]);
     mark(&FileSessions, &state, &docs, &Mark::Untag("docs".into())).unwrap();
     assert!(run("tag:docs").is_empty());
-}
-
-#[test]
-fn rendered_hits_show_marks_and_the_matching_line() {
-    let (state, a, _) = library("render");
-    let hits = search(scan_all(&FileSessions, &state), &Query::parse("lexer").unwrap(), NOW);
-    let text = render_hits(&hits, NOW, &session_file::project_key(&a), Style::off()).join("\n");
-    assert!(text.contains("  1. fix the lexer") && text.contains("24h ago") && text.contains("claude"), "{text}");
-    assert!(!text.contains("proj-a"), "the current project is not repeated: {text}");
-    let elsewhere = render_hits(&hits, NOW, "/other", Style::off()).join("\n");
-    assert!(elsewhere.contains("proj-a"), "{elsewhere}");
 }

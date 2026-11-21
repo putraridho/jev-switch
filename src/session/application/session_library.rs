@@ -16,7 +16,8 @@ use crate::session::domain::saved_session::SavedSession;
 use crate::session::application::ports::SessionStore;
 use crate::session::domain::session_meta::Meta;
 
-const DAY_MS: u64 = 86_400_000;
+/// One day in milliseconds, the unit of the library's age filters.
+pub const DAY_MS: u64 = 86_400_000;
 
 /// One saved session found on disk, with what is said about it.
 #[derive(Debug, Clone)]

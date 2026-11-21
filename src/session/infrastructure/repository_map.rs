@@ -201,7 +201,7 @@ pub fn note(map_text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::orchestration::infrastructure::project_kind::tempdir::Dir;
+    use crate::testkit::temp_folder::Dir;
 
     fn names(text: &str, file: &str) -> Vec<String> {
         symbols(text, Path::new(file)).into_iter().map(|s| format!("{} {}", s.keyword, s.name)).collect()

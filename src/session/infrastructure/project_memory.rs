@@ -109,7 +109,7 @@ fn parse(text: &str) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::orchestration::infrastructure::project_kind::tempdir::Dir;
+    use crate::testkit::temp_folder::Dir;
 
     #[test]
     fn notes_survive_a_reload_and_are_per_project() {

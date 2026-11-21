@@ -144,7 +144,7 @@ fn run_with_timeout(dir: &Path, command: &str, timeout: Duration, stop: &dyn Fn(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::orchestration::infrastructure::project_kind::tempdir::Dir;
+    use crate::testkit::temp_folder::Dir;
 
     fn never() -> bool {
         false
