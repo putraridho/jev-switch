@@ -4,6 +4,8 @@ See [docs/changelog-guide.md](docs/changelog-guide.md) for changelog formatting,
 
 ## Unreleased
 
+- **A queued message you take back to edit is no longer sent twice.** While a turn runs, Enter queues your message and offers it to the running turn. Pressing ↑ to take it back out and edit it used to leave that first copy with the turn, so the turn received both the original and your edited message. Taking a message back now withdraws the copy the turn was offered, and only the edited message is sent.
+
 ## 1.10.0
 
 `/mcp` becomes a list you can navigate: one row per server, live status, a card per server, and login from the list.
