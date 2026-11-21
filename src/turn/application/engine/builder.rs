@@ -50,6 +50,7 @@ impl Engine {
             orchestrate: false,
             orch_setup: None,
             track_changes: true,
+            working_tree: None,
             last_changes: None,
             change_history: Vec::new(),
             images: Vec::new(),

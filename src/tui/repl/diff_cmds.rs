@@ -1,13 +1,13 @@
 //! `/diff` (last turn, one earlier turn, or everything; per-hunk review; patch export)
-//! and `/rewind`. The wording and layout come from [`crate::tui::render`], the arguments and
-//! the git work from [`crate::changes::application::diff_command`].
+//! and `/rewind`. The wording and layout come from [`crate::tui::render`], the git work from [`crate::changes::application::diff_command`].
 
 use crate::tui::repl::session::pager::page;
 use crate::tui::repl::session::{Io, Repl};
-use crate::changes::infrastructure::git_working_tree as changes;
+use crate::changes::application::ports::WorkingTree;
+use crate::changes::infrastructure::git_tree::GitWorkingTree;
 use crate::changes::domain::undo_report::UndoError;
 use crate::changes::application::diff_command as diffcmd;
-use crate::changes::application::diff_command::DiffArgs;
+use super::diff_args::{self, DiffArgs};
 use crate::changes::domain::diff_parse as diffparse;
 use crate::changes::domain::diff_parse::FileDiff;
 use crate::tui::tty::terminal_guard as terminal;
@@ -24,18 +24,18 @@ impl Repl {
     /// `/diff [options] [file]`.
     pub(super) fn diff(&mut self, rest: Option<&str>, io: &mut Io<'_>) {
         let style = self.out_style();
-        let args = match diffcmd::parse_args(rest.unwrap_or("")) {
+        let args = match diff_args::parse_args(rest.unwrap_or("")) {
             Ok(a) => a,
             Err(e) => return self.console.out(&format!("{} {e}", style.yellow("⚠"))),
         };
         if args.list {
-            return self.page_out(&diffcmd::checkpoint_list(self.engine.change_history(), style));
+            return self.page_out(&diff_args::checkpoint_list(self.engine.change_history(), style));
         }
         let summary = match diffcmd::summary_for(args.scope, self.engine.last_changes(), self.engine.change_history()) {
             Ok(s) => s,
             Err(why) => return self.say_dim(&format!("No changes to show: {why}.")),
         };
-        let text = changes::diff_text(self.engine.dir(), &summary, args.path.as_deref()).unwrap_or_default();
+        let text = GitWorkingTree.diff_text(self.engine.dir(), &summary, args.path.as_deref()).unwrap_or_default();
         let files = diffparse::parse(&text);
         if files.is_empty() {
             return match &args.path {
@@ -93,7 +93,7 @@ impl Repl {
                     kept += 1;
                     continue;
                 }
-                match diffcmd::revert_hunk(self.engine.dir(), file, index) {
+                match diffcmd::revert_hunk(&GitWorkingTree, self.engine.dir(), file, index) {
                     Ok(()) => {
                         reverted += 1;
                         self.console.out(&format!("{} hunk reverted", style.green("✓")));
@@ -121,7 +121,7 @@ impl Repl {
         let style = self.out_style();
         let history = self.engine.change_history();
         let Some(number) = turn else {
-            self.page_out(&diffcmd::checkpoint_list(history, style));
+            self.page_out(&diff_args::checkpoint_list(history, style));
             if !history.is_empty() {
                 self.say_dim("/rewind <number> puts the files back to before that turn.");
             }

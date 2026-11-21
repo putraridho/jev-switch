@@ -4,6 +4,7 @@ use std::collections::HashMap;
 use std::path::Path;
 
 use crate::changes::application::undo_turn::undo;
+use crate::changes::infrastructure::git_tree::GitWorkingTree;
 use crate::changes::domain::change_set::ChangeSummary;
 use crate::changes::domain::file_change::{ChangeStatus, FileChange};
 use crate::changes::domain::undo_report::UndoError;
@@ -89,7 +90,7 @@ fn outside_a_repository_everything_degrades_to_none() {
         ..ChangeSummary::default()
     };
     assert_eq!(diff_text(s.path(), &sum, None), None);
-    assert!(matches!(undo(s.path(), &sum), Err(UndoError::Failed(_))));
+    assert!(matches!(undo(&GitWorkingTree, s.path(), &sum), Err(UndoError::Failed(_))));
     assert_eq!(snapshot(Path::new("/definitely/not/a/dir")), None);
 }
 
@@ -102,7 +103,7 @@ fn a_fresh_repository_without_commits_can_be_snapshotted() {
     let after = snapshot(s.path()).unwrap();
     let sum = summarize(s.path(), &before, &after).unwrap();
     assert_eq!(sum.files.len(), 1);
-    undo(s.path(), &sum).unwrap();
+    undo(&GitWorkingTree, s.path(), &sum).unwrap();
     assert!(!s.exists("first.txt"));
 }
 
@@ -136,7 +137,7 @@ fn untracked_files_are_never_written_into_the_object_store() {
     let sum = summarize(s.path(), &before, &after).unwrap();
     assert_eq!(sum.files.len(), 2, "{:?}", sum.files);
     diff_text(s.path(), &sum, None).unwrap();
-    undo(s.path(), &sum).unwrap();
+    undo(&GitWorkingTree, s.path(), &sum).unwrap();
     assert!(!object_exists(s.path(), &id), "the untracked secret must not be hashed into .git/objects");
     assert!(!object_exists(s.path(), &blob_id(s.path(), "dataset\n")));
     assert!(s.exists("secret.env"), "it was there before the turn, so undo leaves it");
@@ -204,7 +205,7 @@ fn a_hidden_file_revealed_by_a_gitignore_edit_is_never_deleted_by_undo() {
     assert!(!sum.added_stamps.contains_key("secret.log"));
     assert_eq!(by["made.txt"].status, ChangeStatus::Added);
     // Undo refuses as a whole rather than deleting the user's file.
-    assert!(matches!(undo(s.path(), &sum), Err(UndoError::UntrackedModified(_))));
+    assert!(matches!(undo(&GitWorkingTree, s.path(), &sum), Err(UndoError::UntrackedModified(_))));
     assert_eq!(std::fs::read_to_string(s.path().join("secret.log")).unwrap(), "TOKEN=abc\n");
 }
 
@@ -221,7 +222,7 @@ fn a_same_size_edit_in_the_same_second_as_the_commit_is_never_missed() {
                     assert_ne!(before.tree, after.tree, "the edit must be seen");
                     let sum = summarize(s.path(), &before, &after).unwrap();
                     assert_eq!(sum.files.len(), 1);
-                    undo(s.path(), &sum).unwrap();
+                    undo(&GitWorkingTree, s.path(), &sum).unwrap();
                     assert_eq!(std::fs::read_to_string(s.path().join("a.txt")).unwrap(), "one\ntwo\nthree\n");
                 }
             });

@@ -17,6 +17,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::turn::domain::effort::EffortSetting;
+use crate::changes::application::ports::WorkingTree;
 use crate::changes::domain::change_set::ChangeSummary;
 use crate::changes::domain::turn_activity::TurnActivity;
 use crate::turn::application::guards::Guards;
@@ -83,8 +84,10 @@ pub struct Engine {
     orchestrate: bool,
     /// Where the delegate tool is; `None` means orchestration cannot attach it.
     orch_setup: Option<Setup>,
-    /// Snapshot the working tree around every turn (see [`crate::changes::infrastructure::git_working_tree`] and [`crate::changes::application::track_turn`]).
+    /// Snapshot the working tree around every turn (see [`crate::changes::application::track_turn`]).
     track_changes: bool,
+    /// The working tree those snapshots and diffs read; `None` tracks nothing. Set with [`Engine::with_working_tree`].
+    working_tree: Option<Arc<dyn WorkingTree>>,
     /// What the last turn that started a model changed; consumed by an undo.
     last_changes: Option<ChangeSummary>,
     /// Every turn of this session that changed files, oldest first: the checkpoints that

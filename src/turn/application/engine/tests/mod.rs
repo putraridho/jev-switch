@@ -203,6 +203,7 @@ fn rig_in(dir: PathBuf, states: &[(ProviderId, State)], script: &'static str) ->
     );
     let engine = Engine::new(Runtime::for_tests(avail), router, dir)
         .with_track_changes(false)
+        .with_working_tree(std::sync::Arc::new(crate::changes::infrastructure::git_tree::GitWorkingTree))
         .with_persistence(None)
         .with_backend_factory(Box::new(move |p| {
             fc.lock().unwrap().push(p);

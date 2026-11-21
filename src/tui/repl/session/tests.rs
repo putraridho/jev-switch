@@ -71,6 +71,7 @@ pub(crate) fn rig(name: &str, script: &str) -> Rig {
     let avail = vec![Availability { provider: ProviderId::Claude, state: State::Ready, plan: None, models: None, detail: String::new(), verified: true }];
     let script = script.to_string();
     let engine = Engine::new(Runtime::for_tests(avail), Router::new(TypeSafe::with_url("k", "http://127.0.0.1:1"), 1.0), dir.clone())
+        .with_working_tree(std::sync::Arc::new(crate::changes::infrastructure::git_tree::GitWorkingTree))
         .with_turn_log(None)
         .with_backend_factory(Box::new(move |p| Box::new(fake_cli(p, &script))));
     let (out, err) = (Buf::default(), Buf::default());
