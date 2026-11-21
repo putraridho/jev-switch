@@ -11,7 +11,11 @@ use crate::tui::repl::library_command::SessionsCmd;
 use crate::session::infrastructure::session_import as sessionimport;
 use crate::session::infrastructure::session_import::Found;
 use crate::session::application::session_library as sessionlib;
-use crate::session::application::session_library::{human_bytes, Mark, Query};
+use crate::session::application::session_library::marks::{self, Mark};
+use crate::session::application::session_library::query::Query;
+use crate::session::application::session_library::search as lsearch;
+use crate::session::application::session_library::transfer;
+use crate::session::application::session_library::upkeep::{self, human_bytes};
 use crate::turn::domain::session_log::utc_stamp;
 use crate::tui::views::status_facts::human_ago;
 
@@ -31,7 +35,7 @@ impl Repl {
         let Some(state) = self.engine.state_dir().map(Path::to_path_buf) else {
             return self.console.out(&format!("  {}", style.dim("Saving sessions is switched off, so there is no library.")));
         };
-        let moved = sessionlib::migrate_legacy(&state);
+        let moved = upkeep::migrate_legacy(&state);
         if moved > 0 {
             self.console.out(&format!("  {}", style.dim(&format!("Moved {moved} session(s) saved by an older version into their project folders."))));
         }
@@ -43,7 +47,7 @@ impl Repl {
             SessionsCmd::ImportHistory { source, pick } => self.import_history(&state, source, pick),
             SessionsCmd::Disk => self.disk(&state),
             SessionsCmd::Clean { days } => {
-                let (n, bytes) = sessionlib::clean(&state, days, self.now());
+                let (n, bytes) = upkeep::clean(&state, days, self.now());
                 let text = format!("removed {n} session file(s) older than {days} days or unreadable, freeing {}; pinned sessions are never removed", human_bytes(bytes));
                 self.console.out(&format!("{} {text}", style.green("✓")));
             }
@@ -53,14 +57,14 @@ impl Repl {
     fn find_sessions(&mut self, state: &Path, query: &Query) {
         let style = self.out_style();
         let now = self.now();
-        let hits = sessionlib::search(sessionlib::scan_all(state), query, now);
+        let hits = lsearch::search(sessionlib::scan_all(state), query, now);
         self.library.listing = hits.iter().map(|h| h.entry.path.clone()).collect();
         if hits.is_empty() {
             return self.console.out(&format!("  {}", style.dim("No saved session matches. Filters: provider: tag: file: since: project: pinned archived all.")));
         }
         let shown = &hits[..hits.len().min(SHOWN)];
         let mut lines = vec![style.bold(&format!("Sessions ({})", hits.len()))];
-        lines.extend(sessionlib::render_hits(shown, now, &session_file::project_key(self.engine.dir()), style));
+        lines.extend(lsearch::render_hits(shown, now, &session_file::project_key(self.engine.dir()), style));
         if hits.len() > SHOWN {
             lines.push(style.dim(&format!("  ... and {} more: narrow with words or filters", hits.len() - SHOWN)));
         }
@@ -81,7 +85,7 @@ impl Repl {
 
     fn mark_session(&mut self, state: &Path, n: usize, mark: &Mark) {
         let style = self.out_style();
-        let result = self.listed(n).and_then(|path| sessionlib::mark(state, &path, mark).map_err(|e| format!("could not save the mark: {e}")));
+        let result = self.listed(n).and_then(|path| marks::mark(state, &path, mark).map_err(|e| format!("could not save the mark: {e}")));
         let done = match mark {
             Mark::Pin(true) => format!("pinned session {n}: it stays at the top and is never deleted"),
             Mark::Pin(false) => format!("unpinned session {n}"),
@@ -109,7 +113,7 @@ impl Repl {
             Some(f) => resolve(f, self.engine.dir(), self.home.as_deref()),
             None => self.engine.dir().join(format!("jev-session-{}.json", utc_stamp(self.now()).1)),
         };
-        match sessionlib::export_to(&entry, &dest) {
+        match transfer::export_to(&entry, &dest) {
             Ok(()) => self.console.out(&format!("{} exported \u{201c}{}\u{201d} to {} {}", style.green("✓"), entry.title(), dest.display(), style.dim("· /sessions import <file> reads it back"))),
             Err(e) => self.console.out(&format!("{} not exported: {e}", style.yellow("⚠"))),
         }
@@ -118,7 +122,7 @@ impl Repl {
     fn import_file(&mut self, state: &Path, file: &str) {
         let style = self.out_style();
         let source = resolve(file, self.engine.dir(), self.home.as_deref());
-        match sessionlib::import_file(state, self.engine.dir(), &source, self.now()) {
+        match transfer::import_file(state, self.engine.dir(), &source, self.now()) {
             Ok(_) => self.console.out(&format!("{} imported into this folder: /resume lists it", style.green("✓"))),
             Err(e) => self.console.out(&format!("{} not imported: {e}", style.yellow("⚠"))),
         }
@@ -153,7 +157,7 @@ impl Repl {
             .and_then(|turns| {
                 let count = turns.len();
                 let saved = sessionimport::to_saved(turns, self.engine.dir(), chosen.modified_ms);
-                sessionlib::adopt(state, self.engine.dir(), saved, now).map(|_| count).map_err(|e| e.to_string())
+                transfer::adopt(state, self.engine.dir(), saved, now).map(|_| count).map_err(|e| e.to_string())
             });
         match result {
             Ok(count) => self.console.out(&format!("{} imported {count} turns from {}: /resume continues it on any provider", style.green("✓"), source.label())),
@@ -163,13 +167,13 @@ impl Repl {
 
     fn disk(&mut self, state: &Path) {
         let style = self.out_style();
-        let usage = sessionlib::disk_use(&sessionlib::scan_all(state));
+        let usage = upkeep::disk_use(&sessionlib::scan_all(state));
         let mut lines = vec![
             style.bold("Saved sessions"),
             format!("  {} sessions, {} on disk ({} pinned, {} archived)", usage.sessions, human_bytes(usage.bytes), usage.pinned, usage.archived),
         ];
         for (project, n, bytes) in usage.by_project.iter().take(8) {
-            lines.push(format!("  {:>9}  {n:>3}  {}", human_bytes(*bytes), sessionlib::project_name(project)));
+            lines.push(format!("  {:>9}  {n:>3}  {}", human_bytes(*bytes), lsearch::project_name(project)));
         }
         lines.push(style.dim("  /sessions clean [days] removes older, unpinned sessions."));
         self.page_out(&lines.join("\n"));
