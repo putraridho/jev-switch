@@ -284,7 +284,7 @@ pub fn first_run_hint_once(avail: &[Availability], state_dir: Option<&Path>) -> 
     if marker.exists() {
         return None;
     }
-    let hint = doctor::first_run_hint(avail)?;
+    let hint = doctor::startup_hint::first_run_hint(avail)?;
     std::fs::write(&marker, "shown\n").ok()?;
     Some(hint)
 }

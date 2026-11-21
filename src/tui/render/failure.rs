@@ -27,7 +27,7 @@ fn reset_label(resets_at: Option<&str>) -> Option<String> {
     (!r.is_empty() && !r.chars().all(|c| c.is_ascii_digit())).then_some(r)
 }
 
-/// How to log in to `provider`, from the one table in [`crate::doctor::domain::diagnose`].
+/// How to log in to `provider`, from the one table in [`crate::doctor::domain::diagnose::provider_checks`].
 fn login_hint(provider: &str) -> String {
     match provider.parse::<ProviderId>() {
         Ok(p) => crate::providers::domain::login_hints::login_instruction(p),
@@ -289,7 +289,7 @@ mod tests {
     use super::*;
     use crate::tui::render::{strip_ansi, display_width};
     use crate::tui::render::test_facts::*;
-    use crate::doctor::domain::diagnose::login_steps;
+    use crate::doctor::domain::diagnose::provider_checks::login_steps;
     use crate::providers::domain::login_hints::{install_hint, login_command, login_instruction};
     use crate::shared::ALL_PROVIDERS;
 
