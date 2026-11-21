@@ -1,5 +1,5 @@
 //! `/bench`: which model has actually served you best. The ranking is built from the audit
-//! log (see [`crate::turn::infrastructure::audit`]): per model, how many turns answered, how long they took and how
+//! log (see [`crate::shared::domain::audit`]): per model, how many turns answered, how long they took and how
 //! many tokens they used, so the router's guesses can be checked against your own work.
 //!
 //! The task sets that `/bench` is meant to run across providers on demand (`eval/cases.json`
@@ -10,7 +10,7 @@ use std::path::Path;
 
 use serde::Deserialize;
 
-use crate::turn::infrastructure::audit::{Entry, Event, Outcome};
+use crate::shared::domain::audit::{Entry, Event, Outcome};
 
 /// One model's record.
 #[derive(Debug, Clone, PartialEq)]

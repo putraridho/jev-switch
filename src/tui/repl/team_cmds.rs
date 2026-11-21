@@ -3,6 +3,7 @@
 //! (audit lines, the in-flight marker, shared team rules).
 
 use crate::tui::repl::session::{Flow, Io, Repl};
+use crate::shared::domain::audit as audit_log;
 use crate::turn::infrastructure::audit;
 use crate::tui::repl::extended_commands::ExtCmd;
 use crate::approval::domain::mode::Mode;
@@ -12,7 +13,7 @@ use crate::routing::domain::decide::Pin;
 use crate::session::domain::session_log::TurnRecord;
 use crate::turn::application::team_rules as team;
 use crate::turn::application::team_rules::Team;
-use crate::calibration::application::bench;
+use crate::turn::application::bench;
 use crate::tui::repl::gitflow;
 use crate::turn::infrastructure::inflight;
 use crate::session::application::replay;
@@ -49,15 +50,15 @@ impl Repl {
                 }
                 self.engine.set_mode(applied.mode());
                 self.remember_mode();
-                self.audit_event(audit::Event::Profile { name: applied.name().to_string() });
+                self.audit_event(audit_log::Event::Profile { name: applied.name().to_string() });
                 self.console.out(&format!("  profile: {applied} ({})", applied.about()));
             }
             ExtCmd::Team => match self.team() {
                 Ok(t) => self.page_out(&t.text()),
                 Err(e) => self.console.out(&format!("{} {e}", style.yellow("⚠"))),
             },
-            ExtCmd::Audit(n) => self.page_out(&audit::audit_text(&self.audit_entries(), n)),
-            ExtCmd::History => self.page_out(&audit::history_text(&audit::history(&self.audit_entries()))),
+            ExtCmd::Audit(n) => self.page_out(&audit_log::audit_text(&self.audit_entries(), n)),
+            ExtCmd::History => self.page_out(&audit_log::history_text(&audit_log::history(&self.audit_entries()))),
             ExtCmd::Bench => {
                 let ranks = bench::rank(&self.audit_entries());
                 self.page_out(&bench::bench_text(&ranks, self.engine.dir()));
@@ -153,7 +154,7 @@ impl Repl {
     }
 
     /// The log's entries for this project (the file is shared by every project).
-    fn audit_entries(&self) -> Vec<audit::Entry> {
+    fn audit_entries(&self) -> Vec<audit_log::Entry> {
         let project = self.engine.dir().display().to_string();
         let mut all = self.audit_path().map(|p| audit::read(&p)).unwrap_or_default();
         all.retain(|e| e.project == project);
@@ -199,9 +200,9 @@ impl Repl {
         self.audit_turn(&record);
     }
 
-    pub(super) fn audit_event(&self, event: audit::Event) {
+    pub(super) fn audit_event(&self, event: audit_log::Event) {
         if let Some(path) = self.audit_path() {
-            let entry = audit::Entry { ts_ms: self.now(), project: self.engine.dir().display().to_string(), event };
+            let entry = audit_log::Entry { ts_ms: self.now(), project: self.engine.dir().display().to_string(), event };
             audit::append(&path, &entry);
         }
     }
@@ -282,10 +283,10 @@ mod tests {
         let mut r = rig("scoped", ANSWER);
         let state = state_in("scoped");
         r.repl.state_dir = Some(state.clone());
-        let entry = |project: &str, prompt: &str| crate::turn::infrastructure::audit::Entry {
+        let entry = |project: &str, prompt: &str| crate::shared::domain::audit::Entry {
             ts_ms: 1000,
             project: project.into(),
-            event: crate::turn::infrastructure::audit::Event::Turn { model: "m".into(), outcome: crate::turn::infrastructure::audit::Outcome::Answered, elapsed_ms: 1, in_tokens: 1, out_tokens: 1, prompt: prompt.into(), cached_tokens: 0, context_tokens: 0, tool_calls: 0 },
+            event: crate::shared::domain::audit::Event::Turn { model: "m".into(), outcome: crate::shared::domain::audit::Outcome::Answered, elapsed_ms: 1, in_tokens: 1, out_tokens: 1, prompt: prompt.into(), cached_tokens: 0, context_tokens: 0, tool_calls: 0 },
         };
         let path = crate::turn::infrastructure::audit::path_in(&state);
         crate::turn::infrastructure::audit::append(&path, &entry("/somewhere/else", "other project prompt"));
@@ -303,7 +304,7 @@ mod tests {
         r.repl.audit_aborted("long task", std::time::Duration::from_millis(1500));
         let entries = crate::turn::infrastructure::audit::read(&crate::turn::infrastructure::audit::path_in(&state));
         assert_eq!(entries.len(), 1);
-        assert!(matches!(&entries[0].event, crate::turn::infrastructure::audit::Event::Turn { outcome: crate::turn::infrastructure::audit::Outcome::Cancelled, elapsed_ms: 1500, prompt, .. } if prompt == "long task"), "{entries:?}");
+        assert!(matches!(&entries[0].event, crate::shared::domain::audit::Event::Turn { outcome: crate::shared::domain::audit::Outcome::Cancelled, elapsed_ms: 1500, prompt, .. } if prompt == "long task"), "{entries:?}");
     }
 
     #[tokio::test]

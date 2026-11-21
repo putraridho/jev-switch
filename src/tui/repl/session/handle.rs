@@ -69,7 +69,12 @@ impl Repl {
             Command::Cache => self.page_out(&self.cache_text()),
             Command::Effort(setting) => self.effort(setting),
             Command::Guard(cmd) => {
-                let text = self.engine.run_guard_command(cmd);
+                let plans: Vec<(String, f64)> = crate::shared::ALL_PROVIDERS
+                    .into_iter()
+                    .filter_map(|p| self.engine.runtime.plan_utilization(p).map(|u| (p.to_string(), u)))
+                    .collect();
+                let (guards, settings) = self.engine.guards_and_settings();
+                let text = crate::tui::repl::guard_commands::run(cmd, guards, settings, &plans);
                 self.page_out(&text);
             }
             Command::Why => {

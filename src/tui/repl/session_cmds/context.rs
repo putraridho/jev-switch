@@ -8,7 +8,7 @@ use crate::tui::repl::session::{Flow, Io, Repl};
 use crate::catalog::domain::model_table as catalog;
 use crate::tui::app::host;
 use crate::tui::app::host::clipboard::Copied;
-use crate::session::domain::session_log::utc_stamp;
+use crate::shared::domain::utc::utc_stamp;
 use crate::session::domain::turn_status::TurnStatus;
 use crate::tui::render as uifmt;
 use crate::tui::render::{ContextFacts, CostRow};
@@ -159,7 +159,7 @@ impl Repl {
         let written = options.open(&target).and_then(|mut f| std::io::Write::write_all(&mut f, text.as_bytes()));
         match written {
             Ok(()) => {
-                self.audit_event(crate::turn::infrastructure::audit::Event::Export { path: target.display().to_string() });
+                self.audit_event(crate::shared::domain::audit::Event::Export { path: target.display().to_string() });
                 self.console.out(&format!("{} saved {} turns to {} (secrets masked)", style.green("✓"), self.log.turns().len(), target.display()));
             }
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {

@@ -16,7 +16,7 @@ use crate::session::application::session_library::query::Query;
 use crate::session::application::session_library::search as lsearch;
 use crate::session::application::session_library::transfer;
 use crate::session::application::session_library::upkeep::{self, human_bytes};
-use crate::session::domain::session_log::utc_stamp;
+use crate::shared::domain::utc::utc_stamp;
 use crate::tui::views::status_facts::startup::human_ago;
 
 /// Most results printed at once; the rest are reachable by narrowing the search.

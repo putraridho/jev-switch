@@ -27,7 +27,7 @@ use crate::judgment::domain::security::Security;
 use crate::judgment::domain::thresholds::TOP_THRESHOLD;
 use crate::judgment::domain::want::ProviderWant;
 use crate::shared::ProviderId;
-use crate::turn::domain::cache::WarmCache;
+use crate::routing::domain::warm_cache::WarmCache;
 
 /// What `/model` pinned. A pin is never silently overridden.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
