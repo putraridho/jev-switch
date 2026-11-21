@@ -37,7 +37,7 @@ use crate::approval::domain::review::Review;
 use crate::approval::domain::{always_plan, review};
 use crate::tui::tty::terminal_guard as terminal;
 use crate::tui::tty::terminal_guard::{Screen, StdScreen};
-use crate::turn::application::ports::{Answer, Ui};
+use crate::turn::application::ports::{Answer, SteerFilter, Ui};
 use crate::turn::domain::failover::{Failover, NoRouteInfo};
 use crate::tui::render as uifmt;
 use crate::tui::render::{FileChange, RouteFacts, Style, SummaryFacts, Theme};
@@ -154,6 +154,9 @@ struct Inner {
     /// Where messages typed during the turn go to be added to it ([`Ui::steering`]); a send
     /// that fails means the turn is over.
     steer: Option<tokio::sync::mpsc::UnboundedSender<String>>,
+    /// Messages the person took back out of the queue ([`Console::withdraw_steer`]) after they
+    /// were offered to the turn: the turn skips each one once instead of sending it.
+    withdrawn: Vec<String>,
     /// Whether the model's whole reasoning is printed. `/thinking` sets it; the
     /// `JEV_SHOW_THINKING` environment variable seeds it.
     show_thinking: bool,

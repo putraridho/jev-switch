@@ -37,6 +37,9 @@ pub enum Action {
     Submit(String),
     /// Offer this queued message to the running turn.
     Steer(String),
+    /// The person took this message back out of the queue to edit it: the turn must not
+    /// send the copy it was offered.
+    Unsteer(String),
     /// Stop the running turn.
     Stop,
     /// End the program.

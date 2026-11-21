@@ -127,7 +127,7 @@ impl App {
                     if let Some(queued) = self.queue.pop_back() {
                         self.editor.set(&queued);
                         self.menu = None;
-                        return Vec::new();
+                        return vec![Action::Unsteer(queued)];
                     }
                 }
                 if let Some(older) = self.history.older(self.editor.text()) {

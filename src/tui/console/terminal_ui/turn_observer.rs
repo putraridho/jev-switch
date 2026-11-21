@@ -61,7 +61,23 @@ impl Ui for Console {
         }
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
         g.steer = Some(tx);
+        // A withdrawal only concerns messages offered to this attempt.
+        g.withdrawn.clear();
         Some(rx)
+    }
+
+    fn steer_wanted(&mut self) -> Option<SteerFilter> {
+        let console = self.clone();
+        Some(Box::new(move |text| {
+            let mut g = console.lock();
+            match g.withdrawn.iter().position(|w| w == text) {
+                Some(at) => {
+                    g.withdrawn.remove(at);
+                    false
+                }
+                None => true,
+            }
+        }))
     }
 
     fn note(&mut self, line: &str) {

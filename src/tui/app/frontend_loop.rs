@@ -545,6 +545,7 @@ fn carry_out(
             Action::Steer(text) => {
                 console.steer(&text);
             }
+            Action::Unsteer(text) => console.withdraw_steer(&text),
             Action::Submit(line) => {
                 if let Some(started) = start(idle, &line, style, screen, app) {
                     next.start = Some(started);

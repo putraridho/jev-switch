@@ -27,6 +27,7 @@ impl Console {
             group: uifmt::ToolGroup::default(),
             fresh_turn: true,
             steer: None,
+            withdrawn: Vec::new(),
             show_thinking: show_thinking_from_env(),
         };
         Self {
@@ -121,6 +122,13 @@ impl Console {
     /// person's queue either way, and the turn reports it ([`Event::Steered`]) once taken.
     pub fn steer(&self, text: &str) -> bool {
         steerable_text(text) && self.lock().steer.as_ref().is_some_and(|tx| tx.send(text.to_string()).is_ok())
+    }
+
+    /// The person took `text` back out of the queue to edit it. If it was already offered to the
+    /// turn ([`Console::steer`]) but not taken yet, the turn must not send it as well: it comes
+    /// back through the queue, edited.
+    pub fn withdraw_steer(&self, text: &str) {
+        self.lock().withdrawn.push(text.to_string());
     }
 
     /// The next queued message, oldest first (one sent with Esc before the rest).

@@ -75,6 +75,7 @@ impl Engine {
         let mut steered: Vec<String> = Vec::new();
         let (mut background_results, mut background_noticed) = (0usize, false);
         let steer_rx = if backend.steerable() { ui.steering() } else { None };
+        let steer_wanted = if steer_rx.is_some() { ui.steer_wanted() } else { None };
         // Progress (tools, plan) is shown as it happens; assistant text is held back until
         // the attempt is known to have succeeded, so a failed attempt's partial commentary
         // never sits on screen as if it were an answer.
@@ -91,7 +92,12 @@ impl Engine {
             let approver = EngineApprover { ui: &shared_ui, cancel, dir: &self.dir, mode: self.mode, hooks: &self.hooks, allowed_tools: &self.allowed_tools };
             let hooks = &self.hooks;
             let (guards, now, dir, model) = (&self.guards, &self.now, &self.dir, chosen.spec.id);
-            let prepare = move |text: &str| guards.steer_text(dir, text, provider, model, now());
+            let prepare = move |text: &str| {
+                if steer_wanted.as_ref().is_some_and(|wanted| !wanted(text)) {
+                    return None;
+                }
+                guards.steer_text(dir, text, provider, model, now())
+            };
             let steering = steer_rx.map(|rx| backend::Steering { rx, prepare: &prepare });
             let mut on_event = |e: &Event| match e {
                 Event::Text(_) => {

@@ -143,6 +143,23 @@ fn a_front_gets_messages_for_the_turn_and_hears_when_the_model_took_one() {
 }
 
 #[test]
+fn a_message_taken_back_out_of_the_queue_is_not_also_sent_to_the_turn() {
+    let (front, _heard) = Front::channel();
+    let (c, _, _) = console(false, Style::off(), true);
+    let mut c = c.with_front(front);
+    let _turn = c.steering().unwrap();
+    let wanted = c.steer_wanted().expect("a console can withdraw");
+    // Offered, then taken back to be edited: the turn skips that copy once...
+    assert!(c.steer("run the tests"));
+    c.withdraw_steer("run the tests");
+    assert!(!wanted("run the tests"), "the withdrawn copy is skipped");
+    // ...and the edited message sent afterwards goes through.
+    assert!(wanted("run the tests and clippy"));
+    // Sending the same text again after taking it back is the one copy that counts.
+    assert!(wanted("run the tests"), "a withdrawal skips exactly one copy");
+}
+
+#[test]
 fn commands_typed_during_a_turn_are_never_written_into_it() {
     let (front, _heard) = Front::channel();
     let (mut c, _, _) = console(false, Style::off(), true);

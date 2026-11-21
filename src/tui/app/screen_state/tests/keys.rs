@@ -81,7 +81,9 @@ fn up_takes_the_last_queued_message_back_into_the_box() {
     a.on_key(key(KeyCode::Enter), Instant::now());
     assert_eq!(a.queue.iter().cloned().collect::<Vec<_>>(), vec!["first".to_string(), "second".to_string()]);
 
-    a.on_key(key(KeyCode::Up), Instant::now());
+    // The copy already offered to the turn is withdrawn, or the turn would send it AND the edit.
+    let out = a.on_key(key(KeyCode::Up), Instant::now());
+    assert!(matches!(out.as_slice(), [Action::Unsteer(t)] if t == "second"), "{out:?}");
     assert_eq!(a.editor.text(), "second", "↑ pops the newest queued message");
     assert_eq!(a.queue.iter().cloned().collect::<Vec<_>>(), vec!["first".to_string()]);
 

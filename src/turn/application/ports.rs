@@ -8,6 +8,9 @@ use crate::approval::domain::always_plan::{Offer, Settled};
 use crate::turn::domain::failover::{Failover, NoRouteInfo};
 use crate::turn::domain::route_facts::RouteFacts;
 
+/// Whether a steered message should still be sent when the turn comes to take it.
+pub type SteerFilter = Box<dyn Fn(&str) -> bool + Send + Sync>;
+
 /// Where a turn shows its progress. The binary prints; tests record.
 /// `Send` because the runner calls back from inside its own future.
 pub trait Ui: Send {
@@ -48,6 +51,13 @@ pub trait Ui: Send {
     /// them taken; dropping the receiver (the attempt is over) tells it to stop. `None`: this
     /// UI has no input during a turn, or does not forward it.
     fn steering(&mut self) -> Option<tokio::sync::mpsc::UnboundedReceiver<String>> {
+        None
+    }
+
+    /// Whether a message offered through [`Ui::steering`] should still be sent when the turn
+    /// comes to take it: `false` once the person withdrew it (took it back out of the queue to
+    /// edit it). `None`: nothing is ever withdrawn.
+    fn steer_wanted(&mut self) -> Option<SteerFilter> {
         None
     }
 
