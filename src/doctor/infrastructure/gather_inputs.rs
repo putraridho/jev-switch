@@ -5,7 +5,7 @@ use std::path::Path;
 use crate::doctor::domain::diagnose::Inputs;
 use super::machine_facts::{env_file_facts, in_git_repo, jev_status, state_dir_writable};
 use crate::providers::application::provider_registry::{BlockReason, Runtime};
-use crate::providers::domain::reset_time::Cooldowns;
+use crate::providers::domain::reset_time::cooldowns::Cooldowns;
 use crate::shared::domain::duration_text::format_left;
 use crate::shared::ProviderId;
 use crate::shared::ALL_PROVIDERS;

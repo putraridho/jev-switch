@@ -6,7 +6,7 @@ use std::sync::PoisonError;
 use crate::backend::ProviderId;
 use crate::catalog::domain::model_table::Usable;
 use crate::providers::domain::availability::Availability;
-use crate::providers::domain::reset_time::Cooldowns;
+use crate::providers::domain::reset_time::cooldowns::Cooldowns;
 use crate::providers::domain::usability::usable_from;
 
 use super::{BlockReason, Runtime};

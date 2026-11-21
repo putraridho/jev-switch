@@ -8,7 +8,7 @@ use crate::catalog::domain::model_table as catalog;
 use crate::catalog::domain::model_table::{Allowances, Usable};
 use crate::providers::domain::availability;
 use crate::providers::domain::availability::{Availability, State};
-use crate::providers::domain::reset_time::Cooldowns;
+use crate::providers::domain::reset_time::cooldowns::Cooldowns;
 
 /// Credits are opt-in via `JEV_ALLOW_CREDITS` ("1" or "true"). Per-token models are
 /// allowed exactly when DeepSeek is Ready, because configuring its key is the

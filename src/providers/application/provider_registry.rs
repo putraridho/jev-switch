@@ -24,7 +24,7 @@ use std::sync::Mutex;
 use crate::backend::{PlanUsage, ProviderId};
 use crate::catalog::domain::model_table::{Allowances, Overrides};
 use crate::providers::domain::availability::Availability;
-use crate::providers::domain::reset_time::{Cooldowns, DiskWatch};
+use crate::providers::domain::reset_time::cooldowns::{Cooldowns, DiskWatch};
 
 /// What the router knows about providers right now. Availability comes from probes;
 /// cooldowns persist across runs; unusable models and plan utilization live only for
