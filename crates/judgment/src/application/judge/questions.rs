@@ -8,7 +8,7 @@ use crate::application::wire::{choice_question, noul_question};
 
 /// The state every code-mode question reads.
 pub(super) fn request_state(request: &str, recent_context: &str) -> Value {
-    json!({ "request": request, "recent_context": recent_context })
+    json!({ "request": crate::domain::request::judged_text(request), "recent_context": recent_context })
 }
 
 pub(super) fn needs_changes_question() -> Value {

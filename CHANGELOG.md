@@ -4,6 +4,12 @@ See [docs/changelog-guide.md](docs/changelog-guide.md) for changelog formatting,
 
 ## Unreleased
 
+## 1.11.1
+
+A long pasted prompt is routed on what you asked, not on the paste.
+
+- **A long prompt with a big paste no longer routes as `unclear`.** The whole prompt, including a page of pasted HTML, went to Jev's judgment, so the paste drowned the ask and the turn was classified `unclear (unsure)` and sent to a mid-tier model, which also kept subagent orchestration from starting. The judgment now reads the start and the end of a long prompt (1,500 characters each, with a note between), where the ask usually is. The model still receives the whole prompt.
+
 ## 1.11.0
 
 Cross-provider subagents and delegation telemetry in jev-code, Gemini Antigravity (`agy`) integration, and queued message withdrawal fix.

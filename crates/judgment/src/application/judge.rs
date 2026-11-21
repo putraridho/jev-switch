@@ -15,6 +15,7 @@ use serde_json::{json, Value};
 use std::sync::Arc;
 
 use jev_catalog::domain::model_table::{MODEL_CHEAP, MODEL_MID, MODEL_STRONG};
+use crate::domain::request::judged_text;
 use crate::domain::security::{is_security_sensitive, is_short_follow_up};
 use crate::domain::thresholds::JEV_TIMEOUT_MS;
 use crate::domain::want::Decision;
@@ -115,7 +116,7 @@ impl Router {
     /// (calibration) so both evaluate the exact same question.
     pub async fn classify(&self, request: &str, recent_context: &str) -> Result<ChoiceAnswer> {
         self.choice(
-                json!({ "request": request, "recent_context": recent_context }),
+                json!({ "request": judged_text(request), "recent_context": recent_context }),
                 "What does this coding request need from the model?",
                 json!({
                     "simple": {
@@ -191,7 +192,7 @@ impl Router {
     ) -> Result<(bool, f64)> {
         let p = self
             .noul(
-                json!({ "request": request, "answer": answer }),
+                json!({ "request": judged_text(request), "answer": answer }),
                 "Does the answer fully and correctly address the request?",
                 json!({
                     "true": "complete, correct, and directly responsive",

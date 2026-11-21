@@ -49,7 +49,7 @@ impl Router {
     /// wrong, incomplete or not what was wanted (a correction, complaint, retry or
     /// the same question again). Logged for later analysis; never used for routing.
     pub async fn is_correction(&self, request: &str, previous_request: &str, previous_answer: &str) -> Result<f64> {
-        let state = json!({ "request": request, "previous_request": previous_request, "previous_answer": previous_answer });
+        let state = json!({ "request": crate::domain::request::judged_text(request), "previous_request": previous_request, "previous_answer": previous_answer });
         self.noul_question(state, is_correction_question()).await
     }
 }
