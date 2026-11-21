@@ -4,6 +4,7 @@ use serde_json::{json, Value};
 
 use super::*;
 use crate::approval::domain::always_plan::always_plan;
+use crate::shared::infrastructure::system_host::SystemHost;
 
 fn project() -> &'static Path {
     Path::new("/work/app")
@@ -64,19 +65,19 @@ fn remembered_needs_every_rule_of_the_chain_saved() {
     let dir = tmp("remembered");
     let ps = Places { project: dir.clone(), home: None, temp: std::env::temp_dir() };
     let input = bash("cargo build 2>&1 | tail -3");
-    assert_eq!(remembered("Bash", &input, None, &ps), None);
+    assert_eq!(remembered(&SystemHost, "Bash", &input, None, &ps), None);
     add_allow_rule(&dir, "Bash(cargo build:*)").unwrap();
-    assert_eq!(remembered("Bash", &input, None, &ps), None, "tail is not saved yet");
+    assert_eq!(remembered(&SystemHost, "Bash", &input, None, &ps), None, "tail is not saved yet");
     add_allow_rule(&dir, "Bash(tail:*)").unwrap();
-    assert_eq!(remembered("Bash", &input, None, &ps), Some(vec!["Bash(cargo build:*)".to_string(), "Bash(tail:*)".to_string()]));
+    assert_eq!(remembered(&SystemHost, "Bash", &input, None, &ps), Some(vec!["Bash(cargo build:*)".to_string(), "Bash(tail:*)".to_string()]));
     assert_eq!(remembered_with_local_trust("Bash", &input, None, &ps, false), None);
     let home = dir.join("home");
     std::fs::create_dir_all(home.join(".claude")).unwrap();
     std::fs::write(user_settings_path(&home), r#"{"permissions":{"allow":["Bash(cargo build:*)","Bash(tail:*)"]}}"#).unwrap();
     let user_rules = Places { home: Some(home), ..ps.clone() };
     assert_eq!(remembered_with_local_trust("Bash", &input, None, &user_rules, false), Some(vec!["Bash(cargo build:*)".to_string(), "Bash(tail:*)".to_string()]));
-    assert_eq!(remembered("Bash", &input, Some("/etc/x"), &ps), None, "a blocked path is never answered from rules");
-    assert_eq!(remembered("Bash", &bash("cargo build && rm x"), None, &ps), None);
+    assert_eq!(remembered(&SystemHost, "Bash", &input, Some("/etc/x"), &ps), None, "a blocked path is never answered from rules");
+    assert_eq!(remembered(&SystemHost, "Bash", &bash("cargo build && rm x"), None, &ps), None);
     let plan = always_plan("Bash", &bash("cargo test | head"), None, &ps).unwrap();
     assert_eq!(plan.label(), "Bash(cargo test:*), Bash(head:*)");
     assert_eq!(save_always(&dir, &plan), Ok(true));
@@ -231,7 +232,7 @@ fn execution_flags_are_never_remembered() {
         "echo ok | go test -exec=./evil",
     ] {
         assert!(rules_for("Bash", &bash(command), None, &places()).is_err(), "{command}");
-        assert_eq!(remembered("Bash", &bash(command), None, &places()), None, "{command}");
+        assert_eq!(remembered(&SystemHost, "Bash", &bash(command), None, &places()), None, "{command}");
         assert!(always_plan("Bash", &bash(command), None, &places()).is_err(), "{command}");
     }
     assert!(rules_for("Bash", &bash("kubectl get pods --context=dev"), None, &places()).is_ok());

@@ -13,7 +13,7 @@ use crate::approval::domain::always_plan::Always;
 use crate::approval::domain::grantable::Places;
 use crate::approval::domain::listing::Listing;
 use crate::approval::domain::rule_policy::rules_for;
-use crate::shared::application::host;
+use crate::shared::application::host::Host;
 use crate::approval::domain::settings_document::{local_settings_path, user_settings_path, List, Settings, SettingsError};
 
 /// Whether the project's local settings must be treated as not the user's own: committed to
@@ -21,11 +21,11 @@ use crate::approval::domain::settings_document::{local_settings_path, user_setti
 /// by someone else, "dubious ownership", or a damaged index). Only the failures below, which
 /// say nothing about the repository, leave the file as the user's own: not under git at all, a
 /// locked index (another git running), a missing folder, or no git program.
-pub fn local_settings_tracked(project: &Path) -> bool {
+pub fn local_settings_tracked(host: &dyn Host, project: &Path) -> bool {
     let output = std::process::Command::new("git")
         .arg("-C")
         .arg(project)
-        .args(host::no_repo_programs(project))
+        .args(host.no_repo_programs(project))
         .args(["ls-files", "--error-unmatch", "--", crate::approval::domain::settings_document::LOCAL_SETTINGS])
         .env("LC_ALL", "C")
         .stdout(std::process::Stdio::null())
@@ -41,8 +41,8 @@ pub fn local_settings_tracked(project: &Path) -> bool {
 /// matches rules itself too, but not always the way jev-code derives them (a `timeout 900`
 /// in front, a chain), so a call it still asks about is checked here. A call asked about
 /// because of a path outside the allowed folders is never answered from rules alone.
-pub fn remembered(tool: &str, input: &Value, blocked_path: Option<&str>, places: &Places) -> Option<Vec<String>> {
-    remembered_with_local_trust(tool, input, blocked_path, places, !local_settings_tracked(&places.project))
+pub fn remembered(host: &dyn Host, tool: &str, input: &Value, blocked_path: Option<&str>, places: &Places) -> Option<Vec<String>> {
+    remembered_with_local_trust(tool, input, blocked_path, places, !local_settings_tracked(host, &places.project))
 }
 
 fn remembered_with_local_trust(tool: &str, input: &Value, blocked_path: Option<&str>, places: &Places, local_trusted: bool) -> Option<Vec<String>> {

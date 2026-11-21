@@ -4,13 +4,13 @@ use super::*;
 #[test]
 fn an_export_imports_into_another_project_and_resumes_there() {
     let (state, a, _) = library("export");
-    let entry = scan_all(&state).into_iter().find(|e| e.title() == "fix the lexer").unwrap();
+    let entry = scan_all(&FileSessions, &state).into_iter().find(|e| e.title() == "fix the lexer").unwrap();
     let file = state.join("out.json");
-    export_to(&entry, &file).unwrap();
-    assert!(export_to(&entry, &file).is_err(), "never overwrites");
+    export_to(&SystemHost, &entry, &file).unwrap();
+    assert!(export_to(&SystemHost, &entry, &file).is_err(), "never overwrites");
     let other = state.join("proj-c");
     std::fs::create_dir_all(&other).unwrap();
-    let moved = import_file(&state, &other, &file, NOW).unwrap();
+    let moved = import_file(&FileSessions, &SystemHost, &state, &other, &file, NOW).unwrap();
     let listed = session_file::list_sessions(&state, &other, NOW, None);
     assert_eq!(listed.len(), 1);
     assert_eq!(listed[0].path, moved);
@@ -18,9 +18,9 @@ fn an_export_imports_into_another_project_and_resumes_there() {
     // The original stays where it was.
     // (The 20-day-old one is past the 14 days `/resume` offers.)
     assert_eq!(session_file::list_sessions(&state, &a, NOW, None).len(), 1);
-    assert!(matches!(import_file(&state, &other, &state.join("nope.json"), NOW), Err(ImportError::Unreadable(_))));
+    assert!(matches!(import_file(&FileSessions, &SystemHost, &state, &other, &state.join("nope.json"), NOW), Err(ImportError::Unreadable(_))));
     std::fs::write(state.join("junk.json"), "{}").unwrap();
-    assert!(matches!(import_file(&state, &other, &state.join("junk.json"), NOW), Err(ImportError::NotASession(_))));
+    assert!(matches!(import_file(&FileSessions, &SystemHost, &state, &other, &state.join("junk.json"), NOW), Err(ImportError::NotASession(_))));
 }
 
 #[test]
@@ -35,9 +35,9 @@ fn export_masks_secrets_without_changing_the_stored_session() {
         &["Bash curl https://alice:toolpassword@example.com", "Read xai-abcdefghijklmnopqrstuvwx"],
     )]);
     let original = std::fs::read_to_string(&original_path).unwrap();
-    let entry = scan_all(&state).into_iter().next().unwrap();
+    let entry = scan_all(&FileSessions, &state).into_iter().next().unwrap();
     let output = state.join("export.json");
-    export_to(&entry, &output).unwrap();
+    export_to(&SystemHost, &entry, &output).unwrap();
     let exported = std::fs::read_to_string(&output).unwrap();
     for secret in ["hunter2", "replysecret", "toolpassword", "xai-abcdefghijklmnopqrstuvwx"] {
         assert!(!exported.contains(secret), "{exported}");

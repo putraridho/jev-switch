@@ -6,6 +6,7 @@ use super::listing::{listing_of, State};
 use super::manifest::{checked_path, read_manifest, reject_links};
 use super::pristine::is_pristine_copy;
 use super::{extensions_dir, fail, load_registry, save_registry, MarketError, Record, MANIFEST};
+use crate::shared::application::host::Host;
 use crate::shared::domain::sha256;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -18,7 +19,7 @@ pub struct Installed {
 }
 
 /// Install (or replace) the extension in the folder `source` under `user`'s extensions.
-pub fn install(user: &Path, source: &Path) -> Result<Installed, MarketError> {
+pub fn install(host: &dyn Host, user: &Path, source: &Path) -> Result<Installed, MarketError> {
     let source = source.canonicalize().map_err(|e| MarketError(format!("{}: {e}", source.display())))?;
     let manifest = read_manifest(&source)?;
     if manifest.files.is_empty() {
@@ -84,13 +85,13 @@ pub fn install(user: &Path, source: &Path) -> Result<Installed, MarketError> {
     registry.extensions.retain(|r| r.name != manifest.name);
     registry.extensions.push(Record { name: manifest.name.clone(), version: manifest.version.clone(), source });
     registry.extensions.sort_by(|a, b| a.name.cmp(&b.name));
-    save_registry(user, &registry)?;
+    save_registry(host, user, &registry)?;
     Ok(Installed { name: manifest.name, version: manifest.version, files: bodies.len(), replaced })
 }
 
 /// Fetch the extension again from where it was installed from. `Ok(None)` when that source
 /// still has the version that is installed.
-pub fn update(user: &Path, name: &str) -> Result<Option<Installed>, MarketError> {
+pub fn update(host: &dyn Host, user: &Path, name: &str) -> Result<Option<Installed>, MarketError> {
     let registry = load_registry(user);
     let Some(record) = registry.extensions.iter().find(|r| r.name == name) else {
         return fail(format!("{name} is not installed"));
@@ -102,11 +103,11 @@ pub fn update(user: &Path, name: &str) -> Result<Option<Installed>, MarketError>
     if offered.version == record.version && listing_of(user, record).state == State::Verified {
         return Ok(None);
     }
-    install(user, &record.source).map(Some)
+    install(host, user, &record.source).map(Some)
 }
 
 /// Delete an installed extension and forget it.
-pub fn remove(user: &Path, name: &str) -> Result<(), MarketError> {
+pub fn remove(host: &dyn Host, user: &Path, name: &str) -> Result<(), MarketError> {
     let mut registry = load_registry(user);
     if !registry.extensions.iter().any(|r| r.name == name) {
         return fail(format!("{name} is not installed"));
@@ -116,5 +117,5 @@ pub fn remove(user: &Path, name: &str) -> Result<(), MarketError> {
         std::fs::remove_dir_all(&target).map_err(|e| MarketError(format!("{}: {e}", target.display())))?;
     }
     registry.extensions.retain(|r| r.name != name);
-    save_registry(user, &registry)
+    save_registry(host, user, &registry)
 }

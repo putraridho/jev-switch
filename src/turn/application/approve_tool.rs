@@ -52,7 +52,7 @@ impl EngineApprover<'_> {
         let places = Places::from_env(self.dir);
         // Every rule this call needs was saved before ("always"): not asked again, in any mode
         // that asks at all. Plan mode never reaches here for writes (Claude Code refuses them).
-        if claude_settings_file::remembered(&req.tool, &req.input, req.blocked_path.as_deref(), &places).is_some() {
+        if claude_settings_file::remembered(crate::shared::application::host::get(), &req.tool, &req.input, req.blocked_path.as_deref(), &places).is_some() {
             lock_ui(self.ui).event(&Event::Hint(permission_request::remembered_allowed(&req.summary)));
             return Decision::Allow;
         }

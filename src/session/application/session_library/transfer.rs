@@ -3,22 +3,22 @@
 use std::path::{Path, PathBuf};
 
 use super::*;
-use crate::session::application::ports;
+use crate::session::application::ports::SessionStore;
 use crate::session::domain::saved_session::SavedSession;
 use crate::session::domain::session::Sessions;
-use crate::shared::application::host::write_private as write_atomic;
+use crate::shared::application::host::Host;
 
 // ----------------------------------------------------------- export / import
 
 /// The session as a file anyone can carry to another machine: the saved-session format
 /// itself, which `import` reads back. Secrets are masked in the exported copy.
-pub fn export_to(entry: &LibraryEntry, dest: &Path) -> std::io::Result<()> {
+pub fn export_to(host: &dyn Host, entry: &LibraryEntry, dest: &Path) -> std::io::Result<()> {
     if dest.exists() {
         return Err(std::io::Error::new(std::io::ErrorKind::AlreadyExists, format!("{} exists already", dest.display())));
     }
     let mut value = entry.saved.to_json();
     redact_export(&mut value);
-    write_atomic(dest, &value.to_string())
+    host.write_private(dest, &value.to_string())
 }
 
 /// Mask strings before serializing, so escaping cannot hide secrets or break JSON.
@@ -50,22 +50,22 @@ impl std::fmt::Display for ImportError {
 
 /// Add an exported session to `project_dir`'s sessions (it becomes resumable there, and
 /// keeps its time). Returns the new session file.
-pub fn import_file(state_dir: &Path, project_dir: &Path, source: &Path, now_ms: u64) -> Result<PathBuf, ImportError> {
+pub fn import_file(store: &dyn SessionStore, host: &dyn Host, state_dir: &Path, project_dir: &Path, source: &Path, now_ms: u64) -> Result<PathBuf, ImportError> {
     let text = std::fs::read_to_string(source).map_err(|e| ImportError::Unreadable(e.to_string()))?;
     let saved = SavedSession::parse(&text).map_err(ImportError::NotASession)?;
-    adopt(state_dir, project_dir, saved, now_ms)
+    adopt(store, host, state_dir, project_dir, saved, now_ms)
 }
 
 /// Store `saved` as a session of `project_dir`.
-pub fn adopt(state_dir: &Path, project_dir: &Path, mut saved: SavedSession, now_ms: u64) -> Result<PathBuf, ImportError> {
+pub fn adopt(store: &dyn SessionStore, host: &dyn Host, state_dir: &Path, project_dir: &Path, mut saved: SavedSession, now_ms: u64) -> Result<PathBuf, ImportError> {
     if saved.sessions.turns() == 0 {
         return Err(ImportError::Empty);
     }
-    saved.project = ports::get().project_key(project_dir);
+    saved.project = store.project_key(project_dir);
     // Another machine's CLI sessions mean nothing here.
     saved.sessions = strip_cli_ids(saved.sessions);
-    let path = ports::get().new_session_file(state_dir, project_dir, now_ms);
-    write_atomic(&path, &saved.render()).map_err(|e| ImportError::Unreadable(e.to_string()))?;
+    let path = store.new_session_file(state_dir, project_dir, now_ms);
+    host.write_private(&path, &saved.render()).map_err(|e| ImportError::Unreadable(e.to_string()))?;
     Ok(path)
 }
 

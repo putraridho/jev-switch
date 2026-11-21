@@ -29,9 +29,9 @@ fn manifests_cannot_reach_outside_the_allowed_folders() {
     assert!(checked_path("skills/db/SKILL.md").is_ok());
     let root = temp("escape");
     std::fs::write(root.join(MANIFEST), r#"{"name":"x","version":"1","files":{"../escape.md":"00"}}"#).unwrap();
-    assert!(install(&root.join("cfg"), &root).unwrap_err().0.contains("not allowed"));
+    assert!(install(&SystemHost, &root.join("cfg"), &root).unwrap_err().0.contains("not allowed"));
     std::fs::write(root.join(MANIFEST), r#"{"name":"Bad Name","version":"1","files":{}}"#).unwrap();
-    assert!(install(&root.join("cfg"), &root).unwrap_err().0.contains("not a usable extension name"));
+    assert!(install(&SystemHost, &root.join("cfg"), &root).unwrap_err().0.contains("not a usable extension name"));
 }
 
 #[test]
