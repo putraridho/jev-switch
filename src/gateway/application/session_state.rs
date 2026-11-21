@@ -8,7 +8,7 @@ use serde_json::Value;
 
 use crate::gateway::application::usage_tap::Turns;
 use crate::gateway::domain::prefix_fingerprint::PrefixWatch;
-use crate::routing::domain::decide::Sticky;
+use crate::routing::domain::sticky::Sticky;
 
 const MAX_SESSIONS: usize = 1024;
 

@@ -4,7 +4,8 @@ use std::path::Path;
 
 use crate::session::infrastructure::session_file;
 use crate::session::domain::saved_session::{ResumeError, SavedSession, SessionEntry, SessionInfo};
-use crate::routing::domain::decide::{RoutingState, Sticky};
+use crate::routing::domain::decide::RoutingState;
+use crate::routing::domain::sticky::Sticky;
 use super::Engine;
 
 impl Engine {
