@@ -88,7 +88,7 @@ pub(crate) async fn run(r: &mut Rig, line: &str) -> Flow {
 pub(crate) const ANSWER: &str = "printf 'TOOL:Edit a.txt\\nTEXT:working\\nFIN:the answer\\n'; echo two >> a.txt";
 
 async fn judged_turn(r: &mut Rig, prompt: &str) -> TurnEnd {
-    let want = crate::judgment::application::judge::ProviderWant {
+    let want = crate::judgment::domain::want::ProviderWant {
         task: crate::catalog::domain::model_table::TaskType::Feature,
         task_confidence: 0.9,
         very_hard_p: 0.0,
@@ -96,8 +96,8 @@ async fn judged_turn(r: &mut Rig, prompt: &str) -> TurnEnd {
         edit_p: 0.5,
         continues_p: 0.5,
         correction_p: None,
-        orchestration: crate::judgment::application::judge::Orchestration::default(),
-        security_keywords: crate::judgment::application::judge::Security::None,
+        orchestration: crate::judgment::domain::orchestration::Orchestration::default(),
+        security_keywords: crate::judgment::domain::security::Security::None,
         signals: serde_json::json!({}),
     };
     let started = Instant::now();

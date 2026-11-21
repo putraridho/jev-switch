@@ -12,7 +12,8 @@ use crate::catalog::domain::model_table::MODEL_STRONG;
 use crate::gateway::application::app_state::{App, Orch};
 use crate::gateway::application::session_state::Sessions;
 use crate::gateway::domain::model_choice::ALIAS;
-use crate::judgment::application::judge::{Router, CODE_STRONG_THRESHOLD, ORCH_TRIGGER_P, TOP_THRESHOLD};
+use crate::judgment::application::judge::Router;
+use crate::judgment::domain::thresholds::{CODE_STRONG_THRESHOLD, ORCH_TRIGGER_P, TOP_THRESHOLD};
 use crate::judgment::infrastructure::typesafe_http::TypeSafe;
 use crate::shared::infrastructure::jsonl_log as log;
 

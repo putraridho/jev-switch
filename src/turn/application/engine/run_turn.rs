@@ -7,7 +7,7 @@ use crate::changes::application::track_turn::{snapshot_until, summarize_until};
 use crate::changes::domain::change_set::ChangeSummary;
 use crate::changes::domain::snapshot::Snapshot;
 use crate::changes::domain::turn_activity::TurnActivity;
-use crate::judgment::application::judge::CodeWant;
+use crate::judgment::domain::want::CodeWant;
 use crate::turn::application::cancel::{stop_signal, Cancel};
 use crate::turn::application::judged::Judged;
 use crate::turn::application::ports::Ui;

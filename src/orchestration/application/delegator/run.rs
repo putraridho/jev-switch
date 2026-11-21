@@ -5,7 +5,7 @@ use std::collections::HashSet;
 use serde_json::Value;
 
 use crate::backend::ProviderId;
-use crate::judgment::application::judge::ProviderWant;
+use crate::judgment::domain::want::ProviderWant;
 use crate::orchestration::application::delegator::outcome::{AttemptOutcome, Finished};
 use crate::orchestration::domain::brief_signals::BriefSignals;
 use crate::orchestration::domain::delegation::{DelegateRequest, DelegateResult};

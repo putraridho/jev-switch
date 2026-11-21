@@ -13,7 +13,8 @@ use tokio::sync::Mutex;
 use crate::catalog::domain::model_table::MODEL_STRONG;
 use crate::gateway::application::app_state::{App, Orch};
 use crate::gateway::application::session_state::Sessions;
-use crate::judgment::application::judge::{Router, CODE_STRONG_THRESHOLD, TOP_THRESHOLD};
+use crate::judgment::application::judge::Router;
+use crate::judgment::domain::thresholds::{CODE_STRONG_THRESHOLD, TOP_THRESHOLD};
 use crate::judgment::infrastructure::typesafe_http::TypeSafe;
 
 use super::proxy_handler::{forward, MAX_BODY};

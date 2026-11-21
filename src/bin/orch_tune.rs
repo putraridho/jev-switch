@@ -21,7 +21,8 @@ use tokio::sync::Semaphore;
 use tokio::task::JoinSet;
 
 use jev_router::shared::infrastructure::jsonl_log as log;
-use jev_router::judgment::application::judge::{Orchestration, Router};
+use jev_router::judgment::application::judge::Router;
+use jev_router::judgment::domain::orchestration::Orchestration;
 use jev_router::judgment::infrastructure::typesafe_http::TypeSafe;
 
 const CONCURRENCY: usize = 8;

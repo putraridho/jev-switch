@@ -7,7 +7,7 @@ use crate::backend::{ProviderId};
 use crate::catalog::domain::model_table as catalog;
 use crate::catalog::domain::model_table::{find, ModelSpec};
 use crate::turn::application::guards::TurnFacts;
-use crate::judgment::application::judge::CodeWant;
+use crate::judgment::domain::want::CodeWant;
 use crate::routing::domain::decide as routing;
 use crate::routing::domain::decide::{NoRoute, Pin, PinOrigin, RouteInput, RoutingState, Signals};
 use crate::turn::application::judged::Judged;

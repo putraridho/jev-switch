@@ -21,7 +21,8 @@ use std::path::{Path, PathBuf};
 
 use crate::backend::{McpAttachment, ProviderId};
 use crate::catalog::domain::model_table::{ModelSpec, Tier};
-use crate::judgment::application::judge::{Orchestration, ORCH_TRIGGER_P};
+use crate::judgment::domain::orchestration::Orchestration;
+use crate::judgment::domain::thresholds::ORCH_TRIGGER_P;
 
 /// The MCP server name; the tools reach the planner as `mcp__jev__delegate` etc.
 pub const MCP_NAME: &str = "jev";

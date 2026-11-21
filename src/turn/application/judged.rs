@@ -2,7 +2,7 @@
 
 use serde_json::Value;
 
-use crate::judgment::application::judge::{CodeWant, ProviderWant};
+use crate::judgment::domain::want::{CodeWant, ProviderWant};
 use crate::routing::domain::decide::Signals;
 /// What Jev (or the legacy tier judgment) said about one turn.
 pub enum Judged {

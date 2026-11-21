@@ -8,7 +8,7 @@ use serde_json::{json, Value};
 use crate::catalog::domain::model_table::MODEL_TOP;
 use crate::gateway::application::app_state::App;
 use crate::gateway::domain::prompt_text::{is_harness_message, user_words};
-use crate::judgment::application::judge::Orchestration;
+use crate::judgment::domain::orchestration::Orchestration;
 use crate::orchestration::domain::orchestration_gate::{orch_gate, Gate};
 use crate::shared::infrastructure::jsonl_log as log;
 
