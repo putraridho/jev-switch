@@ -2,8 +2,10 @@
 //! into the views' facts. (The records are what a planner can still merge or discard;
 //! a live per-tool feed from running workers is not available to the REPL yet.)
 
-use crate::tui::views::agent_orch::flow_diagram;
-use crate::tui::views::agent_workers::{agents_panel, conflict_warning, file_conflicts, WorkerInfo, WorkerState};
+use crate::tui::views::agent_orch::flow::flow_diagram;
+use crate::tui::views::agent_workers::conflicts::{conflict_warning, file_conflicts};
+use crate::tui::views::agent_workers::panel::agents_panel;
+use crate::tui::views::agent_workers::{WorkerInfo, WorkerState};
 use crate::orchestration::infrastructure::worker_file::StoredWorker;
 use crate::tui::render::Style;
 
