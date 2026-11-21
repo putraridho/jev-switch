@@ -189,7 +189,7 @@ pub fn apply(dir: &Path, pull: bool, on_line: &mut dyn FnMut(&str)) -> Result<St
         // `--ff-only`: if anything moved since the check, refuse rather than merge.
         git(dir, &["merge", "--ff-only", "--quiet", "@{upstream}"])?;
     }
-    let run = crate::tui::app::host::run_shell(&format!("./{INSTALL_SCRIPT}"), dir, on_line);
+    let run = crate::tui::app::host::shell::run_shell(&format!("./{INSTALL_SCRIPT}"), dir, on_line);
     if let Some(failed) = run.failed {
         return Err(format!("could not run {INSTALL_SCRIPT}: {failed}"));
     }

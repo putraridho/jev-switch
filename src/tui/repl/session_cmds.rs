@@ -13,7 +13,7 @@ use crate::turn::application::attach;
 use crate::catalog::domain::model_table as catalog;
 use crate::shared::infrastructure::env_file as envfile;
 use crate::tui::app::host;
-use crate::tui::app::host::Copied;
+use crate::tui::app::host::clipboard::Copied;
 use crate::shared::infrastructure::jsonl_log as log;
 use crate::approval::domain::mode::Mode;
 use crate::turn::domain::session_log::utc_stamp;
@@ -124,14 +124,14 @@ impl Repl {
     pub(super) fn shell(&mut self, command: &str) {
         let style = self.out_style();
         let console = self.console.clone();
-        let run = host::run_shell(command, self.engine.dir(), &mut |line| console.out(&format!("  {}", style.dim(line))));
+        let run = host::shell::run_shell(command, self.engine.dir(), &mut |line| console.out(&format!("  {}", style.dim(line))));
         let status = match (&run.failed, run.code) {
             (Some(why), _) => format!("{} could not start: {why}", style.red("✗")),
             (None, Some(0)) => format!("{} exit 0", style.green("✓")),
             (None, Some(code)) => format!("{} exit {code}", style.yellow("⚠")),
             (None, None) => format!("{} stopped by a signal", style.yellow("■")),
         };
-        self.carry.push(host::shell_note(&run));
+        self.carry.push(host::shell::shell_note(&run));
         self.console.out(&format!("  {status} {}", style.dim("· the output goes with your next message")));
         self.console.out("");
     }
@@ -151,7 +151,7 @@ impl Repl {
     /// `/edit`: write the message in the editor, then send it.
     pub(super) async fn edit(&mut self, io: &mut Io<'_>) -> Flow {
         let style = self.out_style();
-        match self.console.with_terminal(|| host::compose(self.state_dir.as_deref())) {
+        match self.console.with_terminal(|| host::editor::compose(self.state_dir.as_deref())) {
             Ok(Some(text)) => {
                 let first = text.lines().next().unwrap_or_default();
                 let more = text.lines().count().saturating_sub(1);
@@ -306,7 +306,7 @@ impl Repl {
             return;
         };
         let lines = answer.lines().count();
-        match host::copy_to_clipboard(answer.trim_end(), std::io::stderr().is_terminal()) {
+        match host::clipboard::copy_to_clipboard(answer.trim_end(), std::io::stderr().is_terminal()) {
             Ok(Copied::By(tool)) => self.console.out(&format!("{} copied the last answer ({lines} lines) with {tool}", style.green("✓"))),
             Ok(Copied::Terminal) => self.console.out(&format!("{} sent the last answer ({lines} lines) to the terminal's clipboard", style.green("✓"))),
             Err(e) => self.console.out(&format!("{} not copied: {e}", style.yellow("⚠"))),
@@ -325,7 +325,7 @@ impl Repl {
             "  {}",
             style.dim("Codex reads AGENTS.md, Claude CLAUDE.md, Gemini GEMINI.md; /init writes AGENTS.md and points the others at it.")
         ));
-        match self.console.with_terminal(|| host::edit_file(&dir.join(file))) {
+        match self.console.with_terminal(|| host::editor::edit_file(&dir.join(file))) {
             Ok(()) if dir.join(file).is_file() => self.console.out(&format!("{} {file} saved; every model reads it from the next turn", style.green("✓"))),
             Ok(()) => self.console.out(&format!("  {}", style.dim(&format!("{file} was not created.")))),
             Err(e) => self.console.out(&format!("{} {e}", style.yellow("⚠"))),
