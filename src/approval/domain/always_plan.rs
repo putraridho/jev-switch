@@ -2,7 +2,7 @@
 
 use std::path::{Component, PathBuf};
 
-use serde_json::Value;
+use crate::approval::domain::tool_input::ToolInput;
 use crate::approval::domain::grantable::{grantable_folder, Places};
 use crate::approval::domain::refusal::Refusal;
 use crate::approval::domain::rule_policy::{literal_path, rules_for};
@@ -52,7 +52,7 @@ pub(super) fn blocked_folder(blocked_path: &str, places: &Places) -> Result<Path
 /// What the `a` choice would save, or why it is not offered. A Bash call that was asked about
 /// because its path is outside the allowed folders needs that folder allowed (a command rule
 /// alone would be asked about again), with the command rule too when a safe one exists.
-pub fn always_plan(tool: &str, input: &Value, blocked_path: Option<&str>, places: &Places) -> Offer {
+pub fn always_plan(tool: &str, input: &ToolInput, blocked_path: Option<&str>, places: &Places) -> Offer {
     let rules = rules_for(tool, input, blocked_path, places);
     match (tool, blocked_path) {
         ("Bash", Some(path)) => Ok(Always { rules: rules.unwrap_or_default(), folder: Some(blocked_folder(path, places)?) }),

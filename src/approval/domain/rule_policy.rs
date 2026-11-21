@@ -2,11 +2,10 @@
 
 use std::path::{Component, Path, PathBuf};
 
-use serde_json::Value;
 use crate::approval::domain::bash_rule::{bash_rule, bash_rules};
 use crate::approval::domain::grantable::{grantable_file, grantable_folder, Places};
 use crate::approval::domain::refusal::Refusal;
-use crate::approval::domain::tool_input::str_field;
+use crate::approval::domain::tool_input::ToolInput;
 use crate::approval::domain::visible_text::is_invisible;
 
 
@@ -55,9 +54,9 @@ pub(super) fn plain_host(url: &str) -> Result<&str, Refusal> {
 
 /// The allow rule that would let Claude Code run this call without asking again, in
 /// Claude Code's rule syntax, or why there is none narrower than "everything".
-pub fn rule_for(tool: &str, input: &Value, blocked_path: Option<&str>, places: &Places) -> Result<String, Refusal> {
+pub fn rule_for(tool: &str, input: &ToolInput, blocked_path: Option<&str>, places: &Places) -> Result<String, Refusal> {
     match tool {
-        "Bash" => bash_rule(str_field(input, "command").ok_or(Refusal::NoRule)?),
+        "Bash" => bash_rule(input.str_field("command").ok_or(Refusal::NoRule)?),
         // Claude Code checks every file-editing tool (Write, Edit, MultiEdit, NotebookEdit)
         // against `Edit(path)` rules only; it accepts a `Write(path)` rule but never matches a
         // write against it. Path anchors: `//path` is absolute, `~/path` the home folder,
@@ -67,14 +66,14 @@ pub fn rule_for(tool: &str, input: &Value, blocked_path: Option<&str>, places: &
         // with a relative `file_path` resolved against the project the tool runs in.
         "Write" | "Edit" | "MultiEdit" | "NotebookEdit" => {
             let key = if tool == "NotebookEdit" { "notebook_path" } else { "file_path" };
-            let path = literal_path(str_field(input, key).or(blocked_path).ok_or(Refusal::NoRule)?)?;
+            let path = literal_path(input.str_field(key).or(blocked_path).ok_or(Refusal::NoRule)?)?;
             // Collecting the components drops a `./` the path started with.
             let path: PathBuf = places.project.join(path).components().collect();
             grantable_file(&path, places)?;
             Ok(format!("Edit({})", abs_path_rule(&path)))
         }
         "Read" | "Grep" | "Glob" | "LS" => {
-            let named = blocked_path.or_else(|| str_field(input, "file_path")).or_else(|| str_field(input, "path"));
+            let named = blocked_path.or_else(|| input.str_field("file_path")).or_else(|| input.str_field("path"));
             let target = literal_path(named.ok_or(Refusal::NoRule)?)?;
             let target = if target.is_absolute() { target.to_path_buf() } else { places.project.join(target) };
             if target.starts_with(&places.project) {
@@ -88,7 +87,7 @@ pub fn rule_for(tool: &str, input: &Value, blocked_path: Option<&str>, places: &
             grantable_folder(&dir, places)?;
             Ok(format!("Read({}/**)", abs_path_rule(&dir)))
         }
-        "WebFetch" => Ok(format!("WebFetch(domain:{})", plain_host(str_field(input, "url").ok_or(Refusal::NoRule)?)?)),
+        "WebFetch" => Ok(format!("WebFetch(domain:{})", plain_host(input.str_field("url").ok_or(Refusal::NoRule)?)?)),
         "WebSearch" => Ok("WebSearch".into()),
         t if t.starts_with("mcp__") && t.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.')) => Ok(t.to_string()),
         _ => Err(Refusal::NoRule),
@@ -96,15 +95,15 @@ pub fn rule_for(tool: &str, input: &Value, blocked_path: Option<&str>, places: &
 }
 
 /// [`rule_for`] without the reason.
-pub fn allow_rule(tool: &str, input: &Value, blocked_path: Option<&str>, places: &Places) -> Option<String> {
+pub fn allow_rule(tool: &str, input: &ToolInput, blocked_path: Option<&str>, places: &Places) -> Option<String> {
     rule_for(tool, input, blocked_path, places).ok()
 }
 
 /// [`rule_for`], except that a Bash chain (`a && b | c`, `2>&1`, `>/dev/null`) gets one rule
 /// per simple command when every one of them has a safe rule (see [`bash_rules`]).
-pub fn rules_for(tool: &str, input: &Value, blocked_path: Option<&str>, places: &Places) -> Result<Vec<String>, Refusal> {
+pub fn rules_for(tool: &str, input: &ToolInput, blocked_path: Option<&str>, places: &Places) -> Result<Vec<String>, Refusal> {
     match tool {
-        "Bash" => bash_rules(str_field(input, "command").ok_or(Refusal::NoRule)?),
+        "Bash" => bash_rules(input.str_field("command").ok_or(Refusal::NoRule)?),
         _ => rule_for(tool, input, blocked_path, places).map(|rule| vec![rule]),
     }
 }

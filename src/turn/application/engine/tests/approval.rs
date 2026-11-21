@@ -34,7 +34,7 @@ impl Backend for AskFake {
                     id: "q1".into(),
                     tool: tool.into(),
                     summary: summary.into(),
-                    input: json!({ "command": summary }),
+                    input: crate::approval::infrastructure::tool_input_wire::tool_input_from_json(&json!({ "command": summary })),
                     blocked_path: None,
                 })]
             }

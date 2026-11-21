@@ -4,6 +4,8 @@ use std::path::{Path, PathBuf};
 
 use serde_json::{json, Value};
 
+use crate::approval::infrastructure::tool_input_wire::tool_input_from_json;
+
 #[allow(unused_imports)]
 use crate::approval::domain::{
     always_plan::*,
@@ -43,11 +45,11 @@ fn bash(command: &str) -> Value {
 }
 
 fn rule(command: &str) -> Result<String, Refusal> {
-    rule_for("Bash", &bash(command), None, &places())
+    rule_for("Bash", &tool_input_from_json(&bash(command)), None, &places())
 }
 
 fn lines_of(tool: &str, input: Value) -> Vec<String> {
-    review(tool, &input, None).lines
+    review(tool, &tool_input_from_json(&input), None).lines
 }
 
 mod always_plan;

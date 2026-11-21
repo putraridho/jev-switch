@@ -34,9 +34,9 @@ pub struct PermissionRequest {
     pub tool: String,
     /// One line for the person: the command, or the path (and size) for a file write.
     pub summary: String,
-    /// The tool's input exactly as the CLI sent it. It can hold secrets: it is only ever
-    /// echoed back to the CLI, never logged or shown.
-    pub input: serde_json::Value,
+    /// The tool's input, read field by field by the rules and the review; its raw form is
+    /// echoed back to the CLI. It can hold secrets: it is never logged.
+    pub input: crate::approval::domain::tool_input::ToolInput,
     /// The path outside the allowed folders that made the CLI ask, when it said.
     pub blocked_path: Option<String>,
 }

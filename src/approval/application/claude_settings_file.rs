@@ -7,7 +7,6 @@
 
 use std::path::{Path, PathBuf};
 
-use serde_json::Value;
 
 use crate::approval::domain::always_plan::Always;
 use crate::approval::domain::grantable::Places;
@@ -41,11 +40,11 @@ pub fn local_settings_tracked(host: &dyn Host, project: &Path) -> bool {
 /// matches rules itself too, but not always the way jev-code derives them (a `timeout 900`
 /// in front, a chain), so a call it still asks about is checked here. A call asked about
 /// because of a path outside the allowed folders is never answered from rules alone.
-pub fn remembered(host: &dyn Host, tool: &str, input: &Value, blocked_path: Option<&str>, places: &Places) -> Option<Vec<String>> {
+pub fn remembered(host: &dyn Host, tool: &str, input: &crate::approval::domain::tool_input::ToolInput, blocked_path: Option<&str>, places: &Places) -> Option<Vec<String>> {
     remembered_with_local_trust(tool, input, blocked_path, places, !local_settings_tracked(host, &places.project))
 }
 
-fn remembered_with_local_trust(tool: &str, input: &Value, blocked_path: Option<&str>, places: &Places, local_trusted: bool) -> Option<Vec<String>> {
+fn remembered_with_local_trust(tool: &str, input: &crate::approval::domain::tool_input::ToolInput, blocked_path: Option<&str>, places: &Places, local_trusted: bool) -> Option<Vec<String>> {
     if blocked_path.is_some() {
         return None;
     }

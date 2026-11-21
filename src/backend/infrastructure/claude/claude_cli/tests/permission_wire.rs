@@ -10,7 +10,7 @@ fn golden_claude_control_response() {
         id: "req-1".into(),
         tool: "Write".into(),
         summary: "unused".into(),
-        input,
+        input: crate::approval::infrastructure::tool_input_wire::tool_input_from_json(&input),
         blocked_path: blocked_path.map(String::from),
     };
     let full = request(json!({ "path": "/tmp/p/x.txt", "content": "a \"b\"\n", "nested": { "z": 1, "a": [1e2, 2.0] } }), Some("/tmp/p/x.txt"));
@@ -35,7 +35,7 @@ fn the_recorded_control_request_becomes_a_permission_request() {
     assert_eq!(r.tool, "Bash");
     assert_eq!(r.summary, "touch /tmp/spike/outside.txt");
     assert_eq!(r.blocked_path.as_deref(), Some("/tmp/spike/outside.txt"));
-    assert_eq!(r.input["command"], "touch /tmp/spike/outside.txt");
+    assert_eq!(r.input.str_field("command"), Some("touch /tmp/spike/outside.txt"));
     // The whole recorded turn: the request, and the denial event that old headless runs got is absent.
     let events: Vec<Event> = ALLOW_TURN.lines().flat_map(|l| backend().parse_line(l)).collect();
     assert_eq!(events.iter().filter(|e| matches!(e, Event::PermissionRequest(_))).count(), 1);

@@ -74,7 +74,7 @@ fn frames(drawn: &str) -> Vec<String> {
 const LONG_COMMAND: &str = "Bash ls -R | head -100 && echo --- && ls | wc -l && cat log --oneline --decorate --graph --all | head -50 && echo done and more and more text";
 
 fn request_of(tool: &str, input: serde_json::Value) -> PermissionRequest {
-    PermissionRequest { id: "q".into(), tool: tool.into(), summary: String::new(), input, blocked_path: None }
+    PermissionRequest { id: "q".into(), tool: tool.into(), summary: String::new(), input: crate::approval::infrastructure::tool_input_wire::tool_input_from_json(&input), blocked_path: None }
 }
 
 fn request(tool: &str, command: &str) -> PermissionRequest {

@@ -12,7 +12,7 @@ fn recorded() -> (Value, String) {
 #[test]
 fn a_path_blocked_bash_call_gets_its_folder_and_a_command_rule() {
     let (input, blocked) = recorded();
-    let plan = always_plan("Bash", &input, Some(&blocked), &places()).unwrap();
+    let plan = always_plan("Bash", &tool_input_from_json(&input), Some(&blocked), &places()).unwrap();
     assert_eq!(plan, Always { rules: vec!["Bash(touch:*)".into()], folder: Some(PathBuf::from("/tmp/spike")) });
     assert_eq!(plan.label(), "Bash(touch:*) and folder /tmp/spike");
 }
@@ -21,7 +21,7 @@ fn a_path_blocked_bash_call_gets_its_folder_and_a_command_rule() {
 fn without_a_safe_command_rule_the_folder_is_still_remembered_alone() {
     let (_, blocked) = recorded();
     let input = bash("bash -c 'touch /tmp/spike/outside.txt'");
-    let plan = always_plan("Bash", &input, Some(&blocked), &places()).unwrap();
+    let plan = always_plan("Bash", &tool_input_from_json(&input), Some(&blocked), &places()).unwrap();
     assert_eq!(plan, Always { rules: vec![], folder: Some(PathBuf::from("/tmp/spike")) });
     assert_eq!(plan.label(), "folder /tmp/spike");
 }
@@ -71,7 +71,7 @@ fn only_folders_inside_home_or_temp_that_hold_no_secrets_are_granted_for_good() 
     assert_eq!(blocked_folder("/home/u/project/x.txt", &places), Ok(PathBuf::from("/home/u/project")));
     assert_eq!(blocked_folder("/tmp/spike/x.txt", &places), Ok(PathBuf::from("/tmp/spike")));
     // With the folder refused, `a` is not offered even though the command rule is safe.
-    assert_eq!(always_plan("Bash", &bash("touch /etc/hosts"), Some("/etc/hosts"), &places), Err(Refusal::FolderTooBroad));
+    assert_eq!(always_plan("Bash", &tool_input_from_json(&bash("touch /etc/hosts")), Some("/etc/hosts"), &places), Err(Refusal::FolderTooBroad));
 }
 
 #[cfg(unix)]
@@ -90,8 +90,8 @@ fn a_symbolic_link_inside_home_cannot_lead_a_grant_out_of_it() {
 
 #[test]
 fn other_blocked_tools_keep_their_rules_and_add_no_folder() {
-    let plan = always_plan("Read", &json!({"file_path": "x"}), Some("/home/u/data/f.txt"), &places()).unwrap();
+    let plan = always_plan("Read", &tool_input_from_json(&json!({"file_path": "x"})), Some("/home/u/data/f.txt"), &places()).unwrap();
     assert_eq!(plan, Always { rules: vec!["Read(//home/u/data/**)".into()], folder: None });
-    assert_eq!(always_plan("Task", &json!({}), None, &places()), Err(Refusal::NoRule));
-    assert_eq!(always_plan("Bash", &bash("bash -c x"), None, &places()), Err(Refusal::RunsOtherCommands));
+    assert_eq!(always_plan("Task", &tool_input_from_json(&json!({})), None, &places()), Err(Refusal::NoRule));
+    assert_eq!(always_plan("Bash", &tool_input_from_json(&bash("bash -c x")), None, &places()), Err(Refusal::RunsOtherCommands));
 }

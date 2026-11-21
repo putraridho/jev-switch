@@ -11,7 +11,7 @@ fn tool_only_start_asks_host_then_finishes_with_real_answer() {
     let events = acp.parse(&permission());
     let [Event::PermissionRequest(req)] = &events[..] else { panic!("{events:?}") };
     assert_eq!(req.tool, "Bash");
-    assert_eq!(req.input, json!({"command":"git status --short"}));
+    assert_eq!(crate::approval::infrastructure::tool_input_wire::tool_input_to_json(&req.input), json!({"command":"git status --short"}));
     let reply: Value = serde_json::from_str(&acp.answer(req, &Decision::AllowAlways).unwrap()).unwrap();
     assert_eq!(reply["id"], "permission-1");
     assert_eq!(reply["result"]["outcome"]["optionId"], "yes");
@@ -70,7 +70,7 @@ fn antigravitys_command_line_is_a_plain_command_shown_without_the_protocols_book
     let events = acp.parse(&ev);
     let [Event::PermissionRequest(req)] = &events[..] else { panic!("{events:?}") };
     assert_eq!(req.tool, "Bash");
-    assert_eq!(req.input, json!({"command":"git status && ls -la"}));
+    assert_eq!(crate::approval::infrastructure::tool_input_wire::tool_input_to_json(&req.input), json!({"command":"git status && ls -la"}));
     assert_eq!(req.summary, "git status && ls -la");
     // The same command run in another directory is not judged as one run in the project.
     ev["params"]["toolCall"]["rawInput"]["Cwd"] = json!("/etc");

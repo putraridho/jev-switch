@@ -22,7 +22,7 @@ impl Backend for Steerable {
         let line = line.trim_end();
         match line.split_once(':') {
             Some(("ECHO", t)) => vec![Event::Steered(t.into())],
-            Some(("ASK", t)) => vec![Event::PermissionRequest(PermissionRequest { id: "q1".into(), tool: "Bash".into(), summary: t.into(), input: serde_json::json!({}), blocked_path: None })],
+            Some(("ASK", t)) => vec![Event::PermissionRequest(PermissionRequest { id: "q1".into(), tool: "Bash".into(), summary: t.into(), input: crate::approval::infrastructure::tool_input_wire::tool_input_from_json(&serde_json::json!({})), blocked_path: None })],
             Some(("FIN", t)) => vec![Event::Finished(Finish { text: t.into(), session_id: None, usage: Usage::default() })],
             _ => vec![],
         }

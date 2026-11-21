@@ -12,7 +12,7 @@ pub(super) fn permission_request(ev: &Value) -> Option<PermissionRequest> {
         return None;
     }
     let tool = request["tool_name"].as_str()?;
-    let input = request["input"].clone();
+    let input = crate::approval::infrastructure::tool_input_wire::tool_input_from_json(&request["input"]);
     Some(PermissionRequest {
         id: ev["request_id"].as_str()?.to_string(),
         tool: tool.to_string(),

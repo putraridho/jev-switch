@@ -35,7 +35,7 @@ impl Backend for Asking {
                 id: id.into(),
                 tool: tool.into(),
                 summary: summary.into(),
-                input: serde_json::json!({ "command": summary }),
+                input: crate::approval::infrastructure::tool_input_wire::tool_input_from_json(&serde_json::json!({ "command": summary })),
                 blocked_path: None,
             })]
         };

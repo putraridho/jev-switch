@@ -49,8 +49,8 @@ fn nothing_that_runs_other_commands_or_has_shell_syntax_gets_a_rule() {
     for command in ADVERSARIAL {
         assert!(rule(command).is_err(), "{command:?} gave {:?}", rule(command));
     }
-    assert_eq!(allow_rule("Task", &json!({}), None, &places()), None);
-    assert_eq!(allow_rule("Bash", &json!({}), None, &places()), None);
+    assert_eq!(allow_rule("Task", &tool_input_from_json(&json!({})), None, &places()), None);
+    assert_eq!(allow_rule("Bash", &tool_input_from_json(&json!({})), None, &places()), None);
 }
 
 #[test]
@@ -222,7 +222,7 @@ fn thousands_of_generated_commands_never_give_a_rule_that_matches_anything_else(
 }
 
 fn rules(command: &str) -> Result<Vec<String>, Refusal> {
-    rules_for("Bash", &bash(command), None, &places())
+    rules_for("Bash", &tool_input_from_json(&bash(command)), None, &places())
 }
 
 #[test]

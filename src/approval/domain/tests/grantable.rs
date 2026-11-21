@@ -25,7 +25,7 @@ fn unsafe_home_or_temp_folders_make_nothing_grantable_through_them() {
 
 #[test]
 fn a_read_family_rule_outside_the_project_never_covers_a_broad_or_secret_folder() {
-    let rule = |tool: &str, input: Value| rule_for(tool, &input, None, &places());
+    let rule = |tool: &str, input: Value| rule_for(tool, &tool_input_from_json(&input), None, &places());
     for (tool, input) in [
         // `~/.bashrc` would have saved `Read(//home/u/**)`: ~/.ssh and ~/.aws with it.
         ("Read", json!({"file_path": "/home/u/.bashrc"})),
@@ -48,5 +48,5 @@ fn a_read_family_rule_outside_the_project_never_covers_a_broad_or_secret_folder(
         assert_eq!(rule(tool, input.clone()), Err(Refusal::FolderTooBroad), "{tool} {input}");
     }
     // With no home folder known, nothing outside the project but the temp folder qualifies.
-    assert_eq!(rule_for("Read", &json!({"file_path": "/home/u/notes/a"}), None, &places_with(None)), Err(Refusal::FolderTooBroad));
+    assert_eq!(rule_for("Read", &tool_input_from_json(&json!({"file_path": "/home/u/notes/a"})), None, &places_with(None)), Err(Refusal::FolderTooBroad));
 }

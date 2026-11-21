@@ -126,7 +126,7 @@ impl Backend for ClaudeBackend {
 
     fn permission_response(&self, req: &PermissionRequest, decision: &Decision) -> Option<String> {
         let answer = match decision {
-            Decision::Allow | Decision::AllowAlways => json!({ "behavior": "allow", "updatedInput": req.input }),
+            Decision::Allow | Decision::AllowAlways => json!({ "behavior": "allow", "updatedInput": crate::approval::infrastructure::tool_input_wire::tool_input_to_json(&req.input) }),
             Decision::Deny { reason } => json!({ "behavior": "deny", "message": reason }),
         };
         let line = json!({ "type": "control_response", "response": { "subtype": "success", "request_id": req.id, "response": answer } });

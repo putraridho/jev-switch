@@ -37,6 +37,7 @@ impl Acp {
                 if raw.as_object().is_some_and(|o| !o.is_empty()) { raw.clone() } else { json!({ "title": call["title"] }) },
             ),
         };
+        let input = crate::approval::infrastructure::tool_input_wire::tool_input_from_json(&input);
         let summary = crate::approval::domain::review::describe(&tool, &input);
         vec![Event::PermissionRequest(PermissionRequest { id, tool, input, summary, blocked_path: None })]
     }

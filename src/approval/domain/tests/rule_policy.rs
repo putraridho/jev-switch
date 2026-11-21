@@ -2,7 +2,7 @@ use super::*;
 
 #[test]
 fn file_rules_use_the_absolute_path_spelling_and_the_right_field() {
-    let rule = |tool: &str, input: Value, blocked: Option<&str>| allow_rule(tool, &input, blocked, &places());
+    let rule = |tool: &str, input: Value, blocked: Option<&str>| allow_rule(tool, &tool_input_from_json(&input), blocked, &places());
     // Every file-editing tool is matched against `Edit(...)` rules only.
     assert_eq!(rule("Write", json!({"file_path": "/work/app/src/a.rs"}), None).as_deref(), Some("Edit(//work/app/src/a.rs)"));
     assert_eq!(rule("Edit", json!({"file_path": "/work/app/a.rs"}), None).as_deref(), Some("Edit(//work/app/a.rs)"));
@@ -22,7 +22,7 @@ fn file_rules_use_the_absolute_path_spelling_and_the_right_field() {
 
 #[test]
 fn a_write_rule_is_only_for_a_plain_project_file_or_a_grantable_folder() {
-    let rule = |tool: &str, path: &str| rule_for(tool, &json!({"file_path": path}), None, &places());
+    let rule = |tool: &str, path: &str| rule_for(tool, &tool_input_from_json(&json!({"file_path": path})), None, &places());
     for (path, want) in [
         // Settings, hooks, env files, credentials: writing them for good could grant or run anything.
         ("/work/app/.claude/settings.local.json", Refusal::SensitiveFile),
@@ -59,7 +59,7 @@ fn a_symbolic_link_cannot_lead_a_write_rule_out_of_the_project() {
     std::os::unix::fs::symlink("/etc", project.join("etc")).unwrap();
     std::os::unix::fs::symlink("/etc/hosts", project.join("hosts")).unwrap();
     let places = Places { project: project.clone(), home: Some(PathBuf::from("/home/u")), temp: PathBuf::from("/nonexistent-temp") };
-    let rule = |path: &Path| rule_for("Write", &json!({"file_path": path.to_str().unwrap()}), None, &places);
+    let rule = |path: &Path| rule_for("Write", &tool_input_from_json(&json!({"file_path": path.to_str().unwrap()})), None, &places);
     assert_eq!(rule(&project.join("etc/hosts")), Err(Refusal::FolderTooBroad), "a folder link out");
     assert_eq!(rule(&project.join("hosts")), Err(Refusal::UnsafePath), "a file link");
     assert!(rule(&project.join("src/a.rs")).is_ok());
@@ -68,7 +68,7 @@ fn a_symbolic_link_cannot_lead_a_write_rule_out_of_the_project() {
 
 #[test]
 fn a_path_that_could_match_more_than_it_names_gets_no_rule() {
-    let rule = |tool: &str, path: &str| allow_rule(tool, &json!({"file_path": path}), None, &places());
+    let rule = |tool: &str, path: &str| allow_rule(tool, &tool_input_from_json(&json!({"file_path": path})), None, &places());
     for path in ["/work/app/*", "/work/app/**/x", "/work/app/a?.rs", "/work/app/[ab].rs", "/work/../etc/passwd", "/w/a)b", "/w/(a", "/w/{a,b}", "/w/a\nb", ""] {
         for tool in ["Write", "Edit", "Read"] {
             assert_eq!(rule(tool, path), None, "{tool} {path:?}");
@@ -78,16 +78,16 @@ fn a_path_that_could_match_more_than_it_names_gets_no_rule() {
 
 #[test]
 fn web_and_mcp_rules() {
-    let web = |u: &str| allow_rule("WebFetch", &json!({"url": u}), None, &places());
+    let web = |u: &str| allow_rule("WebFetch", &tool_input_from_json(&json!({"url": u})), None, &places());
     assert_eq!(web("https://docs.rs/serde/latest?x=1").as_deref(), Some("WebFetch(domain:docs.rs)"));
     assert_eq!(web("http://user@localhost:8080/a").as_deref(), Some("WebFetch(domain:localhost)"));
     assert_eq!(web("https:///").as_deref(), None);
     for odd in ["https://*.evil.com/x", "https://[::1]/x", "https://a b.com", "https://.x.com/", "https://x.com)/"] {
         assert_eq!(web(odd), None, "{odd}");
     }
-    assert_eq!(allow_rule("mcp__jev__delegate", &json!({}), None, &places()).as_deref(), Some("mcp__jev__delegate"));
-    assert_eq!(allow_rule("mcp__a(b)", &json!({}), None, &places()), None);
-    assert_eq!(allow_rule("WebSearch", &json!({"query": "x"}), None, &places()).as_deref(), Some("WebSearch"));
+    assert_eq!(allow_rule("mcp__jev__delegate", &tool_input_from_json(&json!({})), None, &places()).as_deref(), Some("mcp__jev__delegate"));
+    assert_eq!(allow_rule("mcp__a(b)", &tool_input_from_json(&json!({})), None, &places()), None);
+    assert_eq!(allow_rule("WebSearch", &tool_input_from_json(&json!({"query": "x"})), None, &places()).as_deref(), Some("WebSearch"));
 }
 
 #[test]
