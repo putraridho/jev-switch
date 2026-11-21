@@ -15,7 +15,7 @@ pub struct TurnRequest {
     pub mode: crate::approval::domain::mode::Mode,
     /// Whether the person trusted this project's own Claude Code settings (its hooks and
     /// permissions); only Claude Code reads them. Decided by the caller, see
-    /// [`crate::approval::application::extension_hooks::project_settings_trusted`].
+    /// [`crate::approval::application::extension_hooks::trust::project_settings_trusted`].
     pub trust_project_settings: bool,
 }
 

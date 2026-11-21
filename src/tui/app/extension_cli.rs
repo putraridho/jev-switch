@@ -55,7 +55,7 @@ fn failed(style: Style, e: &market::MarketError) -> Outcome {
     Outcome { text: format!("{} {e}", style.red("✗")), code: 1 }
 }
 
-fn installed_line(done: &market::Installed, style: Style) -> String {
+fn installed_line(done: &market::installer::Installed, style: Style) -> String {
     let replaced = done.replaced.as_ref().map(|v| format!(" (was {v})")).unwrap_or_default();
     format!("{} {} {} installed, {} file(s) verified{replaced}", style.green("✓"), done.name, done.version, done.files)
 }
@@ -63,11 +63,11 @@ fn installed_line(done: &market::Installed, style: Style) -> String {
 /// Do the action against the user's config folder.
 pub fn run(action: &ExtAction, user: &Path, style: Style) -> Outcome {
     match action {
-        ExtAction::List => ok(view::installed_text(&market::list(user), style)),
-        ExtAction::Install(folder) => market::install(user, folder).map_or_else(|e| failed(style, &e), |done| ok(installed_line(&done, style))),
+        ExtAction::List => ok(view::installed_text(&market::listing::list(user), style)),
+        ExtAction::Install(folder) => market::installer::install(user, folder).map_or_else(|e| failed(style, &e), |done| ok(installed_line(&done, style))),
         ExtAction::Update(name) => update(user, name.as_deref(), style),
-        ExtAction::Remove(name) => market::remove(user, name).map_or_else(|e| failed(style, &e), |()| ok(format!("{} {name} removed", style.green("✓")))),
-        ExtAction::Pack { dir, name, version } => market::pack(dir, name, version)
+        ExtAction::Remove(name) => market::installer::remove(user, name).map_or_else(|e| failed(style, &e), |()| ok(format!("{} {name} removed", style.green("✓")))),
+        ExtAction::Pack { dir, name, version } => market::manifest::pack(dir, name, version)
             .map_or_else(|e| failed(style, &e), |m| ok(format!("{} wrote {} for {} {} ({} file(s))", style.green("✓"), market::MANIFEST, m.name, m.version, m.files.len()))),
     }
 }
@@ -75,7 +75,7 @@ pub fn run(action: &ExtAction, user: &Path, style: Style) -> Outcome {
 fn update(user: &Path, name: Option<&str>, style: Style) -> Outcome {
     let names: Vec<String> = match name {
         Some(n) => vec![n.to_string()],
-        None => market::list(user).into_iter().map(|l| l.name).collect(),
+        None => market::listing::list(user).into_iter().map(|l| l.name).collect(),
     };
     if names.is_empty() {
         return ok(style.dim("no extensions installed"));
@@ -83,7 +83,7 @@ fn update(user: &Path, name: Option<&str>, style: Style) -> Outcome {
     let mut lines = Vec::new();
     let mut code = 0;
     for n in names {
-        match market::update(user, &n) {
+        match market::installer::update(user, &n) {
             Ok(Some(done)) => lines.push(installed_line(&done, style)),
             Ok(None) => lines.push(format!("{} {n} is up to date", style.dim("·"))),
             Err(e) => {
