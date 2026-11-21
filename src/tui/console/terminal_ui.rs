@@ -31,7 +31,7 @@ use std::time::{Duration, Instant};
 use crate::backend::{self, Decision, Event, PermissionRequest};
 use crate::tui::console::front::{ApprovalAsk, Front, FrontMsg};
 use crate::tui::input::line_editor as lineedit;
-use crate::tui::input::line_editor::AnswerKey;
+use crate::tui::input::line_editor::approval::AnswerKey;
 use crate::approval::domain::always_plan::{Offer, Settled};
 use crate::approval::domain::review::Review;
 use crate::approval::domain::{always_plan, review};

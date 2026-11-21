@@ -61,7 +61,10 @@ pub use crate::tui::command_table::{command_names, command_usage, Cmd, Group, CO
 pub use completion::{complete, completion_start, hint, Candidate, CompleteCtx, SkillChoice};
 pub use diffview::{render_diff, render_hunk, word_diff, DiffOpts, Fold, Layout, Piece, FOLD_AFTER, SPLIT_MIN_WIDTH};
 pub use failure::{error_block, failover_note, next_steps_for, no_route_message, problem_block};
-pub use identity::{builtin_identity, ChipFacts, ColorDepth, Health, Identity, NativeEvent, OverrideError, Palette, ProviderTheme, Rgb, ThemeOverrides};
+pub use identity::color::{ColorDepth, Rgb};
+pub use identity::events::{ChipFacts, Health, NativeEvent};
+pub use identity::overrides::{OverrideError, ThemeOverrides};
+pub use identity::{builtin_identity, Identity, Palette, ProviderTheme};
 pub use markdown::answer_text;
 pub use permissions::{allowed_by_setting, auto_allowed, denied_without_asking, remembered_allowed, permission_answered, permission_prompt, permissions_text, Prompt, Question};
 pub use provider_view::{provider_glyphs, providers_table, AvailRow, ProviderStatus};

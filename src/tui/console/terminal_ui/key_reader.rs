@@ -8,7 +8,7 @@ pub type KeyWait = Pin<Box<dyn Future<Output = AnswerKey> + Send>>;
 /// Starts waiting for one key at an approval question; `true` says "always" can be answered.
 pub type KeyReader = Arc<dyn Fn(bool) -> KeyWait + Send + Sync>;
 
-/// The real terminal's key reader: [`lineedit::read_answer`] on a thread of its own, which
+/// The real terminal's key reader: [`lineedit::approval::read_answer`] on a thread of its own, which
 /// polls stdin and a cancel flag. Dropping the [`KeyWait`] (the question was withdrawn) sets
 /// the flag and returns at once, without blocking the async runtime: the thread notices
 /// within one poll interval and puts the terminal back in the mode it was in before the
@@ -61,7 +61,7 @@ impl TerminalKey {
         let reader = std::thread::spawn(move || {
             // A reader of a withdrawn question may still be restoring the terminal.
             settle_key_readers();
-            if let Some(key) = lineedit::read_answer(always, &flag) {
+            if let Some(key) = lineedit::approval::read_answer(always, &flag) {
                 let _ = send.send(key);
             }
         });

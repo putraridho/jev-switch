@@ -24,7 +24,8 @@ use jev_router::shared::infrastructure::env_file as envfile;
 use jev_router::tui::console::front::{Front, FrontMsg};
 use jev_router::session::infrastructure::session_file;
 use jev_router::tui::input::line_editor as lineedit;
-use jev_router::tui::input::line_editor::{Input, InterruptGuard};
+use jev_router::tui::input::line_editor::interrupt::InterruptGuard;
+use jev_router::tui::input::line_editor::Input;
 use jev_router::shared::infrastructure::jsonl_log as log;
 use jev_router::approval::domain::mode;
 use jev_router::orchestration::domain::orchestration_gate as orchestrate;
@@ -472,7 +473,7 @@ async fn session(args: &Args, dir: &Path, term: &Term, console: Console, state_d
     };
     if let Some(rx) = front_rx {
         // The front end saves the session when it ends.
-        let opts = jev_router::tui::app::frontend_loop::Options { style: term.out_style, history: state_dir.as_deref().map(lineedit::history_path) };
+        let opts = jev_router::tui::app::frontend_loop::Options { style: term.out_style, history: state_dir.as_deref().map(lineedit::history::history_path) };
         return jev_router::tui::app::frontend_loop::run(repl, rx, opts).await;
     }
     let code = if term.interactive() {
@@ -536,7 +537,7 @@ fn startup(repl: &mut Repl, args: &Args, term: &Term, console: &Console, state_d
 
 /// The interactive loop: the line editor, one message or command at a time.
 async fn edit_loop(repl: &mut Repl, term: &Term, console: &Console, state_dir: Option<&Path>, sigint: &mut SigInt) -> i32 {
-    let history = state_dir.map(lineedit::history_path);
+    let history = state_dir.map(lineedit::history::history_path);
     // Shift-Tab changes this while a prompt is open; it is read back after every line.
     let shared_mode = mode::SharedMode::new(repl.engine.mode());
     let mut editor = match lineedit::build_editor(term.out_style, history.as_deref(), shared_mode.clone()) {
@@ -570,13 +571,13 @@ async fn edit_loop(repl: &mut Repl, term: &Term, console: &Console, state_dir: O
             Input::Line(line) => {
                 settle_late_probes(repl);
                 guard.reset();
-                lineedit::remember(&mut editor, &line, history.as_deref());
+                lineedit::history::remember(&mut editor, &line, history.as_deref());
                 let mut flow = run_line(repl, &mut editor, sigint, &line).await;
                 // Messages typed during the turn run next, in order, until one stops the loop.
                 while flow == Flow::Continue {
                     let Some(next) = console.take_queued() else { break };
                     console.out(&format!("{} {}", term.out_style.cyan("›"), next.replace('\n', "\n  ")));
-                    lineedit::remember(&mut editor, &next, history.as_deref());
+                    lineedit::history::remember(&mut editor, &next, history.as_deref());
                     flow = run_line(repl, &mut editor, sigint, &next).await;
                 }
                 match flow {
@@ -586,8 +587,8 @@ async fn edit_loop(repl: &mut Repl, term: &Term, console: &Console, state_dir: O
                 }
             }
             Input::Interrupted => match guard.on_interrupt(Instant::now()) {
-                lineedit::Interrupt::Warn => console.err(&format!("\n{}", term.err_style.dim(lineedit::EXIT_HINT))),
-                lineedit::Interrupt::Exit => return 0,
+                lineedit::interrupt::Interrupt::Warn => console.err(&format!("\n{}", term.err_style.dim(lineedit::interrupt::EXIT_HINT))),
+                lineedit::interrupt::Interrupt::Exit => return 0,
             },
             Input::Eof => {
                 console.out("");

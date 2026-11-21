@@ -4,7 +4,7 @@
 
 use std::path::Path;
 
-use crate::tui::input::line_editor::path_candidates;
+use crate::tui::input::line_editor::completion::path_candidates;
 use crate::tui::render as uifmt;
 use crate::tui::render::{CompleteCtx, COMMANDS};
 use crate::tui::input::fuzzy;
