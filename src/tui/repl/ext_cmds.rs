@@ -41,7 +41,7 @@ impl Repl {
         match cmd {
             ExtCmd::List => {
                 let lib = Library::discover(&places);
-                let installed = places.user.as_deref().map(market::list).unwrap_or_default();
+                let installed = places.user.as_deref().map(market::listing::list).unwrap_or_default();
                 let text = format!("{}\n{}\n{}", view::library_text(&lib, style), style.bold("extensions"), view::installed_text(&installed, style));
                 self.page_out(&text);
             }
@@ -96,7 +96,7 @@ impl Repl {
             self.console.out(&format!("{} no config folder to remember the trust in (HOME is not set)", style.yellow("⚠")));
             return;
         };
-        match hooks::trust_project_full(user, &places.project) {
+        match hooks::trust::trust_project_full(user, &places.project) {
             Ok((newly, approved, settings_lines)) => {
                 let loaded = Hooks::load(places);
                 self.page_out(&view::approved_hooks_text(&approved, style));

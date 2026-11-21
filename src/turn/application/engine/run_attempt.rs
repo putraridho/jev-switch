@@ -69,7 +69,7 @@ impl Engine {
             images: self.images.clone(),
             session_id: self.sessions.session_id(provider).map(String::from),
             mode: self.mode,
-            trust_project_settings: hooks::project_settings_trusted(&self.dir),
+            trust_project_settings: hooks::trust::project_settings_trusted(&self.dir),
         };
         let mut tools: Vec<String> = Vec::new();
         let mut steered: Vec<String> = Vec::new();
@@ -114,7 +114,7 @@ impl Engine {
                         Event::Tool(summary) => {
                             tools.push(summary.clone());
                             let name = summary.split_whitespace().next();
-                            hooks::fire(hooks, hooks::Event::PostTool, name, Some(summary));
+                            hooks::runner::fire(hooks, hooks::Event::PostTool, name, Some(summary));
                         }
                         Event::Plan(plan) => runtime.note_plan(provider, plan.clone()),
                         Event::Steered(text) => steered.push(text.clone()),

@@ -40,7 +40,7 @@ pub(super) struct EngineApprover<'a> {
 
 impl EngineApprover<'_> {
     async fn answer(&self, req: &PermissionRequest) -> Decision {
-        if let Some(outcome) = hooks::refusal_for(self.hooks, &req.tool, &req.summary).await {
+        if let Some(outcome) = hooks::runner::refusal_for(self.hooks, &req.tool, &req.summary).await {
             for warning in &outcome.warnings {
                 lock_ui(self.ui).event(&Event::Hint(warning.clone()));
             }

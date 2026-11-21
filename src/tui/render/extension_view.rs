@@ -2,7 +2,7 @@
 
 use crate::approval::application::extension_hooks::{HookDef, Hooks};
 use crate::approval::application::extension_library::{Entry, Kind, Library};
-use crate::approval::application::extension_market::{Listing, State};
+use crate::approval::application::extension_market::listing::{Listing, State};
 use crate::approval::domain::visible_text::visible;
 use crate::tui::render::Style;
 
@@ -232,7 +232,7 @@ mod tests {
         let loaded = Hooks::load(&places);
         let text = hooks_text(&loaded, Style::off());
         assert!(text.contains("turn_start") && text.contains("echo first␊␛second"), "{text}");
-        let (_, defs) = crate::approval::application::extension_hooks::trust_project_with_preview(places.user.as_deref().unwrap(), &dir).unwrap();
+        let (_, defs) = crate::approval::application::extension_hooks::trust::trust_project_with_preview(places.user.as_deref().unwrap(), &dir).unwrap();
         let approved = approved_hooks_text(&defs, Style::off());
         assert!(approved.contains("turn_start") && approved.contains("echo first␊␛second"), "{approved}");
         std::fs::remove_dir_all(dir).unwrap();

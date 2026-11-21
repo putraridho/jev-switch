@@ -98,7 +98,7 @@ impl Repl {
         let files = report.changes.as_ref().map(views::file_changes).unwrap_or_default();
         self.console.turn_end(&facts, &files);
         let outcome = if report.status == TurnStatus::Answered { "answered" } else { "failed" };
-        crate::approval::application::extension_hooks::fire(self.engine.hooks(), crate::approval::application::extension_hooks::Event::TurnEnd, None, Some(outcome));
+        crate::approval::application::extension_hooks::runner::fire(self.engine.hooks(), crate::approval::application::extension_hooks::Event::TurnEnd, None, Some(outcome));
         if bell_after(elapsed, crate::shared::infrastructure::env_file::lookup("JEV_BELL").as_deref()) {
             self.console.bell();
         }
