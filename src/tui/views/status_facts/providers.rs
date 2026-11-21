@@ -89,7 +89,7 @@ fn mcp_server_names(engine: &Engine) -> Vec<String> {
 
 /// The skills of this project and the user, for `/skill` completion.
 fn skill_choices(project: &std::path::Path) -> Vec<crate::tui::render::SkillChoice> {
-    let lib = crate::approval::application::extension_library::Library::discover(&crate::approval::application::extensions::Places::from_env(project));
+    let lib = crate::approval::application::extension_library::Library::discover(&crate::approval::application::extensions::Places::from_env(project), &crate::tui::render::command_names());
     lib.of_kind(crate::approval::application::extension_library::Kind::Skill)
         .map(|e| crate::tui::render::SkillChoice { name: e.name.clone(), description: e.meta.description.clone(), hint: e.meta.hint.clone() })
         .collect()

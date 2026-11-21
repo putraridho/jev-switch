@@ -2,6 +2,7 @@ mod approve_tool;
 pub mod attach;
 pub mod cancel;
 pub mod engine;
+pub mod guard_store;
 pub mod guards;
 pub mod judged;
 pub mod ports;

@@ -15,10 +15,10 @@ pub struct Overrides {
 }
 
 impl Overrides {
-    /// Read the file named by `JEV_CHAINS`, if set. A missing or broken file yields
-    /// the defaults plus a note, so a typo never stops routing.
-    pub fn from_env() -> Self {
-        let Some(path) = crate::shared::infrastructure::env_file::lookup("JEV_CHAINS").filter(|p| !p.is_empty()) else {
+    /// Read the file named by the `JEV_CHAINS` setting (`setting`), if set. A missing or broken
+    /// file yields the defaults plus a note, so a typo never stops routing.
+    pub fn from_setting(setting: Option<String>) -> Self {
+        let Some(path) = setting.filter(|p| !p.is_empty()) else {
             return Self::default();
         };
         match std::fs::read_to_string(&path).map_err(|e| e.to_string()).and_then(|t| load_overrides(&t)) {

@@ -98,7 +98,7 @@ mod tests {
     fn everything_the_last_session_left_is_read_together() {
         let d = dir("saved");
         assert_eq!(Saved::load(&d), Saved::default());
-        mode::save(&d, Mode::Auto).unwrap();
+        crate::approval::application::mode_store::save(&d, Mode::Auto).unwrap();
         save_flag(&d, Flag::Orchestrate, false).unwrap();
         save_flag(&d, Flag::Thinking, true).unwrap();
         assert_eq!(Saved::load(&d), Saved { mode: Some(Mode::Auto), orchestrate: Some(false), routing: None, thinking: Some(true) });

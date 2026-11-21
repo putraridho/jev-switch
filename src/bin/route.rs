@@ -100,7 +100,7 @@ impl ProviderSetup {
             claude.map(|id| (ProviderId::Claude, id)).chain(codex.into_iter().map(|id| (ProviderId::Codex, id))),
         );
         let credits = std::env::var("ROUTE_CREDITS").is_ok_and(|v| !v.is_empty() && v != "0");
-        Self { usable, allow: Allowances { credits, per_token: false }, overrides: Overrides::from_env() }
+        Self { usable, allow: Allowances { credits, per_token: false }, overrides: jev_router::catalog::application::chain_overrides::from_env() }
     }
 }
 

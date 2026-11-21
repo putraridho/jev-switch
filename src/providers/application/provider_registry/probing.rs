@@ -4,11 +4,10 @@
 use std::path::PathBuf;
 
 use crate::backend::ProviderId;
-use crate::catalog::domain::model_table::Overrides;
+
 use crate::providers::domain::availability;
 use crate::providers::domain::availability::{Availability, State};
 use crate::providers::domain::probe_source::ProbeSource;
-use crate::providers::domain::reset_time::cooldowns as cooldown;
 use crate::providers::domain::reset_time::cooldowns::Cooldowns;
 use crate::providers::domain::usability::allowances_for;
 use crate::providers::infrastructure::probe_cache as probecache;
@@ -20,10 +19,10 @@ impl Runtime {
     /// Probe the machine and load persisted cooldowns.
     pub async fn start() -> Self {
         let avail = availability::probe_all().await;
-        let cooldown_path = cooldown::default_path();
+        let cooldown_path = cooldown_path();
         let cooldowns = cooldown_path.as_deref().map(Cooldowns::load).unwrap_or_default();
         let allow = allowances_for(crate::shared::application::host::env("JEV_ALLOW_CREDITS").as_deref(), &avail);
-        let mut runtime = Self::build(avail, cooldowns, allow, Overrides::from_env(), cooldown_path);
+        let mut runtime = Self::build(avail, cooldowns, allow, crate::catalog::application::chain_overrides::from_env(), cooldown_path);
         runtime.seed_usage(crate::providers::infrastructure::plan_store::default_path());
         runtime
     }
@@ -55,10 +54,10 @@ impl Runtime {
             }
             return (runtime, ProbeSource::Live);
         };
-        let cooldown_path = cooldown::default_path();
+        let cooldown_path = cooldown_path();
         let cooldowns = cooldown_path.as_deref().map(Cooldowns::load).unwrap_or_default();
         let allow = allowances_for(crate::shared::application::host::env("JEV_ALLOW_CREDITS").as_deref(), &cached);
-        let mut runtime = Self::build(cached.clone(), cooldowns, allow, Overrides::from_env(), cooldown_path);
+        let mut runtime = Self::build(cached.clone(), cooldowns, allow, crate::catalog::application::chain_overrides::from_env(), cooldown_path);
         runtime.seed_usage(crate::providers::infrastructure::plan_store::default_path());
         runtime.refresh_in_background(cached, cache);
         (runtime, ProbeSource::Cache)
@@ -169,4 +168,9 @@ impl Runtime {
         }
         applied
     }
+}
+
+/// `<state_dir>/cooldowns.json`, or `None` if there is no state directory.
+pub fn cooldown_path() -> Option<std::path::PathBuf> {
+    Some(crate::shared::application::host::state_dir()?.join("cooldowns.json"))
 }

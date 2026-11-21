@@ -66,8 +66,9 @@ impl FailoverPolicy {
         state_dir.and_then(|d| std::fs::read_to_string(d.join(FILE)).ok()).map(|t| Self::parse(&t)).unwrap_or_default()
     }
 
-    pub fn save(&self, state_dir: &Path) -> std::io::Result<()> {
-        crate::shared::infrastructure::private_file::write_atomic(&state_dir.join(FILE), &self.to_string())
+    /// The file in the state folder that keeps the policy.
+    pub fn file_path(state_dir: &Path) -> std::path::PathBuf {
+        state_dir.join(FILE)
     }
 }
 
@@ -125,18 +126,6 @@ mod tests {
         let p = FailoverPolicy { max_attempts: 3, paid_fallback: false };
         assert_eq!(FailoverPolicy::parse(&p.to_string()), p);
         assert_eq!(FailoverPolicy::parse("junk\nmax-attempts 4\nmax-attempts 400"), FailoverPolicy { max_attempts: 4, paid_fallback: true });
-    }
-
-    #[test]
-    fn the_policy_is_kept() {
-        let d = std::env::temp_dir().join(format!("jev-failover-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&d);
-        std::fs::create_dir_all(&d).unwrap();
-        assert_eq!(FailoverPolicy::load(Some(&d)), FailoverPolicy::default());
-        let p = FailoverPolicy { max_attempts: 2, paid_fallback: false };
-        p.save(&d).unwrap();
-        assert_eq!(FailoverPolicy::load(Some(&d)), p);
-        let _ = std::fs::remove_dir_all(&d);
     }
 
     #[test]

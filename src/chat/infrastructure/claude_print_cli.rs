@@ -3,29 +3,13 @@
 //! the full message history is sent every time.
 
 use anyhow::{bail, Context, Result};
-use serde::{Deserialize, Serialize};
+use crate::chat::domain::message::Message;
+use serde::Deserialize;
 use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
 
 pub use crate::catalog::domain::model_table::{MODEL_CHEAP, MODEL_MID, MODEL_STRONG, MODEL_TOP};
 pub use crate::shared::domain::limit_notice::{is_limit_message, is_limit_phrase};
-
-/// One turn in the conversation. This is the canonical, provider-neutral unit
-/// the transcript stores and replays to whichever model handles the turn.
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct Message {
-    pub role: String,
-    pub content: String,
-}
-
-impl Message {
-    pub fn user(content: impl Into<String>) -> Self {
-        Message { role: "user".into(), content: content.into() }
-    }
-    pub fn assistant(content: impl Into<String>) -> Self {
-        Message { role: "assistant".into(), content: content.into() }
-    }
-}
 
 #[derive(Deserialize)]
 struct Response {

@@ -40,36 +40,36 @@ impl Repl {
         let places = self.ext_places();
         match cmd {
             ExtCmd::List => {
-                let lib = Library::discover(&places);
+                let lib = Library::discover(&places, &crate::tui::render::command_names());
                 let installed = places.user.as_deref().map(market::listing::list).unwrap_or_default();
                 let text = format!("{}\n{}\n{}", view::library_text(&lib, style), style.bold("extensions"), view::installed_text(&installed, style));
                 self.page_out(&text);
             }
-            ExtCmd::Recipes => self.page_out(&view::recipes_text(&Library::discover(&places), style)),
+            ExtCmd::Recipes => self.page_out(&view::recipes_text(&Library::discover(&places, &crate::tui::render::command_names()), style)),
             ExtCmd::RunRecipe { name, args } => {
-                let lib = Library::discover(&places);
+                let lib = Library::discover(&places, &crate::tui::render::command_names());
                 match lib.find(&name).filter(|e| e.kind == crate::approval::application::extension_library::Kind::Recipe) {
                     Some(entry) => return self.run_invocation(entry.invoke(&args), io).await,
                     None => self.console.out(&format!("{} no recipe named {name}. {}", style.yellow("⚠"), style.dim("/recipe lists them"))),
                 }
             }
-            ExtCmd::Skills => self.page_out(&view::skills_text(&Library::discover(&places), style)),
+            ExtCmd::Skills => self.page_out(&view::skills_text(&Library::discover(&places, &crate::tui::render::command_names()), style)),
             ExtCmd::RunSkill { name, args } => {
-                let lib = Library::discover(&places);
+                let lib = Library::discover(&places, &crate::tui::render::command_names());
                 match lib.find(&name).filter(|e| e.kind == Kind::Skill) {
                     Some(entry) => return self.run_invocation(entry.invoke(&args), io).await,
                     None => self.console.out(&no_skill(&lib, &name, style)),
                 }
             }
             ExtCmd::ShowSkill(name) => {
-                let lib = Library::discover(&places);
+                let lib = Library::discover(&places, &crate::tui::render::command_names());
                 match lib.find(&name).filter(|e| e.kind == Kind::Skill) {
                     Some(entry) => self.page_out(&view::skill_text(entry, style)),
                     None => self.console.out(&no_skill(&lib, &name, style)),
                 }
             }
             ExtCmd::NewSkill { name, description } => {
-                let taken = Library::discover(&places).find(&name).map(|e| format!("/{name} is already a {} ({})", e.kind.noun(), e.origin));
+                let taken = Library::discover(&places, &crate::tui::render::command_names()).find(&name).map(|e| format!("/{name} is already a {} ({})", e.kind.noun(), e.origin));
                 match taken.map_or_else(|| library::create_skill(&places, &name, &description), Err) {
                     Ok(path) => {
                         self.console.out(&format!("{} started skill {}", style.green("✓"), style.cyan(&format!("/{name}"))));
@@ -117,7 +117,7 @@ impl Repl {
 
     /// `/<name> [arguments]` for a custom command, skill or recipe. `None`: no such entry.
     pub(super) async fn custom(&mut self, typed: &str, args: &str, io: &mut Io<'_>) -> Option<Flow> {
-        let lib = Library::discover(&self.ext_places());
+        let lib = Library::discover(&self.ext_places(), &crate::tui::render::command_names());
         let entry = lib.find(typed.trim_start_matches('/'))?;
         Some(self.run_invocation(entry.invoke(args), io).await)
     }

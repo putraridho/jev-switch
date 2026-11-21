@@ -1,7 +1,7 @@
 //! One canonical conversation history. Sent in full to whichever model a turn
 //! routes to — this is what keeps memory intact across model switches.
 
-use crate::chat::infrastructure::claude_print_cli::Message;
+use crate::chat::domain::message::Message;
 
 pub struct Transcript {
     pub system: String,

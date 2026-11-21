@@ -237,16 +237,17 @@ impl Budget {
         Self { cap }
     }
 
-    /// Keep the cap (or no cap) for the next session.
-    pub fn save(&self, state_dir: &Path) -> std::io::Result<()> {
-        let path = state_dir.join(BUDGET_FILE);
+    /// The file in the state folder that keeps the cap.
+    pub fn file_path(state_dir: &Path) -> std::path::PathBuf {
+        state_dir.join(BUDGET_FILE)
+    }
+
+    /// What the cap file holds, or `None` when there is no cap (and so no file).
+    pub fn file_text(&self) -> Option<String> {
         match self.cap {
-            Some(Cap::Usd(v)) => crate::shared::infrastructure::private_file::write_atomic(&path, &format!("usd {v}")),
-            Some(Cap::Tokens(v)) => crate::shared::infrastructure::private_file::write_atomic(&path, &format!("tokens {v}")),
-            None => match std::fs::remove_file(&path) {
-                Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e),
-                _ => Ok(()),
-            },
+            Some(Cap::Usd(v)) => Some(format!("usd {v}")),
+            Some(Cap::Tokens(v)) => Some(format!("tokens {v}")),
+            None => None,
         }
     }
 }
@@ -401,24 +402,6 @@ mod tests {
         assert!(meter_text(&m, &b, &[]).contains("cannot be checked"));
         // A tokens cap needs no price.
         assert_eq!(Budget { cap: Some(Cap::Tokens(10_000_000)) }.standing(&m), Standing::Under);
-    }
-
-    #[test]
-    fn the_cap_is_kept_between_sessions() {
-        let d = std::env::temp_dir().join(format!("jev-budget-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&d);
-        std::fs::create_dir_all(&d).unwrap();
-        assert_eq!(Budget::load(Some(&d)), Budget::default());
-        for cap in [Cap::Usd(5.0), Cap::Tokens(2_000_000)] {
-            Budget { cap: Some(cap) }.save(&d).unwrap();
-            assert_eq!(Budget::load(Some(&d)).cap, Some(cap));
-        }
-        Budget::default().save(&d).unwrap();
-        assert_eq!(Budget::load(Some(&d)).cap, None);
-        Budget::default().save(&d).unwrap();
-        std::fs::write(d.join("prices.txt"), "m 1 1 1").unwrap();
-        assert!(PriceTable::load(Some(&d)).price("m").is_some());
-        let _ = std::fs::remove_dir_all(&d);
     }
 
     #[test]

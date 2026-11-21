@@ -140,8 +140,3 @@ impl DiskWatch {
         self.reloads
     }
 }
-
-/// `<state_dir>/cooldowns.json`, or `None` if there is no state directory.
-pub fn default_path() -> Option<PathBuf> {
-    Some(crate::shared::infrastructure::jsonl_log::state_dir()?.join("cooldowns.json"))
-}

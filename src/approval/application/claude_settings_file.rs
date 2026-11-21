@@ -12,8 +12,29 @@ use serde_json::Value;
 use crate::approval::domain::always_plan::Always;
 use crate::approval::domain::grantable::Places;
 use crate::approval::domain::listing::Listing;
-use crate::approval::domain::rule_policy::{local_settings_tracked, rules_for};
+use crate::approval::domain::rule_policy::rules_for;
+use crate::shared::application::host;
 use crate::approval::domain::settings_document::{local_settings_path, user_settings_path, List, Settings, SettingsError};
+
+/// Whether the project's local settings must be treated as not the user's own: committed to
+/// the repository, or git failed in a way that could be the repository's doing (a folder owned
+/// by someone else, "dubious ownership", or a damaged index). Only the failures below, which
+/// say nothing about the repository, leave the file as the user's own: not under git at all, a
+/// locked index (another git running), a missing folder, or no git program.
+pub fn local_settings_tracked(project: &Path) -> bool {
+    let output = std::process::Command::new("git")
+        .arg("-C")
+        .arg(project)
+        .args(host::no_repo_programs(project))
+        .args(["ls-files", "--error-unmatch", "--", crate::approval::domain::settings_document::LOCAL_SETTINGS])
+        .env("LC_ALL", "C")
+        .stdout(std::process::Stdio::null())
+        .output();
+    match output {
+        Ok(out) => crate::approval::domain::rule_policy::tracked_from_git(out.status.code(), &String::from_utf8_lossy(&out.stderr)),
+        Err(_) => false,
+    }
+}
 
 /// The rules that already allow this call, when the person saved every one of them before
 /// (project or user settings): the call is then allowed without asking again. Claude Code
