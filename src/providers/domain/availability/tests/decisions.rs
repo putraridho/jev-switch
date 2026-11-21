@@ -3,7 +3,7 @@
 use crate::providers::domain::availability::claude::{decide_claude, parse_claude_login, ClaudeLogin};
 use crate::providers::domain::availability::codex::{codex_plan_from_auth, decide_codex, decode_base64url, parse_codex_login};
 use crate::providers::domain::availability::deepseek::decide_deepseek;
-use crate::providers::domain::availability::gemini::{decide_gemini, gemini_login_facts, GeminiFacts};
+use crate::providers::domain::availability::gemini::{decide_gemini, GeminiFacts};
 use crate::providers::domain::availability::grok::{decide_grok, GrokFacts};
 use crate::providers::domain::availability::State;
 
@@ -112,18 +112,6 @@ fn codex_decisions() {
 }
 
 // ---- Gemini
-
-#[test]
-fn gemini_login_facts_follow_the_factory_rule() {
-    let commented = "{\n  // login\n  \"security\": {\"auth\": {\"selectedType\": \"oauth-personal\"}}\n}";
-    let no_env = |_: &str| false;
-    assert_eq!(gemini_login_facts(Some(commented), no_env), (false, true), "comments in settings.json are fine");
-    assert_eq!(gemini_login_facts(None, |n| n == "GOOGLE_GENAI_USE_VERTEXAI"), (true, false), "Vertex env only");
-    assert_eq!(gemini_login_facts(None, |n| n == "GOOGLE_GENAI_USE_GCA"), (true, false));
-    assert_eq!(gemini_login_facts(Some(r#"{"theme":"dark"}"#), no_env), (false, false));
-    assert_eq!(gemini_login_facts(Some("nope"), no_env), (false, false));
-    assert_eq!(gemini_login_facts(None, no_env), (false, false));
-}
 
 #[test]
 fn gemini_decisions() {

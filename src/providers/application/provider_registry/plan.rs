@@ -8,7 +8,7 @@ use super::Runtime;
 impl Runtime {
     /// Codex reports its limits only in its session files, not in the turn's output.
     pub(super) fn refresh_codex_plan(&mut self) {
-        if let Some((plan, _)) = crate::backend::infrastructure::codex::codex_plan::latest_plan() {
+        if let Some(plan) = self.host.latest_codex_plan() {
             self.note_plan(ProviderId::Codex, plan);
         }
     }
@@ -19,8 +19,9 @@ impl Runtime {
         let Some(key) = crate::shared::application::host::env("DEEPSEEK_API_KEY").filter(|k| !k.trim().is_empty()) else { return };
         let Ok(handle) = tokio::runtime::Handle::try_current() else { return };
         let slot = self.balance.clone();
+        let host = self.host.clone();
         handle.spawn(async move {
-            if let Some(b) = crate::providers::infrastructure::deepseek_balance::fetch_deepseek_balance(&key).await {
+            if let Some(b) = host.fetch_credit(key).await {
                 *slot.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(b);
             }
         });
@@ -40,7 +41,7 @@ impl Runtime {
         if p != ProviderId::DeepSeek {
             return None;
         }
-        self.balance.lock().unwrap_or_else(std::sync::PoisonError::into_inner).as_ref().map(crate::providers::infrastructure::deepseek_balance::format_balance)
+        self.balance.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone()
     }
 
     pub fn note_plan(&mut self, p: ProviderId, plan: PlanUsage) {
@@ -49,7 +50,7 @@ impl Runtime {
         }
         self.plan.insert(p, plan);
         if let Some(path) = &self.plan_path {
-            crate::providers::infrastructure::plan_store::save(path, &self.plan);
+            self.host.save_plans(path, &self.plan);
         }
     }
 
@@ -57,6 +58,6 @@ impl Runtime {
     /// its window has not reset since.
     pub fn plan_utilization(&self, p: ProviderId) -> Option<f64> {
         let now_s = crate::shared::application::host::now_ms() / 1000;
-        self.plan.get(&p).filter(|u| crate::providers::infrastructure::plan_store::is_current(u, now_s)).map(|u| u.utilization)
+        self.plan.get(&p).filter(|u| self.host.plan_is_current(u, now_s)).map(|u| u.utilization)
     }
 }

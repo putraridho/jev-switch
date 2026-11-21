@@ -1,29 +1,28 @@
 //! Finding out who is available: the startup probe (live or from the cache), `/providers
 //! refresh`, and folding the answers of the background retries into the runtime.
 
-use std::path::PathBuf;
+use std::sync::Arc;
 
 use crate::backend::ProviderId;
-
+use crate::providers::application::ports::ProviderHost;
 use crate::providers::domain::availability;
 use crate::providers::domain::availability::{Availability, State};
 use crate::providers::domain::probe_source::ProbeSource;
 use crate::providers::domain::reset_time::cooldowns::Cooldowns;
 use crate::providers::domain::usability::allowances_for;
-use crate::providers::infrastructure::probe_cache as probecache;
 use crate::shared::ALL_PROVIDERS;
 
 use super::{BlockReason, LateMerge, LateProbes, ProbeCache, Runtime};
 
 impl Runtime {
     /// Probe the machine and load persisted cooldowns.
-    pub async fn start() -> Self {
-        let avail = availability::probe_all().await;
+    pub async fn start(host: Arc<dyn ProviderHost>) -> Self {
+        let avail = availability::probe_all(|p| host.probe(p)).await;
         let cooldown_path = cooldown_path();
         let cooldowns = cooldown_path.as_deref().map(Cooldowns::load).unwrap_or_default();
         let allow = allowances_for(crate::shared::application::host::env("JEV_ALLOW_CREDITS").as_deref(), &avail);
-        let mut runtime = Self::build(avail, cooldowns, allow, crate::catalog::application::chain_overrides::from_env(), cooldown_path);
-        runtime.seed_usage(crate::providers::infrastructure::plan_store::default_path());
+        let mut runtime = Self::build(avail, cooldowns, allow, crate::catalog::application::chain_overrides::from_env(), cooldown_path, host);
+        runtime.seed_usage();
         runtime
     }
 
@@ -31,9 +30,10 @@ impl Runtime {
     /// earlier run saved, Codex's own latest reading from its session files (fresher than
     /// anything saved), and DeepSeek's balance in the background. From now on every new
     /// reading is saved to `plan_path`.
-    fn seed_usage(&mut self, plan_path: Option<PathBuf>) {
+    fn seed_usage(&mut self) {
+        let plan_path = self.host.plan_path();
         if let Some(path) = &plan_path {
-            self.plan = crate::providers::infrastructure::plan_store::load(path);
+            self.plan = self.host.load_plans(path);
         }
         self.plan_path = plan_path;
         self.refresh_codex_plan();
@@ -44,21 +44,21 @@ impl Runtime {
     /// once and the provider CLIs are asked again in the background; [`Runtime::absorb_late`]
     /// then corrects whatever changed. Without a usable cache the probe runs now, as in
     /// `start`, and its answer is saved for the next run. Says where the answer came from.
-    pub async fn start_cached(cache: Option<ProbeCache>) -> (Self, ProbeSource) {
+    pub async fn start_cached(cache: Option<ProbeCache>, host: Arc<dyn ProviderHost>) -> (Self, ProbeSource) {
         let now = crate::shared::application::host::now_ms();
-        let hit = cache.as_ref().and_then(|c| probecache::load(&c.path, now, c.fingerprint));
+        let hit = cache.as_ref().and_then(|c| host.load_probe_cache(&c.path, now, c.fingerprint));
         let Some(cached) = hit else {
-            let runtime = Self::start().await;
+            let runtime = Self::start(host).await;
             if let Some(c) = &cache {
-                probecache::save(&c.path, crate::shared::application::host::now_ms(), c.fingerprint, &runtime.avail);
+                runtime.host.save_probe_cache(&c.path, crate::shared::application::host::now_ms(), c.fingerprint, &runtime.avail);
             }
             return (runtime, ProbeSource::Live);
         };
         let cooldown_path = cooldown_path();
         let cooldowns = cooldown_path.as_deref().map(Cooldowns::load).unwrap_or_default();
         let allow = allowances_for(crate::shared::application::host::env("JEV_ALLOW_CREDITS").as_deref(), &cached);
-        let mut runtime = Self::build(cached.clone(), cooldowns, allow, crate::catalog::application::chain_overrides::from_env(), cooldown_path);
-        runtime.seed_usage(crate::providers::infrastructure::plan_store::default_path());
+        let mut runtime = Self::build(cached.clone(), cooldowns, allow, crate::catalog::application::chain_overrides::from_env(), cooldown_path, host);
+        runtime.seed_usage();
         runtime.refresh_in_background(cached, cache);
         (runtime, ProbeSource::Cache)
     }
@@ -66,17 +66,21 @@ impl Runtime {
     /// Ask every provider again, off the prompt's path. Each answer reaches
     /// [`Runtime::absorb_late`] as it arrives; the cache is rewritten when all are in.
     fn refresh_in_background(&mut self, cached: Vec<Availability>, cache: Option<ProbeCache>) {
+        let host = self.host.clone();
         let (tx, answers) = tokio::sync::mpsc::unbounded_channel();
         self.late = Some(LateProbes { answers, merge: LateMerge::Refresh, on_ready: Box::new(|_| {}) });
         tokio::spawn(async move {
             let mut latest = cached;
-            availability::retry::retry_unknown(ALL_PROVIDERS.to_vec(), availability::PROBE_CAP, availability::probe_provider, |answer| {
+            availability::retry::retry_unknown(ALL_PROVIDERS.to_vec(), availability::PROBE_CAP, {
+                let host = host.clone();
+                move |p| host.probe(p)
+            }, |answer| {
                 availability::retry::merge_refresh(&mut latest, answer.clone());
                 let _ = tx.send(answer);
             })
             .await;
             if let Some(c) = cache {
-                probecache::save(&c.path, crate::shared::application::host::now_ms(), c.fingerprint, &latest);
+                host.save_probe_cache(&c.path, crate::shared::application::host::now_ms(), c.fingerprint, &latest);
             }
         });
     }
@@ -86,7 +90,8 @@ impl Runtime {
     /// its login is offered again once the probe sees it logged in. The per-token
     /// allowance is recomputed because a key may have been added.
     pub async fn refresh(&mut self) {
-        self.apply_probe(availability::probe_all().await);
+        let host = self.host.clone();
+        self.apply_probe(availability::probe_all(|p| host.probe(p)).await);
     }
 
     /// The pure half of [`Runtime::refresh`].
@@ -106,7 +111,8 @@ impl Runtime {
     /// `on_ready` runs there too, once per provider that was Unknown and is now Ready: a
     /// late answer a `/providers refresh` already settled is refused, and so is not announced.
     pub fn retry_slow_probes(&mut self, on_ready: impl Fn(&Availability) + Send + Sync + 'static) {
-        self.retry_slow_probes_with(availability::retry::RETRY_CAP, availability::probe_provider, on_ready);
+        let host = self.host.clone();
+        self.retry_slow_probes_with(availability::retry::RETRY_CAP, move |p| host.probe(p), on_ready);
     }
 
     pub(super) fn retry_slow_probes_with<P, Fut>(&mut self, cap: std::time::Duration, probe: P, on_ready: impl Fn(&Availability) + Send + Sync + 'static)

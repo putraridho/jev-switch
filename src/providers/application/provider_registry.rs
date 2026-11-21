@@ -19,10 +19,11 @@ mod usable;
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::path::PathBuf;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use crate::backend::{PlanUsage, ProviderId};
 use crate::catalog::domain::model_table::{Allowances, Overrides};
+use crate::providers::application::ports::ProviderHost;
 use crate::providers::domain::availability::Availability;
 use crate::providers::domain::reset_time::cooldowns::{Cooldowns, DiskWatch};
 
@@ -47,9 +48,9 @@ pub struct Runtime {
     pub plan: HashMap<ProviderId, PlanUsage>,
     /// Where `plan` is saved after every new reading; `None` in tests and without a state dir.
     plan_path: Option<PathBuf>,
-    /// DeepSeek's remaining account balance, filled in by a background fetch (it is pay per
+    /// DeepSeek's remaining account balance, already formatted for display, filled in by a background fetch (it is pay per
     /// token, so a balance is what "credit left" means there, not a plan percentage).
-    balance: std::sync::Arc<Mutex<Option<crate::providers::infrastructure::deepseek_balance::Balance>>>,
+    balance: std::sync::Arc<Mutex<Option<String>>>,
     /// Providers that failed in a way another provider can cover and that is not a usage
     /// limit, with why. Session-only and kept out of the persisted cooldowns on purpose:
     /// a login problem or an unusable directory is not a limit, and an hour-long cooldown
@@ -58,6 +59,8 @@ pub struct Runtime {
     /// The background retry of probes that timed out at startup, until
     /// [`Runtime::absorb_late`] has folded its answers into `avail`.
     late: Option<LateProbes>,
+    /// The machine: probes, probe cache, saved plan readings, Codex's plan, DeepSeek's balance.
+    host: Arc<dyn ProviderHost>,
 }
 
 /// Answers from the background retry, and what to tell the user about the ones applied.
@@ -115,6 +118,7 @@ impl Runtime {
         allow: Allowances,
         overrides: Overrides,
         cooldown_path: Option<PathBuf>,
+        host: Arc<dyn ProviderHost>,
     ) -> Self {
         Self {
             avail,
@@ -129,12 +133,13 @@ impl Runtime {
             balance: std::sync::Arc::default(),
             blocked: HashMap::new(),
             late: None,
+            host,
         }
     }
 
     #[cfg(test)]
     pub(crate) fn for_tests(avail: Vec<Availability>) -> Self {
         let allow = crate::providers::domain::usability::allowances_for(None, &avail);
-        Self::build(avail, Cooldowns::default(), allow, Overrides::default(), None)
+        Self::build(avail, Cooldowns::default(), allow, Overrides::default(), None, Arc::new(crate::providers::infrastructure::probe_facts::SystemProbes))
     }
 }
