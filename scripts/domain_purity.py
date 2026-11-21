@@ -1,7 +1,7 @@
 """Domain purity check: lines of domain production code (tests and comments stripped) that use
-serde or process-level IO. Usage: python3 -I purity.py <src-root>"""
+serde or process-level IO (files, the environment, processes, and Path methods that ask the disk). Usage: python3 -I purity.py <src-root>"""
 import os, re, sys
-BAD = re.compile(r"\bserde(_json)?\b|std::fs|std::env|std::process|std::net|\bCommand::new|\bfs::(read|write|create|remove|rename|metadata|canonicalize|symlink_metadata|copy|File)|\benv::var|\bFile::(open|create)")
+BAD = re.compile(r"\bserde(_json)?\b|std::fs|std::env|std::process|std::net|\bCommand::new|\bfs::(read|write|create|remove|rename|metadata|canonicalize|symlink_metadata|copy|File)|\benv::var|\bFile::(open|create)|\.canonicalize\(|\.is_dir\(\)|\.is_file\(\)|\.exists\(\)|\bsymlink_metadata\b|\bread_dir\b|\bmetadata\(")
 def strip_tests(text):
     out, lines, i = [], text.split("\n"), 0
     while i < len(lines):

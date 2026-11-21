@@ -13,7 +13,8 @@ use crate::approval::domain::grantable::Places;
 use crate::approval::domain::listing::Listing;
 use crate::approval::domain::rule_policy::rules_for;
 use crate::shared::application::host::Host;
-use crate::approval::domain::settings_document::{local_settings_path, user_settings_path, List, Settings, SettingsError};
+use crate::approval::domain::settings_document::{local_settings_path, user_settings_path, List, SettingsError};
+use crate::approval::infrastructure::settings_json::Settings;
 
 /// Whether the project's local settings must be treated as not the user's own: committed to
 /// the repository, or git failed in a way that could be the repository's doing (a folder owned
@@ -175,6 +176,40 @@ pub fn listing(project: &Path, home: Option<&Path>) -> Listing {
         local_path,
         user_path,
         problems,
+    }
+}
+
+/// The settings files Claude Code reads, as the approval ports see them.
+pub struct ClaudeSettingsFiles {
+    /// Git's safety options for the "is the local file committed?" check.
+    pub host: std::sync::Arc<dyn Host>,
+}
+
+impl crate::approval::application::ports::RememberedRules for ClaudeSettingsFiles {
+    fn remembered(&self, tool: &str, input: &crate::approval::domain::tool_input::ToolInput, blocked_path: Option<&str>, places: &Places) -> Option<Vec<String>> {
+        remembered(&*self.host, tool, input, blocked_path, places)
+    }
+
+    fn save_always(&self, project: &Path, always: &Always) -> Result<bool, SettingsError> {
+        save_always(project, always)
+    }
+}
+
+impl crate::approval::application::ports::PermissionsEditor for ClaudeSettingsFiles {
+    fn add_allow_rule(&self, project: &Path, rule: &str) -> Result<bool, SettingsError> {
+        add_allow_rule(project, rule)
+    }
+
+    fn remove_allow_rule(&self, project: &Path, rule: &str) -> Result<bool, SettingsError> {
+        remove_allow_rule(project, rule)
+    }
+
+    fn add_directory(&self, project: &Path, dir: &Path) -> Result<bool, SettingsError> {
+        add_directory(project, dir)
+    }
+
+    fn listing(&self, project: &Path, home: Option<&Path>) -> Listing {
+        listing(project, home)
     }
 }
 

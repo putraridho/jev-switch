@@ -1,7 +1,7 @@
 //! Tool approvals asked of the person through the UI.
 
 use super::*;
-use crate::approval::application::claude_settings_file;
+use crate::approval::infrastructure::claude_settings_file;
 use crate::approval::domain::{always_plan, settings_document};
 
 // ------------------------------------------------------------ tool approvals

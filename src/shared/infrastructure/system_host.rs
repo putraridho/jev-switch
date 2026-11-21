@@ -22,6 +22,10 @@ impl Host for SystemHost {
         std::process::id()
     }
 
+    fn temp_dir(&self) -> PathBuf {
+        std::env::temp_dir()
+    }
+
     fn now_ms(&self) -> u64 {
         jsonl_log::now_ms()
     }

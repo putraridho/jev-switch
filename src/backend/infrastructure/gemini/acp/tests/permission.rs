@@ -88,7 +88,7 @@ fn a_tool_named_like_a_claude_tool_is_not_judged_by_that_tools_rules() {
     let events = acp.parse(&ev);
     let [Event::PermissionRequest(req)] = &events[..] else { panic!("{events:?}") };
     assert_eq!(req.tool, "acp_WebFetch");
-    let places = crate::approval::domain::grantable::Places::from_env(std::path::Path::new("/tmp"));
+    let places = crate::approval::domain::grantable::Places { project: std::path::PathBuf::from("/tmp"), home: std::env::var_os("HOME").map(std::path::PathBuf::from), temp: std::env::temp_dir(), disk: crate::approval::domain::grantable::Disk(std::sync::Arc::new(crate::approval::infrastructure::path_facts::SystemPathFacts)) };
     assert!(crate::approval::domain::always_plan::always_plan(&req.tool, &req.input, None, &places).is_err());
 }
 

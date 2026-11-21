@@ -81,7 +81,7 @@ fn a_symbolic_link_inside_home_cannot_lead_a_grant_out_of_it() {
     let home = dir.join("home");
     std::fs::create_dir_all(&home).unwrap();
     std::os::unix::fs::symlink("/etc", home.join("innocent")).unwrap();
-    let places = Places { project: project().to_path_buf(), home: Some(home.clone()), temp: PathBuf::from("/nonexistent-temp") };
+    let places = Places { project: project().to_path_buf(), home: Some(home.clone()), temp: PathBuf::from("/nonexistent-temp"), disk: crate::approval::domain::grantable::Disk(std::sync::Arc::new(crate::approval::infrastructure::path_facts::SystemPathFacts)) };
     assert_eq!(grantable_folder(&home.join("innocent"), &places), Err(Refusal::FolderTooBroad));
     std::fs::create_dir_all(home.join("real")).unwrap();
     assert_eq!(grantable_folder(&home.join("real"), &places), Ok(()));

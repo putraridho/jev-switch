@@ -70,6 +70,11 @@ pub struct Engine {
     now: Clock,
     /// Settings, the state directory and private file writes.
     host: Arc<dyn Host>,
+    /// What grant checks ask about the disk.
+    path_facts: Arc<dyn crate::approval::domain::grantable::PathFacts>,
+    /// The rules the person already saved, and where an "always" answer is saved.
+    remembered_rules: Arc<dyn crate::approval::application::ports::RememberedRules>,
+    /// Where the privacy audit log is written.
     privacy_audit: Arc<dyn crate::turn::application::ports::PrivacyAudit>,
     /// Where saved sessions are kept.
     session_store: Arc<dyn SessionStore>,

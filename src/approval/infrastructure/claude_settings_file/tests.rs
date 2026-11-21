@@ -12,7 +12,7 @@ fn project() -> &'static Path {
 }
 
 fn places() -> Places {
-    Places { project: project().to_path_buf(), home: Some(PathBuf::from("/home/u")), temp: PathBuf::from("/tmp") }
+    Places { project: project().to_path_buf(), home: Some(PathBuf::from("/home/u")), temp: PathBuf::from("/tmp"), disk: crate::approval::domain::grantable::Disk(std::sync::Arc::new(crate::approval::infrastructure::path_facts::SystemPathFacts)) }
 }
 
 fn tmp(name: &str) -> PathBuf {
@@ -64,7 +64,7 @@ fn golden_settings_local() {
 #[test]
 fn remembered_needs_every_rule_of_the_chain_saved() {
     let dir = tmp("remembered");
-    let ps = Places { project: dir.clone(), home: None, temp: std::env::temp_dir() };
+    let ps = Places { project: dir.clone(), home: None, temp: std::env::temp_dir(), disk: crate::approval::domain::grantable::Disk(std::sync::Arc::new(crate::approval::infrastructure::path_facts::SystemPathFacts)) };
     let input = bash("cargo build 2>&1 | tail -3");
     assert_eq!(remembered(&SystemHost, "Bash", &tool_input_from_json(&input), None, &ps), None);
     add_allow_rule(&dir, "Bash(cargo build:*)").unwrap();

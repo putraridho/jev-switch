@@ -22,7 +22,7 @@ fn always_for_a_path_blocked_call_saves_the_folder_and_says_exactly_what_was_sav
     assert!(e.contains("[a]lways in this project"), "{e}");
     assert!(e.contains("[a] also lets Claude Code use everything in the folder /tmp/spike"), "{e}");
     assert!(e.trim_end().ends_with("✓ allowed, and always in this project: Bash(touch:*) and folder /tmp/spike"), "{e}");
-    let saved = crate::approval::application::claude_settings_file::load(&crate::approval::domain::settings_document::local_settings_path(&dir)).unwrap();
+    let saved = crate::approval::infrastructure::claude_settings_file::load(&crate::approval::domain::settings_document::local_settings_path(&dir)).unwrap();
     assert_eq!(saved.list(crate::approval::domain::settings_document::List::Directories), ["/tmp/spike"]);
     assert_eq!(saved.list(crate::approval::domain::settings_document::List::Allow), ["Bash(touch:*)"], "rule and folder in one write");
     let _ = std::fs::remove_dir_all(&dir);
@@ -38,7 +38,7 @@ fn the_folder_alone_is_offered_when_the_command_has_no_safe_rule() {
     assert_eq!(*offered.lock().unwrap(), vec![true]);
     assert_eq!(d, Some(Decision::AllowAlways));
     assert!(err.text().trim_end().ends_with("✓ allowed, and always in this project: folder /tmp/spike"), "{}", err.text());
-    let saved = crate::approval::application::claude_settings_file::load(&crate::approval::domain::settings_document::local_settings_path(&dir)).unwrap();
+    let saved = crate::approval::infrastructure::claude_settings_file::load(&crate::approval::domain::settings_document::local_settings_path(&dir)).unwrap();
     assert_eq!(saved.list(crate::approval::domain::settings_document::List::Directories), ["/tmp/spike"]);
     let _ = std::fs::remove_dir_all(&dir);
 }

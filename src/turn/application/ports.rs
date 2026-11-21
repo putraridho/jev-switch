@@ -7,7 +7,6 @@ use std::time::Duration;
 use serde_json::Value;
 
 use crate::backend::{self, BackendFactory, Decision, Event, McpAttachment, PermissionRequest, ProviderId, TurnError, TurnOutcome};
-use crate::approval::application::claude_settings_file;
 use crate::session::application::ports::SessionStore;
 use crate::shared::application::host::Host;
 use crate::approval::domain::always_plan::{Offer, Settled};
@@ -101,12 +100,12 @@ pub type Answer = std::pin::Pin<Box<dyn std::future::Future<Output = Option<Deci
 /// Settle a question's answer: the one place "always" is saved. The offer is what was shown;
 /// "always" saves exactly that (rule and folder in one write) or, when the file cannot be
 /// written, allows once and says so. An "always" with nothing on offer is a plain yes.
-pub fn settle(answer: Option<Decision>, offer: &Offer, project: &Path) -> Settled {
+pub fn settle(rules: &dyn crate::approval::application::ports::RememberedRules, answer: Option<Decision>, offer: &Offer, project: &Path) -> Settled {
     match answer {
         None => Settled::Stopped,
         Some(Decision::Allow) => Settled::Allowed,
         Some(Decision::AllowAlways) => match offer {
-            Ok(always) => match claude_settings_file::save_always(project, always) {
+            Ok(always) => match rules.save_always(project, always) {
                 Ok(_) => Settled::Remembered(always.clone()),
                 Err(e) => Settled::NotSaved(e),
             },
@@ -176,6 +175,10 @@ pub struct Adapters {
     pub host: Arc<dyn Host>,
     /// Where saved sessions are kept.
     pub sessions: Arc<dyn SessionStore>,
+    /// What grant checks ask about the disk.
+    pub path_facts: Arc<dyn crate::approval::domain::grantable::PathFacts>,
+    /// The rules a person already saved, and where an "always" answer is saved.
+    pub remembered_rules: Arc<dyn crate::approval::application::ports::RememberedRules>,
     /// Where the privacy audit log is written.
     pub privacy_audit: Arc<dyn PrivacyAudit>,
 }

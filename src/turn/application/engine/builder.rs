@@ -43,6 +43,8 @@ impl Engine {
             git_status: adapters.git_status,
             now: Box::new(move || clock.now_ms()),
             host,
+            path_facts: adapters.path_facts,
+            remembered_rules: adapters.remembered_rules,
             privacy_audit: adapters.privacy_audit,
             session_store: adapters.sessions,
             idle_timeout: adapters.idle_timeout,

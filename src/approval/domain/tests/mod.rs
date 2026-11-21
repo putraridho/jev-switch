@@ -33,7 +33,7 @@ fn places() -> Places {
 }
 
 fn places_with(home: Option<&str>) -> Places {
-    Places { project: project().to_path_buf(), home: home.map(PathBuf::from), temp: PathBuf::from("/tmp") }
+    Places { project: project().to_path_buf(), home: home.map(PathBuf::from), temp: PathBuf::from("/tmp"), disk: crate::approval::domain::grantable::Disk(std::sync::Arc::new(crate::approval::infrastructure::path_facts::SystemPathFacts)) }
 }
 
 fn tmp(name: &str) -> PathBuf {

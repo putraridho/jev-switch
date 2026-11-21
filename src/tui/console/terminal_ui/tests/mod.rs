@@ -99,7 +99,7 @@ fn wait<T>(f: impl Future<Output = T>) -> T {
 /// What the engine offers for `req` in this console's project, with home `/home/u` and
 /// the temp folder `/tmp`.
 fn offer_for(c: &Console, req: &PermissionRequest) -> Offer {
-    let places = grantable::Places { project: c.lock().cfg.project.clone(), home: Some("/home/u".into()), temp: "/tmp".into() };
+    let places = grantable::Places { project: c.lock().cfg.project.clone(), home: Some("/home/u".into()), temp: "/tmp".into(), disk: crate::approval::domain::grantable::Disk(std::sync::Arc::new(crate::approval::infrastructure::path_facts::SystemPathFacts)) };
     always_plan::always_plan(&req.tool, &req.input, req.blocked_path.as_deref(), &places)
 }
 
@@ -109,7 +109,7 @@ fn settle_like_the_engine(c: &mut Console, req: &PermissionRequest, offer: &Offe
         return answer;
     }
     let project = c.lock().cfg.project.clone();
-    let settled = crate::turn::application::ports::settle(answer, offer, &project);
+    let settled = crate::turn::application::ports::settle(&crate::approval::infrastructure::claude_settings_file::ClaudeSettingsFiles { host: std::sync::Arc::new(crate::shared::infrastructure::system_host::SystemHost) }, answer, offer, &project);
     c.permission_settled(req, &settled);
     crate::turn::application::ports::settled_decision(&settled)
 }

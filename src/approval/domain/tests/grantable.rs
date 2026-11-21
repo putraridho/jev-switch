@@ -2,7 +2,7 @@ use super::*;
 
 #[test]
 fn unsafe_home_or_temp_folders_make_nothing_grantable_through_them() {
-    let with = |home: Option<&str>, temp: &str| Places { project: project().to_path_buf(), home: home.map(PathBuf::from), temp: PathBuf::from(temp) };
+    let with = |home: Option<&str>, temp: &str| Places { project: project().to_path_buf(), home: home.map(PathBuf::from), temp: PathBuf::from(temp), disk: crate::approval::domain::grantable::Disk(std::sync::Arc::new(crate::approval::infrastructure::path_facts::SystemPathFacts)) };
     for (home, dir) in [
         ("/", "/etc/ssh"), ("/", "/usr/bin"), ("/home", "/home/other/x"), ("/root", "/root/x"), ("home/u", "home/u/x"),
         ("/etc/x", "/etc/x/y"), ("/usr/local", "/usr/local/bin"), ("/home/u/..", "/home/x"),

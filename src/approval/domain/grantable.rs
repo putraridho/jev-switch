@@ -1,22 +1,39 @@
 //! Which folders and files an "always" may grant, judged from the project, home and temp.
 
+use std::fmt;
 use std::path::{Component, Path, PathBuf};
+use std::sync::Arc;
+
 use crate::approval::domain::refusal::Refusal;
 
+/// What a grant check has to know about the disk, asked of the caller (real:
+/// `approval::infrastructure::path_facts::SystemPathFacts`).
+pub trait PathFacts: Send + Sync {
+    /// The entry itself is a symbolic link.
+    fn is_symlink(&self, path: &Path) -> bool;
+    /// Where `path` really is, links resolved; `None` when it does not exist.
+    fn real_path(&self, path: &Path) -> Option<PathBuf>;
+    fn is_dir(&self, path: &Path) -> bool;
+}
+
+/// The disk a [`Places`] is judged on.
+#[derive(Clone)]
+pub struct Disk(pub Arc<dyn PathFacts>);
+
+impl fmt::Debug for Disk {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("Disk")
+    }
+}
+
 /// Where rules and folder grants are judged from: the project, the home folder and the
-/// system's temp folder.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// system's temp folder, and the disk they are on.
+#[derive(Debug, Clone)]
 pub struct Places {
     pub project: PathBuf,
     pub home: Option<PathBuf>,
     pub temp: PathBuf,
-}
-
-impl Places {
-    /// The places of the running process, for the project at `project`.
-    pub fn from_env(project: &Path) -> Self {
-        Self { project: project.to_path_buf(), home: std::env::var_os("HOME").map(PathBuf::from), temp: std::env::temp_dir() }
-    }
+    pub disk: Disk,
 }
 
 /// Folder names (lower case) that hold secrets whatever their place, besides every hidden
@@ -100,9 +117,10 @@ pub(super) fn grantable_in(dir: &Path, home: Option<&Path>, temp: &Path) -> bool
 /// cannot lead out: when the folder exists, its real path has to pass too.
 pub(super) fn grantable_folder(dir: &Path, places: &Places) -> Result<(), Refusal> {
     let lexical = grantable_in(dir, places.home.as_deref(), &places.temp);
-    let real = dir.canonicalize().ok().map(|real| {
-        let home = places.home.as_deref().map(|h| h.canonicalize().unwrap_or_else(|_| h.to_path_buf()));
-        grantable_in(&real, home.as_deref(), &places.temp.canonicalize().unwrap_or_else(|_| places.temp.clone()))
+    let disk = &places.disk.0;
+    let real = disk.real_path(dir).map(|real| {
+        let home = places.home.as_deref().map(|h| disk.real_path(h).unwrap_or_else(|| h.to_path_buf()));
+        grantable_in(&real, home.as_deref(), &disk.real_path(&places.temp).unwrap_or_else(|| places.temp.clone()))
     });
     if lexical && real.unwrap_or(true) {
         Ok(())
@@ -143,14 +161,15 @@ pub(super) fn grantable_file(file: &Path, places: &Places) -> Result<(), Refusal
         None => file.parent().map_or(Err(Refusal::FolderTooBroad), |dir| grantable_folder(dir, places)),
     };
     judge(file, &places.project)?;
-    if std::fs::symlink_metadata(file).is_ok_and(|m| m.file_type().is_symlink()) {
+    let disk = &places.disk.0;
+    if disk.is_symlink(file) {
         return Err(Refusal::UnsafePath);
     }
-    match dir.canonicalize() {
-        Ok(real_dir) => {
-            let project = places.project.canonicalize().unwrap_or_else(|_| places.project.clone());
+    match disk.real_path(dir) {
+        Some(real_dir) => {
+            let project = disk.real_path(&places.project).unwrap_or_else(|| places.project.clone());
             judge(&real_dir.join(name), &project)
         }
-        Err(_) => Ok(()),
+        None => Ok(()),
     }
 }

@@ -44,7 +44,7 @@ pub(super) fn blocked_folder(blocked_path: &str, places: &Places) -> Result<Path
     if !path.is_absolute() || path.components().any(|c| matches!(c, Component::CurDir)) {
         return Err(Refusal::UnsafePath);
     }
-    let dir = if path.is_dir() { path } else { path.parent().ok_or(Refusal::FolderTooBroad)? };
+    let dir = if places.disk.0.is_dir(path) { path } else { path.parent().ok_or(Refusal::FolderTooBroad)? };
     grantable_folder(dir, places)?;
     Ok(dir.to_path_buf())
 }

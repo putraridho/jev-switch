@@ -16,6 +16,8 @@ pub trait Host: Send + Sync {
     fn home(&self) -> Option<String>;
     /// The current process identifier.
     fn process_id(&self) -> u32;
+    /// The system's folder for temporary files.
+    fn temp_dir(&self) -> PathBuf;
     /// Unix time in milliseconds.
     fn now_ms(&self) -> u64;
     /// The directory holding logs, sessions and caches, created on first use.

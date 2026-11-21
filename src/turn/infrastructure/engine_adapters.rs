@@ -23,6 +23,8 @@ pub fn real() -> Adapters {
         write_mcp: Box::new(write_mcp_config),
         host: Arc::new(SystemHost),
         sessions: Arc::new(FileSessions),
+        path_facts: Arc::new(crate::approval::infrastructure::path_facts::SystemPathFacts),
+        remembered_rules: Arc::new(crate::approval::infrastructure::claude_settings_file::ClaudeSettingsFiles { host: Arc::new(SystemHost) }),
         privacy_audit: Arc::new(super::privacy_audit::FilePrivacyAudit),
     }
 }

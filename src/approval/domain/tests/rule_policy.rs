@@ -58,7 +58,7 @@ fn a_symbolic_link_cannot_lead_a_write_rule_out_of_the_project() {
     std::fs::create_dir_all(project.join("src")).unwrap();
     std::os::unix::fs::symlink("/etc", project.join("etc")).unwrap();
     std::os::unix::fs::symlink("/etc/hosts", project.join("hosts")).unwrap();
-    let places = Places { project: project.clone(), home: Some(PathBuf::from("/home/u")), temp: PathBuf::from("/nonexistent-temp") };
+    let places = Places { project: project.clone(), home: Some(PathBuf::from("/home/u")), temp: PathBuf::from("/nonexistent-temp"), disk: crate::approval::domain::grantable::Disk(std::sync::Arc::new(crate::approval::infrastructure::path_facts::SystemPathFacts)) };
     let rule = |path: &Path| rule_for("Write", &tool_input_from_json(&json!({"file_path": path.to_str().unwrap()})), None, &places);
     assert_eq!(rule(&project.join("etc/hosts")), Err(Refusal::FolderTooBroad), "a folder link out");
     assert_eq!(rule(&project.join("hosts")), Err(Refusal::UnsafePath), "a file link");

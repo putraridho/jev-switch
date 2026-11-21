@@ -3,7 +3,7 @@
 
 use crate::doctor::infrastructure::gather_inputs::gather;
 use crate::doctor::domain::diagnose as doctor;
-use crate::approval::application::claude_settings_file;
+use crate::approval::infrastructure::claude_settings_file;
 use crate::approval::domain::settings_document;
 use crate::tui::permissions_command::PermissionsCmd;
 use crate::shared::infrastructure::jsonl_log as log;

@@ -11,6 +11,17 @@ use crate::routing::domain::decide::{Pin, PinOrigin};
 use super::Engine;
 
 impl Engine {
+    /// The project's places for judging grants: its folder, the home and temp folders, and
+    /// the disk they are on.
+    pub(super) fn places(&self) -> crate::approval::domain::grantable::Places {
+        crate::approval::domain::grantable::Places {
+            project: self.dir.clone(),
+            home: self.host.home().map(std::path::PathBuf::from),
+            temp: self.host.temp_dir(),
+            disk: crate::approval::domain::grantable::Disk(self.path_facts.clone()),
+        }
+    }
+
     /// The guards and the folder their settings are saved in: what `/budget`, `/privacy`,
     /// `/failover` and `/health` act on.
     pub fn guards_and_settings(&mut self) -> (&mut crate::turn::application::guards::Guards, Option<&Path>) {

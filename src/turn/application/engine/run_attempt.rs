@@ -86,10 +86,11 @@ impl Engine {
         let idle = self.idle_timeout;
         let stream = self.stream_text;
         let started = Instant::now();
+        let places = self.places();
         let runtime = &mut self.runtime;
         let result = {
             let shared_ui: SharedUi = Mutex::new(&mut *ui);
-            let approver = EngineApprover { ui: &shared_ui, cancel, dir: &self.dir, mode: self.mode, hooks: &self.hooks, allowed_tools: &self.allowed_tools, host: &*self.host };
+            let approver = EngineApprover { ui: &shared_ui, cancel, dir: &self.dir, mode: self.mode, hooks: &self.hooks, allowed_tools: &self.allowed_tools, rules: &*self.remembered_rules, places };
             let hooks = &self.hooks;
             let (guards, now, dir, model) = (&self.guards, &self.now, &self.dir, chosen.spec.id);
             let prepare = move |text: &str| {
