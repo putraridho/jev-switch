@@ -39,7 +39,7 @@ impl Delegator {
             return Finished::done(DelegateResult::failed(format!("not delegated: {}", verdict.refusal_line()), Vec::new()));
         }
         let want = if self.guards.may_leave(&repo, &outgoing, &[]) {
-            (self.judge)(crate::turn::domain::privacy::prepare(&self.guards.privacy, &req.brief).prompt).await
+            (self.judge)(crate::turn::domain::privacy::outgoing::prepare(&self.guards.privacy, &req.brief).prompt).await
         } else {
             None
         };

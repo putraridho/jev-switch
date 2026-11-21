@@ -10,8 +10,10 @@ use crate::backend::ProviderId;
 use crate::turn::domain::budget::{Budget, Meter, PriceTable};
 use crate::catalog::domain::model_table::{TaskType, Usable};
 use crate::turn::domain::failover_policy::FailoverPolicy;
-use crate::turn::domain::privacy;
-use crate::turn::domain::privacy::{AuditLog, AuditRecord, Outgoing, Policy};
+use crate::turn::domain::privacy::outgoing::{self, Outgoing};
+use crate::turn::domain::privacy::verdict::Verdict;
+use crate::turn::domain::privacy::Policy;
+use crate::turn::domain::privacy::audit::{AuditLog, AuditRecord};
 use crate::routing::domain::user_rules as routing_rules;
 use crate::routing::domain::user_rules::Rules;
 use crate::turn::domain::scoreboard::Scoreboard;
@@ -111,7 +113,7 @@ impl Guards {
 
     /// The privacy policy's verdict on this turn: the prompt, and for each provider that is
     /// behind, the catch-up it would get with it.
-    pub fn verdict(&self, turn: &TurnFacts) -> crate::turn::domain::privacy::Verdict {
+    pub fn verdict(&self, turn: &TurnFacts) -> Verdict {
         let mut verdict = self.privacy.check(turn.root, turn.prompt, turn.attached);
         for (provider, text) in turn.catch_ups {
             let theirs = self.privacy.check(turn.root, &format!("{text}\n{}", turn.prompt), turn.attached);
@@ -146,7 +148,7 @@ impl Guards {
     /// The prompt as it may leave for `provider`, after the secret scan; the audit log
     /// gets a line saying what was sent.
     pub fn outgoing(&self, prompt: &str, provider: ProviderId, model: &str, now_ms: u64) -> Outgoing {
-        let out = privacy::prepare(&self.privacy, prompt);
+        let out = outgoing::prepare(&self.privacy, prompt);
         if let Some(log) = &self.audit {
             log.record(&AuditRecord::sent(now_ms, provider, model, &out));
         }
