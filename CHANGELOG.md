@@ -4,6 +4,10 @@ See [docs/changelog-guide.md](docs/changelog-guide.md) for changelog formatting,
 
 ## Unreleased
 
+## 1.11.7
+
+- **Paste copied images and files with Ctrl-V on Linux.** The interactive prompt now reads PNG images, file-manager selections and text from the Wayland or X11 clipboard (requires `wl-clipboard` or `xclip`). Images are saved privately and attached to the next message; clipboard failures appear in the prompt.
+
 ## 1.11.6
 
 Gemini and Grok workers can run shell commands again.

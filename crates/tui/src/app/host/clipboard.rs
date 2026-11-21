@@ -101,3 +101,6 @@ mod tests {
         assert_eq!(osc52("hi"), "\x1b]52;c;aGk=\x07");
     }
 }
+
+mod paste;
+pub use paste::paste_from_clipboard;

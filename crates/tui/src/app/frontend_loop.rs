@@ -7,7 +7,7 @@
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-use crossterm::event::{Event, EventStream, MouseEventKind};
+use crossterm::event::{Event, EventStream, KeyCode, KeyEventKind, KeyModifiers, MouseEventKind};
 use futures_util::StreamExt;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
@@ -125,6 +125,17 @@ pub async fn run(repl: Repl, mut rx: mpsc::UnboundedReceiver<FrontMsg>, opts: Op
 
         let mut actions = tokio::select! {
             ev = next_event(&mut events) => match ev {
+                Some(Ok(Event::Key(k))) if k.code == KeyCode::Char('v')
+                    && k.modifiers == KeyModifiers::CONTROL
+                    && k.kind != KeyEventKind::Release
+                    && app.approval.is_none() && app.confirm.is_none()
+                    && app.keymap.action(&k).is_none() => {
+                    match crate::app::host::clipboard::paste_from_clipboard(state_dir.as_deref()).await {
+                        Ok(text) => app.on_paste(&text),
+                        Err(error) => app.notice = Some((error, Instant::now())),
+                    }
+                    Vec::new()
+                }
                 Some(Ok(Event::Key(k))) => app.on_key(k, Instant::now()),
                 Some(Ok(Event::Paste(text))) => {
                     let pasted = crate::tty::terminal_environment::sanitize_paste(&text);
