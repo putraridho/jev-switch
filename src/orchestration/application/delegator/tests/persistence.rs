@@ -43,7 +43,7 @@ fn saving(wt: &Arc<FakeWorktrees>, state: &Path, clock: &Arc<AtomicU64>) -> Dele
 }
 
 fn real_now() -> Arc<AtomicU64> {
-    Arc::new(AtomicU64::new(host::now_ms()))
+    Arc::new(AtomicU64::new(system_now_ms()))
 }
 
 #[tokio::test]
@@ -80,7 +80,7 @@ async fn startup_removes_abandoned_checkouts_and_prunes() {
     let (old, fresh) = (first.delegate(brief("one")).await.worker_id, first.delegate(brief("two")).await.worker_id);
     // `fresh` is a later worker: move the clock before saving it again via a show.
     let mut record: Value = serde_json::from_slice(&std::fs::read(state.join("workers").join(format!("{old}.json"))).unwrap()).unwrap();
-    record["created_ms"] = json!(host::now_ms() - 25 * HOUR);
+    record["created_ms"] = json!(system_now_ms() - 25 * HOUR);
     std::fs::write(state.join("workers").join(format!("{old}.json")), record.to_string()).unwrap();
     // An orphan (no record), a brand new orphan, a corrupt record, and a record of a worker that was running.
     let orphan = wt.base.join("orphan");
@@ -89,7 +89,7 @@ async fn startup_removes_abandoned_checkouts_and_prunes() {
     std::fs::write(state.join("workers").join("other.txt"), "ignored").unwrap();
     let running = wt.base.join("w1-running");
     std::fs::create_dir_all(&running).unwrap();
-    let live = Saved { worker_id: "w1-running".into(), path: running.clone(), repo: wt.repo(), provider: "claude".into(), model: "m".into(), created_ms: host::now_ms(), running: true, shown: Default::default(), covered: Default::default(), merged: Default::default(), owner: None };
+    let live = Saved { worker_id: "w1-running".into(), path: running.clone(), repo: wt.repo(), provider: "claude".into(), model: "m".into(), created_ms: system_now_ms(), running: true, shown: Default::default(), covered: Default::default(), merged: Default::default(), owner: None };
     std::fs::write(state.join("workers").join("w1-running.json"), serde_json::to_string(&live).unwrap()).unwrap();
     std::mem::drop(first);
 
@@ -104,7 +104,7 @@ async fn startup_removes_abandoned_checkouts_and_prunes() {
     assert!(wt.pruned.lock().unwrap().contains(&wt.repo()), "git worktree prune ran in the affected repository");
 
     // A day later the orphan and the stale running record are cleaned as well.
-    let later = Arc::new(AtomicU64::new(host::now_ms() + 25 * HOUR));
+    let later = Arc::new(AtomicU64::new(system_now_ms() + 25 * HOUR));
     let third = saving(&wt, &state, &later);
     third.recover().await;
     assert!(!orphan.exists(), "an orphan older than the grace period is removed");
@@ -199,7 +199,7 @@ async fn a_second_server_never_touches_the_workers_of_a_live_one() {
     let (young, old) = (first.delegate(brief("one")).await.worker_id, first.delegate(brief("two")).await.worker_id);
     assert_eq!(read_record(&state, &young)["owner"]["pid"], first.owner.pid, "every record names its server");
     let mut record = read_record(&state, &old);
-    record["created_ms"] = json!(host::now_ms() - 25 * HOUR);
+    record["created_ms"] = json!(system_now_ms() - 25 * HOUR);
     std::fs::write(record_file(&state, &old), record.to_string()).unwrap();
 
     // A second session starts while the first is alive and still using both workers.

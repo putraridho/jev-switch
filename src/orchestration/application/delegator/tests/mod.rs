@@ -32,7 +32,12 @@ use crate::orchestration::infrastructure::git_worktrees::GitWorktrees;
 use crate::orchestration::application::ports::CheckRun;
 use crate::orchestration::infrastructure::worker_file::{has_leftovers, open_workers, plain_id};
 use crate::testkit::unified_patch::{big_patch, file_patch};
-use crate::shared::application::host;
+use crate::shared::application::host::Host as _;
+
+/// The machine's clock, for records that must look real to recovery.
+fn system_now_ms() -> u64 {
+    crate::shared::infrastructure::system_host::SystemHost.now_ms()
+}
 use anyhow::bail;
 use std::time::Instant;
 use super::*;

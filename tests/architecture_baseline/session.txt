@@ -1,1 +1,0 @@
-T2 | src/session/application/ports.rs | crate::session::infrastructure | 1

@@ -9,6 +9,7 @@ Timings measured (one process, sequential): initialize 212 ms, account/rateLimit
 15 ms after stdin is closed; whole session 2.75 s; stderr empty.
 
 Notes for the parser:
+
 - Free plan: `primary.windowDurationMins` = 43200 (30 days), `secondary` = null. Paid plans
   are expected to report a 300-minute primary and a 10080-minute secondary (schema only,
   not recorded). Never assume which window is which: read `windowDurationMins`.

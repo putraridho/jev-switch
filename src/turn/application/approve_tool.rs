@@ -36,6 +36,8 @@ pub(super) struct EngineApprover<'a> {
     pub(super) hooks: &'a Arc<Hooks>,
     /// `CODE_ALLOWED_TOOLS`: calls these rules allow are not asked about.
     pub(super) allowed_tools: &'a [String],
+    /// The machine's doors, for reading the remembered rules.
+    pub(super) host: &'a dyn crate::shared::application::host::Host,
 }
 
 impl EngineApprover<'_> {
@@ -52,7 +54,7 @@ impl EngineApprover<'_> {
         let places = Places::from_env(self.dir);
         // Every rule this call needs was saved before ("always"): not asked again, in any mode
         // that asks at all. Plan mode never reaches here for writes (Claude Code refuses them).
-        if claude_settings_file::remembered(crate::shared::application::host::get(), &req.tool, &req.input, req.blocked_path.as_deref(), &places).is_some() {
+        if claude_settings_file::remembered(self.host, &req.tool, &req.input, req.blocked_path.as_deref(), &places).is_some() {
             lock_ui(self.ui).event(&Event::Hint(permission_request::remembered_allowed(&req.summary)));
             return Decision::Allow;
         }

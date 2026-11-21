@@ -21,7 +21,7 @@ impl Runtime {
         let cooldown_path = cooldown_path(&*host);
         let cooldowns = cooldown_path.as_deref().map(Cooldowns::load).unwrap_or_default();
         let allow = allowances_for(host.env("JEV_ALLOW_CREDITS").as_deref(), &avail);
-        let mut runtime = Self::build(avail, cooldowns, allow, crate::catalog::application::chain_overrides::from_env(), cooldown_path, host);
+        let mut runtime = Self::build(avail, cooldowns, allow, crate::catalog::domain::model_table::Overrides::from_setting(host.env("JEV_CHAINS")), cooldown_path, host);
         runtime.seed_usage();
         runtime
     }
@@ -57,7 +57,7 @@ impl Runtime {
         let cooldown_path = cooldown_path(&*host);
         let cooldowns = cooldown_path.as_deref().map(Cooldowns::load).unwrap_or_default();
         let allow = allowances_for(host.env("JEV_ALLOW_CREDITS").as_deref(), &cached);
-        let mut runtime = Self::build(cached.clone(), cooldowns, allow, crate::catalog::application::chain_overrides::from_env(), cooldown_path, host);
+        let mut runtime = Self::build(cached.clone(), cooldowns, allow, crate::catalog::domain::model_table::Overrides::from_setting(host.env("JEV_CHAINS")), cooldown_path, host);
         runtime.seed_usage();
         runtime.refresh_in_background(cached, cache);
         (runtime, ProbeSource::Cache)

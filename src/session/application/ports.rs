@@ -1,13 +1,11 @@
 //! The door the use cases have to where sessions are kept: the session files of a project
 //! and the marks beside them.
 //!
-//! Owns the port ([`SessionStore`]) and the one process-wide place its adapter is looked up,
-//! the same shape as [`crate::shared::application::host`]. The real adapter is
-//! [`crate::session::infrastructure::session_file::FileSessions`]; a test or a binary that
-//! wants another calls [`install`] before the first use.
+//! Owns the port ([`SessionStore`]). Use cases receive it through their constructor or as a
+//! parameter; the composition roots pass the real adapter,
+//! [`crate::session::infrastructure::session_file::FileSessions`], and tests pass their own.
 
 use std::path::{Path, PathBuf};
-use std::sync::OnceLock;
 
 use crate::session::domain::saved_session::{ResumeError, SavedSession, SessionEntry};
 use crate::session::domain::session_meta::MetaStore;
@@ -32,16 +30,4 @@ pub trait SessionStore: Send + Sync {
     fn load_marks(&self, state_dir: &Path) -> MetaStore;
     /// Write the marks back.
     fn save_marks(&self, state_dir: &Path, marks: &MetaStore) -> std::io::Result<()>;
-}
-
-static INSTALLED: OnceLock<Box<dyn SessionStore>> = OnceLock::new();
-
-/// Use `store` for the rest of the process. `false` when one was already chosen.
-pub fn install(store: Box<dyn SessionStore>) -> bool {
-    INSTALLED.set(store).is_ok()
-}
-
-/// The store in use: the installed one, else the session files on disk.
-pub fn get() -> &'static dyn SessionStore {
-    &**INSTALLED.get_or_init(|| Box::new(crate::session::infrastructure::session_file::FileSessions))
 }
