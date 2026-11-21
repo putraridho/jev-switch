@@ -30,7 +30,7 @@ impl Lazy {
         let router = Arc::new(Router::new(TypeSafe::from_env()?, 1.0));
         let state = log::state_dir().context("no state directory (is HOME set?)")?;
         let worktrees = GitWorktrees::new(&self.dir, state.join("worktrees"))?;
-        let runtime = Runtime::start().await;
+        let runtime = Runtime::start(std::sync::Arc::new(crate::providers::infrastructure::probe_facts::SystemProbes)).await;
         let delegator = Delegator::new(runtime, router_judge(router), Box::new(worktrees))
             .with_log(log::path_from_env("JEV_DELEGATE_LOG", "orchestration.jsonl"))
             .with_planner(self.planner.clone())

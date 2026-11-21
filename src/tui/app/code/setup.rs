@@ -62,7 +62,7 @@ pub(super) async fn start_runtime(console: &Console, mode: ProbeMode) -> (Runtim
     if live {
         eprint!("{}", console.err_style().dim("checking providers..."));
     }
-    let started = Runtime::start_cached(cache).await;
+    let started = Runtime::start_cached(cache, std::sync::Arc::new(crate::providers::infrastructure::probe_facts::SystemProbes)).await;
     if live {
         eprint!("{}", uifmt::clear_line());
     }

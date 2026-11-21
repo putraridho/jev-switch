@@ -19,12 +19,12 @@ use serde::{Deserialize, Serialize};
 
 use crate::backend::ProviderId;
 
-mod claude;
-mod codex;
-mod deepseek;
-mod gemini;
-mod grok;
-mod host;
+pub(crate) mod claude;
+pub(crate) mod codex;
+pub(crate) mod deepseek;
+pub(crate) mod gemini;
+pub(crate) mod grok;
+pub(crate) mod host;
 pub(crate) mod mise;
 pub mod render;
 pub mod retry;
@@ -88,27 +88,21 @@ fn avail(provider: ProviderId, state: State, detail: impl Into<String>) -> Avail
 
 // ---------------------------------------------------------------- public API
 
-/// Probe all five providers concurrently, each capped at [`PROBE_CAP`].
-pub async fn probe_all() -> Vec<Availability> {
+/// Probe all five providers concurrently, each capped at [`PROBE_CAP`]. `probe` is the one
+/// provider's uncapped probe: it gathers the facts, so it lives outside the domain.
+pub async fn probe_all<P, Fut>(probe: P) -> Vec<Availability>
+where
+    P: Fn(ProviderId) -> Fut,
+    Fut: Future<Output = Availability>,
+{
     let (claude, deepseek, codex, gemini, grok) = tokio::join!(
-        capped(PROBE_CAP, ProviderId::Claude, probe_provider(ProviderId::Claude)),
-        capped(PROBE_CAP, ProviderId::DeepSeek, probe_provider(ProviderId::DeepSeek)),
-        capped(PROBE_CAP, ProviderId::Codex, probe_provider(ProviderId::Codex)),
-        capped(PROBE_CAP, ProviderId::Gemini, probe_provider(ProviderId::Gemini)),
-        capped(PROBE_CAP, ProviderId::Grok, probe_provider(ProviderId::Grok)),
+        capped(PROBE_CAP, ProviderId::Claude, probe(ProviderId::Claude)),
+        capped(PROBE_CAP, ProviderId::DeepSeek, probe(ProviderId::DeepSeek)),
+        capped(PROBE_CAP, ProviderId::Codex, probe(ProviderId::Codex)),
+        capped(PROBE_CAP, ProviderId::Gemini, probe(ProviderId::Gemini)),
+        capped(PROBE_CAP, ProviderId::Grok, probe(ProviderId::Grok)),
     );
     vec![claude, deepseek, codex, gemini, grok]
-}
-
-/// One provider's probe, with no time cap of its own: the caller says how long it may take.
-pub async fn probe_provider(provider: ProviderId) -> Availability {
-    match provider {
-        ProviderId::Claude => claude::probe_claude().await,
-        ProviderId::DeepSeek => deepseek::probe_deepseek().await,
-        ProviderId::Codex => codex::probe_codex().await,
-        ProviderId::Gemini => gemini::probe_gemini().await,
-        ProviderId::Grok => grok::probe_grok().await,
-    }
 }
 
 /// Run one probe under `cap`. A probe that hangs must not delay startup, and "could
