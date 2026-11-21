@@ -1,7 +1,8 @@
 //! How `/sessions` reads its words. Pure, so every spelling is a unit test.
 
 use crate::session::infrastructure::session_import::Source;
-use crate::session::application::session_library::{Mark, Query};
+use crate::session::application::session_library::marks::Mark;
+use crate::session::application::session_library::query::Query;
 use crate::session::infrastructure::session_meta::clean_tag;
 
 /// Days `/sessions clean` keeps when none is given.

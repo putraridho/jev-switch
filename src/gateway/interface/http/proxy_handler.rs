@@ -13,7 +13,9 @@ use serde_json::{json, Value};
 
 use crate::catalog::domain::model_table::{MODEL_CHEAP, MODEL_MID};
 use crate::gateway::application::app_state::App;
-use crate::gateway::application::usage_tap::{find_cwd, project_of, request_params, Turns, UsageTap};
+use crate::gateway::application::turns::Turns;
+use crate::gateway::application::usage_tap::UsageTap;
+use crate::gateway::domain::request_signals::{find_cwd, project_of, request_params};
 use crate::gateway::domain::haiku_adaptation::{adapt_for_haiku, haiku_declined};
 use crate::gateway::domain::prompt_text::{last_user_prompt, recent_context};
 use crate::gateway::infrastructure::anthropic_wire::set_model;

@@ -6,7 +6,7 @@ use std::time::Instant;
 
 use serde_json::Value;
 
-use crate::gateway::application::usage_tap::Turns;
+use crate::gateway::application::turns::Turns;
 use crate::gateway::domain::prefix_fingerprint::PrefixWatch;
 use crate::routing::domain::sticky::Sticky;
 
