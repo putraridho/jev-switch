@@ -17,7 +17,9 @@ use crate::providers::domain::availability::grok::{decide_grok, GrokFacts};
 use crate::providers::domain::availability::host::{home, home_path_exists, read_home_file, run_capture};
 use crate::providers::domain::availability::mise::installed_for_real;
 use crate::providers::domain::availability::Availability;
+use crate::shared::application::host::Host;
 use crate::shared::infrastructure::env_file as envfile;
+use crate::shared::infrastructure::system_host::SystemHost;
 
 /// One provider's probe, with no time cap of its own: the caller says how long it may take.
 pub async fn probe_provider(provider: ProviderId) -> Availability {
@@ -127,6 +129,18 @@ impl ProviderHost for SystemProbes {
 
     fn fetch_credit(&self, key: String) -> BoxFuture<Option<String>> {
         Box::pin(async move { super::deepseek_balance::fetch_deepseek_balance(&key).await.as_ref().map(super::deepseek_balance::format_balance) })
+    }
+
+    fn env(&self, name: &str) -> Option<String> {
+        SystemHost.env(name)
+    }
+
+    fn now_ms(&self) -> u64 {
+        SystemHost.now_ms()
+    }
+
+    fn state_dir(&self) -> Option<PathBuf> {
+        SystemHost.state_dir()
     }
 }
 

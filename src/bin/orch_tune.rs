@@ -70,7 +70,7 @@ async fn main() -> Result<()> {
         .collect();
     eprintln!("scoring {} distinct prompts from {path}", prompts.len());
 
-    let router = Arc::new(Router::new(TypeSafe::from_env()?, 1.0));
+    let router = Arc::new(Router::new(TypeSafe::from_env()?, 1.0).with_jev_timeout_from(&jev_router::shared::infrastructure::system_host::SystemHost));
     let sem = Arc::new(Semaphore::new(CONCURRENCY));
     let mut tasks = JoinSet::new();
     for prompt in prompts {

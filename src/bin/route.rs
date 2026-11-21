@@ -186,7 +186,7 @@ async fn main() -> Result<()> {
     let provider_mode = std::env::var("ROUTE_MODE").as_deref() == Ok("provider");
     let as_json = std::env::var("ROUTE_JSON").is_ok_and(|v| !v.is_empty() && v != "0");
     let setup = Arc::new(ProviderSetup::from_env());
-    let router = Arc::new(Router::new(TypeSafe::from_env()?, threshold).with_strong_threshold(strong));
+    let router = Arc::new(Router::new(TypeSafe::from_env()?, threshold).with_jev_timeout_from(&jev_router::shared::infrastructure::system_host::SystemHost).with_strong_threshold(strong));
     let sem = Arc::new(Semaphore::new(CONCURRENCY));
     let mut tasks = JoinSet::new();
     for (i, Item { id, category: cat, prompt, context }) in prompts.into_iter().enumerate() {

@@ -50,9 +50,9 @@ pub fn summary_for(scope: Scope, last: Option<&ChangeSummary>, history: &[Change
     }
 }
 
-fn git_apply(root: &Path, patch: &str, extra: &[&str]) -> Result<(), String> {
+fn git_apply(tree: &dyn WorkingTree, root: &Path, patch: &str, extra: &[&str]) -> Result<(), String> {
     let mut cmd = Command::new("git");
-    cmd.arg("-C").arg(root).args(crate::shared::application::host::no_repo_programs(root)).args(["apply", "--whitespace=nowarn"]).args(extra);
+    cmd.arg("-C").arg(root).args(tree.no_repo_programs(root)).args(["apply", "--whitespace=nowarn"]).args(extra);
     cmd.env_remove("GIT_DIR").env_remove("GIT_WORK_TREE").env_remove("GIT_INDEX_FILE");
     cmd.stdin(Stdio::piped()).stdout(Stdio::null()).stderr(Stdio::piped());
     let mut child = cmd.spawn().map_err(|e| format!("could not run git: {e}"))?;
@@ -74,8 +74,8 @@ fn git_apply(root: &Path, patch: &str, extra: &[&str]) -> Result<(), String> {
 pub fn revert_hunk(tree: &dyn WorkingTree, dir: &Path, file: &FileDiff, index: usize) -> Result<(), String> {
     let patch = file.hunk_patch(index).ok_or_else(|| format!("{} has no hunk {}", file.path, index + 1))?;
     let root = tree.repo_root(dir).ok_or_else(|| "not inside a git repository".to_string())?;
-    git_apply(&root, &patch, &["-R", "--check"]).map_err(|e| format!("{} changed since: {e}", file.path))?;
-    git_apply(&root, &patch, &["-R"])
+    git_apply(tree, &root, &patch, &["-R", "--check"]).map_err(|e| format!("{} changed since: {e}", file.path))?;
+    git_apply(tree, &root, &patch, &["-R"])
 }
 
 /// Write the diff as a patch file `git apply` or `patch -p1` takes. Relative paths are

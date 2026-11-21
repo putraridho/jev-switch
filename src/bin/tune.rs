@@ -49,7 +49,7 @@ async fn main() -> Result<()> {
     let cases: Vec<Case> = serde_json::from_str(&raw).context("parse cases json")?;
     anyhow::ensure!(!cases.is_empty(), "no cases in {}", path);
 
-    let router = Router::new(TypeSafe::from_env()?, 0.0);
+    let router = Router::new(TypeSafe::from_env()?, 0.0).with_jev_timeout_from(&jev_router::shared::infrastructure::system_host::SystemHost);
 
     eprintln!("classifying {} cases via Jev…", cases.len());
     let mut scored = Vec::with_capacity(cases.len());

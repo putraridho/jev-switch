@@ -77,7 +77,6 @@ use crate::orchestration::domain::delegation::DelegateRequest;
 use crate::orchestration::domain::worker::{Owner, Saved, Worker};
 use crate::orchestration::domain::worker_pick::{pick_worker, NoWorker, WorkerView};
 use crate::providers::application::provider_registry::Runtime;
-use crate::shared::application::host;
 
 use super::ports::{Adapters, BoxFut, Checks, DelegateApi, DelegationLog, Judge, Liveness, Records, Scanner, WorkerPolicy, Worktrees};
 use background::Task;
@@ -148,10 +147,10 @@ struct Applied {
 }
 
 impl Delegator {
-    /// The given adapters, the real clock and idle timeout; no log, unknown planner, workers not saved.
+    /// The given adapters (clock and idle timeout included); no log, unknown planner, workers not saved.
     pub fn new(runtime: Runtime, judge: Judge, worktrees: Box<dyn Worktrees>, adapters: Adapters) -> Self {
         static INSTANCES: AtomicU64 = AtomicU64::new(0);
-        let Adapters { liveness, checks, backend_factory, idle_timeout, log, scan, policy } = adapters;
+        let Adapters { liveness, checks, backend_factory, idle_timeout, log, scan, policy, now } = adapters;
         let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos());
         Self {
             runtime: Mutex::new(runtime),
@@ -165,7 +164,7 @@ impl Delegator {
             liveness,
             counter: AtomicU64::new(1),
             run_tag: run_tag(std::process::id(), nanos, INSTANCES.fetch_add(1, Ordering::SeqCst)),
-            now: Box::new(host::now_ms),
+            now,
             idle_timeout,
             log_path: None,
             planner: String::new(),

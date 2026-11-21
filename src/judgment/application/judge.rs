@@ -19,6 +19,7 @@ use crate::judgment::domain::security::{is_security_sensitive, is_short_follow_u
 use crate::judgment::domain::thresholds::JEV_TIMEOUT_MS;
 use crate::judgment::domain::want::Decision;
 use crate::judgment::application::ports::JevTransport;
+use crate::shared::application::host::Host;
 use crate::judgment::application::wire::{choice_question, decode_choice, decode_noul, noul_question, ChoiceAnswer};
 
 /// The key a single-question call files its question under.
@@ -44,16 +45,24 @@ pub struct Router {
 }
 
 impl Router {
+    /// A router with the default judgment timeout; composition roots then apply the
+    /// `JEV_TIMEOUT_MS` setting with [`Router::with_jev_timeout_from`].
     pub fn new(ts: impl JevTransport + 'static, cheap_threshold: f64) -> Self {
-        let ms = crate::shared::application::host::env("JEV_TIMEOUT_MS").and_then(|v| v.parse().ok()).unwrap_or(JEV_TIMEOUT_MS);
         Self {
             ts: Arc::new(ts),
             cheap_threshold,
             strong_threshold: 0.0,
             top_threshold: None,
             worker_cheap: None,
-            jev_timeout: std::time::Duration::from_millis(ms),
+            jev_timeout: std::time::Duration::from_millis(JEV_TIMEOUT_MS),
         }
+    }
+
+    /// The judgment timeout `host`'s `JEV_TIMEOUT_MS` setting asks for (milliseconds), else
+    /// the default.
+    pub fn with_jev_timeout_from(self, host: &dyn Host) -> Self {
+        let ms = host.env("JEV_TIMEOUT_MS").and_then(|v| v.parse().ok()).unwrap_or(JEV_TIMEOUT_MS);
+        self.with_jev_timeout(std::time::Duration::from_millis(ms))
     }
 
     /// One Choice judgment over `state`. `criteria` is a JSON object mapping each

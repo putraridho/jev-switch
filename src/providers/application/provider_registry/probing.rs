@@ -18,9 +18,9 @@ impl Runtime {
     /// Probe the machine and load persisted cooldowns.
     pub async fn start(host: Arc<dyn ProviderHost>) -> Self {
         let avail = availability::probe_all(|p| host.probe(p)).await;
-        let cooldown_path = cooldown_path();
+        let cooldown_path = cooldown_path(&*host);
         let cooldowns = cooldown_path.as_deref().map(Cooldowns::load).unwrap_or_default();
-        let allow = allowances_for(crate::shared::application::host::env("JEV_ALLOW_CREDITS").as_deref(), &avail);
+        let allow = allowances_for(host.env("JEV_ALLOW_CREDITS").as_deref(), &avail);
         let mut runtime = Self::build(avail, cooldowns, allow, crate::catalog::application::chain_overrides::from_env(), cooldown_path, host);
         runtime.seed_usage();
         runtime
@@ -45,18 +45,18 @@ impl Runtime {
     /// then corrects whatever changed. Without a usable cache the probe runs now, as in
     /// `start`, and its answer is saved for the next run. Says where the answer came from.
     pub async fn start_cached(cache: Option<ProbeCache>, host: Arc<dyn ProviderHost>) -> (Self, ProbeSource) {
-        let now = crate::shared::application::host::now_ms();
+        let now = host.now_ms();
         let hit = cache.as_ref().and_then(|c| host.load_probe_cache(&c.path, now, c.fingerprint));
         let Some(cached) = hit else {
             let runtime = Self::start(host).await;
             if let Some(c) = &cache {
-                runtime.host.save_probe_cache(&c.path, crate::shared::application::host::now_ms(), c.fingerprint, &runtime.avail);
+                runtime.host.save_probe_cache(&c.path, runtime.host.now_ms(), c.fingerprint, &runtime.avail);
             }
             return (runtime, ProbeSource::Live);
         };
-        let cooldown_path = cooldown_path();
+        let cooldown_path = cooldown_path(&*host);
         let cooldowns = cooldown_path.as_deref().map(Cooldowns::load).unwrap_or_default();
-        let allow = allowances_for(crate::shared::application::host::env("JEV_ALLOW_CREDITS").as_deref(), &cached);
+        let allow = allowances_for(host.env("JEV_ALLOW_CREDITS").as_deref(), &cached);
         let mut runtime = Self::build(cached.clone(), cooldowns, allow, crate::catalog::application::chain_overrides::from_env(), cooldown_path, host);
         runtime.seed_usage();
         runtime.refresh_in_background(cached, cache);
@@ -80,7 +80,7 @@ impl Runtime {
             })
             .await;
             if let Some(c) = cache {
-                host.save_probe_cache(&c.path, crate::shared::application::host::now_ms(), c.fingerprint, &latest);
+                host.save_probe_cache(&c.path, host.now_ms(), c.fingerprint, &latest);
             }
         });
     }
@@ -97,7 +97,7 @@ impl Runtime {
     /// The pure half of [`Runtime::refresh`].
     pub(super) fn apply_probe(&mut self, avail: Vec<Availability>) {
         self.avail = avail;
-        self.allow = allowances_for(crate::shared::application::host::env("JEV_ALLOW_CREDITS").as_deref(), &self.avail);
+        self.allow = allowances_for(self.host.env("JEV_ALLOW_CREDITS").as_deref(), &self.avail);
         let avail = &self.avail;
         self.blocked.retain(|p, reason| {
             *reason != BlockReason::Auth || !avail.iter().any(|a| a.provider == *p && a.state == State::Ready)
@@ -177,6 +177,6 @@ impl Runtime {
 }
 
 /// `<state_dir>/cooldowns.json`, or `None` if there is no state directory.
-pub fn cooldown_path() -> Option<std::path::PathBuf> {
-    Some(crate::shared::application::host::state_dir()?.join("cooldowns.json"))
+pub fn cooldown_path(host: &dyn ProviderHost) -> Option<std::path::PathBuf> {
+    Some(host.state_dir()?.join("cooldowns.json"))
 }

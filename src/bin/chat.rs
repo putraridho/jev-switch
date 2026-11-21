@@ -60,7 +60,7 @@ async fn main() -> Result<()> {
         .unwrap_or(0.85);
 
     let claude = Anthropic::from_env()?;
-    let router = Router::new(TypeSafe::from_env()?, threshold).with_strong_threshold(strong);
+    let router = Router::new(TypeSafe::from_env()?, threshold).with_jev_timeout_from(&jev_router::shared::infrastructure::system_host::SystemHost).with_strong_threshold(strong);
     let mut tx = Transcript::new(SYSTEM);
     let mut prev_model: Option<&'static str> = None;
 

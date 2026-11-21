@@ -124,7 +124,7 @@ impl Rig {
             http: reqwest::Client::new(),
             upstream: upstream_url,
             downgrade_after: 2,
-            sessions: Mutex::new(Sessions::default()),
+            sessions: Mutex::new(Sessions::new(Arc::new(crate::shared::infrastructure::system_host::SystemHost))),
             log_path: path("gateway.jsonl"),
             usage_path: path("usage.jsonl"),
             turns_path: path("turns.jsonl"),

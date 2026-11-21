@@ -34,4 +34,6 @@ pub trait WorkingTree: Send + Sync {
     fn restore_paths(&self, root: &Path, tree: &str, paths: &[&str]) -> Result<(), UndoError>;
     /// Delete `rel`, and the directories the turn created for it that are now empty.
     fn remove_file_and_empty_parents(&self, root: &Path, rel: &str) -> Result<(), UndoError>;
+    /// The `git -c` options that stop the repository at `dir` from running its own programs.
+    fn no_repo_programs(&self, dir: &Path) -> Vec<String>;
 }
