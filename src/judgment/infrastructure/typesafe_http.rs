@@ -2,19 +2,10 @@
 //! We ask typed judgments — Choice and Noul — never free text.
 
 use anyhow::{bail, Context, Result};
-use serde::Deserialize;
+use crate::judgment::application::ports::{BoxFut, JevTransport};
 use serde_json::{json, Value};
-use std::collections::HashMap;
 
-#[derive(Debug, Deserialize)]
-pub struct ChoiceAnswer {
-    pub choice: String,
-    #[serde(default)]
-    pub confidence: f64,
-    #[serde(default)]
-    pub probabilities: HashMap<String, f64>,
-}
-
+/// The real Jev transport: one HTTPS round trip per [`JevTransport::ask_many`].
 pub struct TypeSafe {
     key: String,
     url: String,
@@ -37,6 +28,12 @@ fn http_client() -> reqwest::Client {
     reqwest::Client::builder().timeout(HTTP_TIMEOUT).build().unwrap_or_default()
 }
 
+impl JevTransport for TypeSafe {
+    fn ask_many(&self, state: Value, questions: Value) -> BoxFut<'_, Result<Value>> {
+        Box::pin(self.ask(state, questions))
+    }
+}
+
 impl TypeSafe {
     pub fn from_env() -> Result<Self> {
         let key = key_lookup()
@@ -48,15 +45,6 @@ impl TypeSafe {
     /// A client for a different endpoint (tests, proxies).
     pub fn with_url(key: &str, url: &str) -> Self {
         Self { key: key.into(), url: url.into(), http: http_client() }
-    }
-
-    /// Several judgments in ONE round trip. `questions` is a JSON object keyed by
-    /// name (build each value with [`choice_question`] / [`noul_question`]); the
-    /// result is the `answers` object with the same keys, read with [`decode_choice`]
-    /// and [`decode_noul`]. Every question shares `state`, and the API answers them
-    /// together, so N judgments cost about one request's latency instead of N.
-    pub async fn ask_many(&self, state: Value, questions: Value) -> Result<Value> {
-        self.ask(state, questions).await
     }
 
     async fn ask(&self, state: Value, questions: Value) -> Result<Value> {
@@ -78,69 +66,6 @@ impl TypeSafe {
         Ok(v.get("answers").cloned().unwrap_or(Value::Null))
     }
 
-    /// One Choice judgment over `state`. `criteria` is a JSON object mapping each
-    /// option name to its description (string, or an object with `what`/`not_for`/
-    /// `examples` when options risk confusion).
-    pub async fn choice(
-        &self,
-        state: Value,
-        instructions: &str,
-        criteria: Value,
-    ) -> Result<ChoiceAnswer> {
-        let answers = self.ask_one(state, choice_question(instructions, criteria)).await?;
-        decode_choice(&answers, SOLO)
-    }
-
-    /// One Noul (yes/no) judgment; returns P(true) in 0..=1.
-    pub async fn noul(
-        &self,
-        state: Value,
-        instructions: &str,
-        criteria: Value,
-    ) -> Result<f64> {
-        self.noul_question(state, noul_question(instructions, criteria)).await
-    }
-
-    /// One prebuilt Noul question (see [`noul_question`]), asked alone. Lets a
-    /// single-call method send exactly the question definition the batch uses.
-    pub async fn noul_question(&self, state: Value, question: Value) -> Result<f64> {
-        let answers = self.ask_one(state, question).await?;
-        decode_noul(&answers, SOLO)
-    }
-
-    /// One already-built question asked alone, filed under [`SOLO`].
-    async fn ask_one(&self, state: Value, question: Value) -> Result<Value> {
-        self.ask(state, json!({ SOLO: question })).await
-    }
-}
-
-/// The key a single-question call files its question under.
-const SOLO: &str = "q";
-
-/// A Choice question for [`TypeSafe::ask_many`]. Pure, so question text lives in one
-/// place and tests can compare it without a network.
-pub fn choice_question(instructions: &str, criteria: Value) -> Value {
-    json!({ "type": "choice", "instructions": instructions, "criteria": criteria })
-}
-
-/// A Noul (yes/no) question for [`TypeSafe::ask_many`].
-pub fn noul_question(instructions: &str, criteria: Value) -> Value {
-    json!({ "type": "noul", "instructions": instructions, "criteria": criteria })
-}
-
-/// Read the Choice answer filed under `key` in an `answers` object.
-pub fn decode_choice(answers: &Value, key: &str) -> Result<ChoiceAnswer> {
-    let a = answers.get(key).cloned().with_context(|| format!("missing choice answer `{key}`"))?;
-    serde_json::from_value(a).with_context(|| format!("decode choice answer `{key}`"))
-}
-
-/// Read the Noul answer filed under `key`: P(true) in 0..=1.
-pub fn decode_noul(answers: &Value, key: &str) -> Result<f64> {
-    answers
-        .get(key)
-        .and_then(|q| q.get("noul"))
-        .and_then(|n| n.as_f64())
-        .with_context(|| format!("missing noul value `{key}`"))
 }
 
 /// The names a Jev key may be filed under, in order of preference.
@@ -155,19 +80,7 @@ fn key_lookup() -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn decoders_read_each_answer_by_its_key() {
-        let answers = json!({
-            "a": { "choice": "x", "confidence": 0.9, "probabilities": { "x": 0.9 } },
-            "b": { "noul": 0.25 }
-        });
-        let c = decode_choice(&answers, "a").unwrap();
-        assert_eq!((c.choice.as_str(), c.confidence), ("x", 0.9));
-        assert_eq!(decode_noul(&answers, "b").unwrap(), 0.25);
-        assert!(decode_choice(&answers, "missing").is_err());
-        assert!(decode_noul(&answers, "a").is_err(), "a choice is not a noul");
-    }
+    use crate::judgment::application::wire::{choice_question, noul_question};
 
     #[test]
     fn the_endpoint_defaults_to_the_public_api_and_can_be_overridden() {
@@ -223,20 +136,11 @@ mod tests {
         // Everything optional absent: one solo question, an empty state.
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let client = TypeSafe::with_url("k", &format!("http://{}/v1/systemone", listener.local_addr().unwrap()));
-        let solo = sent(Box::pin(async { client.choice(json!({ "request": "hi" }), "pick", json!({ "a": "A" })).await.unwrap(); }), listener).await;
+        let solo = sent(Box::pin(async { client.ask_many(json!({ "request": "hi" }), json!({ "q": choice_question("pick", json!({ "a": "A" })) })).await.unwrap(); }), listener).await;
 
         let actual = format!("=== all_parts\n{full}\n=== minimal_solo\n{solo}\n");
         let (head, body) = GOLDEN.split_once('\n').unwrap();
         assert_eq!(head, MASKED);
         assert_eq!(body, actual);
-    }
-
-    #[test]
-    fn question_builders_keep_the_wire_shape() {
-        assert_eq!(
-            noul_question("why", json!({ "true": "t", "false": "f" })),
-            json!({ "type": "noul", "instructions": "why", "criteria": { "true": "t", "false": "f" } })
-        );
-        assert_eq!(choice_question("pick", json!({ "a": "A" }))["type"], "choice");
     }
 }

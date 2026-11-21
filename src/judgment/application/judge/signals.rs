@@ -4,7 +4,7 @@ use anyhow::Result;
 use serde_json::json;
 
 use crate::judgment::domain::orchestration::Orchestration;
-use crate::judgment::infrastructure::typesafe_http::decode_noul;
+use crate::judgment::application::wire::decode_noul;
 
 use super::questions::*;
 use super::Router;
@@ -14,7 +14,7 @@ impl Router {
     /// running commands (vs. only reading code and answering). Changing auth or
     /// session code goes to the strong model; reading it stays on mid.
     pub async fn needs_changes(&self, request: &str, recent_context: &str) -> Result<f64> {
-        self.ts.noul_question(request_state(request, recent_context), needs_changes_question()).await
+        self.noul_question(request_state(request, recent_context), needs_changes_question()).await
     }
 
     /// Code mode: probability that `request` is about security: who can access or
@@ -22,13 +22,13 @@ impl Router {
     /// trust-boundary questions that carry no security keyword, and lets keyword
     /// matches that are about something else (design tokens, React keys) through.
     pub async fn security_review(&self, request: &str, recent_context: &str) -> Result<f64> {
-        self.ts.noul_question(request_state(request, recent_context), security_review_question()).await
+        self.noul_question(request_state(request, recent_context), security_review_question()).await
     }
 
     /// Probability that `request` is among the hardest work: it needs the most capable
     /// model, not just a strong one. Asked only of turns already headed to Opus.
     pub async fn very_hard(&self, request: &str, recent_context: &str) -> Result<f64> {
-        self.ts.noul_question(request_state(request, recent_context), very_hard_question()).await
+        self.noul_question(request_state(request, recent_context), very_hard_question()).await
     }
 
     /// Orchestrate mode's judgment, from ONE Jev request asking both `multi_part` (is
@@ -50,6 +50,6 @@ impl Router {
     /// the same question again). Logged for later analysis; never used for routing.
     pub async fn is_correction(&self, request: &str, previous_request: &str, previous_answer: &str) -> Result<f64> {
         let state = json!({ "request": request, "previous_request": previous_request, "previous_answer": previous_answer });
-        self.ts.noul_question(state, is_correction_question()).await
+        self.noul_question(state, is_correction_question()).await
     }
 }

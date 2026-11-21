@@ -4,7 +4,7 @@
 
 use serde_json::{json, Value};
 
-use crate::judgment::infrastructure::typesafe_http::{choice_question, noul_question};
+use crate::judgment::application::wire::{choice_question, noul_question};
 
 /// The state every code-mode question reads.
 pub(super) fn request_state(request: &str, recent_context: &str) -> Value {
