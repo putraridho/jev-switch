@@ -410,6 +410,40 @@ fn door_layer(doors: &BTreeMap<String, BTreeMap<String, Origin>>, context: &str,
     }
 }
 
+/// What a domain file may not use (T3), found in its code tokens: the `serde` crates, the `std`
+/// modules that do IO (also inside a `use std::{..}` group), and the `Path` methods that ask
+/// the disk (called with no arguments, as `Path`'s are; an injected port of the same name
+/// takes the path as an argument).
+fn impure_uses(tokens: &[Token]) -> Vec<(String, usize)> {
+    const CRATES: &[&str] = &["serde", "serde_json"];
+    const STD_IO: &[&str] = &["fs", "env", "process", "net"];
+    const DISK_METHODS: &[&str] = &["canonicalize", "is_dir", "is_file", "exists", "symlink_metadata", "read_dir", "metadata"];
+    let mut out = Vec::new();
+    for (i, token) in tokens.iter().enumerate() {
+        let next = |n: usize| tokens.get(i + n).map(|t| t.text.as_str());
+        let after_path = i > 0 && tokens[i - 1].text == "::";
+        if CRATES.contains(&token.text.as_str()) && next(1) == Some("::") && !after_path {
+            out.push((token.text.clone(), token.line));
+        } else if token.text == "std" && next(1) == Some("::") && !after_path {
+            match next(2) {
+                Some(module) if STD_IO.contains(&module) => out.push((format!("std::{module}"), token.line)),
+                Some("{") => {
+                    let end = matching(tokens, i + 2, "{", "}");
+                    for inner in &tokens[i + 3..end.min(tokens.len())] {
+                        if STD_IO.contains(&inner.text.as_str()) {
+                            out.push((format!("std::{}", inner.text), inner.line));
+                        }
+                    }
+                }
+                _ => {}
+            }
+        } else if token.text == "." && next(1).is_some_and(|m| DISK_METHODS.contains(&m)) && next(2) == Some("(") && next(3) == Some(")") {
+            out.push((format!(".{}()", next(1).unwrap()), token.line));
+        }
+    }
+    out
+}
+
 #[test]
 fn front_door_names_resolve_to_the_layer_they_come_from() {
     let doors = front_doors(&Path::new(env!("CARGO_MANIFEST_DIR")).join("src"));
@@ -469,6 +503,13 @@ fn architecture() {
                 if own < 2 && rank > own && (target_context == context || allowed.contains(&target_context)) {
                     violations.entry(("T2".into(), context.into(), file_name, format!("crate::{target_context}::{layer}"))).or_default().push(line);
                 }
+            }
+        }
+        // T3: domain code is pure (DDD.md section 3): no serde, no files, environment, processes
+        // or network, and no `Path` method that asks the disk. Facts come in as arguments.
+        if module.get(1).map(String::as_str) == Some("domain") {
+            for (what, line) in impure_uses(&without_tests(&lex(&fs::read_to_string(&file).unwrap()))) {
+                violations.entry(("T3".into(), context.into(), relative.to_string_lossy().into_owned(), what)).or_default().push(line);
             }
         }
     }
@@ -552,4 +593,12 @@ fn collects_bare_imported_modules_and_test_files() {
     assert_eq!(test_module_files(Path::new("src/example.rs"), &tokens), vec![PathBuf::from("src/example/helpers.rs"), PathBuf::from("src/example/helpers")]);
     assert_eq!(test_module_files(Path::new("src/lib.rs"), &tokens), vec![PathBuf::from("src/helpers.rs"), PathBuf::from("src/helpers")]);
     assert_eq!(paths(&without_tests(&tokens), &["example".into()]), vec![("crate::other".into(), 1), ("crate::third".into(), 1), ("crate::third::Item".into(), 1), ("crate::other".into(), 1), ("crate::third".into(), 1)]);
+}
+
+#[test]
+fn finds_what_domain_code_may_not_use() {
+    let source = "use serde::Serialize; use std::{collections::HashMap, fs}; fn f(p: &Path) { std::env::var(\"X\"); p.is_dir(); facts.is_dir(p); p.join(\"a\"); my::serde::x(); }";
+    let found: Vec<String> = impure_uses(&lex(source)).into_iter().map(|(what, _)| what).collect();
+    assert_eq!(found, ["serde", "std::fs", "std::env", ".is_dir()"]);
+    assert!(impure_uses(&without_tests(&lex("#[cfg(test)] mod tests { use std::fs; }"))).is_empty(), "test code may");
 }
