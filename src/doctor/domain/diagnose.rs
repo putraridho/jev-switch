@@ -15,7 +15,7 @@ use serde_json::json;
 
 use crate::providers::domain::availability::{Availability, State};
 use crate::shared::ProviderId;
-use crate::providers::domain::reset_time::Cooldowns;
+use crate::providers::domain::reset_time::cooldowns::Cooldowns;
 use crate::providers::application::provider_registry::{BlockReason, Runtime};
 use crate::shared::domain::duration_text::format_left;
 use crate::shared::ALL_PROVIDERS;

@@ -3,7 +3,7 @@
 use std::path::PathBuf;
 
 use super::*;
-use crate::providers::domain::reset_time::Cooldowns;
+use crate::providers::domain::reset_time::cooldowns::Cooldowns;
 
     #[test]
     fn cool_down_persists_to_the_given_path() {
