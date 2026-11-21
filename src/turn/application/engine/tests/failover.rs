@@ -111,7 +111,7 @@ async fn auth_failure_blocks_the_provider_for_the_session_and_names_the_tool_to_
     // blocked for this session, and cleared by `/providers refresh`.
     assert!(r.engine.runtime.cooldowns.active(a, NOW).is_none());
     assert_eq!(r.engine.runtime.blocked.get(&a), Some(&crate::providers::application::provider_registry::BlockReason::Auth));
-    assert!(r.ui.notes.iter().any(|n| n.contains("log in to") && n.contains(crate::providers::application::provider_registry::login_target(a))), "{:?}", r.ui.notes);
+    assert!(r.ui.notes.iter().any(|n| n.contains("log in to") && n.contains(crate::providers::domain::login_hints::login_target(a))), "{:?}", r.ui.notes);
 }
 
 #[tokio::test]

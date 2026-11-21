@@ -1,4 +1,5 @@
 pub mod base64;
+pub mod duration_text;
 pub mod limit_notice;
 pub mod path_text;
 pub mod redact;

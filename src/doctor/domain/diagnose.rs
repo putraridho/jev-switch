@@ -16,9 +16,10 @@ use serde_json::json;
 use crate::providers::domain::availability::{Availability, State};
 use crate::shared::ProviderId;
 use crate::providers::domain::reset_time::Cooldowns;
-use crate::providers::application::provider_registry::{format_left, BlockReason, Runtime};
+use crate::providers::application::provider_registry::{BlockReason, Runtime};
+use crate::shared::domain::duration_text::format_left;
 use crate::shared::ALL_PROVIDERS;
-pub use crate::providers::application::provider_registry::{install_hint, login_command, login_instruction, login_verified, DEFAULT_ENV_PATH};
+pub use crate::providers::domain::login_hints::{install_hint, login_command, login_instruction, login_verified, DEFAULT_ENV_PATH};
 use crate::judgment::infrastructure::typesafe_http::TypeSafe;
 
 
