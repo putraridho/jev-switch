@@ -21,6 +21,17 @@ fn plan_refusal_is_not_entitled() {
 
 
 #[test]
+fn a_model_this_login_cannot_use_is_not_entitled() {
+    // Headless (as in orchestration.jsonl on 2026-11-21) and over ACP (grok 1.0.92).
+    for message in [
+        "Couldn't set model 'grok-build-0.1': Invalid params: \"unknown model id\". Run 'grok models' to see available models.",
+        "grok ACP: Invalid params: unknown model id",
+    ] {
+        assert_eq!(backend().classify_error(message), ErrorKind::NotEntitled, "{message}");
+    }
+}
+
+#[test]
 fn classifies_common_errors_and_unknowns() {
     assert!(matches!(backend().classify_error("HTTP 429 Too Many Requests"), ErrorKind::Quota { .. }));
     assert_eq!(backend().classify_error("weird"), ErrorKind::Other);

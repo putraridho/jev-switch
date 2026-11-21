@@ -36,7 +36,8 @@ impl Delegator {
             Event::Plan(plan) => lock(&self.runtime).note_plan(spec.provider, plan.clone()),
             _ => {}
         };
-        let result = backend::run_turn(&*backend, &req, self.idle_timeout, &mut on_event).await;
+        let approver = self.policy.approver(dir, read_only);
+        let result = backend::run_turn_with(&*backend, &req, self.idle_timeout, &mut on_event, &*approver).await;
         (result, tools)
     }
 

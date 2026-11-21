@@ -6,6 +6,7 @@ use super::*;
 use jev_approval::domain::mode::Mode;
 use crate::{Event, TurnRequest};
 
+mod grok;
 mod permission;
 mod runner;
 mod session;

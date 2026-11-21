@@ -649,7 +649,16 @@ working tree and the planner gets the report and the file list with +/- counts, 
 `undo` (worker_id) takes exactly those changes back out while the delegate server runs. Set
 `JEV_AUTO_MERGE=0` to turn this off. With no test command, failing tests (their output's tail
 comes back), a conflict, or `review: true`, the planner reviews the diff and `merge`s or
-`discard`s it as before. In review, the `delegate` result lists EVERY changed file with
+`discard`s it as before. Nobody can approve a worker's tool calls, so a CLI that asks jev-code
+about them (Gemini on Antigravity; Grok, whose workers run over ACP with `grok agent stdio`)
+gets a rule instead of a question: it may run what `CODE_ALLOWED_TOOLS` allows (editing
+workers only) and commands that only read or build and test the project (`git status`/`diff`/
+`log`, `grep`, `cat`, `cargo test`, `npm test`, …), as long as no path in them leaves the
+worktree (`/…`, `~`, `..`); an editing Grok worker may also edit files inside its worktree (not
+`.git`), since Grok has no accept-edits mode. Committing, the network, MCP tools and anything
+else is denied. Claude Code and Codex workers decide inside their own CLI (`--allowedTools`,
+the Codex sandbox). A Grok model the login cannot use ("unknown model id") counts as not on
+the plan, so the next model is tried. In review, the `delegate` result lists EVERY changed file with
 its +/- counts and shows whole-file diffs up to 20,000 characters; `show_diff` (worker_id,
 optional `file`, `offset`) pages the rest, and `merge` (optional `files`) refuses any file the
 planner has not seen in full. A merge is a plain `git apply` onto the working tree (so the

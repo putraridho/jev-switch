@@ -58,3 +58,4 @@ mod grantable;
 mod permission_rule;
 mod review;
 mod rule_policy;
+mod worker_command;

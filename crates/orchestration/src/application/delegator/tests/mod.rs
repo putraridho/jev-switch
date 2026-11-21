@@ -264,6 +264,10 @@ impl WorkerPolicy for OpenPolicy {
         let mode = if read_only { Mode::Plan } else { Mode::default() };
         jev_backend::TurnRequest { dir: dir.to_path_buf(), model: model.to_string(), prompt, images: vec![], session_id: None, mode, trust_project_settings: false }
     }
+
+    fn approver(&self, _dir: &Path, _read_only: bool) -> Arc<dyn jev_backend::Approver> {
+        Arc::new(jev_backend::NoApprover)
+    }
 }
 
 /// The real adapters with a policy that lets every brief through.

@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use jev_backend::idle_timeout_from_env;
 use crate::application::ports::{Adapters, WorkerPolicy};
-use jev_providers::infrastructure::backend_factory::backend_for;
+use jev_providers::infrastructure::backend_factory::worker_backend_for;
 use jev_shared::application::host::Host;
 use jev_shared::infrastructure::system_host::SystemHost;
 
@@ -19,7 +19,7 @@ pub fn real(policy: Arc<dyn WorkerPolicy>) -> Adapters {
     Adapters {
         liveness: Arc::new(ProcLiveness),
         checks: Arc::new(ProjectChecks::default()),
-        backend_factory: Box::new(backend_for),
+        backend_factory: Box::new(worker_backend_for),
         idle_timeout: idle_timeout_from_env(),
         log: Arc::new(JsonlLog),
         scan: Arc::new(gather_scan),

@@ -26,6 +26,21 @@ pub fn session_backend_for(provider: ProviderId) -> Box<dyn Backend> {
     build_backend(provider, true)
 }
 
+/// [`backend_for`] for a delegated worker, which nobody watches: Grok runs over ACP so its
+/// shell commands and edits reach the worker's approver (headless Grok denies every shell
+/// command on its own). The other CLIs are the same as in [`backend_for`]: Antigravity is
+/// already ACP, Claude Code gets `--allowedTools`, Codex's sandbox decides.
+pub fn worker_backend_for(provider: ProviderId) -> Box<dyn Backend> {
+    match provider {
+        ProviderId::Grok => Box::new(grok_backend().over_acp()),
+        _ => backend_for(provider),
+    }
+}
+
+fn grok_backend() -> GrokBackend {
+    GrokBackend::grok().with_env(jev_backend::infrastructure::grok::grok_cli::auth_env(&envfile::lookup))
+}
+
 /// The backends of a `jev-code` run: [`session_backend_for`] when someone can answer an
 /// approval question (`can_ask`: a session on a terminal), else [`backend_for`]. A run nobody
 /// can answer (`-p`, piped input) must not use the host prompt protocol: every question would
@@ -46,7 +61,7 @@ fn build_backend(provider: ProviderId, session: bool) -> Box<dyn Backend> {
     match provider {
         ProviderId::Claude => claude_code(ClaudeBackend::claude()),
         ProviderId::Codex => Box::new(CodexBackend::codex()),
-        ProviderId::Grok => Box::new(GrokBackend::grok().with_env(jev_backend::infrastructure::grok::grok_cli::auth_env(&envfile::lookup))),
+        ProviderId::Grok => Box::new(grok_backend()),
         ProviderId::Gemini => Box::new(match detect_gemini_flavor() {
             Flavor::GeminiCli => GeminiBackend::gemini_cli().with_env(gemini_env(&envfile::lookup)),
             Flavor::Antigravity => GeminiBackend::antigravity().with_env(gemini_env(&envfile::lookup)),
@@ -97,6 +112,19 @@ mod tests {
             let a = args(&*asking);
             assert!(asking.interactive(), "{provider}");
             assert!(a.iter().any(|x| x == "--permission-prompt-tool") && a.iter().any(|x| x == jev_backend::infrastructure::claude::claude_cli::SESSION_NOTE), "{provider}: {a:?}");
+        }
+    }
+
+    #[test]
+    fn only_a_worker_runs_grok_over_acp() {
+        let req = jev_backend::TurnRequest { dir: "/tmp".into(), model: "grok-4.7".into(), prompt: "hi".into(), images: vec![], session_id: None, mode: Default::default(), trust_project_settings: false };
+        let args = |b: &dyn Backend| -> Vec<String> { b.command(&req).as_std().get_args().map(|a| a.to_string_lossy().into_owned()).collect() };
+        let worker = worker_backend_for(ProviderId::Grok);
+        assert!(worker.interactive());
+        assert_eq!(args(&*worker), ["agent", "stdio"]);
+        for plain in [backend_for(ProviderId::Grok), session_backend_for(ProviderId::Grok)] {
+            assert!(!plain.interactive());
+            assert!(args(&*plain).iter().any(|a| a.starts_with("--single=")), "{:?}", args(&*plain));
         }
     }
 

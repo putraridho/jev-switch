@@ -15,6 +15,7 @@ pub mod settings_document;
 pub mod shell_words;
 pub mod tool_input;
 pub mod visible_text;
+pub mod worker_command;
 
 #[cfg(test)]
 mod tests;

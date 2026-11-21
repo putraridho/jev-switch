@@ -1,4 +1,5 @@
-//! xAI Grok Build backend: `grok --single=<prompt> --output-format streaming-messages-json`.
+//! xAI Grok Build backend: `grok --single=<prompt> --output-format streaming-messages-json`,
+//! or for a delegated worker `grok agent stdio` over ACP (see [`GrokBackend::over_acp`]).
 //!
 //! Written from the official docs only, never against a recorded run (see
 //! `tests/fixtures/grok/README.md`). Two choices follow from the docs:
@@ -11,10 +12,12 @@
 //!   [`Backend::parse_line`] cannot assemble without sharing state between turns.
 
 use std::path::Path;
+use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use tokio::process::Command;
 
-use crate::{Backend, ErrorKind, Event, PromptFiles, ProviderId, TurnRequest};
+use crate::infrastructure::gemini::acp::{Acp, Agent};
+use crate::{Backend, Decision, ErrorKind, Event, PermissionRequest, PromptFiles, ProviderId, TurnRequest};
 
 mod command;
 mod errors;
@@ -33,11 +36,29 @@ pub struct GrokBackend {
     /// Variables the child needs that may live only in `~/.jev-router.env` (the API key),
     /// which the child process would not otherwise see.
     extra_env: Vec<(String, String)>,
+    /// `Some` when the turn runs over ACP (`grok agent stdio`, see [`GrokBackend::over_acp`]):
+    /// its tool questions then reach the host's approver instead of being decided by the CLI.
+    acp: Option<Mutex<Acp>>,
 }
 
 impl GrokBackend {
     pub fn new(bin: impl Into<String>) -> Self {
-        Self { bin: bin.into(), prompts: PromptFiles::default(), extra_env: Vec::new() }
+        Self { bin: bin.into(), prompts: PromptFiles::default(), extra_env: Vec::new(), acp: None }
+    }
+
+    /// Run over ACP (`grok agent stdio`) instead of headless `--single`. Headless Grok decides
+    /// shell commands itself and denies them with nobody to ask; over ACP each question goes to
+    /// the host's approver, which is how a delegated worker gets the worker rule. A session on a
+    /// terminal keeps headless Grok: over ACP every edit would be asked about (Grok has no
+    /// accept-edits mode).
+    pub fn over_acp(mut self) -> Self {
+        self.acp = Some(Mutex::new(Acp::for_agent(Agent::Grok)));
+        self
+    }
+
+    /// A poisoned lock only means an earlier parse panicked; `start` resets the state.
+    fn acp(&self) -> Option<MutexGuard<'_, Acp>> {
+        self.acp.as_ref().map(|m| m.lock().unwrap_or_else(PoisonError::into_inner))
     }
 
     /// Pass these variables to the CLI (see `extra_env`).
@@ -72,12 +93,18 @@ impl Backend for GrokBackend {
     }
 
     fn command(&self, req: &TurnRequest) -> Command {
-        self.turn_command(req)
+        if self.acp.is_none() {
+            return self.turn_command(req);
+        }
+        let mut cmd = Command::new(&self.bin);
+        cmd.args(["agent", "stdio"]).current_dir(&req.dir).envs(self.extra_env.iter().map(|(k, v)| (k.as_str(), v.as_str())));
+        cmd
     }
 
-    /// Headless Grok ignores piped stdin; the prompt is in the args.
-    fn stdin_payload(&self, _req: &TurnRequest) -> Option<String> {
-        None
+    /// Headless Grok ignores piped stdin (the prompt is in the args); over ACP stdin carries
+    /// the protocol, starting with `initialize`.
+    fn stdin_payload(&self, req: &TurnRequest) -> Option<String> {
+        self.acp().map(|mut acp| acp.start(req))
     }
 
     fn cleanup(&self) {
@@ -85,7 +112,22 @@ impl Backend for GrokBackend {
     }
 
     fn parse_line(&self, line: &str) -> Vec<Event> {
-        stream_events::parse_line(line)
+        match self.acp() {
+            Some(mut acp) => serde_json::from_str(line).map(|ev| acp.parse(&ev)).unwrap_or_default(),
+            None => stream_events::parse_line(line),
+        }
+    }
+
+    fn interactive(&self) -> bool {
+        self.acp.is_some()
+    }
+
+    fn take_responses(&self) -> Vec<String> {
+        self.acp().map(|mut acp| acp.drain()).unwrap_or_default()
+    }
+
+    fn permission_response(&self, req: &PermissionRequest, decision: &Decision) -> Option<String> {
+        self.acp()?.answer(req, decision).map(|line| line.trim_end_matches('\n').to_string())
     }
 
     fn classify_error(&self, message: &str) -> ErrorKind {

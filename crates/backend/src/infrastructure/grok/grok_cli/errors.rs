@@ -29,12 +29,20 @@ pub(super) fn is_auth_text(lower: &str) -> bool {
         || (lower.contains("xai_api_key") && key_broken)
 }
 
+/// A model the account cannot use: Grok answers `set_model` (ACP) or `--model` (headless) with
+/// "unknown model id" when the model is not in this login's list (`grok models`), as
+/// `grok-build-0.1` was for a free grok.com login on 2026-11-21. Not on the plan, so the
+/// worker pick marks the model unusable and tries the next one.
+fn is_unknown_model(lower: &str) -> bool {
+    lower.contains("unknown model id")
+}
+
 pub(super) fn classify(message: &str) -> ErrorKind {
     if let Some(kind) = classify_common(message) {
         return kind;
     }
     let lower = message.to_lowercase();
-    if is_entitlement_text(&lower) {
+    if is_entitlement_text(&lower) || is_unknown_model(&lower) {
         ErrorKind::NotEntitled
     } else if is_auth_text(&lower) {
         ErrorKind::Auth

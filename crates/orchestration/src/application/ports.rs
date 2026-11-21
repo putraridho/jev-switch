@@ -10,7 +10,7 @@ use std::time::Duration;
 use anyhow::Result;
 use serde_json::Value;
 
-use jev_backend::{BackendFactory, ProviderId, TurnError, TurnOutcome, TurnRequest};
+use jev_backend::{Approver, BackendFactory, ProviderId, TurnError, TurnOutcome, TurnRequest};
 use jev_catalog::domain::model_table::{ModelSpec, TaskType};
 use jev_judgment::application::judge::Router;
 use jev_judgment::domain::want::ProviderWant;
@@ -163,6 +163,9 @@ pub trait WorkerPolicy: Send + Sync {
     fn outgoing(&self, prompt: &str, provider: ProviderId, model: &str, now_ms: u64) -> String;
     /// The request that runs a worker in `dir`: plan mode when `read_only`.
     fn request(&self, dir: &Path, model: &str, prompt: String, read_only: bool) -> TurnRequest;
+    /// Who answers the tool calls a worker's CLI asks jev-code about, for a worker in `dir`.
+    /// Nobody watches a worker, so the answer is a rule, never a question.
+    fn approver(&self, dir: &Path, read_only: bool) -> Arc<dyn Approver>;
 }
 
 /// Reads everything recovery needs from disk in one blocking step.

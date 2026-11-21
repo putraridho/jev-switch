@@ -27,9 +27,11 @@ impl Acp {
         let raw = &call["rawInput"];
         // Only known raw command inputs get Bash rules/auto approval. Never infer
         // an executable command from the model-authored title or display content.
-        let (tool, input) = match shell_command(&call) {
-            Some(command) => ("Bash".to_string(), json!({ "command": command })),
-            None => (
+        let edited = (self.agent == super::Agent::Grok).then(|| edited_file(&call)).flatten();
+        let (tool, input) = match (shell_command(&call), edited) {
+            (Some(command), _) => ("Bash".to_string(), json!({ "command": command })),
+            (None, Some(path)) => ("Edit".to_string(), json!({ "file_path": path })),
+            (None, None) => (
                 foreign_tool_name(call["name"].as_str().or(call["title"].as_str()).unwrap_or("AntigravityTool")),
                 // What the model passed to the tool, not the protocol's bookkeeping around it
                 // (`kind`, `status`, `toolCallId`, a copy of the input): that is all the
@@ -85,6 +87,21 @@ fn shell_command(call: &Value) -> Option<&str> {
         return None;
     }
     raw["command"].as_str().or(raw["CommandLine"].as_str()).filter(|c| !c.trim().is_empty())
+}
+
+/// The one file an edit call changes (Grok asks about edits: it has no accept-edits mode).
+/// Taken only when the call is an edit and every place it names is the same single path:
+/// from `locations` and the raw input's `file_path`/`path`. Anything else (no path, two
+/// different ones) is not an `Edit` and stays a tool the approver does not know.
+fn edited_file(call: &Value) -> Option<String> {
+    if call["kind"] != "edit" {
+        return None;
+    }
+    let raw = &call["rawInput"];
+    let mut paths: Vec<&str> = call["locations"].as_array().into_iter().flatten().filter_map(|l| l["path"].as_str()).collect();
+    paths.extend(["file_path", "path"].iter().filter_map(|k| raw[k].as_str()));
+    let first = *paths.first()?;
+    (!first.trim().is_empty() && paths.iter().all(|p| *p == first)).then(|| first.to_string())
 }
 
 fn cancelled(id: &Value) -> String {

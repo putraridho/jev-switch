@@ -4,6 +4,14 @@ See [docs/changelog-guide.md](docs/changelog-guide.md) for changelog formatting,
 
 ## Unreleased
 
+## 1.11.6
+
+Gemini and Grok workers can run shell commands again.
+
+- **Workers answer tool calls by a rule instead of denying them all.** A delegated worker has nobody to approve its tool calls, so every shell command a Gemini worker asked about was denied and the worker stopped without an answer (9 of 13 Gemini delegations failed). A worker now may run what `CODE_ALLOWED_TOOLS` allows (editing workers only) and commands that only read or build and test the project (`git status`/`diff`/`log`, `grep`, `cat`, `cargo test`, `npm test`, …), as long as no path in them leaves its worktree (`/…`, `~`, `..`). Committing, the network and anything else is still denied. Claude Code and Codex workers are unchanged: they decide inside their own CLI.
+- **Grok workers run over ACP.** Headless Grok denied every shell command itself; a worker now runs `grok agent stdio`, so its shell commands reach the same rule, and an editing worker may edit files inside its worktree (not `.git`), since Grok has no accept-edits mode. Grok turns in a session are unchanged. The request shapes were taken from the ACP spec; anything Grok sends in another shape is denied, never allowed.
+- **A Grok model the login cannot use is skipped.** "unknown model id" (as `grok-build-0.1` is for a free grok.com login) now counts as not on the plan, so the next model is tried, and a Grok quota error over ACP keeps its detail so the provider cools down.
+
 ## 1.11.5
 
 A message that starts with `#` reaches the model instead of landing in AGENTS.md.
