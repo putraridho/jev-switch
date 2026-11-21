@@ -3,15 +3,15 @@
 
 use std::path::Path;
 
-use crate::shared::application::host;
+use crate::shared::application::host::Host;
 use crate::turn::domain::budget::Budget;
 use crate::turn::domain::failover_policy::FailoverPolicy;
 
 /// Keep the cap (or no cap) for the next session.
-pub fn save_budget(budget: &Budget, state_dir: &Path) -> std::io::Result<()> {
+pub fn save_budget(host: &dyn Host, budget: &Budget, state_dir: &Path) -> std::io::Result<()> {
     let path = Budget::file_path(state_dir);
     match budget.file_text() {
-        Some(text) => host::write_private(&path, &text),
+        Some(text) => host.write_private(&path, &text),
         None => match std::fs::remove_file(&path) {
             Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e),
             _ => Ok(()),
@@ -20,13 +20,14 @@ pub fn save_budget(budget: &Budget, state_dir: &Path) -> std::io::Result<()> {
 }
 
 /// Keep the failover policy for the next session.
-pub fn save_failover(policy: &FailoverPolicy, state_dir: &Path) -> std::io::Result<()> {
-    host::write_private(&FailoverPolicy::file_path(state_dir), &policy.to_string())
+pub fn save_failover(host: &dyn Host, policy: &FailoverPolicy, state_dir: &Path) -> std::io::Result<()> {
+    host.write_private(&FailoverPolicy::file_path(state_dir), &policy.to_string())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::shared::infrastructure::system_host::SystemHost;
     use crate::turn::domain::budget::{Cap, PriceTable};
 
     #[test]
@@ -36,12 +37,12 @@ mod tests {
         std::fs::create_dir_all(&d).unwrap();
         assert_eq!(Budget::load(Some(&d)), Budget::default());
         for cap in [Cap::Usd(5.0), Cap::Tokens(2_000_000)] {
-            save_budget(&Budget { cap: Some(cap) }, &d).unwrap();
+            save_budget(&SystemHost, &Budget { cap: Some(cap) }, &d).unwrap();
             assert_eq!(Budget::load(Some(&d)).cap, Some(cap));
         }
-        save_budget(&Budget::default(), &d).unwrap();
+        save_budget(&SystemHost, &Budget::default(), &d).unwrap();
         assert_eq!(Budget::load(Some(&d)).cap, None);
-        save_budget(&Budget::default(), &d).unwrap();
+        save_budget(&SystemHost, &Budget::default(), &d).unwrap();
         std::fs::write(d.join("prices.txt"), "m 1 1 1").unwrap();
         assert!(PriceTable::load(Some(&d)).price("m").is_some());
         let _ = std::fs::remove_dir_all(&d);
@@ -55,7 +56,7 @@ mod tests {
         std::fs::create_dir_all(&d).unwrap();
         assert_eq!(FailoverPolicy::load(Some(&d)), FailoverPolicy::default());
         let p = FailoverPolicy { max_attempts: 2, paid_fallback: false };
-        save_failover(&p, &d).unwrap();
+        save_failover(&SystemHost, &p, &d).unwrap();
         assert_eq!(FailoverPolicy::load(Some(&d)), p);
         let _ = std::fs::remove_dir_all(&d);
     }

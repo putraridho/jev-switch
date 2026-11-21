@@ -7,6 +7,7 @@
 use std::path::{Path, PathBuf};
 
 use crate::backend::ProviderId;
+use crate::shared::application::host::Host;
 use crate::turn::domain::budget::{Budget, Meter, PriceTable};
 use crate::catalog::domain::model_table::{TaskType, Usable};
 use crate::turn::domain::failover_policy::FailoverPolicy;
@@ -63,10 +64,10 @@ impl Guards {
     /// Every setting file of the user's state folder and the project. A missing file is
     /// the default; a broken line is kept in `problems` and skipped. `JEV_LOCAL_ONLY=1`
     /// turns local-only mode on whatever the files say.
-    pub fn load(state_dir: Option<&Path>, project: &Path) -> Self {
+    pub fn load(host: &dyn Host, state_dir: Option<&Path>, project: &Path) -> Self {
         let (privacy, privacy_errors) = Policy::load(state_dir, project);
         let (rules, rule_errors) = Rules::load(state_dir, project);
-        let local_only = crate::shared::application::host::env("JEV_LOCAL_ONLY").is_some_and(|v| matches!(v.trim(), "1" | "on" | "true" | "yes"));
+        let local_only = host.env("JEV_LOCAL_ONLY").is_some_and(|v| matches!(v.trim(), "1" | "on" | "true" | "yes"));
         let mut problems: Vec<String> = privacy_errors.iter().map(|(file, e)| format!("{}: {e}", file.display())).collect();
         problems.extend(rule_errors.iter().map(|e| format!("routing.rules line {}: {}", e.line, e.message)));
         Self {
@@ -306,7 +307,7 @@ mod tests {
         std::fs::write(state.join("routing.rules"), "prefer claude\n").unwrap();
         std::fs::write(state.join("budget"), "usd 3").unwrap();
         std::fs::write(state.join("failover"), "max-attempts 2").unwrap();
-        let g = Guards::load(Some(&state), &project);
+        let g = Guards::load(&crate::shared::infrastructure::system_host::SystemHost, Some(&state), &project);
         assert_eq!(g.privacy.rule_count(), 1);
         assert_eq!(g.problems.len(), 1);
         assert_eq!(g.budget.cap, Some(Cap::Usd(3.0)));

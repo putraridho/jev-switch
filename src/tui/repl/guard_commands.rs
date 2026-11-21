@@ -6,6 +6,7 @@ use std::path::Path;
 use crate::turn::domain::budget;
 use crate::turn::domain::budget::Cap;
 use crate::turn::application::guards::Guards;
+use crate::shared::infrastructure::system_host::SystemHost;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum GuardCmd {
@@ -61,11 +62,11 @@ pub fn run(cmd: GuardCmd, guards: &mut Guards, state_dir: Option<&Path>, plans: 
         GuardCmd::BudgetShow => budget::meter_text(&guards.meter, &guards.budget, plans),
         GuardCmd::BudgetSet(cap) => {
             guards.budget.cap = Some(cap);
-            saved(state_dir, |d| crate::turn::application::guard_store::save_budget(&guards.budget, d), "Paid models stop being picked once the cap is used up.")
+            saved(state_dir, |d| crate::turn::application::guard_store::save_budget(&SystemHost, &guards.budget, d), "Paid models stop being picked once the cap is used up.")
         }
         GuardCmd::BudgetClear => {
             guards.budget.cap = None;
-            saved(state_dir, |d| crate::turn::application::guard_store::save_budget(&guards.budget, d), "No cap on paid use.")
+            saved(state_dir, |d| crate::turn::application::guard_store::save_budget(&SystemHost, &guards.budget, d), "No cap on paid use.")
         }
         GuardCmd::PrivacyShow => privacy_text(guards),
         GuardCmd::LocalOnly(on) => match guards.privacy.set_local_only(on) {
@@ -90,7 +91,7 @@ pub fn run(cmd: GuardCmd, guards: &mut Guards, state_dir: Option<&Path>, plans: 
             if guards.failover.paid_fallback { "on" } else { "off" }
         ),
         GuardCmd::FailoverSet { key, value } => match guards.failover.set(&key, &value) {
-            Ok(()) => saved(state_dir, |d| crate::turn::application::guard_store::save_failover(&guards.failover, d), "Failover policy changed."),
+            Ok(()) => saved(state_dir, |d| crate::turn::application::guard_store::save_failover(&SystemHost, &guards.failover, d), "Failover policy changed."),
             Err(e) => format!("  {e}"),
         },
         GuardCmd::Health => {
@@ -152,9 +153,9 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let mut g = Guards::default();
         run(GuardCmd::BudgetSet(Cap::Usd(3.0)), &mut g, Some(&dir), &[]);
-        assert_eq!(Guards::load(Some(&dir), &dir).budget.cap, Some(Cap::Usd(3.0)));
+        assert_eq!(Guards::load(&SystemHost, Some(&dir), &dir).budget.cap, Some(Cap::Usd(3.0)));
         run(GuardCmd::BudgetClear, &mut g, Some(&dir), &[]);
-        assert_eq!(Guards::load(Some(&dir), &dir).budget.cap, None);
+        assert_eq!(Guards::load(&SystemHost, Some(&dir), &dir).budget.cap, None);
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

@@ -31,6 +31,8 @@ use crate::routing::domain::decide::{Pin, PinOrigin, RoutingState};
 use crate::routing::domain::sticky::Sticky;
 
 use crate::backend::BackendFactory;
+use crate::session::application::ports::SessionStore;
+use crate::shared::application::host::Host;
 use super::ports::{GitStatus, McpWriter, TurnLog};
 
 mod accessors;
@@ -66,6 +68,10 @@ pub struct Engine {
     backend_factory: BackendFactory,
     git_status: GitStatus,
     now: Clock,
+    /// Settings, the state directory and private file writes.
+    host: Arc<dyn Host>,
+    /// Where saved sessions are kept.
+    session_store: Arc<dyn SessionStore>,
     idle_timeout: Duration,
     /// Show assistant text as it arrives instead of holding it until the attempt succeeds
     /// (the interactive screen: a failed attempt's text is then followed by a note saying it

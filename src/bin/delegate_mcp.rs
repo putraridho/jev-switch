@@ -14,7 +14,7 @@
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     jev_router::orchestration::interface::mcp::compose::run(Box::new(|state, dir| {
-        std::sync::Arc::new(jev_router::turn::infrastructure::worker_policy::GuardedWorkers(jev_router::turn::application::guards::Guards::load(Some(state), dir)))
+        std::sync::Arc::new(jev_router::turn::infrastructure::worker_policy::GuardedWorkers(jev_router::turn::application::guards::Guards::load(&jev_router::shared::infrastructure::system_host::SystemHost, Some(state), dir)))
     }))
     .await
 }

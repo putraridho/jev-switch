@@ -9,7 +9,6 @@ use crate::changes::domain::turn_activity::TurnActivity;
 use crate::turn::application::guards::Guards;
 use crate::approval::application::extension_hooks::Hooks;
 use crate::session::domain::session::Sessions;
-use crate::shared::application::host;
 use crate::approval::domain::mode::Mode;
 use crate::orchestration::domain::orchestration_gate::Setup;
 use crate::approval::domain::permission_rule;
@@ -25,6 +24,10 @@ impl Engine {
     /// The given backends, git, turn log writer and idle timeout, the real clock, and the turn
     /// log path from `JEV_CODE_LOG`. Routing is on.
     pub fn new(runtime: Runtime, router: Router, dir: PathBuf, adapters: Adapters) -> Self {
+        let host = adapters.host;
+        let clock = host.clone();
+        let turn_log = host.env("JEV_CODE_LOG").or_else(|| Some(host.state_dir()?.join("code-turns.jsonl").to_string_lossy().into_owned()));
+        let allowed_tools = permission_rule::split_rules(&host.env("CODE_ALLOWED_TOOLS").unwrap_or_default());
         Self {
             runtime,
             sessions: Sessions::new(),
@@ -38,10 +41,12 @@ impl Engine {
             enabled: true,
             backend_factory: adapters.backend_factory,
             git_status: adapters.git_status,
-            now: Box::new(host::now_ms),
+            now: Box::new(move || clock.now_ms()),
+            host,
+            session_store: adapters.sessions,
             idle_timeout: adapters.idle_timeout,
             stream_text: false,
-            turn_log: host::path_from_env("JEV_CODE_LOG", "code-turns.jsonl"),
+            turn_log,
             turn_log_writer: adapters.turn_log,
             write_mcp: adapters.write_mcp,
             previous: None,
@@ -62,7 +67,7 @@ impl Engine {
             session_file: None,
             mode: Mode::default(),
             effort: EffortSetting::default(),
-            allowed_tools: permission_rule::split_rules(&crate::shared::application::host::env("CODE_ALLOWED_TOOLS").unwrap_or_default()),
+            allowed_tools,
         }
     }
 
@@ -75,7 +80,7 @@ impl Engine {
 
     /// Save the session after every turn under `state_dir/sessions/` so it can be resumed
     /// after a restart. `None` (the default of the library) saves nothing; the binary
-    /// passes [`host::state_dir`].
+    /// passes the host's state directory.
     pub fn with_persistence(self, state_dir: Option<PathBuf>) -> Self {
         // The settings that fence in the router live beside the saved sessions.
         let settings = state_dir.clone();
@@ -86,7 +91,7 @@ impl Engine {
     /// budget, failover, routing rules) from `settings`: a one-shot keeps no session yet still
     /// obeys them.
     pub fn with_persistence_and_settings(mut self, persist: Option<PathBuf>, settings: Option<&std::path::Path>) -> Self {
-        self.guards = Guards::load(settings, &self.dir);
+        self.guards = Guards::load(&*self.host, settings, &self.dir);
         self.persist = persist;
         self.settings = settings.map(Path::to_path_buf);
         self

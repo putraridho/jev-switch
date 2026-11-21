@@ -8,6 +8,8 @@ use serde_json::Value;
 
 use crate::backend::{self, BackendFactory, Decision, Event, McpAttachment, PermissionRequest, ProviderId, TurnError, TurnOutcome};
 use crate::approval::application::claude_settings_file;
+use crate::session::application::ports::SessionStore;
+use crate::shared::application::host::Host;
 use crate::approval::domain::always_plan::{Offer, Settled};
 use crate::turn::domain::failover::{Failover, NoRouteInfo};
 use crate::turn::domain::route_facts::RouteFacts;
@@ -161,4 +163,8 @@ pub struct Adapters {
     pub turn_log: Arc<dyn TurnLog>,
     pub idle_timeout: Duration,
     pub write_mcp: McpWriter,
+    /// Settings, the clock, the state directory and private file writes.
+    pub host: Arc<dyn Host>,
+    /// Where saved sessions are kept.
+    pub sessions: Arc<dyn SessionStore>,
 }

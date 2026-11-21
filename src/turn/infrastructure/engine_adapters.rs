@@ -7,6 +7,8 @@ use std::sync::Arc;
 use crate::backend::idle_timeout_from_env;
 use crate::backend::infrastructure::claude::claude_cli::mcp_config::write_mcp_config;
 use crate::providers::infrastructure::backend_factory::session_backend_for;
+use crate::session::infrastructure::session_file::FileSessions;
+use crate::shared::infrastructure::system_host::SystemHost;
 use crate::turn::application::ports::Adapters;
 
 use super::git_status::git_status_short;
@@ -19,5 +21,7 @@ pub fn real() -> Adapters {
         turn_log: Arc::new(FileTurnLog),
         idle_timeout: idle_timeout_from_env(),
         write_mcp: Box::new(write_mcp_config),
+        host: Arc::new(SystemHost),
+        sessions: Arc::new(FileSessions),
     }
 }
