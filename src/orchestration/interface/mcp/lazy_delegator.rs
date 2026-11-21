@@ -1,7 +1,7 @@
 //! The real delegator, built on first use: probing providers takes seconds and the MCP
 //! handshake must not wait for it.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -11,11 +11,17 @@ use tokio::sync::OnceCell;
 use crate::judgment::application::judge::Router;
 use crate::judgment::infrastructure::typesafe_http::TypeSafe;
 use crate::orchestration::application::delegator::Delegator;
-use crate::orchestration::application::ports::{router_judge, BoxFut, DelegateApi};
+use crate::orchestration::application::ports::{router_judge, BoxFut, DelegateApi, WorkerPolicy};
 use crate::orchestration::domain::delegation::DelegateRequest;
+use crate::orchestration::infrastructure::adapters;
 use crate::orchestration::infrastructure::git_worktrees::GitWorktrees;
+use crate::orchestration::infrastructure::worker_file::Store;
 use crate::providers::application::provider_registry::Runtime;
 use crate::shared::infrastructure::jsonl_log as log;
+
+/// The privacy policy and permission mode workers run under, built from the state directory
+/// and the project: the binary supplies it (it lives outside this context).
+pub type PolicyFor = Box<dyn Fn(&Path, &Path) -> Arc<dyn WorkerPolicy> + Send + Sync>;
 
 /// Builds the real [`Delegator`] on first use: probing providers takes seconds and the
 /// MCP handshake must not wait for it.
@@ -23,6 +29,7 @@ pub(super) struct Lazy {
     pub(super) dir: PathBuf,
     pub(super) planner: String,
     pub(super) cell: OnceCell<Arc<Delegator>>,
+    pub(super) policy_for: PolicyFor,
 }
 
 impl Lazy {
@@ -31,12 +38,11 @@ impl Lazy {
         let state = log::state_dir().context("no state directory (is HOME set?)")?;
         let worktrees = GitWorktrees::new(&self.dir, state.join("worktrees"))?;
         let runtime = Runtime::start(std::sync::Arc::new(crate::providers::infrastructure::probe_facts::SystemProbes)).await;
-        let delegator = Delegator::new(runtime, router_judge(router), Box::new(worktrees))
+        let delegator = Delegator::new(runtime, router_judge(router), Box::new(worktrees), adapters::real((self.policy_for)(&state, &self.dir)))
             .with_log(log::path_from_env("JEV_DELEGATE_LOG", "orchestration.jsonl"))
             .with_planner(self.planner.clone())
-            .with_guards(crate::turn::application::guards::Guards::load(Some(&state), &self.dir))
             .with_auto_merge(auto_merge_on(crate::shared::infrastructure::env_file::lookup("JEV_AUTO_MERGE").as_deref()))
-            .with_store(&state);
+            .with_records(Arc::new(Store { dir: state.join("workers") }));
         // Workers an earlier run left: reload the mergeable ones, remove the abandoned ones.
         delegator.recover().await;
         Ok(Arc::new(delegator))

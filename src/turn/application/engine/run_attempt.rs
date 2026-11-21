@@ -49,7 +49,7 @@ impl Engine {
         }
         backend.set_streaming(self.stream_text);
         if let Some(mcp) = chosen.mcp.as_ref().filter(|_| backend.supports_mcp()) {
-            match orchestrate::write_mcp_config(mcp) {
+            match (self.write_mcp)(mcp) {
                 Ok(()) => {
                     backend.attach_mcp(mcp);
                     sent = format!("{}\n\n{sent}", orchestrate::PLANNER_NOTE);

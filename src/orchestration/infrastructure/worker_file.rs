@@ -4,7 +4,7 @@
 use std::path::{Path, PathBuf};
 
 use crate::orchestration::application::ports::{Liveness, Records};
-use crate::orchestration::domain::recovery::Found;
+use crate::orchestration::domain::recovery::{Found, Scan};
 use crate::orchestration::domain::worker::Saved;
 
 use super::delegation_log::handoff_key;
@@ -143,14 +143,8 @@ pub fn open_workers(state_dir: &Path, repo: &Path) -> Vec<OpenWorker> {
 }
 
 /// Everything recovery reads from disk, gathered in one blocking step.
-pub struct Scan {
-    pub records: Vec<Found>,
-    /// Directories under the worktrees root, with their modification time.
-    pub dirs: Vec<(PathBuf, Option<u64>)>,
-}
-
-impl Scan {
-    pub fn gather(records: &dyn Records, liveness: &dyn Liveness, root: &Path) -> Self {
+pub fn gather_scan(records: &dyn Records, liveness: &dyn Liveness, root: &Path) -> Scan {
+    {
         let me = liveness.me();
         let records = records
             .load()
@@ -173,6 +167,6 @@ impl Scan {
                 (p, ms)
             })
             .collect();
-        Self { records, dirs }
+        Scan { records, dirs }
     }
 }

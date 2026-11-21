@@ -81,13 +81,13 @@ pub(super) fn engine_for(args: &Args, runtime: Runtime, router: Router, dir: Pat
     let routing = saved.routing.unwrap_or_else(|| commands::typo::routing_enabled(envfile::lookup("JEV_PROVIDERS").as_deref()));
     let orchestrate = orchestrate::start(saved.orchestrate, envfile::lookup("JEV_ORCHESTRATE").as_deref(), session.is_some());
     let hooks = std::sync::Arc::new(crate::approval::application::extension_hooks::Hooks::load(&crate::approval::application::extensions::Places::from_env(&dir)));
-    let engine = Engine::new(runtime, router, dir)
+    let engine = Engine::new(runtime, router, dir, crate::turn::infrastructure::engine_adapters::real())
         .with_working_tree(std::sync::Arc::new(crate::changes::infrastructure::git_tree::GitWorkingTree))
         .with_backend_factory(Box::new(crate::providers::infrastructure::backend_factory::run_backends(can_ask)))
         .with_enabled(routing)
         .with_mode(mode)
         .with_orchestrate(orchestrate)
-        .with_orch_setup(Setup::detect())
+        .with_orch_setup(Setup::detect(crate::shared::infrastructure::jsonl_log::state_dir(), envfile::lookup("JEV_DELEGATE_BIN"), std::env::current_exe().ok().as_deref()))
         .with_hooks(hooks)
         .with_downgrade_after(envfile::lookup_f64("DOWNGRADE_AFTER", 2.0) as u32);
     match &args.pin {

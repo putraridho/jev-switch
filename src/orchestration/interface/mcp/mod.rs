@@ -3,7 +3,7 @@
 //! the lazily built delegator and the stdio loop.
 
 mod json_rpc;
-mod lazy_delegator;
+pub mod lazy_delegator;
 mod tool_arguments;
 mod tool_schema;
 

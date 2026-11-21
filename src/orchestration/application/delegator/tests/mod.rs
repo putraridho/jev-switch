@@ -22,7 +22,12 @@ use crate::backend::{TurnError, TurnOutcome};
 use crate::catalog::domain::model_table::models;
 use crate::orchestration::application::delegator::background::task_number;
 use crate::orchestration::domain::recovery::{Fate, Found};
-use crate::orchestration::infrastructure::delegation_log::{handoff_key, recent_delegations, AttemptLog};
+use crate::orchestration::application::ports::AttemptLog;
+use crate::orchestration::infrastructure::adapters;
+use crate::orchestration::infrastructure::delegation_log::{handoff_key, recent_delegations};
+use crate::orchestration::infrastructure::worker_file::Store;
+use crate::turn::application::guards::Guards;
+use crate::turn::infrastructure::worker_policy::GuardedWorkers;
 use crate::orchestration::infrastructure::git_worktrees::GitWorktrees;
 use crate::orchestration::application::ports::CheckRun;
 use crate::orchestration::infrastructure::worker_file::{has_leftovers, open_workers, plain_id};
@@ -209,7 +214,7 @@ fn delegator_on(wt: &Arc<FakeWorktrees>, ready: &[ProviderId], task: TaskType, s
     let avail = PROVIDERS.iter().map(|p| availability(*p, ready.contains(p))).collect();
     let (st, sc, md) = (started.clone(), scripts.clone(), modes.clone());
     let judge: Judge = Box::new(move |_| Box::pin(async move { Some(want(task)) }));
-    Delegator::new(Runtime::for_tests(avail), judge, Box::new(wt.clone()))
+    Delegator::new(Runtime::for_tests(avail), judge, Box::new(wt.clone()), real_adapters())
         .with_backend_factory(Box::new(move |p| {
             let script = sc.lock().unwrap()[&p];
             Box::new(fake_cli(p, script, &st, &md))
@@ -235,4 +240,9 @@ fn rig(ready: &[ProviderId], task: TaskType) -> Rig {
 
 fn brief(text: &str) -> DelegateRequest {
     DelegateRequest { brief: text.into(), ..DelegateRequest::default() }
+}
+
+/// The real adapters with the default privacy policy (no settings files).
+fn real_adapters() -> crate::orchestration::application::ports::Adapters {
+    adapters::real(Arc::new(GuardedWorkers(Guards::default())))
 }

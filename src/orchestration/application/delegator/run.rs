@@ -30,18 +30,17 @@ impl Delegator {
         // have it, and Jev (a cloud service) is asked only when some cloud provider may.
         let repo = self.worktrees.repo();
         let outgoing = worker_prompt(&req.brief, &req.files, req.read_only);
-        let verdict = self.guards.privacy.check(&repo, &outgoing, &[]);
+        let screen = self.policy.screen(&repo, &outgoing, &req.brief);
         let mut excluded: HashSet<(ProviderId, String)> = HashSet::new();
-        for p in crate::shared::ALL_PROVIDERS.into_iter().filter(|p| !verdict.permits(*p)) {
+        for p in crate::shared::ALL_PROVIDERS.into_iter().filter(|p| !screen.permitted.contains(p)) {
             excluded.extend(crate::catalog::domain::model_table::models().iter().filter(|m| m.provider == p).map(|m| (m.provider, m.id.to_string())));
         }
-        if crate::shared::ALL_PROVIDERS.into_iter().all(|p| !verdict.permits(p)) {
-            return Finished::done(DelegateResult::failed(format!("not delegated: {}", verdict.refusal_line()), Vec::new()));
+        if screen.permitted.is_empty() {
+            return Finished::done(DelegateResult::failed(format!("not delegated: {}", screen.refusal), Vec::new()));
         }
-        let want = if self.guards.may_leave(&repo, &outgoing, &[]) {
-            (self.judge)(crate::turn::domain::privacy::outgoing::prepare(&self.guards.privacy, &req.brief).prompt).await
-        } else {
-            None
+        let want = match screen.judge_prompt {
+            Some(prompt) => (self.judge)(prompt).await,
+            None => None,
         };
         let signals = want.as_ref().map_or_else(BriefSignals::unjudged, |w| signals_of(w, req.read_only));
         let jev = want.map_or(Value::Null, |w| w.signals);

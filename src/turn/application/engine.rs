@@ -12,7 +12,7 @@
 //!   [`routing::decide`] with the live usable set, also after a failure);
 //! - a failed attempt never produces an answer: only a successful attempt returns text.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -31,6 +31,7 @@ use crate::routing::domain::decide::{Pin, PinOrigin, RoutingState};
 use crate::routing::domain::sticky::Sticky;
 
 use crate::backend::BackendFactory;
+use super::ports::{GitStatus, McpWriter, TurnLog};
 
 mod accessors;
 mod attempt;
@@ -49,7 +50,6 @@ mod tests;
 /// Budget for the catch-up block put in front of a prompt after a provider switch.
 const CATCH_UP_TOKENS: usize = 10_000;
 
-type GitStatus = Box<dyn Fn(&Path) -> String + Send + Sync>;
 type Clock = Box<dyn Fn() -> u64 + Send + Sync>;
 
 pub struct Engine {
@@ -72,6 +72,8 @@ pub struct Engine {
     /// was cut off, which the failover line already says).
     stream_text: bool,
     turn_log: Option<String>,
+    turn_log_writer: Arc<dyn TurnLog>,
+    write_mcp: McpWriter,
     /// The last (prompt, reply), for Jev's correction question.
     previous: Option<(String, String)>,
     /// Context size the last answering CLI reported.

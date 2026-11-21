@@ -8,10 +8,14 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Result;
+use serde_json::Value;
 
+use crate::backend::{BackendFactory, ProviderId, TurnError, TurnOutcome, TurnRequest};
+use crate::catalog::domain::model_table::{ModelSpec, TaskType};
 use crate::judgment::application::judge::Router;
 use crate::judgment::domain::want::ProviderWant;
 use crate::orchestration::domain::delegation::DelegateRequest;
+use crate::orchestration::domain::recovery::Scan;
 use crate::orchestration::domain::worker::{Owner, Saved};
 
 pub type BoxFut<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
@@ -108,4 +112,70 @@ pub trait Checks: Send + Sync {
     /// Run `command` in `dir` until it ends, the timeout passes, or `stop()` says to give up.
     /// Blocks: the caller runs it off the async threads.
     fn run(&self, dir: &Path, command: &str, stop: &dyn Fn() -> bool) -> CheckRun;
+}
+
+/// Everything one log row needs.
+pub struct AttemptLog<'a> {
+    pub spec: &'static ModelSpec,
+    pub id: &'a str,
+    pub task: TaskType,
+    pub attempt: u32,
+    pub read_only: bool,
+    pub jev: &'a Value,
+    pub result: &'a Result<TurnOutcome, TurnError>,
+    pub wall_ms: u64,
+    /// Unix ms when the backend turn began.
+    pub started_ms: u64,
+    pub files: &'a [String],
+    pub tools: &'a [String],
+    /// Where the work went (`Landing::tag`, or `Verdict::tag` before it lands); `None`
+    /// for a failed attempt.
+    pub landing: Option<&'static str>,
+    /// A read-only worker that ran in the user's folder instead of a worktree.
+    pub in_place: bool,
+}
+
+/// Where worker attempts are logged. Real: `delegation_log::JsonlLog`.
+pub trait DelegationLog: Send + Sync {
+    /// Append the row for one attempt to the log at `path`; `repo` is the repository the
+    /// worker was cut from.
+    fn append(&self, path: &str, planner: &str, repo: &Path, a: &AttemptLog);
+}
+
+/// What the privacy policy says about a brief.
+pub struct Screen {
+    /// Providers the brief may go to.
+    pub permitted: Vec<ProviderId>,
+    /// Why nothing may take it (used when `permitted` is empty).
+    pub refusal: String,
+    /// What Jev's judge may be sent (secrets blanked), or `None` when no cloud provider may
+    /// have the brief, so Jev is not asked.
+    pub judge_prompt: Option<String>,
+}
+
+/// The rules a worker's prompt and request answer to, as the planner's own turns do: the
+/// privacy policy with its audit log, and the permission mode and trust of a worker's turn.
+/// Real: built by the composition root.
+pub trait WorkerPolicy: Send + Sync {
+    /// Which providers may have `outgoing` (the worker prompt for `brief`).
+    fn screen(&self, repo: &Path, outgoing: &str, brief: &str) -> Screen;
+    /// The prompt as it may leave for `provider`, secrets blanked; the audit log is told.
+    fn outgoing(&self, prompt: &str, provider: ProviderId, model: &str, now_ms: u64) -> String;
+    /// The request that runs a worker in `dir`: plan mode when `read_only`.
+    fn request(&self, dir: &Path, model: &str, prompt: String, read_only: bool) -> TurnRequest;
+}
+
+/// Reads everything recovery needs from disk in one blocking step.
+pub type Scanner = Arc<dyn Fn(&dyn Records, &dyn Liveness, &Path) -> Scan + Send + Sync>;
+
+/// The adapters a delegator cannot build itself (they live in outer layers or other
+/// contexts); the composition root passes them to `Delegator::new`.
+pub struct Adapters {
+    pub liveness: Arc<dyn Liveness>,
+    pub checks: Arc<dyn Checks>,
+    pub backend_factory: BackendFactory,
+    pub idle_timeout: Duration,
+    pub log: Arc<dyn DelegationLog>,
+    pub scan: Scanner,
+    pub policy: Arc<dyn WorkerPolicy>,
 }

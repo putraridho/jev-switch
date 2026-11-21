@@ -4,7 +4,6 @@ use std::collections::{BTreeSet, HashSet};
 use std::path::PathBuf;
 
 use crate::orchestration::domain::recovery::{Fate, ORPHAN_GRACE_MS};
-use crate::orchestration::infrastructure::worker_file::Scan;
 
 use super::{lock, Delegator};
 
@@ -18,7 +17,8 @@ impl Delegator {
     pub async fn recover(&self) {
         let Some(records) = self.records.clone() else { return };
         let (liveness, root) = (self.liveness.clone(), self.worktrees.root());
-        let Ok(scan) = Self::off_thread(move || Scan::gather(&*records, &*liveness, &root)).await else { return };
+        let scan = self.scan.clone();
+        let Ok(scan) = Self::off_thread(move || scan(&*records, &*liveness, &root)).await else { return };
         let now = (self.now)();
         let known: HashSet<&PathBuf> = scan.records.iter().map(|f| &f.saved.path).collect();
         let mut repos: BTreeSet<PathBuf> = BTreeSet::new();

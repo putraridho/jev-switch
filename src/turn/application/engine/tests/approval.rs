@@ -119,7 +119,7 @@ fn ask_engine_running(name: &str, backend: BackendFactory) -> (Engine, PathBuf) 
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let router = Router::new(TypeSafe::with_url("k", "http://127.0.0.1:1"), 1.0);
-    let engine = Engine::new(Runtime::for_tests(vec![availability(Claude, State::Ready)]), router, dir.clone())
+    let engine = Engine::new(Runtime::for_tests(vec![availability(Claude, State::Ready)]), router, dir.clone(), crate::turn::infrastructure::engine_adapters::real())
         .with_track_changes(false)
         .with_persistence(None)
         .with_backend_factory(backend)

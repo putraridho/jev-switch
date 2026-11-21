@@ -47,3 +47,10 @@ impl Found {
         }
     }
 }
+
+/// Everything recovery reads from disk, gathered in one blocking step.
+pub struct Scan {
+    pub records: Vec<Found>,
+    /// Directories under the worktrees root, with their modification time.
+    pub dirs: Vec<(std::path::PathBuf, Option<u64>)>,
+}
