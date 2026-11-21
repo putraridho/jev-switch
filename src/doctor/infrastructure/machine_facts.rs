@@ -7,6 +7,8 @@ use std::time::Duration;
 use serde_json::json;
 
 use crate::doctor::domain::diagnose::EnvFileFacts;
+use crate::judgment::application::ports::JevTransport;
+use crate::judgment::application::wire::{choice_question, decode_choice};
 use crate::judgment::infrastructure::typesafe_http::TypeSafe;
 
 /// The Jev ping and the `git` check each get this long, so `doctor` never hangs.
@@ -15,8 +17,9 @@ const IO_CAP: Duration = Duration::from_secs(3);
 /// `(key present, reachable)`. Reachable is not asked without a key.
 pub(crate) async fn jev_status() -> (bool, Option<bool>) {
     let Ok(client) = TypeSafe::from_env() else { return (false, None) };
-    let ping = client.choice(json!("ping"), "Pick option a.", json!({ "a": "the only real option", "b": "never pick this" }));
-    let ok = matches!(tokio::time::timeout(IO_CAP, ping).await, Ok(Ok(_)));
+    let question = choice_question("Pick option a.", json!({ "a": "the only real option", "b": "never pick this" }));
+    let ping = client.ask_many(json!("ping"), json!({ "q": question }));
+    let ok = matches!(tokio::time::timeout(IO_CAP, ping).await, Ok(Ok(answers)) if decode_choice(&answers, "q").is_ok());
     (true, Some(ok))
 }
 

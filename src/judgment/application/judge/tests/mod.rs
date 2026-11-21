@@ -5,7 +5,8 @@ use serde_json::{json, Value};
 use crate::catalog::domain::model_table::TaskType;
 use crate::judgment::domain::orchestration::Orchestration;
 use crate::judgment::domain::security::Security;
-use crate::judgment::infrastructure::typesafe_http::{choice_question, TypeSafe};
+use crate::judgment::application::wire::choice_question;
+use crate::judgment::infrastructure::typesafe_http::TypeSafe;
 use crate::testkit::fake_jev::{fake_jev, stalled_jev};
 
 use super::provider::repo_question_task;

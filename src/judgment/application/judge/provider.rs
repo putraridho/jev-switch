@@ -7,7 +7,7 @@ use crate::catalog::domain::model_table::TaskType;
 use crate::judgment::domain::orchestration::Orchestration;
 use crate::judgment::domain::security::security_level;
 use crate::judgment::domain::want::ProviderWant;
-use crate::judgment::infrastructure::typesafe_http::{decode_choice, decode_noul};
+use crate::judgment::application::wire::{decode_choice, decode_noul};
 
 use super::questions::*;
 use super::Router;

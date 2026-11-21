@@ -11,16 +11,21 @@ mod signals;
 mod tests;
 
 use anyhow::Result;
-use serde_json::json;
+use serde_json::{json, Value};
+use std::sync::Arc;
 
 use crate::catalog::domain::model_table::{MODEL_CHEAP, MODEL_MID, MODEL_STRONG};
 use crate::judgment::domain::security::{is_security_sensitive, is_short_follow_up};
 use crate::judgment::domain::thresholds::JEV_TIMEOUT_MS;
 use crate::judgment::domain::want::Decision;
-use crate::judgment::infrastructure::typesafe_http::{ChoiceAnswer, TypeSafe};
+use crate::judgment::application::ports::JevTransport;
+use crate::judgment::application::wire::{choice_question, decode_choice, decode_noul, noul_question, ChoiceAnswer};
+
+/// The key a single-question call files its question under.
+const SOLO: &str = "q";
 
 pub struct Router {
-    pub ts: TypeSafe,
+    pub ts: Arc<dyn JevTransport>,
     /// Route to the cheap model only when the task is `simple` AND confidence is
     /// at least this. Do NOT guess this — read it off the `tune` sweep.
     pub cheap_threshold: f64,
@@ -39,16 +44,41 @@ pub struct Router {
 }
 
 impl Router {
-    pub fn new(ts: TypeSafe, cheap_threshold: f64) -> Self {
+    pub fn new(ts: impl JevTransport + 'static, cheap_threshold: f64) -> Self {
         let ms = crate::shared::application::host::env("JEV_TIMEOUT_MS").and_then(|v| v.parse().ok()).unwrap_or(JEV_TIMEOUT_MS);
         Self {
-            ts,
+            ts: Arc::new(ts),
             cheap_threshold,
             strong_threshold: 0.0,
             top_threshold: None,
             worker_cheap: None,
             jev_timeout: std::time::Duration::from_millis(ms),
         }
+    }
+
+    /// One Choice judgment over `state`. `criteria` is a JSON object mapping each
+    /// option name to its description (string, or an object with `what`/`not_for`/
+    /// `examples` when options risk confusion).
+    async fn choice(&self, state: Value, instructions: &str, criteria: Value) -> Result<ChoiceAnswer> {
+        let answers = self.ask_one(state, choice_question(instructions, criteria)).await?;
+        decode_choice(&answers, SOLO)
+    }
+
+    /// One Noul (yes/no) judgment; returns P(true) in 0..=1.
+    async fn noul(&self, state: Value, instructions: &str, criteria: Value) -> Result<f64> {
+        self.noul_question(state, noul_question(instructions, criteria)).await
+    }
+
+    /// One prebuilt Noul question (see [`noul_question`]), asked alone. Lets a
+    /// single-call method send exactly the question definition the batch uses.
+    async fn noul_question(&self, state: Value, question: Value) -> Result<f64> {
+        let answers = self.ask_one(state, question).await?;
+        decode_noul(&answers, SOLO)
+    }
+
+    /// One already-built question asked alone, filed under [`SOLO`].
+    async fn ask_one(&self, state: Value, question: Value) -> Result<Value> {
+        self.ts.ask_many(state, json!({ SOLO: question })).await
     }
 
     pub fn with_jev_timeout(mut self, timeout: std::time::Duration) -> Self {
@@ -75,8 +105,7 @@ impl Router {
     /// The single routing judgment, shared by `route` (production) and `tune`
     /// (calibration) so both evaluate the exact same question.
     pub async fn classify(&self, request: &str, recent_context: &str) -> Result<ChoiceAnswer> {
-        self.ts
-            .choice(
+        self.choice(
                 json!({ "request": request, "recent_context": recent_context }),
                 "What does this coding request need from the model?",
                 json!({
@@ -152,7 +181,6 @@ impl Router {
         threshold: f64,
     ) -> Result<(bool, f64)> {
         let p = self
-            .ts
             .noul(
                 json!({ "request": request, "answer": answer }),
                 "Does the answer fully and correctly address the request?",
