@@ -71,7 +71,7 @@ fn detect_gemini_flavor() -> Flavor {
     let settings = std::env::var_os("HOME")
         .and_then(|h| std::fs::read_to_string(PathBuf::from(h).join(".gemini/settings.json")).ok());
     // The same rule the availability probe uses, so "ready" and "which CLI" agree.
-    let configured = crate::backend::infrastructure::gemini::gemini_cli::is_configured(settings.as_deref(), |n| envfile::lookup(n).is_some());
+    let configured = crate::backend::infrastructure::gemini::gemini_cli::auth::is_configured(settings.as_deref(), |n| envfile::lookup(n).is_some());
     choose_gemini_flavor(crate::providers::domain::availability::installed_for_real(&GeminiBackend::gemini_cli().bin), configured)
 }
 

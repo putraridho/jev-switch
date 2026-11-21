@@ -6,7 +6,7 @@ use std::collections::HashMap;
 
 use serde_json::{json, Value};
 
-use super::gemini_cli::finish_or_empty;
+use super::gemini_cli::stream_events::finish_or_empty;
 use crate::backend::{Decision, Event, PermissionRequest, TurnRequest, Usage};
 use crate::approval::domain::mode::Mode;
 

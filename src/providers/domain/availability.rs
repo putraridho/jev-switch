@@ -19,7 +19,7 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::backend::infrastructure::gemini::gemini_cli as gemini;
+use crate::backend::infrastructure::gemini::gemini_cli::auth as gemini;
 use crate::backend::infrastructure::grok::grok_cli as grok;
 use crate::backend::ProviderId;
 use crate::shared::infrastructure::env_file as envfile;
@@ -433,7 +433,7 @@ async fn probe_codex() -> Availability {
     }
     let login_ok = run_capture("codex", &["login", "status"]).await.and_then(|c| parse_codex_login(c.ok, &c.text));
     let plan = read_home_file(".codex/auth.json").and_then(|t| codex_plan_from_auth(&t));
-    let models = read_home_file(".codex/models_cache.json").map(|t| crate::backend::infrastructure::codex::codex_cli::allowed_models_from_cache(&t));
+    let models = read_home_file(".codex/models_cache.json").map(|t| crate::backend::infrastructure::codex::codex_cli::models::allowed_models_from_cache(&t));
     decide_codex(installed, login_ok, plan.as_deref(), models)
 }
 
