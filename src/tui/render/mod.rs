@@ -59,7 +59,8 @@ pub use ansi::{clean_text, clear_line, hide_cursor, restore_cursor, save_cursor,
 pub use changes::{changes_block, diff_colorize, relativize_paths, tool_line, FileChange, MAX_CHANGE_ROWS};
 pub use crate::tui::command_table::{command_names, command_usage, Cmd, Group, COMMANDS, KEYS};
 pub use completion::{complete, completion_start, hint, Candidate, CompleteCtx, SkillChoice};
-pub use diffview::{render_diff, render_hunk, word_diff, DiffOpts, Fold, Layout, Piece, FOLD_AFTER, SPLIT_MIN_WIDTH};
+pub use diffview::word_diff::{word_diff, Piece};
+pub use diffview::{render_diff, render_hunk, DiffOpts, Fold, Layout, FOLD_AFTER, SPLIT_MIN_WIDTH};
 pub use failure::{error_block, failover_note, next_steps_for, no_route_message, problem_block};
 pub use identity::color::{ColorDepth, Rgb};
 pub use identity::events::{ChipFacts, Health, NativeEvent};

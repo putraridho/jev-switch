@@ -4,7 +4,7 @@
 use std::path::Path;
 
 use crate::tui::render::changes::relativize_paths;
-use crate::tui::render::diffview::paint_edit_lines;
+use crate::tui::render::diffview::edit_lines::paint_edit_lines;
 use crate::approval::domain::always_plan::Settled;
 use crate::tui::render::style::Style;
 use crate::tui::render::text::one_line;

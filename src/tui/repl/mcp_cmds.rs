@@ -40,7 +40,7 @@ impl Repl {
             return self.page_out(&uifmt::mcp_text(&[], style));
         }
         let answers = mcp_health_check::check_in_background(&servers);
-        let chosen = self.console.with_terminal(|| crate::tui::views::mcp_picker::run(servers, answers, style, terminal::rows(), terminal::width()));
+        let chosen = self.console.with_terminal(|| crate::tui::views::mcp_picker::session::run(servers, answers, style, terminal::rows(), terminal::width()));
         if let Some((server, scope)) = chosen {
             self.mcp_login_with(&server, scope);
         }
