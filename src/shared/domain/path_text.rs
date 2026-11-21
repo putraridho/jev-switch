@@ -3,7 +3,7 @@
 use std::path::Path;
 
 /// The raw and unwrapped words of a prompt, relative to `root`.
-pub fn mentioned_paths(root: &Path, prompt: &str) -> Vec<String> {
+pub fn mentioned_paths(root: &Path, prompt: &str, home: Option<&str>) -> Vec<String> {
     let wrapper = |c: char| matches!(c, '"' | '\'' | '`' | '(' | ')' | '[' | ']' | '<' | '>' | ',' | ';' | '?' | '!' | ':');
     prompt
         .split_whitespace()
@@ -21,7 +21,7 @@ pub fn mentioned_paths(root: &Path, prompt: &str) -> Vec<String> {
             [raw, unwrapped]
         })
         .filter(|w| !w.is_empty())
-        .map(|w| relative(root, w))
+        .map(|w| relative(root, w, home))
         .collect()
 }
 
@@ -57,10 +57,10 @@ fn strip_location_suffixes(mut path: &str) -> &str {
 
 /// `path` as the policy sees it: `~` expanded, `.` and `..` resolved (so `a/../secrets/x`
 /// is `secrets/x`), and the project root taken off the front.
-pub fn relative(root: &Path, path: &str) -> String {
-    let home = std::env::var("HOME").ok().filter(|h| h.starts_with('/'));
-    let expanded = match (path, &home) {
-        ("~", Some(h)) => h.clone(),
+pub fn relative(root: &Path, path: &str, home: Option<&str>) -> String {
+    let home = home.filter(|h| h.starts_with('/'));
+    let expanded = match (path, home) {
+        ("~", Some(h)) => h.to_string(),
         (p, Some(h)) if p.starts_with("~/") => format!("{}/{}", h.trim_end_matches('/'), &p[2..]),
         _ => path.to_string(),
     };
@@ -153,9 +153,11 @@ mod tests {
 
     #[test]
     fn non_location_suffixes_are_preserved() {
+        assert_eq!(relative(Path::new("/home/user/project"), "~/project/src/main.rs", Some("/home/user")), "src/main.rs");
+        assert_eq!(relative(Path::new(ROOT), "~/secret", None), "~/secret");
         for prompt in ["x.pem:12-x", "x.pem:12-", "x.pem#L", "x.pem#L1-L", "x.pem#L1-extra", "C:\\work\\x.pem"] {
-            assert_eq!(mentioned_paths(Path::new(ROOT), prompt), vec![prompt, prompt]);
+            assert_eq!(mentioned_paths(Path::new(ROOT), prompt, None), vec![prompt, prompt]);
         }
-        assert_eq!(mentioned_paths(Path::new(ROOT), "host:8080"), vec!["host:8080", "host"]);
+        assert_eq!(mentioned_paths(Path::new(ROOT), "host:8080", None), vec!["host:8080", "host"]);
     }
 }

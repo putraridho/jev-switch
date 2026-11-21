@@ -32,7 +32,7 @@ impl Engine {
             runtime,
             sessions: Sessions::new(),
             routing: RoutingState::default(),
-            guards: Guards::default(),
+            guards: Guards { home: host.home(), ..Guards::default() },
             router,
             pin: Pin::Auto,
             pin_origin: PinOrigin::User,

@@ -55,8 +55,8 @@ pub struct Facts<'a> {
 }
 
 impl<'a> Facts<'a> {
-    pub fn new(root: &std::path::Path, prompt: &'a str, task: Option<TaskType>) -> Self {
-        Self { prompt, task, paths: mentioned_paths(root, prompt) }
+    pub fn new(root: &std::path::Path, prompt: &'a str, task: Option<TaskType>, home: Option<&str>) -> Self {
+        Self { prompt, task, paths: mentioned_paths(root, prompt, home) }
     }
 }
 
@@ -230,7 +230,7 @@ mod tests {
     }
 
     fn facts<'a>(prompt: &'a str, task: Option<TaskType>) -> Facts<'a> {
-        Facts::new(Path::new("/w"), prompt, task)
+        Facts::new(Path::new("/w"), prompt, task, None)
     }
 
     #[test]

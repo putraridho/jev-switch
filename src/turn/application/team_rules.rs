@@ -26,11 +26,32 @@ struct RawRule {
 }
 
 #[derive(Debug, Deserialize)]
+#[cfg_attr(test, derive(serde::Serialize))]
+#[serde(rename_all = "lowercase")]
+enum RawProfile {
+    Locked,
+    Careful,
+    Standard,
+    Trusted,
+}
+
+impl From<RawProfile> for Profile {
+    fn from(value: RawProfile) -> Self {
+        match value {
+            RawProfile::Locked => Self::Locked,
+            RawProfile::Careful => Self::Careful,
+            RawProfile::Standard => Self::Standard,
+            RawProfile::Trusted => Self::Trusted,
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
 struct RawTeam {
     #[serde(default)]
     routing: Vec<RawRule>,
     #[serde(default)]
-    max_profile: Option<Profile>,
+    max_profile: Option<RawProfile>,
 }
 
 /// One routing rule: a prompt that contains `contains` (any case) goes to `pin`.
@@ -78,7 +99,7 @@ impl Team {
             let pin = Pin::parse(&r.pin).map_err(|e| TeamError(format!("routing rule {}: {e}", i + 1)))?;
             routing.push(Rule { contains: r.contains.trim().to_ascii_lowercase(), pin });
         }
-        Ok(Team { routing, max_profile: raw.max_profile })
+        Ok(Team { routing, max_profile: raw.max_profile.map(Profile::from) })
     }
 
     /// Only the profile limit of a team file, read apart from the routing rules so that a rule
@@ -90,7 +111,9 @@ impl Team {
         };
         match fields.get("max_profile") {
             None | Some(serde_json::Value::Null) => Ok(None),
-            Some(v) => serde_json::from_value(v.clone()).map(Some).map_err(|e| TeamError(format!("max_profile: {e}"))),
+            Some(v) => serde_json::from_value::<RawProfile>(v.clone())
+                .map(|profile| Some(profile.into()))
+                .map_err(|e| TeamError(format!("max_profile: {e}"))),
         }
     }
 
@@ -142,6 +165,13 @@ impl Team {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn serde_uses_the_lowercase_names() {
+        let profile = serde_json::from_str::<RawProfile>("\"careful\"").unwrap();
+        assert_eq!(Profile::from(profile), Profile::Careful);
+        assert_eq!(serde_json::to_string(&RawProfile::Trusted).unwrap(), "\"trusted\"");
+    }
 
     #[test]
     fn the_limit_survives_a_routing_rule_this_version_cannot_read() {

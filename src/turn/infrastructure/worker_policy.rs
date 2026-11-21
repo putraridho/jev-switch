@@ -17,7 +17,7 @@ pub struct GuardedWorkers(pub Guards);
 
 impl WorkerPolicy for GuardedWorkers {
     fn screen(&self, repo: &Path, outgoing_text: &str, brief: &str) -> Screen {
-        let verdict = self.0.privacy.check(repo, outgoing_text, &[]);
+        let verdict = self.0.privacy.check(repo, outgoing_text, &[], self.0.home.as_deref());
         let permitted = crate::shared::ALL_PROVIDERS.into_iter().filter(|p| verdict.permits(*p)).collect();
         let judge_prompt = self.0.may_leave(repo, outgoing_text, &[]).then(|| outgoing::prepare(&self.0.privacy, brief).prompt);
         Screen { permitted, refusal: verdict.refusal_line(), judge_prompt }

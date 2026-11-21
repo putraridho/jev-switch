@@ -2,8 +2,9 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::providers::domain::availability::host::{find_on_path, probe_command};
-use crate::providers::domain::availability::mise::{is_mise_wrapper, mise_data_dir, mise_installs_binary, really_installed};
+use crate::providers::domain::availability::host::find_on_path;
+use crate::providers::domain::availability::mise::{is_mise_wrapper, mise_data_dir, really_installed};
+use crate::providers::infrastructure::probe_host::{mise_installs_binary, probe_command};
 
 #[test]
 fn probes_run_in_mise_offline_mode_so_they_never_update_or_install() {

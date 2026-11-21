@@ -48,6 +48,7 @@ pub struct Restricted {
 
 #[derive(Debug, Default)]
 pub struct Guards {
+    pub home: Option<String>,
     pub privacy: Policy,
     pub audit: Option<AuditLog>,
     pub rules: Rules,
@@ -71,6 +72,7 @@ impl Guards {
         let mut problems: Vec<String> = privacy_errors.iter().map(|(file, e)| format!("{}: {e}", file.display())).collect();
         problems.extend(rule_errors.iter().map(|e| format!("routing.rules line {}: {}", e.line, e.message)));
         Self {
+            home: host.home(),
             privacy: privacy.with_local_only(local_only),
             audit: state_dir.map(AuditLog::in_state_dir),
             rules,
@@ -104,7 +106,7 @@ impl Guards {
         }
         let mut notes = Vec::new();
         if !turn.pinned && !self.rules.is_empty() {
-            let facts = routing_rules::Facts::new(turn.root, turn.prompt, turn.task);
+            let facts = routing_rules::Facts::new(turn.root, turn.prompt, turn.task, self.home.as_deref());
             let applied = self.rules.apply(&current, &facts)?;
             current = applied.usable;
             notes = applied.notes;
@@ -115,9 +117,9 @@ impl Guards {
     /// The privacy policy's verdict on this turn: the prompt, and for each provider that is
     /// behind, the catch-up it would get with it.
     pub fn verdict(&self, turn: &TurnFacts) -> Verdict {
-        let mut verdict = self.privacy.check(turn.root, turn.prompt, turn.attached);
+        let mut verdict = self.privacy.check(turn.root, turn.prompt, turn.attached, self.home.as_deref());
         for (provider, text) in turn.catch_ups {
-            let theirs = self.privacy.check(turn.root, &format!("{text}\n{}", turn.prompt), turn.attached);
+            let theirs = self.privacy.check(turn.root, &format!("{text}\n{}", turn.prompt), turn.attached, self.home.as_deref());
             verdict.take_denial(*provider, &theirs);
         }
         verdict
@@ -142,7 +144,7 @@ impl Guards {
     /// have it). The Jev classifier is a cloud service too, so it is not asked otherwise.
     pub fn may_leave(&self, root: &Path, text: &str, attached: &[std::path::PathBuf]) -> bool {
         use crate::turn::domain::privacy::{locality, Locality};
-        let verdict = self.privacy.check(root, text, attached);
+        let verdict = self.privacy.check(root, text, attached, self.home.as_deref());
         crate::shared::ALL_PROVIDERS.into_iter().filter(|p| locality(*p) == Locality::Cloud).any(|p| verdict.permits(p))
     }
 
@@ -161,12 +163,12 @@ impl Guards {
     /// waits as a turn of its own, where routing decides), else with its secrets blanked and
     /// the audit log told, as for a prompt.
     pub fn steer_text(&self, root: &Path, text: &str, provider: ProviderId, model: &str, now_ms: u64) -> Option<String> {
-        self.privacy.check(root, text, &[]).permits(provider).then(|| self.outgoing(text, provider, model, now_ms).prompt)
+        self.privacy.check(root, text, &[], self.home.as_deref()).permits(provider).then(|| self.outgoing(text, provider, model, now_ms).prompt)
     }
 
     /// Whether the privacy policy lets `text` go to `provider` (nothing is audited or changed).
     pub fn text_permitted(&self, root: &Path, text: &str, provider: ProviderId) -> bool {
-        self.privacy.check(root, text, &[]).permits(provider)
+        self.privacy.check(root, text, &[], self.home.as_deref()).permits(provider)
     }
 
     /// Note in the audit log that the policy kept the prompt from providers.

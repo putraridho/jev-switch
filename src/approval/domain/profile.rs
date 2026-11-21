@@ -6,12 +6,9 @@
 use std::fmt;
 use std::str::FromStr;
 
-use serde::{Deserialize, Serialize};
-
 use crate::approval::domain::mode::Mode;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Profile {
     /// Read and plan only.
     Locked,
@@ -138,9 +135,4 @@ mod tests {
         assert!(!text.contains("careful   asks before every edit and command  ("), "{text}");
     }
 
-    #[test]
-    fn serde_uses_the_lowercase_names() {
-        assert_eq!(serde_json::from_str::<Profile>("\"careful\"").unwrap(), Profile::Careful);
-        assert_eq!(serde_json::to_string(&Profile::Trusted).unwrap(), "\"trusted\"");
-    }
 }

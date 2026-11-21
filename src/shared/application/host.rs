@@ -12,6 +12,10 @@ use std::path::{Path, PathBuf};
 pub trait Host: Send + Sync {
     /// A setting: the environment first, then the key file; empty counts as unset.
     fn env(&self, name: &str) -> Option<String>;
+    /// The process HOME, without consulting the settings file.
+    fn home(&self) -> Option<String>;
+    /// The current process identifier.
+    fn process_id(&self) -> u32;
     /// Unix time in milliseconds.
     fn now_ms(&self) -> u64;
     /// The directory holding logs, sessions and caches, created on first use.

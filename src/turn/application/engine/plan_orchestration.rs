@@ -52,7 +52,7 @@ impl Engine {
             Outcome::Normal => (normal.spec, normal.reason.clone(), None),
             Outcome::Unavailable(why) => (normal.spec, format!("{}; orchestration skipped: {why}", normal.reason), None),
             Outcome::Planner(spec) => {
-                let mcp = self.orch_setup.as_ref().and_then(|s| s.attachment(&self.dir, spec));
+                let mcp = self.orch_setup.as_ref().and_then(|s| s.attachment(&self.dir, spec, self.host.process_id()));
                 let moved = if spec == normal.spec {
                     String::new()
                 } else {

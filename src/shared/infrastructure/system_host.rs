@@ -14,6 +14,14 @@ impl Host for SystemHost {
         env_file::lookup(name)
     }
 
+    fn home(&self) -> Option<String> {
+        std::env::var("HOME").ok()
+    }
+
+    fn process_id(&self) -> u32 {
+        std::process::id()
+    }
+
     fn now_ms(&self) -> u64 {
         jsonl_log::now_ms()
     }

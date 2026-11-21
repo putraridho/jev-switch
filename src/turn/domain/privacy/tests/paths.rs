@@ -28,7 +28,7 @@ fn location_suffixes_do_not_hide_paths() {
         ("\".env\":3", ".env"),
         ("(`server.pem`:1:2).", "server.pem"),
     ] {
-        assert!(mentioned_paths(Path::new(ROOT), prompt).contains(&path.to_string()), "{prompt}");
+        assert!(mentioned_paths(Path::new(ROOT), prompt, None).contains(&path.to_string()), "{prompt}");
         let verdict = check(&p, prompt);
         assert!(crate::shared::ALL_PROVIDERS.iter().all(|provider| !verdict.permits(*provider)), "{prompt}");
     }
@@ -40,7 +40,7 @@ fn globs_ignore_ascii_case_for_prompts_and_attachments() {
     assert!(!check(&p, "Secrets/db.yml").permits(ProviderId::Claude));
     assert!(!check(&p, "/WORK/APP/Secrets/db.yml").permits(ProviderId::Claude));
     assert!(!check(&p, "deploy/KEY.PEM").permits(ProviderId::Claude));
-    assert!(!p.check(Path::new(ROOT), "inspect", &[PathBuf::from("Secrets/db.yml")]).permits(ProviderId::Claude));
+    assert!(!p.check(Path::new(ROOT), "inspect", &[PathBuf::from("Secrets/db.yml")], None).permits(ProviderId::Claude));
     assert!(glob_matches("SECRETS/**", "secrets/db.yml"));
     assert!(!glob_matches("secrets/**", "secrets-old/db.yml"));
 }

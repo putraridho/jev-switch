@@ -28,7 +28,7 @@ fn only_rules_allow_a_list() {
 #[test]
 fn attached_files_count() {
     let p = policy("block *.png from all");
-    let v = p.check(Path::new(ROOT), "what is this", &[PathBuf::from("/work/app/shots/a.png")]);
+    let v = p.check(Path::new(ROOT), "what is this", &[PathBuf::from("/work/app/shots/a.png")], None);
     assert!(!v.permits(ProviderId::Claude));
 }
 

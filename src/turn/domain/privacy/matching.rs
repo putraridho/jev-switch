@@ -27,9 +27,9 @@ impl Rule {
 
 impl Policy {
     /// What this prompt (and these attached files) may be sent to.
-    pub fn check(&self, root: &Path, prompt: &str, attached: &[PathBuf]) -> Verdict {
-        let mut paths = mentioned_paths(root, prompt);
-        paths.extend(attached.iter().map(|p| relative(root, &p.to_string_lossy())));
+    pub fn check(&self, root: &Path, prompt: &str, attached: &[PathBuf], home: Option<&str>) -> Verdict {
+        let mut paths = mentioned_paths(root, prompt, home);
+        paths.extend(attached.iter().map(|p| relative(root, &p.to_string_lossy(), home)));
         let mut denials: BTreeMap<ProviderId, String> = BTreeMap::new();
         for rule in &self.rules {
             let Some(hit) = paths.iter().find(|p| glob_matches(rule.glob(), p)) else { continue };

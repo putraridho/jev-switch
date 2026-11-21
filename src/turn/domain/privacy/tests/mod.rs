@@ -21,5 +21,5 @@ fn policy(text: &str) -> Policy {
 }
 
 fn check(p: &Policy, prompt: &str) -> Verdict {
-    p.check(Path::new(ROOT), prompt, &[])
+    p.check(Path::new(ROOT), prompt, &[], None)
 }

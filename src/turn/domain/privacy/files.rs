@@ -74,7 +74,7 @@ mod tests {
         let (mut p, errors) = Policy::load(Some(&state), &project);
         assert!(p.local_only());
         assert!(p.set_local_only(false).is_err());
-        assert!(crate::shared::ALL_PROVIDERS.iter().all(|provider| !p.check(Path::new("/work/app"), "hello", &[]).permits(*provider)));
+        assert!(crate::shared::ALL_PROVIDERS.iter().all(|provider| !p.check(Path::new("/work/app"), "hello", &[], None).permits(*provider)));
         assert_eq!(errors.len(), 1);
         assert_eq!(errors[0].0, file);
         assert!(errors[0].1.to_string().contains("could not read privacy rules"));

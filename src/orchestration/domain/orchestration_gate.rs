@@ -172,9 +172,9 @@ impl Setup {
     }
 
     /// The attachment for one planner, or `None` when the binary was not found.
-    pub fn attachment(&self, project: &Path, planner: &ModelSpec) -> Option<McpAttachment> {
+    pub fn attachment(&self, project: &Path, planner: &ModelSpec, pid: u32) -> Option<McpAttachment> {
         let bin = self.bin.as_ref()?;
-        Some(attachment(bin, project, planner, &self.config_dir, std::process::id()))
+        Some(attachment(bin, project, planner, &self.config_dir, pid))
     }
 }
 
@@ -355,7 +355,7 @@ mod tests {
         assert_eq!(a.args, ["--dir", "/repo", "--planner", "claude:claude-opus-5-5"]);
         assert_eq!(a.config_path, Path::new("/state/mcp-delegate-42.json"));
         let setup = Setup { bin: None, config_dir: "/state".into() };
-        assert!(setup.attachment(Path::new("/repo"), opus).is_none());
+        assert!(setup.attachment(Path::new("/repo"), opus, 42).is_none());
     }
 
     #[test]
