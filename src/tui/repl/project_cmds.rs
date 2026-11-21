@@ -112,12 +112,12 @@ impl Repl {
         for round in 1..=FIX_ROUNDS {
             self.console.out(&format!("  {} {}", style.dim("running"), style.cyan(command)));
             let console = self.console.clone();
-            let run = host::run_shell(command, self.engine.dir(), &mut |line| console.out(&format!("  {}", style.dim(line))));
+            let run = host::shell::run_shell(command, self.engine.dir(), &mut |line| console.out(&format!("  {}", style.dim(line))));
             if run.failed.is_none() && run.code == Some(0) {
                 self.console.out(&format!("{} {check} passed", style.green("✓")));
                 return Flow::Continue;
             }
-            self.carry.push(host::shell_note(&run));
+            self.carry.push(host::shell::shell_note(&run));
             if !fix {
                 self.console.out(&format!("{} {check} failed {}", style.yellow("⚠"), style.dim("· the output goes with your next message; /project check fix repairs and reruns")));
                 return Flow::Continue;
