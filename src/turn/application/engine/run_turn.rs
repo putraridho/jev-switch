@@ -54,7 +54,7 @@ impl Engine {
             };
         }
         // What does go to Jev has its secrets blanked, as for any provider.
-        let blank = |text: &str| crate::turn::domain::privacy::prepare(&self.guards.privacy, text).prompt;
+        let blank = |text: &str| crate::turn::domain::privacy::outgoing::prepare(&self.guards.privacy, text).prompt;
         let (prompt, recent) = (blank(prompt), blank(&recent_raw));
         let previous_pair = self.previous.as_ref().map(|(p, r)| (blank(p), blank(r)));
         if !self.enabled {

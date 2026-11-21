@@ -16,7 +16,7 @@ answer) and prints:
     python3 -I scripts/task_type_accuracy.py out.jsonl [--pairs N] [--examples N]
 
 CAVEAT: the lunagraph categories were written for a Sonnet-vs-Opus study, not for this
-router. TASK_MAP (single definition, in provider_eval.py) is a judgment call, and
+router. TASK_MAP (single definition, in provider_eval/config.py) is a judgment call, and
 several categories are genuinely ambiguous (refactor and test as "feature", locate and
 trace as "explain", followup as "unclear"). Low agreement is therefore a prompt to
 read the example misses, NOT proof that Jev is wrong; the examples show which side the
@@ -30,7 +30,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from provider_eval import TASK_MAP  # noqa: E402  (the one definition of category -> type)
+from provider_eval.config import TASK_MAP  # noqa: E402  (the one definition of category -> type)
 
 STAY_MODEL = "claude-sonnet-5-5"  # "no change" for a user already on Claude Sonnet
 CONF_CUTS = (0.5, 0.7)
@@ -135,7 +135,7 @@ def render(res, pairs=12):
         f"{res['unmapped']} answered with a category TASK_MAP does not map (not measured)"
     )
     out.append("")
-    out.append("NOTE: the category -> type mapping is approximate (see TASK_MAP in provider_eval.py).")
+    out.append("NOTE: the category -> type mapping is approximate (see TASK_MAP in provider_eval/config.py).")
     out.append("Low agreement is a prompt to read the examples below, not proof of a Jev error.")
     out.append("")
     out.append(f"Agreement (mapped category == Jev's type): {res['agree']}/{res['mapped']} = {pct(res['agreement'])}")

@@ -9,7 +9,7 @@ import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-import provider_eval as pe  # noqa: E402
+import provider_eval.config as pe_config  # noqa: E402
 import task_type_accuracy as tta  # noqa: E402
 
 
@@ -86,7 +86,7 @@ class Analyze(unittest.TestCase):
         self.assertEqual(res["confusion"][("explain", "feature")], 5)
 
     def test_uses_the_single_task_map_of_provider_eval(self):
-        self.assertIs(tta.TASK_MAP, pe.TASK_MAP)
+        self.assertIs(tta.TASK_MAP, pe_config.TASK_MAP)
 
     def test_custom_map_and_empty_input(self):
         res = tta.analyze([row(1, "x", "docs")], task_map={"x": "docs"})
