@@ -63,7 +63,7 @@ case "$mode" in
     ;;
   pty)
     cargo build -q --bin code
-    key="pty-$( { printf '%s\n' target/debug/code scripts/test_pty_ux.py; } | hash_files)-$(printf '%s ' "$@" | shasum -a 256 | cut -c1-8)"
+    key="pty-$( { printf '%s\n' target/debug/code scripts/test_pty_ux.py scripts/pty_ux/*.py; } | hash_files)-$(printf '%s ' "$@" | shasum -a 256 | cut -c1-8)"
     cached_run "$key" "the PTY scenarios${*:+ matching $*}" python3 -I scripts/test_pty_ux.py "$@"
     ;;
   clear)
