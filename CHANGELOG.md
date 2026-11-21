@@ -4,6 +4,12 @@ See [docs/changelog-guide.md](docs/changelog-guide.md) for changelog formatting,
 
 ## Unreleased
 
+## 1.11.3
+
+A prompt with a dash or another multibyte character before a secret-looking name no longer crashes the turn.
+
+- **Redaction no longer panics inside a multibyte character.** Every outgoing prompt is scanned for secrets. The scan took the character before `:` or `=` by byte and stepped one byte past it, so a multibyte character there (an en dash, an arrow, an emoji) put the slice inside that character and the turn panicked. A prompt as ordinary as `Keep PKCE – : mandatory` was enough. The scan now steps past the whole character.
+
 ## 1.11.2
 
 Resuming a session brings its conversation back onto the screen.

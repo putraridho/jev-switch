@@ -22,6 +22,13 @@ fn names_ending_in_key_are_masked() {
 }
 
 #[test]
+fn a_multibyte_character_before_the_name_does_not_panic() {
+    assert!(redact("Keep PKCE – : mandatory").is_clean());
+    assert!(redact("Keep PKCE –: mandatory").is_clean());
+    assert_eq!(redact("note – password: hunter2hunter2").text, "note – password: [REDACTED:named-secret]");
+}
+
+#[test]
 fn credentials_name_is_masked() {
     assert_eq!(redact("credentials: hunter2hunter2").text, "credentials: [REDACTED:named-secret]");
 }

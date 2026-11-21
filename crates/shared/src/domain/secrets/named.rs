@@ -75,7 +75,7 @@ pub(super) fn named_secrets(text: &str, urls: &[Finding]) -> Vec<Finding> {
 /// The identifier that ends just before an `=` or `:` (quotes and spaces skipped).
 pub(super) fn name_before(head: &str) -> &str {
     let head = head.trim_end_matches([' ', '\t', '"', '\'', '\\']);
-    let start = head.rfind(|c: char| !(c.is_ascii_alphanumeric() || c == '_' || c == '-' || c == '.')).map_or(0, |p| p + 1);
+    let start = head.char_indices().rev().find(|&(_, c)| !(c.is_ascii_alphanumeric() || c == '_' || c == '-' || c == '.')).map_or(0, |(p, c)| p + c.len_utf8());
     &head[start..]
 }
 
