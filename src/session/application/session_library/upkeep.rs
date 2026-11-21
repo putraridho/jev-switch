@@ -3,9 +3,8 @@
 use std::path::{Path, PathBuf};
 
 use super::*;
+use crate::session::application::ports;
 use crate::session::domain::saved_session::SavedSession;
-use crate::session::infrastructure::session_file;
-use crate::session::infrastructure::session_meta::MetaStore;
 use crate::shared::application::host::write_private as write_atomic;
 
 // ------------------------------------------------------------ disk and clean
@@ -53,7 +52,7 @@ pub fn human_bytes(bytes: u64) -> String {
 /// can no longer be read. Pinned sessions are never deleted. Returns how many files went
 /// and how many bytes they were.
 pub fn clean(state_dir: &Path, older_than_days: u64, now_ms: u64) -> (usize, u64) {
-    let mut meta = MetaStore::load(state_dir);
+    let mut meta = ports::get().load_marks(state_dir);
     let max_age_ms = older_than_days.saturating_mul(DAY_MS);
     let readable: std::collections::HashSet<PathBuf> = scan_all(state_dir).into_iter().map(|e| e.path).collect();
     let mut removed = (0, 0);
@@ -78,7 +77,7 @@ pub fn clean(state_dir: &Path, older_than_days: u64, now_ms: u64) -> (usize, u64
             }
         }
     }
-    let _ = meta.save();
+    let _ = ports::get().save_marks(state_dir, &meta);
     removed
 }
 
@@ -96,7 +95,7 @@ pub fn migrate_legacy(state_dir: &Path) -> usize {
             continue;
         }
         let Some(saved) = std::fs::read_to_string(&path).ok().and_then(|t| SavedSession::parse(&t).ok()) else { continue };
-        let dest_dir = session_file::project_sessions_dir(state_dir, Path::new(&saved.project));
+        let dest_dir = ports::get().project_sessions_dir(state_dir, Path::new(&saved.project));
         let dest = dest_dir.join(format!("{}-legacy.json", saved.saved_ms));
         let written = dest.exists() || write_atomic(&dest, &saved.render()).is_ok();
         if written && std::fs::remove_file(&path).is_ok() {

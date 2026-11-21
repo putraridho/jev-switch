@@ -8,8 +8,8 @@ use crate::tui::repl::session::{Flow, Io, Repl};
 use crate::catalog::domain::model_table as catalog;
 use crate::tui::app::host;
 use crate::tui::app::host::clipboard::Copied;
-use crate::turn::domain::session_log::utc_stamp;
-use crate::turn::domain::turn_status::TurnStatus;
+use crate::session::domain::session_log::utc_stamp;
+use crate::session::domain::turn_status::TurnStatus;
 use crate::tui::render as uifmt;
 use crate::tui::render::{ContextFacts, CostRow};
 
@@ -115,7 +115,7 @@ impl Repl {
     /// `/cost`.
     pub(in crate::tui::repl) fn cost_text(&self) -> String {
         let (rows, total) = self.log.totals();
-        let to_row = |t: &crate::turn::domain::session_log::ModelTotal| CostRow {
+        let to_row = |t: &crate::session::domain::session_log::ModelTotal| CostRow {
             model: t.model.clone(),
             turns: t.turns,
             in_tokens: t.in_tokens,

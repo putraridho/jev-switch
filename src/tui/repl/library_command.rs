@@ -3,7 +3,7 @@
 use crate::session::infrastructure::session_import::Source;
 use crate::session::application::session_library::marks::Mark;
 use crate::session::application::session_library::query::Query;
-use crate::session::infrastructure::session_meta::clean_tag;
+use crate::session::domain::session_meta::clean_tag;
 
 /// Days `/sessions clean` keeps when none is given.
 pub const DEFAULT_CLEAN_DAYS: u64 = 30;

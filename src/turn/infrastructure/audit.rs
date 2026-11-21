@@ -12,8 +12,8 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use crate::shared::domain::redact::redact;
-use crate::turn::domain::session_log::{utc_stamp, TurnRecord};
-use crate::turn::domain::turn_status::TurnStatus;
+use crate::session::domain::session_log::{utc_stamp, TurnRecord};
+use crate::session::domain::turn_status::TurnStatus;
 
 /// How much of a prompt the log keeps, in characters.
 const PREVIEW_CHARS: usize = 120;

@@ -3,7 +3,7 @@ use crate::backend::Usage;
 use crate::changes::domain::change_set::ChangeSummary;
 use crate::changes::domain::file_change::{ChangeStatus, FileChange as GitChange};
 use crate::turn::application::turn_report::TurnReport;
-use crate::turn::domain::turn_status::TurnStatus;
+use crate::session::domain::turn_status::TurnStatus;
 use super::super::turns::{exit_code, file_changes, summary_facts};
 
 #[test]

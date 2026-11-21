@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use crate::turn::domain::session_log::utc_stamp;
+use crate::session::domain::session_log::utc_stamp;
 
 const PREFIX: &str = "inflight-";
 

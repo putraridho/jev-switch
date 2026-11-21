@@ -13,7 +13,7 @@ use crate::shared::infrastructure::jsonl_log as log;
 use crate::tui::render as uifmt;
 use crate::tui::render::Style;
 use crate::turn::application::engine::Engine;
-use crate::turn::domain::session_log::SessionLog;
+use crate::session::domain::session_log::SessionLog;
 
 mod commands;
 mod handle;

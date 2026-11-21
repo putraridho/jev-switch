@@ -37,7 +37,7 @@ impl Query {
         for token in text.split_whitespace() {
             match token.split_once(':') {
                 Some(("provider", v)) => q.provider = Some(ProviderId::from_str(v).map_err(|_| format!("unknown provider \"{v}\""))?),
-                Some(("tag", v)) => q.tag = Some(crate::session::infrastructure::session_meta::clean_tag(v).ok_or_else(|| format!("\"{v}\" is not a tag"))?),
+                Some(("tag", v)) => q.tag = Some(crate::session::domain::session_meta::clean_tag(v).ok_or_else(|| format!("\"{v}\" is not a tag"))?),
                 Some(("file", v)) if !v.is_empty() => q.file = Some(v.to_lowercase()),
                 Some(("project", v)) if !v.is_empty() => q.project = Some(v.to_lowercase()),
                 Some(("since", v)) => q.since_ms = Some(parse_days(v).ok_or_else(|| format!("since:{v} should look like since:7d or since:2w"))?),

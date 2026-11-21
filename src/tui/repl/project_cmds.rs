@@ -197,6 +197,6 @@ impl Repl {
     pub(super) fn context_breakdown(&self) -> String {
         let memory = self.memory_note();
         let b = ctxintel::breakdown(self.log.turns(), &self.carry, memory.as_deref());
-        ctxintel::breakdown_text(&b, self.auto_compact(), self.out_style())
+        crate::tui::views::context_breakdown::breakdown_text(&b, self.auto_compact(), self.out_style())
     }
 }

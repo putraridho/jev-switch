@@ -26,7 +26,7 @@ use crate::backend::{
     TurnRequest, Usage,
 };
 use crate::turn::domain::failover_policy::MAX_ATTEMPTS;
-use crate::turn::domain::turn_status::TurnStatus;
+use crate::session::domain::turn_status::TurnStatus;
 use crate::catalog::domain::model_table as catalog;
 use crate::catalog::domain::model_table::find;
 use crate::changes::domain::undo_report::UndoError;

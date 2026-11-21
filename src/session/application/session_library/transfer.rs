@@ -3,9 +3,9 @@
 use std::path::{Path, PathBuf};
 
 use super::*;
+use crate::session::application::ports;
 use crate::session::domain::saved_session::SavedSession;
 use crate::session::domain::session::Sessions;
-use crate::session::infrastructure::session_file;
 use crate::shared::application::host::write_private as write_atomic;
 
 // ----------------------------------------------------------- export / import
@@ -61,10 +61,10 @@ pub fn adopt(state_dir: &Path, project_dir: &Path, mut saved: SavedSession, now_
     if saved.sessions.turns() == 0 {
         return Err(ImportError::Empty);
     }
-    saved.project = session_file::project_key(project_dir);
+    saved.project = ports::get().project_key(project_dir);
     // Another machine's CLI sessions mean nothing here.
     saved.sessions = strip_cli_ids(saved.sessions);
-    let path = session_file::new_session_file(state_dir, project_dir, now_ms);
+    let path = ports::get().new_session_file(state_dir, project_dir, now_ms);
     write_atomic(&path, &saved.render()).map_err(|e| ImportError::Unreadable(e.to_string()))?;
     Ok(path)
 }

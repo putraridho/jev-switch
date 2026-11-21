@@ -8,5 +8,3 @@ pub mod privacy;
 pub mod route_facts;
 pub mod schedule;
 pub mod scoreboard;
-pub mod session_log;
-pub mod turn_status;
