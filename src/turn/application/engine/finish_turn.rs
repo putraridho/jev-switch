@@ -15,7 +15,7 @@ use crate::turn::application::ports::Ui;
 use crate::turn::application::turn_report::TurnReport;
 use super::attempt::Attempt;
 use super::Engine;
-use crate::turn::infrastructure::turn_log::{self, AttemptRow};
+use crate::turn::application::ports::AttemptRow;
 
 impl Engine {
     pub(super) fn finish(&mut self, prompt: &str, attempt: Attempt, out: TurnOutcome, attempts: u32) -> TurnReport {
@@ -109,7 +109,7 @@ impl Engine {
             cancelled: a.cancelled,
             notes,
         };
-        turn_log::append_attempt(path, &row);
+        self.turn_log_writer.append(path, &row);
     }
 
     /// Plain words for "no model can take this turn", never a guess at one.

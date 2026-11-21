@@ -201,7 +201,7 @@ fn rig_in(dir: PathBuf, states: &[(ProviderId, State)], script: &'static str) ->
         clock.clone(),
         attempt_ms.clone(),
     );
-    let engine = Engine::new(Runtime::for_tests(avail), router, dir)
+    let engine = Engine::new(Runtime::for_tests(avail), router, dir, crate::turn::infrastructure::engine_adapters::real())
         .with_track_changes(false)
         .with_persistence(None)
         .with_backend_factory(Box::new(move |p| {

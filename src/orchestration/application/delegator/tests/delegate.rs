@@ -100,7 +100,7 @@ async fn a_failed_merge_keeps_the_worktree_for_discard() {
     let avail = PROVIDERS.iter().map(|p| availability(*p, *p == Claude)).collect();
     let judge: Judge = Box::new(|_| Box::pin(async { Some(want(TaskType::Feature)) }));
     let st = Arc::new(Mutex::new(Vec::new()));
-    let d = Delegator::new(Runtime::for_tests(avail), judge, Box::new(wt.clone()))
+    let d = Delegator::new(Runtime::for_tests(avail), judge, Box::new(wt.clone()), real_adapters())
         .with_backend_factory(Box::new(move |p| Box::new(fake_cli(p, OK, &st, &Modes::default()))))
         .with_idle_timeout(Duration::from_millis(500));
     let res = d.delegate(brief("x")).await;

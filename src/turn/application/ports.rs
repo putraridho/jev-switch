@@ -1,8 +1,12 @@
 //! What a turn talks to: the [`Ui`] it shows progress on and asks questions through.
 
 use std::path::Path;
+use std::sync::Arc;
+use std::time::Duration;
 
-use crate::backend::{self, Decision, Event, PermissionRequest};
+use serde_json::Value;
+
+use crate::backend::{self, BackendFactory, Decision, Event, McpAttachment, PermissionRequest, ProviderId, TurnError, TurnOutcome};
 use crate::approval::application::claude_settings_file;
 use crate::approval::domain::always_plan::{Offer, Settled};
 use crate::turn::domain::failover::{Failover, NoRouteInfo};
@@ -118,4 +122,43 @@ pub fn settled_decision(settled: &Settled) -> Option<Decision> {
         Settled::Denied(reason) => Some(Decision::Deny { reason: reason.clone() }),
         Settled::Stopped => None,
     }
+}
+
+/// What one attempt adds to the turn log, besides what the outcome already carries.
+pub struct AttemptRow<'a> {
+    pub provider: ProviderId,
+    pub model: &'a str,
+    pub session: Option<&'a str>,
+    pub reason: &'a str,
+    /// Jev's numbers for the turn.
+    pub jev: &'a Value,
+    pub result: &'a Result<TurnOutcome, TurnError>,
+    pub wall_ms: u64,
+    pub attempt: u32,
+    pub orchestrated: bool,
+    pub cancelled: bool,
+    pub notes: &'a [String],
+}
+
+/// Where a turn's attempts are logged. Real: `turn_log::FileTurnLog`.
+pub trait TurnLog: Send + Sync {
+    /// Append the row of one attempt to the log at `path`.
+    fn append(&self, path: &str, row: &AttemptRow<'_>);
+}
+
+/// `git status --short` of a folder.
+pub type GitStatus = Box<dyn Fn(&Path) -> String + Send + Sync>;
+
+/// Writes the MCP config file a planner CLI reads.
+pub type McpWriter = Box<dyn Fn(&McpAttachment) -> std::io::Result<()> + Send + Sync>;
+
+/// The adapters an [`Engine`](crate::turn::application::engine::Engine) cannot build itself
+/// (they live in outer layers or other contexts); the composition root passes them to
+/// `Engine::new`.
+pub struct Adapters {
+    pub backend_factory: BackendFactory,
+    pub git_status: GitStatus,
+    pub turn_log: Arc<dyn TurnLog>,
+    pub idle_timeout: Duration,
+    pub write_mcp: McpWriter,
 }

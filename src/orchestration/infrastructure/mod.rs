@@ -4,3 +4,4 @@ pub mod process_liveness;
 pub mod project_kind;
 pub mod worker_check;
 pub mod worker_file;
+pub mod adapters;

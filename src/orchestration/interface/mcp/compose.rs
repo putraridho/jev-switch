@@ -10,7 +10,7 @@ use tokio::sync::{mpsc, OnceCell};
 use tokio::task::JoinSet;
 
 use super::json_rpc::{handle, Server};
-use super::lazy_delegator::Lazy;
+use super::lazy_delegator::{Lazy, PolicyFor};
 use crate::orchestration::infrastructure::worker_file::has_leftovers;
 use crate::shared::infrastructure::jsonl_log as log;
 
@@ -28,13 +28,15 @@ pub(super) fn parse_args(args: impl IntoIterator<Item = String>) -> Result<(Opti
     Ok((dir, planner))
 }
 
-pub async fn run() -> Result<()> {
+/// `policy_for` builds what workers answer to (privacy policy, permission mode) from the
+/// state directory and the project.
+pub async fn run(policy_for: PolicyFor) -> Result<()> {
     let (dir, planner) = parse_args(std::env::args().skip(1))?;
     let dir = match dir {
         Some(d) => d,
         None => std::env::current_dir()?,
     };
-    let lazy = Arc::new(Lazy { dir, planner, cell: OnceCell::new() });
+    let lazy = Arc::new(Lazy { dir, planner, cell: OnceCell::new(), policy_for });
     // Workers an earlier run left behind are cleaned up at startup, but providers are only
     // probed for that when there is something to clean: a session that never delegates stays free.
     if log::state_dir().is_some_and(|s| has_leftovers(&s)) {

@@ -33,6 +33,6 @@ pub(super) fn runtime() -> Runtime {
 pub(super) fn engine(rt: Runtime) -> Engine {
     use crate::judgment::application::judge::Router;
     use crate::judgment::infrastructure::typesafe_http::TypeSafe;
-    Engine::new(rt, Router::new(TypeSafe::with_url("k", "http://127.0.0.1:1"), 1.0), PathBuf::from("/home/me/proj"))
+    Engine::new(rt, Router::new(TypeSafe::with_url("k", "http://127.0.0.1:1"), 1.0), PathBuf::from("/home/me/proj"), crate::turn::infrastructure::engine_adapters::real())
         .with_turn_log(None)
 }

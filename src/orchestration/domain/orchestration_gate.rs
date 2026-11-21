@@ -159,13 +159,14 @@ pub struct Setup {
 }
 
 impl Setup {
-    /// `JEV_DELEGATE_BIN`, else `delegate_mcp` beside the running executable (where
-    /// `cargo build` and `install.sh` put it). The config goes in the state dir.
-    pub fn detect() -> Option<Self> {
-        let config_dir = crate::shared::infrastructure::jsonl_log::state_dir()?;
-        let bin = match crate::shared::infrastructure::env_file::lookup("JEV_DELEGATE_BIN") {
+    /// `delegate_bin` (what `JEV_DELEGATE_BIN` says), else `delegate_mcp` beside `exe`, the
+    /// running executable (where `cargo build` and `install.sh` put it). The config goes in
+    /// `state_dir`. The caller reads the environment and the state directory.
+    pub fn detect(state_dir: Option<PathBuf>, delegate_bin: Option<String>, exe: Option<&Path>) -> Option<Self> {
+        let config_dir = state_dir?;
+        let bin = match delegate_bin {
             Some(path) => Some(PathBuf::from(path)).filter(|p| p.is_file()),
-            None => std::env::current_exe().ok().and_then(|exe| beside(&exe)),
+            None => exe.and_then(beside),
         };
         Some(Self { bin, config_dir })
     }
@@ -198,8 +199,6 @@ pub fn attachment(bin: &Path, project: &Path, planner: &ModelSpec, config_dir: &
         config_path: config_dir.join(format!("mcp-delegate-{instance}.json")),
     }
 }
-
-pub use crate::backend::infrastructure::claude::claude_cli::mcp_config::write_mcp_config;
 
 /// Put in front of the prompt of an orchestrated turn so the planner uses the tool
 /// instead of doing every piece itself. It says nothing about models: Jev picks them.

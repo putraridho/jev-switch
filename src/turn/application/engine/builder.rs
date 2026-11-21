@@ -17,15 +17,14 @@ use crate::providers::application::provider_registry::Runtime;
 use crate::judgment::application::judge::Router;
 use crate::routing::domain::decide::{Pin, PinOrigin, RoutingState};
 use crate::routing::domain::sticky::Sticky;
-use super::{Clock, Engine, GitStatus};
-use crate::backend::{idle_timeout_from_env};
-use crate::turn::infrastructure::git_status::git_status_short;
+use super::{Clock, Engine};
 use crate::backend::BackendFactory;
+use crate::turn::application::ports::{Adapters, GitStatus};
 
 impl Engine {
-    /// Real backends, the real clock and git, and the turn log from `JEV_CODE_LOG`.
-    /// Routing is on.
-    pub fn new(runtime: Runtime, router: Router, dir: PathBuf) -> Self {
+    /// The given backends, git, turn log writer and idle timeout, the real clock, and the turn
+    /// log path from `JEV_CODE_LOG`. Routing is on.
+    pub fn new(runtime: Runtime, router: Router, dir: PathBuf, adapters: Adapters) -> Self {
         Self {
             runtime,
             sessions: Sessions::new(),
@@ -37,12 +36,14 @@ impl Engine {
             hooks: Arc::new(Hooks::none(&dir)),
             dir,
             enabled: true,
-            backend_factory: Box::new(crate::providers::infrastructure::backend_factory::session_backend_for),
-            git_status: Box::new(git_status_short),
+            backend_factory: adapters.backend_factory,
+            git_status: adapters.git_status,
             now: Box::new(host::now_ms),
-            idle_timeout: idle_timeout_from_env(),
+            idle_timeout: adapters.idle_timeout,
             stream_text: false,
             turn_log: host::path_from_env("JEV_CODE_LOG", "code-turns.jsonl"),
+            turn_log_writer: adapters.turn_log,
+            write_mcp: adapters.write_mcp,
             previous: None,
             last_context_tokens: 0,
             sticky: Sticky::default(),

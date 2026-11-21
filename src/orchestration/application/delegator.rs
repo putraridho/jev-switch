@@ -64,27 +64,22 @@ mod run;
 mod tests;
 
 use std::collections::{BTreeMap, HashMap, HashSet};
-use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
 use anyhow::{anyhow, Result};
 
-use crate::backend::idle_timeout_from_env;
 use crate::backend::{BackendFactory, ProviderId};
 use crate::catalog::domain::model_table::ModelSpec;
 use crate::orchestration::domain::brief_signals::BriefSignals;
 use crate::orchestration::domain::delegation::DelegateRequest;
 use crate::orchestration::domain::worker::{Owner, Saved, Worker};
 use crate::orchestration::domain::worker_pick::{pick_worker, NoWorker, WorkerView};
-use crate::orchestration::infrastructure::process_liveness::ProcLiveness;
-use crate::orchestration::infrastructure::worker_check::ProjectChecks;
-use crate::orchestration::infrastructure::worker_file::Store;
 use crate::providers::application::provider_registry::Runtime;
 use crate::shared::application::host;
 
-use super::ports::{BoxFut, Checks, DelegateApi, Judge, Liveness, Records, Worktrees};
+use super::ports::{Adapters, BoxFut, Checks, DelegateApi, DelegationLog, Judge, Liveness, Records, Scanner, WorkerPolicy, Worktrees};
 use background::Task;
 
 type Clock = Box<dyn Fn() -> u64 + Send + Sync>;
@@ -125,8 +120,11 @@ pub struct Delegator {
     idle_timeout: Duration,
     log_path: Option<String>,
     planner: String,
-    /// The privacy policy (and audit log) briefs answer to, as the planner's own turns do.
-    guards: crate::turn::application::guards::Guards,
+    /// The privacy policy (and audit log) briefs answer to, as the planner's own turns do,
+    /// and the permission mode a worker's turn runs under.
+    policy: Arc<dyn WorkerPolicy>,
+    log: Arc<dyn DelegationLog>,
+    scan: Scanner,
     /// Runs a finished worker's tests before its work may merge on its own.
     checks: Arc<dyn Checks>,
     /// Work whose tests pass merges without the planner's review (`JEV_AUTO_MERGE=0` turns it off).
@@ -150,16 +148,16 @@ struct Applied {
 }
 
 impl Delegator {
-    /// Real backends, clock and idle timeout; no log, unknown planner, workers not saved.
-    pub fn new(runtime: Runtime, judge: Judge, worktrees: Box<dyn Worktrees>) -> Self {
+    /// The given adapters, the real clock and idle timeout; no log, unknown planner, workers not saved.
+    pub fn new(runtime: Runtime, judge: Judge, worktrees: Box<dyn Worktrees>, adapters: Adapters) -> Self {
         static INSTANCES: AtomicU64 = AtomicU64::new(0);
-        let liveness: Arc<dyn Liveness> = Arc::new(ProcLiveness);
+        let Adapters { liveness, checks, backend_factory, idle_timeout, log, scan, policy } = adapters;
         let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos());
         Self {
             runtime: Mutex::new(runtime),
             judge,
             worktrees: Arc::from(worktrees),
-            backend_factory: Box::new(crate::providers::infrastructure::backend_factory::backend_for),
+            backend_factory,
             live: Mutex::new(HashMap::new()),
             records: None,
             gate: Arc::new(tokio::sync::Mutex::new(())),
@@ -168,11 +166,13 @@ impl Delegator {
             counter: AtomicU64::new(1),
             run_tag: run_tag(std::process::id(), nanos, INSTANCES.fetch_add(1, Ordering::SeqCst)),
             now: Box::new(host::now_ms),
-            idle_timeout: idle_timeout_from_env(),
+            idle_timeout,
             log_path: None,
             planner: String::new(),
-            guards: crate::turn::application::guards::Guards::default(),
-            checks: Arc::new(ProjectChecks::default()),
+            policy,
+            log,
+            scan,
+            checks,
             auto_merge: true,
             main_tree: tokio::sync::Mutex::new(()),
             merged: Arc::default(),
@@ -190,13 +190,6 @@ impl Delegator {
     /// `false` sends every editing worker's diff to the planner for review.
     pub fn with_auto_merge(mut self, on: bool) -> Self {
         self.auto_merge = on;
-        self
-    }
-
-    /// The privacy policy, secret scan and audit log of the user's settings
-    /// ([`crate::turn::application::guards::Guards::load`]). Without it briefs still get the default secret scan.
-    pub fn with_guards(mut self, guards: crate::turn::application::guards::Guards) -> Self {
-        self.guards = guards;
         self
     }
 
@@ -227,13 +220,10 @@ impl Delegator {
         self
     }
 
-    /// Keep the worker registry in `<state_dir>/workers`, so a restarted server still
-    /// knows its unmerged workers. Call [`Delegator::recover`] after.
-    pub fn with_store(self, state_dir: &Path) -> Self {
-        self.with_records(Arc::new(Store { dir: state_dir.join("workers") }))
-    }
-
-    fn with_records(mut self, records: Arc<dyn Records>) -> Self {
+    /// Keep the worker registry in these records (the composition root passes the
+    /// `<state_dir>/workers` store), so a restarted server still knows its unmerged
+    /// workers. Call [`Delegator::recover`] after.
+    pub fn with_records(mut self, records: Arc<dyn Records>) -> Self {
         self.records = Some(records);
         self
     }

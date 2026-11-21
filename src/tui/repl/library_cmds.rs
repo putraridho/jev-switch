@@ -209,7 +209,7 @@ mod tests {
         let (state, project) = (root.join("state"), root.join("project"));
         std::fs::create_dir_all(&project).unwrap();
         let avail = vec![Availability { provider: ProviderId::Claude, state: State::Ready, plan: None, models: None, detail: String::new(), verified: true }];
-        let engine = Engine::new(Runtime::for_tests(avail), Router::new(TypeSafe::with_url("k", "http://127.0.0.1:1"), 1.0), project.clone())
+        let engine = Engine::new(Runtime::for_tests(avail), Router::new(TypeSafe::with_url("k", "http://127.0.0.1:1"), 1.0), project.clone(), crate::turn::infrastructure::engine_adapters::real())
             .with_turn_log(None)
             .with_persistence(Some(state.clone()));
         let out = Buf::default();

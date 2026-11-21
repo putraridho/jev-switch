@@ -34,7 +34,7 @@ fn server(wt: &Arc<FakeWorktrees>, state: &Path, clock: &Arc<AtomicU64>, procs: 
     delegator_on(wt, &[Claude], TaskType::Feature, &started, &scripts, &Modes::default())
         .with_clock(Box::new(move || c.load(Ordering::SeqCst)))
         .with_liveness(Arc::new(FakeLiveness { pid, procs: procs.clone() }))
-        .with_store(state)
+        .with_records(Arc::new(Store { dir: state.join("workers") }))
 }
 
 /// A server whose predecessors are all dead (nobody else is in its process table).

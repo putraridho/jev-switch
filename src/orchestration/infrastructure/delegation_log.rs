@@ -6,8 +6,7 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 
 use crate::backend::infrastructure::outcome_wire::turn_row;
-use crate::backend::{TurnError, TurnOutcome};
-use crate::catalog::domain::model_table::{ModelSpec, TaskType};
+use crate::orchestration::application::ports::{AttemptLog, DelegationLog};
 use crate::shared::infrastructure::jsonl_log as log;
 
 /// The project folder as rows and records name it: canonical when it can be.
@@ -56,30 +55,9 @@ pub fn recent_delegations(log: &Path, repo: &Path, limit: usize) -> Vec<Delegati
     rows
 }
 
-/// Everything one log row needs.
-pub struct AttemptLog<'a> {
-    pub spec: &'static ModelSpec,
-    pub id: &'a str,
-    pub task: TaskType,
-    pub attempt: u32,
-    pub read_only: bool,
-    pub jev: &'a Value,
-    pub result: &'a Result<TurnOutcome, TurnError>,
-    pub wall_ms: u64,
-    /// Unix ms when the backend turn began.
-    pub started_ms: u64,
-    pub files: &'a [String],
-    pub tools: &'a [String],
-    /// Where the work went ([`Landing::tag`], or [`Verdict::tag`] before it lands); `None`
-    /// for a failed attempt.
-    pub landing: Option<&'static str>,
-    /// A read-only worker that ran in the user's folder instead of a worktree.
-    pub in_place: bool,
-}
-
 /// Append the row for one worker attempt to the log at `path`; `repo` is the repository the
 /// worker was cut from.
-pub fn append_attempt(path: &str, planner: &str, repo: &Path, a: &AttemptLog) {
+fn append_attempt(path: &str, planner: &str, repo: &Path, a: &AttemptLog) {
     let reason = format!("delegated {} brief", a.task);
     let mut row = turn_row(a.spec.provider, a.spec.id, None, &reason, a.jev, a.result, a.wall_ms);
     if let Value::Object(o) = &mut row {
@@ -102,4 +80,13 @@ pub fn append_attempt(path: &str, planner: &str, repo: &Path, a: &AttemptLog) {
         o.insert("repo".into(), json!(handoff_key(repo)));
     }
     log::append(path, &row);
+}
+
+/// The JSON-lines log file as the [`DelegationLog`].
+pub struct JsonlLog;
+
+impl DelegationLog for JsonlLog {
+    fn append(&self, path: &str, planner: &str, repo: &Path, a: &AttemptLog) {
+        append_attempt(path, planner, repo, a);
+    }
 }

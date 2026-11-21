@@ -8,25 +8,23 @@ use std::time::Instant;
 
 use serde_json::Value;
 
-use crate::approval::domain::mode::Mode;
-use crate::backend::{self, Event, ProviderId, TurnError, TurnOutcome, TurnRequest};
+use crate::backend::{self, Event, ProviderId, TurnError, TurnOutcome};
 use crate::catalog::domain::model_table::ModelSpec;
 use crate::orchestration::domain::brief_signals::{worker_task, BriefSignals};
 use crate::orchestration::domain::delegation::{DelegateRequest, DelegateResult, Landing, ReviewReason};
 use crate::orchestration::domain::file_patch::{split_patch, truncate_with_note, FileDiff, FileStat, MAX_SUMMARY_CHARS};
 use crate::orchestration::domain::worker_prompt::{plan_mode_enforced, worker_prompt};
-use crate::orchestration::infrastructure::delegation_log::{append_attempt, AttemptLog};
 
-use crate::orchestration::application::ports::CheckRun;
+use crate::orchestration::application::ports::{AttemptLog, CheckRun};
 use super::outcome::{AttemptFailure, AttemptOutcome, Finished, Pending, Verdict};
 use super::reservation::{create_unless_cancelled, CreateSlot, Reservation};
 use super::{lock, Delegator};
 
 impl Delegator {
     /// Run the worker CLI in its worktree. Plan usage it reports feeds the spreading.
-    pub(super) async fn run_worker(&self, id: &str, spec: &'static ModelSpec, dir: &Path, prompt: String, mode: Mode) -> (Result<TurnOutcome, TurnError>, Vec<String>) {
+    pub(super) async fn run_worker(&self, id: &str, spec: &'static ModelSpec, dir: &Path, prompt: String, read_only: bool) -> (Result<TurnOutcome, TurnError>, Vec<String>) {
         let backend = (self.backend_factory)(spec.provider);
-        let req = TurnRequest { dir: dir.to_path_buf(), model: spec.id.to_string(), prompt, images: vec![], session_id: None, mode, trust_project_settings: crate::approval::application::extension_hooks::trust::project_settings_trusted(dir) };
+        let req = self.policy.request(dir, spec.id, prompt, read_only);
         let mut tools: Vec<String> = Vec::new();
         let mut on_event = |e: &Event| match e {
             Event::Tool(summary) => {
@@ -44,7 +42,7 @@ impl Delegator {
 
     pub(super) fn log_attempt(&self, a: &AttemptLog) {
         let Some(path) = &self.log_path else { return };
-        append_attempt(path, &self.planner, &self.worktrees.repo(), a);
+        self.log.append(path, &self.planner, &self.worktrees.repo(), a);
     }
 
     /// One attempt: pick and claim, create the worktree, run. `Err` is the failure to react
@@ -101,9 +99,8 @@ impl Delegator {
         let started = Instant::now();
         let started_ms = (self.now)();
         // Secrets are blanked as for any provider, and the audit log notes what was sent.
-        let prompt = self.guards.outgoing(&worker_prompt(&req.brief, &req.files, req.read_only), spec.provider, spec.id, (self.now)()).prompt;
-        let mode = if req.read_only { Mode::Plan } else { Mode::default() };
-        let (result, tools) = self.run_worker(&id, spec, &path, prompt, mode).await;
+        let prompt = self.policy.outgoing(&worker_prompt(&req.brief, &req.files, req.read_only), spec.provider, spec.id, (self.now)());
+        let (result, tools) = self.run_worker(&id, spec, &path, prompt, req.read_only).await;
         self.update(&id, |w| w.running = false).await;
         let wall_ms = started.elapsed().as_millis() as u64;
         let task = worker_task(signals);
