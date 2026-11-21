@@ -1,1 +1,1 @@
-T2 | src/catalog/domain/model_table.rs | crate::shared::infrastructure | 1
+T2 | src/catalog/domain/model_table/overrides.rs | crate::shared::infrastructure | 1
