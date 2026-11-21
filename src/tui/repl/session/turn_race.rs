@@ -11,7 +11,7 @@ use crate::tui::input::typeahead::TypeAhead;
 use crate::turn::application::cancel::Cancel;
 use crate::turn::application::engine::Engine;
 use crate::turn::application::turn_report::TurnReport;
-use crate::turn::domain::turn_status::TurnStatus;
+use crate::session::domain::turn_status::TurnStatus;
 
 /// A source of Ctrl-C presses.
 pub trait Interrupt: Send {

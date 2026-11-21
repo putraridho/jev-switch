@@ -9,7 +9,7 @@
 //! earlier, and a provider that documents no window has none here.
 
 use crate::backend::{ProviderId, Usage};
-use crate::turn::domain::session_log::{SessionLog, TurnRecord};
+use crate::session::domain::session_log::{SessionLog, TurnRecord};
 use crate::shared::domain::wording::{human_count, human_duration};
 use crate::tui::render::Style;
 
@@ -286,7 +286,7 @@ pub fn switch_note(est: &SwitchEstimate, from: ProviderId, to: ProviderId) -> St
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::turn::domain::turn_status::TurnStatus;
+    use crate::session::domain::turn_status::TurnStatus;
 
     fn usage(input: u64, cached: u64) -> Usage {
         Usage { input_tokens: input, cached_input_tokens: cached, output_tokens: 1, context_tokens: None }

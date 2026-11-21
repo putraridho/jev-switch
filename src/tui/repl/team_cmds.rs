@@ -9,7 +9,7 @@ use crate::approval::domain::mode::Mode;
 use crate::approval::domain::profile;
 use crate::approval::domain::profile::Profile;
 use crate::routing::domain::decide::Pin;
-use crate::turn::domain::session_log::TurnRecord;
+use crate::session::domain::session_log::TurnRecord;
 use crate::turn::application::team_rules as team;
 use crate::turn::application::team_rules::Team;
 use crate::calibration::application::bench;
@@ -188,7 +188,7 @@ impl Repl {
         let record = TurnRecord {
             prompt: prompt.to_string(),
             answer: String::new(),
-            status: crate::turn::domain::turn_status::TurnStatus::Cancelled,
+            status: crate::session::domain::turn_status::TurnStatus::Cancelled,
             model: String::new(),
             route: None,
             usage: None,

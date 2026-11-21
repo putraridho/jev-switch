@@ -5,7 +5,7 @@ use crate::changes::domain::change_set::ChangeSummary;
 use crate::changes::domain::file_change::ChangeStatus;
 use crate::providers::application::provider_registry::Runtime;
 use crate::turn::application::turn_report::TurnReport;
-use crate::turn::domain::turn_status::TurnStatus;
+use crate::session::domain::turn_status::TurnStatus;
 use crate::tui::render::{FileChange, SummaryFacts};
 
 fn change_letter(s: ChangeStatus) -> char {

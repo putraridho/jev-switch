@@ -2,7 +2,7 @@
 
 use serde_json::Value;
 
-use crate::turn::domain::turn_status::TurnStatus;
+use crate::session::domain::turn_status::TurnStatus;
 use crate::changes::application::track_turn::{snapshot_until, summarize_until};
 use crate::changes::domain::change_set::ChangeSummary;
 use crate::changes::domain::snapshot::Snapshot;

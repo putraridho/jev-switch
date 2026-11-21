@@ -2,7 +2,7 @@
 
 use std::path::Path;
 
-use crate::session::infrastructure::session_meta::MetaStore;
+use crate::session::application::ports;
 
 // ------------------------------------------------------------------ marks
 
@@ -17,12 +17,12 @@ pub enum Mark {
 
 /// Apply `mark` to the session file and save the marks.
 pub fn mark(state_dir: &Path, session: &Path, mark: &Mark) -> std::io::Result<()> {
-    let mut store = MetaStore::load(state_dir);
+    let mut store = ports::get().load_marks(state_dir);
     store.update(session, |m| match mark {
         Mark::Pin(on) => m.pinned = *on,
         Mark::Archive(on) => m.archived = *on,
         Mark::Tag(t) => m.tags.push(t.clone()),
         Mark::Untag(t) => m.tags.retain(|x| x != t),
     });
-    store.save()
+    ports::get().save_marks(state_dir, &store)
 }

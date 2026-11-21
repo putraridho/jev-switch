@@ -1,7 +1,7 @@
 //! What a turn came to.
 
 use crate::backend::{ProviderId, Usage};
-use crate::turn::domain::turn_status::TurnStatus;
+use crate::session::domain::turn_status::TurnStatus;
 use crate::changes::domain::change_set::ChangeSummary;
 #[derive(Debug, Clone)]
 pub struct TurnReport {

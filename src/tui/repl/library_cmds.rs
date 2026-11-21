@@ -16,7 +16,7 @@ use crate::session::application::session_library::query::Query;
 use crate::session::application::session_library::search as lsearch;
 use crate::session::application::session_library::transfer;
 use crate::session::application::session_library::upkeep::{self, human_bytes};
-use crate::turn::domain::session_log::utc_stamp;
+use crate::session::domain::session_log::utc_stamp;
 use crate::tui::views::status_facts::startup::human_ago;
 
 /// Most results printed at once; the rest are reachable by narrowing the search.
@@ -64,7 +64,7 @@ impl Repl {
         }
         let shown = &hits[..hits.len().min(SHOWN)];
         let mut lines = vec![style.bold(&format!("Sessions ({})", hits.len()))];
-        lines.extend(lsearch::render_hits(shown, now, &session_file::project_key(self.engine.dir()), style));
+        lines.extend(crate::tui::views::session_hits::render_hits(shown, now, &session_file::project_key(self.engine.dir()), style));
         if hits.len() > SHOWN {
             lines.push(style.dim(&format!("  ... and {} more: narrow with words or filters", hits.len() - SHOWN)));
         }

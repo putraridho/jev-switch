@@ -3,7 +3,10 @@
 
 use std::path::{Path, PathBuf};
 
-use super::session_meta::MetaStore;
+
+
+use crate::session::application::ports::SessionStore;
+use crate::session::domain::session_meta::MetaStore;
 use crate::session::domain::saved_session::{ResumeError, SavedSession, SessionEntry, SessionInfo};
 
 /// The project folder as it is keyed on disk: canonical when it can be.
@@ -97,7 +100,7 @@ pub fn load_latest(
 /// Every usable saved session of `project_dir` other than `current`, newest first: the
 /// list `/resume` offers. Expired, empty, damaged and other projects' files are left out.
 pub fn list_sessions(state_dir: &Path, project_dir: &Path, now_ms: u64, current: Option<&Path>) -> Vec<SessionEntry> {
-    let marks = MetaStore::load(state_dir);
+    let marks = super::session_meta::load(state_dir);
     let mut found: Vec<(u64, SessionEntry)> = session_files(state_dir, project_dir)
         .into_iter()
         .filter(|p| Some(p.as_path()) != current && !marks.is_archived(p))
@@ -122,7 +125,7 @@ pub fn load_path(project_dir: &Path, path: &Path) -> Result<SavedSession, Resume
 /// Keep at most [`SAVED_KEEP`] sessions of the project: delete the oldest, never `current`.
 /// A file that cannot be read counts as the oldest. Cheap while under the cap (a listing).
 pub fn prune(state_dir: &Path, project_dir: &Path, current: &Path) {
-    let marks = MetaStore::load(state_dir);
+    let marks = super::session_meta::load(state_dir);
     // Pinned sessions are never deleted and do not count towards the cap.
     let files: Vec<PathBuf> = session_files(state_dir, project_dir).into_iter().filter(|p| !marks.is_pinned(p)).collect();
     if files.len() <= SAVED_KEEP {
@@ -147,6 +150,39 @@ pub fn saved_session_info_in(state_dir: &Path, project_dir: &Path, now_ms: u64) 
 /// the UI to offer resuming at startup.
 pub fn saved_session_info(project_dir: &Path) -> Option<SessionInfo> {
     saved_session_info_in(&crate::shared::infrastructure::jsonl_log::state_dir()?, project_dir, crate::shared::infrastructure::jsonl_log::now_ms())
+}
+
+/// The session files on disk, as the use cases see them.
+pub struct FileSessions;
+
+impl SessionStore for FileSessions {
+    fn project_key(&self, dir: &Path) -> String {
+        project_key(dir)
+    }
+    fn project_sessions_dir(&self, state_dir: &Path, project_dir: &Path) -> PathBuf {
+        project_sessions_dir(state_dir, project_dir)
+    }
+    fn new_session_file(&self, state_dir: &Path, project_dir: &Path, now_ms: u64) -> PathBuf {
+        new_session_file(state_dir, project_dir, now_ms)
+    }
+    fn load_latest(&self, state_dir: &Path, project_dir: &Path, now_ms: u64, current: Option<&Path>) -> Result<(PathBuf, SavedSession), ResumeError> {
+        load_latest(state_dir, project_dir, now_ms, current)
+    }
+    fn list_sessions(&self, state_dir: &Path, project_dir: &Path, now_ms: u64, current: Option<&Path>) -> Vec<SessionEntry> {
+        list_sessions(state_dir, project_dir, now_ms, current)
+    }
+    fn load_path(&self, project_dir: &Path, path: &Path) -> Result<SavedSession, ResumeError> {
+        load_path(project_dir, path)
+    }
+    fn prune(&self, state_dir: &Path, project_dir: &Path, current: &Path) {
+        prune(state_dir, project_dir, current);
+    }
+    fn load_marks(&self, state_dir: &Path) -> MetaStore {
+        super::session_meta::load(state_dir)
+    }
+    fn save_marks(&self, state_dir: &Path, marks: &MetaStore) -> std::io::Result<()> {
+        super::session_meta::save(state_dir, marks)
+    }
 }
 
 #[cfg(test)]

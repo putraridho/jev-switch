@@ -1,7 +1,7 @@
 //! Turns: what one prints, stopping with Ctrl-C, `-p`, `--every`, the bell and the pager.
 
 use super::*;
-use crate::turn::domain::turn_status::TurnStatus;
+use crate::session::domain::turn_status::TurnStatus;
 use super::super::turn::bell_after;
 use super::super::pager::page;
 use super::super::turn_race::{press_outside_pager, run_turn};

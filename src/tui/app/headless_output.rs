@@ -9,7 +9,7 @@ use serde::Serialize;
 
 use crate::changes::domain::file_change::FileChange;
 use crate::turn::application::turn_report::TurnReport;
-use crate::turn::domain::turn_status::TurnStatus;
+use crate::session::domain::turn_status::TurnStatus;
 use crate::tui::views::status_facts as views;
 
 /// How `-p` prints its result.

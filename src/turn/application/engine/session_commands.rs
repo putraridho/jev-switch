@@ -2,7 +2,7 @@
 
 use std::path::Path;
 
-use crate::session::infrastructure::session_file;
+use crate::session::application::ports;
 use crate::session::domain::saved_session::{ResumeError, SavedSession, SessionEntry, SessionInfo};
 use crate::routing::domain::decide::RoutingState;
 use crate::routing::domain::sticky::Sticky;
@@ -43,7 +43,7 @@ impl Engine {
     }
 
     /// Save the session now and say why not on failure. A session with no turns is not
-    /// written. Each session has its own file (see [`session_file::new_session_file`]), so
+    /// written. Each session has its own file (see [`ports::SessionStore::new_session_file`]), so
     /// saving never touches an earlier session; the oldest beyond ten are deleted.
     /// Turns save themselves best-effort; the binary calls this once more on exit.
     pub fn save_now(&mut self) -> std::io::Result<()> {
@@ -54,16 +54,16 @@ impl Engine {
         let saved_ms = (self.now)();
         let path = match &self.session_file {
             Some(p) => p.clone(),
-            None => session_file::new_session_file(&state, &self.dir, saved_ms),
+            None => ports::get().new_session_file(&state, &self.dir, saved_ms),
         };
         let saved = SavedSession {
-            project: session_file::project_key(&self.dir),
+            project: ports::get().project_key(&self.dir),
             saved_ms,
             sessions: self.sessions.clone(),
             current: self.routing.current.clone(),
         };
         crate::shared::application::host::write_private(&path, &saved.to_json().to_string())?;
-        session_file::prune(&state, &self.dir, &path);
+        ports::get().prune(&state, &self.dir, &path);
         self.session_file = Some(path);
         Ok(())
     }
@@ -79,7 +79,7 @@ impl Engine {
     /// again steps back to the one before.
     pub fn resume(&mut self) -> Result<SessionInfo, ResumeError> {
         let state = self.persist.as_ref().ok_or(ResumeError::Disabled)?;
-        let (path, saved) = session_file::load_latest(state, &self.dir, (self.now)(), self.session_file.as_deref())?;
+        let (path, saved) = ports::get().load_latest(state, &self.dir, (self.now)(), self.session_file.as_deref())?;
         Ok(self.adopt(path, saved))
     }
 
@@ -87,12 +87,12 @@ impl Engine {
     /// the one that is running.
     pub fn resumable(&self) -> Result<Vec<SessionEntry>, ResumeError> {
         let state = self.persist.as_ref().ok_or(ResumeError::Disabled)?;
-        Ok(session_file::list_sessions(state, &self.dir, (self.now)(), self.session_file.as_deref()))
+        Ok(ports::get().list_sessions(state, &self.dir, (self.now)(), self.session_file.as_deref()))
     }
 
     /// Resume the session saved in `path`, one of [`Engine::resumable`].
     pub fn resume_from(&mut self, path: &std::path::Path) -> Result<SessionInfo, ResumeError> {
-        let saved = session_file::load_path(&self.dir, path)?;
+        let saved = ports::get().load_path(&self.dir, path)?;
         Ok(self.adopt(path.to_path_buf(), saved))
     }
 

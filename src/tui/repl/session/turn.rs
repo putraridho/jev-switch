@@ -8,8 +8,8 @@ use crate::tui::repl::session::turn_race::{run_turn, Interrupt, TurnEnd};
 use crate::tui::repl::session::{Flow, Io, Repl};
 use crate::tui::views::status_facts as views;
 use crate::turn::application::turn_report::TurnReport;
-use crate::turn::domain::session_log::TurnRecord;
-use crate::turn::domain::turn_status::TurnStatus;
+use crate::session::domain::session_log::TurnRecord;
+use crate::session::domain::turn_status::TurnStatus;
 
 impl Repl {
     /// A message from the person: sent with the notes waiting for it, attachments said.
