@@ -55,7 +55,7 @@ pub(super) async fn orchestrate_check(State(app): State<Arc<App>>, Json(c): Json
     // when routing escalates it as very hard (and ORCH_PLANNER doesn't pin one).
     let mut route_tier = None;
     let mut hard_p = None;
-    if judgment.as_ref().is_some_and(|j| j.passes(app.orch.cutoff)) {
+    if judgment.as_ref().is_some_and(|j| crate::orchestration::domain::orchestration_gate::passes(j, app.orch.cutoff)) {
         let want = app.router.code_want(&words, &c.context, 1).await;
         if !want.signals.is_null() {
             route_tier = Some(want.tier);

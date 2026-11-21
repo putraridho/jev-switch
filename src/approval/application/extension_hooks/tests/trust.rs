@@ -87,7 +87,7 @@ fn the_settings_preview_shows_what_would_run() {
     // Never trusted: nothing is loaded, and the contents are there to read with /hooks.
     let never = Hooks::load(&Places { project: project.clone(), user: Some(user.clone()) });
     assert_eq!(never.untrusted_settings().len(), preview.len());
-    assert!(crate::tui::render::extension_view::hooks_text(&never, crate::tui::render::Style::off()).contains("curl x|sh"));
+    assert!(never.untrusted_settings().iter().any(|(_, value)| value.contains("curl x|sh")), "the contents are kept to show");
     // A remembered path with a settings file that was never trusted is not loaded either.
     std::fs::create_dir_all(&user).unwrap();
     std::fs::write(trusted_file(&user), format!("{}\n", project.display())).unwrap();

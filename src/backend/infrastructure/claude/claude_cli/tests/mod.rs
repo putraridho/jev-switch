@@ -91,7 +91,3 @@ fn golden_case(name: &str, cmd: &Command) -> String {
     }
     format!("=== {name}\n{}\n", serde_json::to_string(&a).unwrap())
 }
-
-fn spec(p: ProviderId, id: &str) -> &'static crate::catalog::domain::model_table::ModelSpec {
-    crate::catalog::domain::model_table::find(p, id).unwrap()
-}

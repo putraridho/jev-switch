@@ -357,6 +357,9 @@ mod tests {
         assert_eq!(recipe_steps("one prompt", "solo"), vec![Step { title: "solo".into(), body: "one prompt".into() }]);
     }
 
+    /// The built-in command names the tests collide with (the tui owns the real table).
+    const BUILTIN: &[&str] = &["/help", "/model", "/diff"];
+
     #[test]
     fn discovery_prefers_the_persons_own_and_reports_what_it_skipped() {
         let root = temp("discover");
@@ -369,7 +372,7 @@ mod tests {
         write(&user.join("commands/empty.md"), "---\ndescription: none\n---\n");
         write(&user.join("skills/db/SKILL.md"), "---\ndescription: Query the db\n---\nUse psql.");
         write(&user.join("recipes/fix-tests.md"), "---\nmode: edit\n---\n## Run\nrun tests\n## Fix\nfix them");
-        let lib = Library::discover(&Places { project, user: Some(user) }, &crate::tui::render::command_names());
+        let lib = Library::discover(&Places { project, user: Some(user) }, BUILTIN);
         // The repository cannot take over a name the person already uses.
         let ship = lib.find("ship").unwrap();
         assert_eq!((ship.origin.clone(), ship.usage().as_str()), (Origin::User, "/ship"));
@@ -388,7 +391,7 @@ mod tests {
     fn invoking_expands_every_step_and_labels_the_turns() {
         let root = temp("invoke");
         write(&root.join("proj/.jev/recipes/r.md"), "## One\ndo $1\n## Two\nthen $ARGUMENTS");
-        let lib = Library::discover(&Places { project: root.join("proj"), user: None }, &crate::tui::render::command_names());
+        let lib = Library::discover(&Places { project: root.join("proj"), user: None }, BUILTIN);
         let inv = lib.find("r").unwrap().invoke("x y");
         assert_eq!(inv.label, "/r x y");
         assert_eq!(inv.prompts, vec![("One".to_string(), "do x".to_string()), ("Two".to_string(), "then x y".to_string())]);
@@ -400,7 +403,7 @@ mod tests {
         let places = Places { project: root.join("proj"), user: None };
         let path = create_skill(&places, "db", "Query the db").unwrap();
         assert_eq!(path, root.join("proj/.jev/skills/db/SKILL.md"));
-        let lib = Library::discover(&places, &crate::tui::render::command_names());
+        let lib = Library::discover(&places, BUILTIN);
         let skill = lib.find("db").expect("the new skill loads");
         assert_eq!((skill.kind, skill.meta.description.as_str(), skill.meta.hint.as_str()), (Kind::Skill, "Query the db", "[what to apply it to]"));
         assert!(lib.problems.is_empty(), "{:?}", lib.problems);
@@ -417,7 +420,7 @@ mod tests {
         write(&root.join("proj/.claude/skills/a/SKILL.md"), "---\ndescription: from claude\n---\nbody");
         write(&root.join("proj/.claude/skills/b/SKILL.md"), "from claude b");
         write(&root.join("proj/.jev/skills/b/SKILL.md"), "from jev b");
-        let lib = Library::discover(&Places { project: root.join("proj"), user: None }, &crate::tui::render::command_names());
+        let lib = Library::discover(&Places { project: root.join("proj"), user: None }, BUILTIN);
         assert_eq!(lib.find("a").unwrap().meta.description, "from claude");
         assert_eq!(lib.find("b").unwrap().steps[0].body, "from jev b");
     }

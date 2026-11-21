@@ -12,14 +12,13 @@ use crate::session::domain::turn_status::TurnStatus;
 /// The file inside the state folder.
 pub const FILE: &str = "audit.jsonl";
 
-impl From<TurnStatus> for Outcome {
-    fn from(s: TurnStatus) -> Self {
-        match s {
-            TurnStatus::Answered => Outcome::Answered,
-            TurnStatus::NoRoute => Outcome::NoRoute,
-            TurnStatus::Failed => Outcome::Failed,
-            TurnStatus::Cancelled => Outcome::Cancelled,
-        }
+/// How a turn that ended with `s` is recorded in the audit log.
+fn outcome_of(s: TurnStatus) -> Outcome {
+    match s {
+        TurnStatus::Answered => Outcome::Answered,
+        TurnStatus::NoRoute => Outcome::NoRoute,
+        TurnStatus::Failed => Outcome::Failed,
+        TurnStatus::Cancelled => Outcome::Cancelled,
     }
 }
 
@@ -31,7 +30,7 @@ pub fn turn_entry(ts_ms: u64, project: &str, t: &TurnRecord) -> Entry {
         project: project.to_string(),
         event: Event::Turn {
             model: t.model.clone(),
-            outcome: t.status.into(),
+            outcome: outcome_of(t.status),
             elapsed_ms: t.elapsed_ms,
             in_tokens: usage.input_tokens,
             out_tokens: usage.output_tokens,

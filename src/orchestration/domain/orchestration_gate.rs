@@ -59,13 +59,11 @@ pub fn orch_gate(judgment: Option<&Orchestration>, cutoff: f64, route_tier: Opti
     }
 }
 
-impl Orchestration {
-    /// Whether the judgment alone clears the gate at `cutoff`: multi-part enough and not a
-    /// sequence. [`orch_gate`] with no routing requirement, so the gateway (which asks the
-    /// routing question only for a prompt that passes) and the engine use one rule.
-    pub fn passes(&self, cutoff: f64) -> bool {
-        orch_gate(Some(self), cutoff, None, false) == Gate::Trigger
-    }
+/// Whether `judgment` alone clears the gate at `cutoff`: multi-part enough and not a
+/// sequence. [`orch_gate`] with no routing requirement, so the gateway (which asks the
+/// routing question only for a prompt that passes) and the engine use one rule.
+pub fn passes(judgment: &Orchestration, cutoff: f64) -> bool {
+    orch_gate(Some(judgment), cutoff, None, false) == Gate::Trigger
 }
 
 /// The gateway's tier number for a catalog model: 0 light, 1 everyday, 2 top, 3 a
@@ -257,13 +255,13 @@ mod tests {
     #[test]
     fn the_judgment_alone_passes_only_when_multi_part_enough_and_not_a_sequence() {
         // The predicate the gateway asks before it pays for the routing question.
-        assert!(parallel(0.7).passes(0.7), "at the cutoff");
-        assert!(!parallel(0.69).passes(0.7), "under it");
-        assert!(!Orchestration::new(0.95, 0.9).passes(0.7), "a sequence, however multi-part");
-        assert!(!Orchestration::new(0.95, 0.9).passes(0.0), "at any cutoff");
-        assert!(Orchestration::judged(0.95, None).passes(0.7), "no sequential answer: no veto information, multi_part decides");
+        assert!(passes(&parallel(0.7), 0.7), "at the cutoff");
+        assert!(!passes(&parallel(0.69), 0.7), "under it");
+        assert!(!passes(&Orchestration::new(0.95, 0.9), 0.7), "a sequence, however multi-part");
+        assert!(!passes(&Orchestration::new(0.95, 0.9), 0.0), "at any cutoff");
+        assert!(passes(&Orchestration::judged(0.95, None), 0.7), "no sequential answer: no veto information, multi_part decides");
         for (j, cutoff) in [(parallel(0.8), 0.7), (parallel(0.5), 0.7), (Orchestration::new(0.9, 0.95), 0.2)] {
-            assert_eq!(j.passes(cutoff), orch_gate(Some(&j), cutoff, Some(2), true) == Gate::Trigger, "one rule for both");
+            assert_eq!(passes(&j, cutoff), orch_gate(Some(&j), cutoff, Some(2), true) == Gate::Trigger, "one rule for both");
         }
     }
 
@@ -376,5 +374,37 @@ mod tests {
     #[test]
     fn the_planner_note_does_not_let_the_planner_pick_models() {
         assert!(PLANNER_NOTE.contains("cannot choose the worker's model"));
+    }
+
+    /// The delegate server's MCP config as Claude Code reads it, pinned byte for byte.
+    #[test]
+    fn golden_mcp_config() {
+        use crate::backend::infrastructure::claude::claude_cli::mcp_config::write_mcp_config;
+        use crate::backend::{McpAttachment, ProviderId};
+        use std::path::Path;
+        use ProviderId::Claude;
+        let dir = std::env::temp_dir().join(format!("jev-golden-mcp-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let written = |name: &str, command: &str, args: &[&str]| {
+            let mcp = McpAttachment {
+                name: name.into(),
+                command: command.into(),
+                args: args.iter().map(|a| a.to_string()).collect(),
+                config_path: dir.join("mcp.json"),
+            };
+            write_mcp_config(&mcp).unwrap();
+            std::fs::read_to_string(&mcp.config_path).unwrap()
+        };
+        let real = attachment(Path::new("/opt/jev/bin/delegate_mcp"), Path::new("/work/app"), crate::catalog::domain::model_table::find(Claude, "claude-opus-5-5").unwrap(), &dir, 1);
+        write_mcp_config(&real).unwrap();
+        let typical = std::fs::read_to_string(&real.config_path).unwrap();
+        let actual = format!(
+            "## typical: the delegate server as `attachment` builds it\n{typical}\n## unusual: no arguments, spaces, quotes and non-ASCII text\n{}\n",
+            written("j\"ev é", "/opt/my tools/é \\ delegate", &[]),
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+        let golden = golden!("backend/mcp_config.txt");
+        assert_eq!(golden.split_once('\n').unwrap().1, actual);
     }
 }

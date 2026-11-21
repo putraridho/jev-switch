@@ -9,7 +9,7 @@ use std::time::Duration;
 
 use serde_json::{json, Value};
 
-use crate::approval::domain::mode::Mode;
+use crate::backend::Mode;
 use crate::backend::testing::{ScriptedCli, SessionId};
 use crate::backend::{ErrorKind, ProviderId, Usage};
 use crate::backend::ProviderId::{Claude, Codex, DeepSeek, Gemini, Grok};
@@ -26,8 +26,7 @@ use crate::orchestration::application::ports::AttemptLog;
 use crate::orchestration::infrastructure::adapters;
 use crate::orchestration::infrastructure::delegation_log::{handoff_key, recent_delegations};
 use crate::orchestration::infrastructure::worker_file::Store;
-use crate::turn::application::guards::Guards;
-use crate::turn::infrastructure::worker_policy::GuardedWorkers;
+use crate::orchestration::application::ports::{Screen, WorkerPolicy};
 use crate::orchestration::infrastructure::git_worktrees::GitWorktrees;
 use crate::orchestration::application::ports::CheckRun;
 use crate::orchestration::infrastructure::worker_file::{has_leftovers, open_workers, plain_id};
@@ -247,7 +246,27 @@ fn brief(text: &str) -> DelegateRequest {
     DelegateRequest { brief: text.into(), ..DelegateRequest::default() }
 }
 
-/// The real adapters with the default privacy policy (no settings files).
+/// A worker policy with nothing configured: every provider may have a brief, prompts leave
+/// unchanged (the briefs in these tests hold no secret), and the request is the plain one.
+/// The real policy (privacy, secret scan, audit) is the turn's and is tested there.
+struct OpenPolicy;
+
+impl WorkerPolicy for OpenPolicy {
+    fn screen(&self, _repo: &Path, _outgoing: &str, brief: &str) -> Screen {
+        Screen { permitted: crate::shared::ALL_PROVIDERS.to_vec(), refusal: String::new(), judge_prompt: Some(brief.to_string()) }
+    }
+
+    fn outgoing(&self, prompt: &str, _provider: ProviderId, _model: &str, _now_ms: u64) -> String {
+        prompt.to_string()
+    }
+
+    fn request(&self, dir: &Path, model: &str, prompt: String, read_only: bool) -> crate::backend::TurnRequest {
+        let mode = if read_only { Mode::Plan } else { Mode::default() };
+        crate::backend::TurnRequest { dir: dir.to_path_buf(), model: model.to_string(), prompt, images: vec![], session_id: None, mode, trust_project_settings: false }
+    }
+}
+
+/// The real adapters with a policy that lets every brief through.
 fn real_adapters() -> crate::orchestration::application::ports::Adapters {
-    adapters::real(Arc::new(GuardedWorkers(Guards::default())))
+    adapters::real(Arc::new(OpenPolicy))
 }
