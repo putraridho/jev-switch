@@ -5,7 +5,7 @@ use std::path::Path;
 use super::host::{home, home_path_exists, read_home_file};
 use super::mise::installed_for_real;
 use super::{avail, Availability, State};
-use crate::backend::infrastructure::gemini::gemini_cli as gemini;
+use crate::backend::infrastructure::gemini::gemini_cli::auth as gemini;
 use crate::backend::ProviderId;
 use crate::shared::infrastructure::env_file as envfile;
 

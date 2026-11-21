@@ -35,7 +35,7 @@ pub fn choose_gemini_flavor(gemini_on_path: bool, gemini_configured: bool) -> Fl
 /// The Gemini auth variables that are set in the environment OR in `~/.jev-router.env`,
 /// so a key kept only in that file still reaches the CLI (and the probe agrees).
 pub fn gemini_env(lookup: &dyn Fn(&str) -> Option<String>) -> Vec<(String, String)> {
-    crate::backend::infrastructure::gemini::gemini_cli::AUTH_ENV_VARS
+    crate::backend::infrastructure::gemini::gemini_cli::auth::AUTH_ENV_VARS
         .iter()
         .filter_map(|n| lookup(n).map(|v| (n.to_string(), v)))
         .collect()
