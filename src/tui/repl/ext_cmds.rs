@@ -19,7 +19,7 @@ use crate::turn::domain::turn_status::TurnStatus;
 fn no_skill(lib: &Library, name: &str, style: crate::tui::render::Style) -> String {
     let near = lib
         .of_kind(Kind::Skill)
-        .map(|e| (crate::tui::command::edit_distance(name, &e.name), e.name.as_str()))
+        .map(|e| (crate::tui::command::typo::edit_distance(name, &e.name), e.name.as_str()))
         .filter(|(d, n)| *d <= 2 || n.starts_with(name))
         .min_by_key(|(d, _)| *d)
         .map(|(_, n)| n);
