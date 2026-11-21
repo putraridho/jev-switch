@@ -51,7 +51,7 @@ pub fn usable_from(
         catalog::models().iter().filter(|m| m.provider == p).map(|m| m.id.to_string()).collect::<Vec<_>>()
     };
     Usable::new(
-        availability::usable_models(avail, &catalog_ids)
+        availability::usable::usable_models(avail, &catalog_ids)
             .into_iter()
             .filter(|(p, _)| cooldowns.active(*p, now_ms).is_none())
             .filter(|pair| !unusable.contains(pair)),

@@ -71,8 +71,8 @@ impl Runtime {
         self.late = Some(LateProbes { answers, merge: LateMerge::Refresh, on_ready: Box::new(|_| {}) });
         tokio::spawn(async move {
             let mut latest = cached;
-            availability::retry_unknown(ALL_PROVIDERS.to_vec(), availability::PROBE_CAP, availability::probe_provider, |answer| {
-                availability::merge_refresh(&mut latest, answer.clone());
+            availability::retry::retry_unknown(ALL_PROVIDERS.to_vec(), availability::PROBE_CAP, availability::probe_provider, |answer| {
+                availability::retry::merge_refresh(&mut latest, answer.clone());
                 let _ = tx.send(answer);
             })
             .await;
@@ -107,7 +107,7 @@ impl Runtime {
     /// `on_ready` runs there too, once per provider that was Unknown and is now Ready: a
     /// late answer a `/providers refresh` already settled is refused, and so is not announced.
     pub fn retry_slow_probes(&mut self, on_ready: impl Fn(&Availability) + Send + Sync + 'static) {
-        self.retry_slow_probes_with(availability::RETRY_CAP, availability::probe_provider, on_ready);
+        self.retry_slow_probes_with(availability::retry::RETRY_CAP, availability::probe_provider, on_ready);
     }
 
     pub(super) fn retry_slow_probes_with<P, Fut>(&mut self, cap: std::time::Duration, probe: P, on_ready: impl Fn(&Availability) + Send + Sync + 'static)
@@ -115,7 +115,7 @@ impl Runtime {
         P: Fn(ProviderId) -> Fut + Send + 'static,
         Fut: std::future::Future<Output = Availability> + Send + 'static,
     {
-        let providers = availability::retry_candidates(&self.avail);
+        let providers = availability::retry::retry_candidates(&self.avail);
         if providers.is_empty() {
             // A background refresh may be running; the caller still wants to hear what it finds.
             if let Some(late) = self.late.as_mut() {
@@ -125,7 +125,7 @@ impl Runtime {
         }
         let (tx, answers) = tokio::sync::mpsc::unbounded_channel();
         self.late = Some(LateProbes { answers, merge: LateMerge::FillUnknown, on_ready: Box::new(on_ready) });
-        tokio::spawn(availability::retry_unknown(providers, cap, probe, move |answer| {
+        tokio::spawn(availability::retry::retry_unknown(providers, cap, probe, move |answer| {
             let _ = tx.send(answer);
         }));
     }
@@ -146,8 +146,8 @@ impl Runtime {
                 Ok(answer) => {
                     let was_ready = merged.iter().any(|a| a.provider == answer.provider && a.state == State::Ready);
                     let changed = match merge {
-                        LateMerge::FillUnknown => availability::merge_late(&mut merged, answer.clone()),
-                        LateMerge::Refresh => availability::merge_refresh(&mut merged, answer.clone()),
+                        LateMerge::FillUnknown => availability::retry::merge_late(&mut merged, answer.clone()),
+                        LateMerge::Refresh => availability::retry::merge_refresh(&mut merged, answer.clone()),
                     };
                     applied |= changed;
                     if changed && answer.state == State::Ready && !was_ready {

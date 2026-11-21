@@ -15,7 +15,7 @@ use crate::providers::domain::availability;
         assert!(text.contains("codex:some-model refused"), "{text}");
         assert!(text.contains("credits no, per-token no"), "{text}");
         assert!(text.contains("override: JEV_CHAINS ignored: boom"), "{text}");
-        assert!(text.contains(&availability::render(&rt.avail)), "{text}");
+        assert!(text.contains(&availability::render::render(&rt.avail)), "{text}");
     }
 
     #[test]

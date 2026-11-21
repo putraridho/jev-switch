@@ -10,7 +10,7 @@ use super::{BlockReason, Runtime};
 impl Runtime {
     /// The text of `/providers`: probe results, then what has changed since.
     pub fn render(&self, now_ms: u64) -> String {
-        let mut out = vec![availability::render(&self.avail)];
+        let mut out = vec![availability::render::render(&self.avail)];
         out.extend(self.cooldown_lines(now_ms));
         out.extend(self.unusable_lines());
         out.extend(self.blocked_lines());
@@ -27,7 +27,7 @@ impl Runtime {
     /// over from earlier runs, and where to find the rest.
     pub fn render_summary(&self, now_ms: u64) -> String {
         let mut lines: Vec<String> = Vec::new();
-        let ready = availability::render_ready(&self.avail);
+        let ready = availability::render::render_ready(&self.avail);
         lines.push(if ready.is_empty() { "no provider is ready".to_string() } else { ready });
         lines.extend(self.cooldown_lines(now_ms));
         lines.push("/providers for details".to_string());
