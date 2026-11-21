@@ -74,7 +74,7 @@ impl Repl {
     /// here: the read-only mode `/review` and `/compact` borrow for one turn is not kept.
     pub fn remember_mode(&self) {
         if let Some(dir) = &self.state_dir {
-            self.said_if_failed(crate::approval::application::mode_store::save(dir, self.engine.mode()), "the mode");
+            self.said_if_failed(crate::approval::application::mode_store::save(&crate::shared::infrastructure::system_host::SystemHost, dir, self.engine.mode()), "the mode");
         }
     }
 

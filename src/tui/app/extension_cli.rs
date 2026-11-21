@@ -11,6 +11,7 @@
 use std::path::{Path, PathBuf};
 
 use crate::approval::application::extension_market as market;
+use crate::shared::infrastructure::system_host::SystemHost;
 use crate::tui::render::extension_view as view;
 use crate::tui::render::Style;
 
@@ -64,9 +65,9 @@ fn installed_line(done: &market::installer::Installed, style: Style) -> String {
 pub fn run(action: &ExtAction, user: &Path, style: Style) -> Outcome {
     match action {
         ExtAction::List => ok(view::installed_text(&market::listing::list(user), style)),
-        ExtAction::Install(folder) => market::installer::install(user, folder).map_or_else(|e| failed(style, &e), |done| ok(installed_line(&done, style))),
+        ExtAction::Install(folder) => market::installer::install(&SystemHost, user, folder).map_or_else(|e| failed(style, &e), |done| ok(installed_line(&done, style))),
         ExtAction::Update(name) => update(user, name.as_deref(), style),
-        ExtAction::Remove(name) => market::installer::remove(user, name).map_or_else(|e| failed(style, &e), |()| ok(format!("{} {name} removed", style.green("✓")))),
+        ExtAction::Remove(name) => market::installer::remove(&SystemHost, user, name).map_or_else(|e| failed(style, &e), |()| ok(format!("{} {name} removed", style.green("✓")))),
         ExtAction::Pack { dir, name, version } => market::manifest::pack(dir, name, version)
             .map_or_else(|e| failed(style, &e), |m| ok(format!("{} wrote {} for {} {} ({} file(s))", style.green("✓"), market::MANIFEST, m.name, m.version, m.files.len()))),
     }
@@ -83,7 +84,7 @@ fn update(user: &Path, name: Option<&str>, style: Style) -> Outcome {
     let mut lines = Vec::new();
     let mut code = 0;
     for n in names {
-        match market::installer::update(user, &n) {
+        match market::installer::update(&SystemHost, user, &n) {
             Ok(Some(done)) => lines.push(installed_line(&done, style)),
             Ok(None) => lines.push(format!("{} {n} is up to date", style.dim("·"))),
             Err(e) => {

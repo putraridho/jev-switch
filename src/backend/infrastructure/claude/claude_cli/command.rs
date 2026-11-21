@@ -35,7 +35,7 @@ impl ClaudeBackend {
         if let Some(id) = &req.session_id {
             cmd.args(["--resume", id]);
         }
-        let sources = setting_sources(!crate::approval::application::claude_settings_file::local_settings_tracked(&req.dir), req.trust_project_settings);
+        let sources = setting_sources(!crate::approval::application::claude_settings_file::local_settings_tracked(&crate::shared::infrastructure::system_host::SystemHost, &req.dir), req.trust_project_settings);
         cmd.args(["--setting-sources", sources, "--permission-mode", req.mode.claude_flag()]);
         if self.interactive || sends_image_blocks(self.provider, req) {
             cmd.args(["--input-format", "stream-json"]);

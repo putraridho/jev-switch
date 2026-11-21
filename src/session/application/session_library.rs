@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 
 use crate::backend::ProviderId;
 use crate::session::domain::saved_session::SavedSession;
-use crate::session::application::ports;
+use crate::session::application::ports::SessionStore;
 use crate::session::domain::session_meta::Meta;
 
 const DAY_MS: u64 = 86_400_000;
@@ -59,8 +59,8 @@ fn session_dirs(state_dir: &Path) -> Vec<PathBuf> {
 
 /// Every readable session file under `<state>/sessions/`, in any project, newest first.
 /// Damaged files are skipped (they stay on disk; `clean` removes them).
-pub fn scan_all(state_dir: &Path) -> Vec<LibraryEntry> {
-    let meta = ports::get().load_marks(state_dir);
+pub fn scan_all(store: &dyn SessionStore, state_dir: &Path) -> Vec<LibraryEntry> {
+    let meta = store.load_marks(state_dir);
     let files = session_dirs(state_dir).into_iter().flat_map(|p| {
         if p.is_dir() {
             std::fs::read_dir(p).into_iter().flatten().filter_map(|e| e.ok().map(|e| e.path())).collect()

@@ -19,6 +19,8 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+use crate::shared::application::host::Host;
+
 
 pub const MANIFEST: &str = "jev-extension.json";
 const REGISTRY: &str = "extensions.json";
@@ -79,10 +81,10 @@ fn load_registry(user: &Path) -> Registry {
     std::fs::read_to_string(user.join(REGISTRY)).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default()
 }
 
-fn save_registry(user: &Path, registry: &Registry) -> Result<(), MarketError> {
+fn save_registry(host: &dyn Host, user: &Path, registry: &Registry) -> Result<(), MarketError> {
     let text = serde_json::to_string_pretty(registry).map_err(|e| MarketError(e.to_string()))?;
     std::fs::create_dir_all(user).map_err(|e| MarketError(format!("{}: {e}", user.display())))?;
-    crate::shared::application::host::write_private(&user.join(REGISTRY), &text).map_err(|e| MarketError(format!("cannot save the extension list: {e}")))
+    host.write_private(&user.join(REGISTRY), &text).map_err(|e| MarketError(format!("cannot save the extension list: {e}")))
 }
 
 pub mod installer;

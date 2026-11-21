@@ -3,9 +3,9 @@
 use std::path::{Path, PathBuf};
 
 use super::*;
-use crate::session::application::ports;
+use crate::session::application::ports::SessionStore;
 use crate::session::domain::saved_session::SavedSession;
-use crate::shared::application::host::write_private as write_atomic;
+use crate::shared::application::host::Host;
 
 // ------------------------------------------------------------ disk and clean
 
@@ -51,10 +51,10 @@ pub fn human_bytes(bytes: u64) -> String {
 /// Delete sessions last saved more than `older_than_days` ago, and every session file that
 /// can no longer be read. Pinned sessions are never deleted. Returns how many files went
 /// and how many bytes they were.
-pub fn clean(state_dir: &Path, older_than_days: u64, now_ms: u64) -> (usize, u64) {
-    let mut meta = ports::get().load_marks(state_dir);
+pub fn clean(store: &dyn SessionStore, state_dir: &Path, older_than_days: u64, now_ms: u64) -> (usize, u64) {
+    let mut meta = store.load_marks(state_dir);
     let max_age_ms = older_than_days.saturating_mul(DAY_MS);
-    let readable: std::collections::HashSet<PathBuf> = scan_all(state_dir).into_iter().map(|e| e.path).collect();
+    let readable: std::collections::HashSet<PathBuf> = scan_all(store, state_dir).into_iter().map(|e| e.path).collect();
     let mut removed = (0, 0);
     let all_files = session_dirs(state_dir).into_iter().flat_map(|p| {
         if p.is_dir() {
@@ -77,7 +77,7 @@ pub fn clean(state_dir: &Path, older_than_days: u64, now_ms: u64) -> (usize, u64
             }
         }
     }
-    let _ = ports::get().save_marks(state_dir, &meta);
+    let _ = store.save_marks(state_dir, &meta);
     removed
 }
 
@@ -87,7 +87,7 @@ pub fn clean(state_dir: &Path, older_than_days: u64, now_ms: u64) -> (usize, u64
 /// the per-project folders. Move each into its project's folder (named by its save time)
 /// so they list, search and prune like the rest. A file that cannot be read stays where it
 /// is. Returns how many were moved; running it again moves nothing.
-pub fn migrate_legacy(state_dir: &Path) -> usize {
+pub fn migrate_legacy(store: &dyn SessionStore, host: &dyn Host, state_dir: &Path) -> usize {
     let root = state_dir.join("sessions");
     let mut moved = 0;
     for path in std::fs::read_dir(&root).into_iter().flatten().filter_map(|e| e.ok().map(|e| e.path())) {
@@ -95,9 +95,9 @@ pub fn migrate_legacy(state_dir: &Path) -> usize {
             continue;
         }
         let Some(saved) = std::fs::read_to_string(&path).ok().and_then(|t| SavedSession::parse(&t).ok()) else { continue };
-        let dest_dir = ports::get().project_sessions_dir(state_dir, Path::new(&saved.project));
+        let dest_dir = store.project_sessions_dir(state_dir, Path::new(&saved.project));
         let dest = dest_dir.join(format!("{}-legacy.json", saved.saved_ms));
-        let written = dest.exists() || write_atomic(&dest, &saved.render()).is_ok();
+        let written = dest.exists() || host.write_private(&dest, &saved.render()).is_ok();
         if written && std::fs::remove_file(&path).is_ok() {
             moved += 1;
         }

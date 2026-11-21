@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 
 use crate::tui::repl::session_cmds::resolve;
 use crate::tui::repl::session::Repl;
-use crate::session::infrastructure::session_file;
+use crate::session::infrastructure::session_file::{self, FileSessions};
 use crate::tui::repl::library_command::SessionsCmd;
 use crate::session::infrastructure::session_import as sessionimport;
 use crate::session::infrastructure::session_import::Found;
@@ -17,6 +17,7 @@ use crate::session::application::session_library::search as lsearch;
 use crate::session::application::session_library::transfer;
 use crate::session::application::session_library::upkeep::{self, human_bytes};
 use crate::shared::domain::utc::utc_stamp;
+use crate::shared::infrastructure::system_host::SystemHost;
 use crate::tui::views::status_facts::startup::human_ago;
 
 /// Most results printed at once; the rest are reachable by narrowing the search.
@@ -35,7 +36,7 @@ impl Repl {
         let Some(state) = self.engine.state_dir().map(Path::to_path_buf) else {
             return self.console.out(&format!("  {}", style.dim("Saving sessions is switched off, so there is no library.")));
         };
-        let moved = upkeep::migrate_legacy(&state);
+        let moved = upkeep::migrate_legacy(&FileSessions, &SystemHost, &state);
         if moved > 0 {
             self.console.out(&format!("  {}", style.dim(&format!("Moved {moved} session(s) saved by an older version into their project folders."))));
         }
@@ -47,7 +48,7 @@ impl Repl {
             SessionsCmd::ImportHistory { source, pick } => self.import_history(&state, source, pick),
             SessionsCmd::Disk => self.disk(&state),
             SessionsCmd::Clean { days } => {
-                let (n, bytes) = upkeep::clean(&state, days, self.now());
+                let (n, bytes) = upkeep::clean(&FileSessions, &state, days, self.now());
                 let text = format!("removed {n} session file(s) older than {days} days or unreadable, freeing {}; pinned sessions are never removed", human_bytes(bytes));
                 self.console.out(&format!("{} {text}", style.green("✓")));
             }
@@ -57,7 +58,7 @@ impl Repl {
     fn find_sessions(&mut self, state: &Path, query: &Query) {
         let style = self.out_style();
         let now = self.now();
-        let hits = lsearch::search(sessionlib::scan_all(state), query, now);
+        let hits = lsearch::search(sessionlib::scan_all(&FileSessions, state), query, now);
         self.library.listing = hits.iter().map(|h| h.entry.path.clone()).collect();
         if hits.is_empty() {
             return self.console.out(&format!("  {}", style.dim("No saved session matches. Filters: provider: tag: file: since: project: pinned archived all.")));
@@ -85,7 +86,7 @@ impl Repl {
 
     fn mark_session(&mut self, state: &Path, n: usize, mark: &Mark) {
         let style = self.out_style();
-        let result = self.listed(n).and_then(|path| marks::mark(state, &path, mark).map_err(|e| format!("could not save the mark: {e}")));
+        let result = self.listed(n).and_then(|path| marks::mark(&FileSessions, state, &path, mark).map_err(|e| format!("could not save the mark: {e}")));
         let done = match mark {
             Mark::Pin(true) => format!("pinned session {n}: it stays at the top and is never deleted"),
             Mark::Pin(false) => format!("unpinned session {n}"),
@@ -106,14 +107,14 @@ impl Repl {
             Ok(p) => p,
             Err(e) => return self.console.out(&format!("{} {e}", style.yellow("⚠"))),
         };
-        let Some(entry) = sessionlib::scan_all(state).into_iter().find(|e| e.path == path) else {
+        let Some(entry) = sessionlib::scan_all(&FileSessions, state).into_iter().find(|e| e.path == path) else {
             return self.console.out(&format!("{} that session is gone from disk", style.yellow("⚠")));
         };
         let dest = match file {
             Some(f) => resolve(f, self.engine.dir(), self.home.as_deref()),
             None => self.engine.dir().join(format!("jev-session-{}.json", utc_stamp(self.now()).1)),
         };
-        match transfer::export_to(&entry, &dest) {
+        match transfer::export_to(&SystemHost, &entry, &dest) {
             Ok(()) => self.console.out(&format!("{} exported \u{201c}{}\u{201d} to {} {}", style.green("✓"), entry.title(), dest.display(), style.dim("· /sessions import <file> reads it back"))),
             Err(e) => self.console.out(&format!("{} not exported: {e}", style.yellow("⚠"))),
         }
@@ -122,7 +123,7 @@ impl Repl {
     fn import_file(&mut self, state: &Path, file: &str) {
         let style = self.out_style();
         let source = resolve(file, self.engine.dir(), self.home.as_deref());
-        match transfer::import_file(state, self.engine.dir(), &source, self.now()) {
+        match transfer::import_file(&FileSessions, &SystemHost, state, self.engine.dir(), &source, self.now()) {
             Ok(_) => self.console.out(&format!("{} imported into this folder: /resume lists it", style.green("✓"))),
             Err(e) => self.console.out(&format!("{} not imported: {e}", style.yellow("⚠"))),
         }
@@ -157,7 +158,7 @@ impl Repl {
             .and_then(|turns| {
                 let count = turns.len();
                 let saved = sessionimport::to_saved(turns, self.engine.dir(), chosen.modified_ms);
-                transfer::adopt(state, self.engine.dir(), saved, now).map(|_| count).map_err(|e| e.to_string())
+                transfer::adopt(&FileSessions, &SystemHost, state, self.engine.dir(), saved, now).map(|_| count).map_err(|e| e.to_string())
             });
         match result {
             Ok(count) => self.console.out(&format!("{} imported {count} turns from {}: /resume continues it on any provider", style.green("✓"), source.label())),
@@ -167,7 +168,7 @@ impl Repl {
 
     fn disk(&mut self, state: &Path) {
         let style = self.out_style();
-        let usage = upkeep::disk_use(&sessionlib::scan_all(state));
+        let usage = upkeep::disk_use(&sessionlib::scan_all(&FileSessions, state));
         let mut lines = vec![
             style.bold("Saved sessions"),
             format!("  {} sessions, {} on disk ({} pinned, {} archived)", usage.sessions, human_bytes(usage.bytes), usage.pinned, usage.archived),
