@@ -22,7 +22,7 @@ mod usable;
 
 pub use chains::{chain_with, default_chain};
 pub use models::{allowed_for, find, models, MODEL_CHEAP, MODEL_MID, MODEL_STRONG, MODEL_TOP};
-pub use overrides::{load_overrides, Overrides};
+pub use overrides::{Overrides, RawChain, RawEntry};
 pub use pick::{pick, Allowances, Pick};
 pub use spec::{Billing, ModelSpec, Tier};
 pub use task_type::TaskType;

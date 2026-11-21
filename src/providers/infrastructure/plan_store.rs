@@ -8,6 +8,7 @@
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 
+use crate::backend::infrastructure::plan_usage_file::PlanUsageFile;
 use crate::backend::{PlanUsage, ProviderId};
 
 /// Where readings are saved; `None` when there is no state directory.
@@ -19,15 +20,15 @@ pub fn default_path() -> Option<PathBuf> {
 /// name, is skipped: this is a display hint, never worth failing startup over.
 pub fn load(path: &Path) -> HashMap<ProviderId, PlanUsage> {
     let Ok(text) = std::fs::read_to_string(path) else { return HashMap::new() };
-    let Ok(saved) = serde_json::from_str::<BTreeMap<String, PlanUsage>>(&text) else { return HashMap::new() };
-    saved.into_iter().filter_map(|(name, plan)| Some((name.parse::<ProviderId>().ok()?, plan))).collect()
+    let Ok(saved) = serde_json::from_str::<BTreeMap<String, PlanUsageFile>>(&text) else { return HashMap::new() };
+    saved.into_iter().filter_map(|(name, plan)| Some((name.parse::<ProviderId>().ok()?, PlanUsage::from(plan)))).collect()
 }
 
 /// Save every reading. Written to a temporary file and renamed, so a reader in another
 /// process (`delegate_mcp`) never sees half a file. Errors are ignored for the same
 /// reason [`load`] skips them.
 pub fn save(path: &Path, plans: &HashMap<ProviderId, PlanUsage>) {
-    let out: BTreeMap<String, &PlanUsage> = plans.iter().map(|(p, plan)| (p.to_string(), plan)).collect();
+    let out: BTreeMap<String, PlanUsageFile> = plans.iter().map(|(p, plan)| (p.to_string(), PlanUsageFile::from(plan))).collect();
     let Ok(text) = serde_json::to_string_pretty(&out) else { return };
     let tmp = path.with_extension(format!("json.{}.tmp", std::process::id()));
     if std::fs::write(&tmp, text).is_ok() && std::fs::rename(&tmp, path).is_err() {

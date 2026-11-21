@@ -141,12 +141,6 @@ pub fn saved_path(state_dir: &Path) -> PathBuf {
     state_dir.join("mode")
 }
 
-/// The mode the last session ended in, when one was kept. A missing or unreadable file, or
-/// a word that names no mode, is no choice at all.
-pub fn load_saved(state_dir: &Path) -> Option<Mode> {
-    std::fs::read_to_string(saved_path(state_dir)).ok()?.parse().ok()
-}
-
 /// The mode an interactive session starts in: what was asked on the command line, else what
 /// the last session left (`/mode`, Shift-Tab), else [`initial`].
 pub fn start(flag: Option<Mode>, saved: Option<Mode>, env: Option<&str>) -> Mode {

@@ -32,10 +32,10 @@ fn hold_steps_down_after_max_hold_and_upgrade_is_immediate() {
 
 #[test]
 fn step_down_is_one_tier_and_stays_on_the_chain_and_usable() {
-    let o = catalog::load_overrides(
-        r#"{"simple_edit":["claude:claude-haiku-5-5","claude:claude-sonnet-5-5","claude:claude-opus-5-5"]}"#,
-    )
-    .unwrap();
+    let o = catalog::Overrides::from_raw(vec![(
+        "simple_edit".to_string(),
+        catalog::RawChain::of(&["claude:claude-haiku-5-5", "claude:claude-sonnet-5-5", "claude:claude-opus-5-5"]),
+    )]);
     // Chain order puts Haiku first, but from Opus the step is to Sonnet, not Haiku.
     let mut f = Fixture::new(&[Claude]);
     f.overrides = o;

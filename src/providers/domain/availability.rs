@@ -15,8 +15,6 @@
 use std::future::Future;
 use std::time::Duration;
 
-use serde::{Deserialize, Serialize};
-
 use crate::backend::ProviderId;
 
 pub(crate) mod claude;
@@ -37,8 +35,7 @@ pub mod usable;
 pub const PROBE_CAP: Duration = Duration::from_secs(5);
 
 /// Can the user use this provider?
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum State {
     Ready,
     NotInstalled,

@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex};
 
 use serde_json::{json, Map, Value};
 
-use crate::gateway::domain::request_signals::{find_cwd, project_of, similarity};
+use crate::gateway::domain::request_signals::{project_of, similarity};
 use crate::shared::application::host::Host;
 
 /// Token fields summed into turn records.
@@ -101,14 +101,14 @@ impl Turns {
         session: &str,
         prompt_id: Option<&str>,
         class: &str,
-        req: &Value,
+        find_cwd: impl FnOnce() -> Option<String>,
         requested_model: &str,
         prompt: Option<&str>,
         now_ms: u64,
     ) -> Option<NewTurn> {
         let mut g = self.lock();
         if g.sessions.get(session).is_none_or(|s| s.cwd.is_none()) {
-            if let Some(c) = find_cwd(req) {
+            if let Some(c) = find_cwd() {
                 g.sessions.entry(session.to_string()).or_default().cwd = Some(c.clone());
                 // Turns opened before the cwd was known get it too.
                 for ((s, _), a) in g.open.iter_mut() {
@@ -280,9 +280,8 @@ mod tests {
     fn cwd_learned_mid_turn_reaches_the_open_turn() {
         let turns = Turns::new(None, Arc::new(crate::shared::infrastructure::system_host::SystemHost));
         let usage = Map::new();
-        turns.observe("s", Some("p1"), "main", &json!({"messages": []}), "m", Some("hi"), 1);
-        let with_cwd = json!({"system": "Primary working directory: /home/u/app", "messages": []});
-        turns.observe("s", Some("p1"), "subagent", &with_cwd, "m", None, 2);
+        turns.observe("s", Some("p1"), "main", || None, "m", Some("hi"), 1);
+        turns.observe("s", Some("p1"), "subagent", || Some("/home/u/app".to_string()), "m", None, 2);
         assert_eq!(turns.lock().open.values().next().unwrap().cwd.as_deref(), Some("/home/u/app"));
         turns.finish_request(end("p1", &usage, "end_turn"));
     }
@@ -297,11 +296,10 @@ mod tests {
     #[test]
     fn turn_stays_open_across_tool_calls_and_closes_on_end_turn() {
         let turns = Turns::new(None, Arc::new(crate::shared::infrastructure::system_host::SystemHost));
-        let req = json!({"messages": []});
         let usage = Map::new();
-        assert!(turns.observe("s", Some("p1"), "main", &req, "m", Some("hi"), 1).is_some());
+        assert!(turns.observe("s", Some("p1"), "main", || None, "m", Some("hi"), 1).is_some());
         // Tool-result requests of the same turn are not a new turn.
-        assert!(turns.observe("s", Some("p1"), "main", &req, "m", None, 2).is_none());
+        assert!(turns.observe("s", Some("p1"), "main", || None, "m", None, 2).is_none());
         turns.finish_request(end("p1", &usage, "tool_use"));
         assert_eq!(turns.lock().open.len(), 1);
         turns.finish_request(end("p1", &usage, "end_turn"));
@@ -311,10 +309,9 @@ mod tests {
     #[test]
     fn closed_turn_waits_for_pending_check_and_new_turn_sweeps_the_old() {
         let turns = Turns::new(None, Arc::new(crate::shared::infrastructure::system_host::SystemHost));
-        let req = json!({"messages": []});
         let usage = Map::new();
-        turns.observe("s", Some("p1"), "main", &req, "m", Some("hi"), 1);
-        turns.observe("s", Some("p2"), "main", &req, "m", Some("again"), 2);
+        turns.observe("s", Some("p1"), "main", || None, "m", Some("hi"), 1);
+        turns.observe("s", Some("p2"), "main", || None, "m", Some("again"), 2);
         assert_eq!(turns.lock().open.len(), 1, "p1 swept when p2 began");
         turns.begin_check("s", "p2");
         turns.finish_request(end("p2", &usage, "end_turn"));

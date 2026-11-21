@@ -110,16 +110,20 @@ impl Rules {
         (Self { rules }, errors)
     }
 
-    /// The user's file, then the project's; later rules apply after earlier ones.
-    pub fn load(state_dir: Option<&std::path::Path>, project: &std::path::Path) -> (Self, Vec<RuleError>) {
+    /// Where the rule files are, in the order they apply: the user's, then the project's.
+    pub fn file_paths(state_dir: Option<&std::path::Path>, project: &std::path::Path) -> Vec<std::path::PathBuf> {
+        [state_dir.map(|d| d.join("routing.rules")), Some(project.join(".jev/routing.rules"))].into_iter().flatten().collect()
+    }
+
+    /// The rules of several files' texts, in order; later rules apply after earlier ones.
+    /// Line numbers in errors are per file.
+    pub fn parse_files<'t>(texts: impl IntoIterator<Item = &'t str>) -> (Self, Vec<RuleError>) {
         let mut all = Self::default();
         let mut errors = Vec::new();
-        for path in [state_dir.map(|d| d.join("routing.rules")), Some(project.join(".jev/routing.rules"))].into_iter().flatten() {
-            if let Ok(text) = std::fs::read_to_string(path) {
-                let (rules, errs) = Self::parse(&text);
-                all.rules.extend(rules.rules);
-                errors.extend(errs);
-            }
+        for text in texts {
+            let (rules, errs) = Self::parse(text);
+            all.rules.extend(rules.rules);
+            errors.extend(errs);
         }
         (all, errors)
     }
@@ -291,20 +295,5 @@ mod tests {
         assert_eq!(errors.iter().map(|e| e.line).collect::<Vec<_>>(), vec![1, 2, 3, 4, 5]);
         assert_eq!(r.lines().collect::<Vec<_>>(), vec!["prefer codex"]);
         assert!(Rules::default().is_empty());
-    }
-
-    #[test]
-    fn files_load_user_then_project() {
-        let base = std::env::temp_dir().join(format!("jev-rules-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&base);
-        let (state, project) = (base.join("state"), base.join("proj"));
-        std::fs::create_dir_all(&state).unwrap();
-        std::fs::create_dir_all(project.join(".jev")).unwrap();
-        std::fs::write(state.join("routing.rules"), "avoid grok\n").unwrap();
-        std::fs::write(project.join(".jev/routing.rules"), "prefer codex\nbad\n").unwrap();
-        let (r, errors) = Rules::load(Some(&state), &project);
-        assert_eq!(r.lines().collect::<Vec<_>>(), vec!["avoid grok", "prefer codex"]);
-        assert_eq!(errors.len(), 1);
-        let _ = std::fs::remove_dir_all(&base);
     }
 }

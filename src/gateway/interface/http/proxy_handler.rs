@@ -15,10 +15,13 @@ use crate::catalog::domain::model_table::{MODEL_CHEAP, MODEL_MID};
 use crate::gateway::application::app_state::App;
 use crate::gateway::application::turns::Turns;
 use crate::gateway::application::usage_tap::UsageTap;
-use crate::gateway::domain::request_signals::{find_cwd, project_of, request_params};
-use crate::gateway::domain::haiku_adaptation::{adapt_for_haiku, haiku_declined};
-use crate::gateway::domain::prompt_text::{last_user_prompt, recent_context};
+use crate::gateway::domain::request_signals::project_of;
+use crate::gateway::domain::haiku_adaptation::haiku_declined;
 use crate::gateway::infrastructure::anthropic_wire::set_model;
+use crate::gateway::infrastructure::haiku_adaptation::adapt_for_haiku;
+use crate::gateway::infrastructure::prefix_fingerprint::observe_request;
+use crate::gateway::infrastructure::prompt_text::{last_user_prompt, recent_context};
+use crate::gateway::infrastructure::request_signals::{find_cwd, request_params};
 use crate::shared::infrastructure::jsonl_log as log;
 
 use super::choose_model::{choose_model, Meta};
@@ -60,7 +63,7 @@ pub(super) async fn forward(app: &Arc<App>, req: Request) -> Result<Response<Bod
         let requested = json.as_ref().and_then(|j| j.get("model")).and_then(Value::as_str).unwrap_or("").to_string();
         if let Some(j) = &json {
             let prompt = last_user_prompt(j);
-            let new_turn = tracking.turns.observe(&meta.session, meta.prompt_id.as_deref(), &meta.class, j, &requested, prompt.as_deref(), ts_ms);
+            let new_turn = tracking.turns.observe(&meta.session, meta.prompt_id.as_deref(), &meta.class, || find_cwd(j), &requested, prompt.as_deref(), ts_ms);
             if let (true, Some(prev), Some(pid), Some(prompt)) = (correction_check_enabled(), new_turn.and_then(|n| n.prev_prompt), &meta.prompt_id, prompt) {
                 tracking.turns.begin_check(&meta.session, pid);
                 spawn_outcome_check(app, tracking.turns.clone(), meta.session.clone(), pid.clone(), prompt, prev, recent_context(j));
@@ -111,7 +114,7 @@ pub(super) async fn forward(app: &Arc<App>, req: Request) -> Result<Response<Bod
                     "messages": j.and_then(|j| j.get("messages")).and_then(Value::as_array).map(Vec::len),
                     "tools": j.and_then(|j| j.get("tools")).and_then(Value::as_array).map(Vec::len),
                     "req_bytes": bytes.len(),
-                    "prefix": j.map(|j| tracking.prefix.observe(&meta.session, match meta.class.as_str() { "main" | "auxiliary" | "subagent" => &meta.class, _ => "other" }, j)),
+                    "prefix": j.map(|j| observe_request(&tracking.prefix, &meta.session, match meta.class.as_str() { "main" | "auxiliary" | "subagent" => &meta.class, _ => "other" }, j)),
                 }),
                 tracking.turns.clone(),
                 meta.session.clone(),

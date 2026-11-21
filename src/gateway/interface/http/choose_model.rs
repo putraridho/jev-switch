@@ -7,8 +7,10 @@ use crate::catalog::domain::model_table::{MODEL_CHEAP, MODEL_MID, MODEL_STRONG, 
 use crate::gateway::application::app_state::App;
 use crate::gateway::application::session_state::SessionState;
 use crate::gateway::domain::model_choice::{ALIAS, TIERS};
-use crate::gateway::domain::orchestration_brief::{is_orchestrated, strip_orchestrate_block};
-use crate::gateway::domain::prompt_text::{is_harness_message, last_user_prompt, recent_context, user_words};
+use crate::gateway::domain::orchestration_brief::strip_orchestrate_block;
+use crate::gateway::domain::prompt_text::{is_harness_message, user_words};
+use crate::gateway::infrastructure::orchestration_brief::is_orchestrated;
+use crate::gateway::infrastructure::prompt_text::{last_user_prompt, recent_context};
 use crate::shared::infrastructure::jsonl_log as log;
 
 use super::proxy_handler::header;

@@ -5,6 +5,7 @@
 use std::path::{Path, PathBuf};
 
 use crate::shared::domain::audit::{preview, Entry, Event, Outcome};
+use crate::shared::infrastructure::audit_wire::EntryWire;
 use crate::session::domain::session_log::TurnRecord;
 use crate::session::domain::turn_status::TurnStatus;
 
@@ -49,7 +50,7 @@ pub fn path_in(state_dir: &Path) -> PathBuf {
 
 /// Append `entry`; never fails the caller (an audit line is not worth a lost turn).
 pub fn append(path: &Path, entry: &Entry) {
-    if let Ok(line) = serde_json::to_string(entry) {
+    if let Ok(line) = serde_json::to_string(&EntryWire::from(entry)) {
         crate::shared::infrastructure::jsonl_log::append_line(&path.to_string_lossy(), &line);
     }
 }
@@ -57,7 +58,7 @@ pub fn append(path: &Path, entry: &Entry) {
 /// Every entry in the file, oldest first; lines that are not entries are skipped.
 pub fn read(path: &Path) -> Vec<Entry> {
     let Ok(text) = std::fs::read_to_string(path) else { return Vec::new() };
-    text.lines().filter_map(|l| serde_json::from_str(l).ok()).collect()
+    text.lines().filter_map(|l| serde_json::from_str::<EntryWire>(l).ok().map(Into::into)).collect()
 }
 
 #[cfg(test)]
@@ -89,7 +90,7 @@ mod tests {
     #[test]
     fn a_turn_entry_keeps_a_redacted_preview_and_never_the_answer() {
         let e = turn_entry(1_000, "/p", &record("use ANTHROPIC_API_KEY=hunter2hunter2\nsecond line", "claude · s", TurnStatus::Answered));
-        let line = serde_json::to_string(&e).unwrap();
+        let line = serde_json::to_string(&EntryWire::from(&e)).unwrap();
         assert!(line.contains(r#""event":"turn""#) && line.contains("[REDACTED]"), "{line}");
         assert!(!line.contains("hunter2") && !line.contains("SECRET answer") && !line.contains("second line"), "{line}");
     }
@@ -99,12 +100,13 @@ mod tests {
         let mut r = record("x", "claude · s", TurnStatus::Answered);
         r.usage = Some(Usage { input_tokens: 900, cached_input_tokens: 800, output_tokens: 5, context_tokens: Some(70_000) });
         r.tool_calls = 12;
-        let line = serde_json::to_string(&turn_entry(1, "/p", &r)).unwrap();
-        let Event::Turn { cached_tokens, context_tokens, tool_calls, .. } = serde_json::from_str::<Entry>(&line).unwrap().event else { panic!("{line}") };
+        let line = serde_json::to_string(&EntryWire::from(&turn_entry(1, "/p", &r))).unwrap();
+        assert_eq!(line, r#"{"ts_ms":1,"project":"/p","event":"turn","model":"claude · s","outcome":"answered","elapsed_ms":2500,"in_tokens":900,"out_tokens":5,"prompt":"x","cached_tokens":800,"context_tokens":70000,"tool_calls":12}"#);
+        let Event::Turn { cached_tokens, context_tokens, tool_calls, .. } = Entry::from(serde_json::from_str::<EntryWire>(&line).unwrap()).event else { panic!("{line}") };
         assert_eq!((cached_tokens, context_tokens, tool_calls), (800, 70_000, 12));
 
         let old = r#"{"ts_ms":1,"project":"/p","event":"turn","model":"m","outcome":"answered","elapsed_ms":5,"in_tokens":1,"out_tokens":2,"prompt":"p"}"#;
-        let Event::Turn { cached_tokens, context_tokens, tool_calls, .. } = serde_json::from_str::<Entry>(old).unwrap().event else { panic!() };
+        let Event::Turn { cached_tokens, context_tokens, tool_calls, .. } = Entry::from(serde_json::from_str::<EntryWire>(old).unwrap()).event else { panic!() };
         assert_eq!((cached_tokens, context_tokens, tool_calls), (0, 0, 0));
     }
 

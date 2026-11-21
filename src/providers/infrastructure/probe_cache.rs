@@ -27,9 +27,43 @@ const FILE_NAME: &str = "probe-cache.json";
 const FINGERPRINT_VARS: [&str; 6] = ["PATH", "HOME", "CLAUDE_BIN", "CODEX_BIN", "GROK_BIN", "GEMINI_BIN"];
 
 #[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum StateWire {
+    Ready,
+    NotInstalled,
+    NotLoggedIn,
+    NoKey,
+    Unknown,
+}
+
+impl From<State> for StateWire {
+    fn from(value: State) -> Self {
+        match value {
+            State::Ready => Self::Ready,
+            State::NotInstalled => Self::NotInstalled,
+            State::NotLoggedIn => Self::NotLoggedIn,
+            State::NoKey => Self::NoKey,
+            State::Unknown => Self::Unknown,
+        }
+    }
+}
+
+impl From<StateWire> for State {
+    fn from(value: StateWire) -> Self {
+        match value {
+            StateWire::Ready => Self::Ready,
+            StateWire::NotInstalled => Self::NotInstalled,
+            StateWire::NotLoggedIn => Self::NotLoggedIn,
+            StateWire::NoKey => Self::NoKey,
+            StateWire::Unknown => Self::Unknown,
+        }
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize)]
 struct Entry {
     provider: String,
-    state: State,
+    state: StateWire,
     plan: Option<String>,
     models: Option<Vec<String>>,
     detail: String,
@@ -77,7 +111,7 @@ pub fn load(path: &Path, now_ms: u64, fingerprint: u64) -> Option<Vec<Availabili
         .entries
         .into_iter()
         .filter_map(|e| {
-            Some(Availability { provider: e.provider.parse::<ProviderId>().ok()?, state: e.state, plan: e.plan, models: e.models, detail: e.detail, verified: e.verified })
+            Some(Availability { provider: e.provider.parse::<ProviderId>().ok()?, state: e.state.into(), plan: e.plan, models: e.models, detail: e.detail, verified: e.verified })
         })
         .collect();
     let complete = ALL_PROVIDERS.iter().all(|p| avail.iter().any(|a| a.provider == *p));
@@ -93,7 +127,7 @@ pub fn save(path: &Path, now_ms: u64, fingerprint: u64, avail: &[Availability]) 
     }
     let entries = avail
         .iter()
-        .map(|a| Entry { provider: a.provider.as_str().to_string(), state: a.state, plan: a.plan.clone(), models: a.models.clone(), detail: a.detail.clone(), verified: a.verified })
+        .map(|a| Entry { provider: a.provider.as_str().to_string(), state: a.state.into(), plan: a.plan.clone(), models: a.models.clone(), detail: a.detail.clone(), verified: a.verified })
         .collect();
     let Ok(text) = serde_json::to_string(&CacheFile { saved_ms: now_ms, fingerprint, entries }) else { return };
     // Owner-only, like every other file in the state folder.
@@ -121,6 +155,9 @@ mod tests {
     fn a_saved_probe_is_read_back_while_fresh() {
         let path = temp("roundtrip");
         save(&path, 1_000, 7, &all(State::Ready));
+        assert_eq!(serde_json::to_string(&StateWire::from(State::NotInstalled)).unwrap(), "\"not_installed\"");
+        assert_eq!(serde_json::to_string(&StateWire::from(State::NotLoggedIn)).unwrap(), "\"not_logged_in\"");
+        assert_eq!(serde_json::to_string(&StateWire::from(State::NoKey)).unwrap(), "\"no_key\"");
         assert_eq!(load(&path, 1_000 + TTL_MS - 1, 7), Some(all(State::Ready)));
     }
 

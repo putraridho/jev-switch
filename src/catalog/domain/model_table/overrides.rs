@@ -1,7 +1,5 @@
 use std::collections::HashMap;
 
-use serde_json::Value;
-
 use super::models::find;
 use super::{ModelSpec, TaskType};
 use crate::shared::ProviderId;
@@ -14,51 +12,67 @@ pub struct Overrides {
     pub notes: Vec<String>,
 }
 
+/// One item of a user's chain list, as read from the chains file.
+#[derive(Debug, Clone, PartialEq)]
+pub enum RawEntry {
+    /// A string item, expected to read `<provider>:<model id>`.
+    Ref(String),
+    /// An item that is not a string; carries how to show it in the note.
+    NotAString(String),
+}
+
+/// What the chains file gave for one task type.
+#[derive(Debug, Clone, PartialEq)]
+pub enum RawChain {
+    List(Vec<RawEntry>),
+    NotAList,
+}
+
+impl RawChain {
+    /// A list of `<provider>:<model id>` strings.
+    pub fn of(refs: &[&str]) -> Self {
+        Self::List(refs.iter().map(|r| RawEntry::Ref((*r).to_string())).collect())
+    }
+}
+
 impl Overrides {
-    /// Read the file named by the `JEV_CHAINS` setting (`setting`), if set. A missing or broken
-    /// file yields the defaults plus a note, so a typo never stops routing.
-    pub fn from_setting(setting: Option<String>) -> Self {
-        let Some(path) = setting.filter(|p| !p.is_empty()) else {
-            return Self::default();
-        };
-        match std::fs::read_to_string(&path).map_err(|e| e.to_string()).and_then(|t| load_overrides(&t)) {
-            Ok(o) => o,
-            Err(e) => Self { notes: vec![format!("JEV_CHAINS ignored: {e}")], ..Self::default() },
+    /// Turn what the chains file said, task type name to list, in file order, into overrides.
+    /// Unknown task types, providers and model ids are skipped and reported in [`Overrides::notes`].
+    pub fn from_raw(raw: Vec<(String, RawChain)>) -> Self {
+        let mut out = Self::default();
+        for (key, list) in raw {
+            let Ok(task) = key.parse::<TaskType>() else {
+                out.notes.push(format!("unknown task type `{key}` ignored"));
+                continue;
+            };
+            let RawChain::List(items) = list else {
+                out.notes.push(format!("`{key}` must be a list; ignored"));
+                continue;
+            };
+            let mut chain = Vec::new();
+            for item in items {
+                match match item {
+                    RawEntry::Ref(s) => parse_model_ref(&s),
+                    RawEntry::NotAString(shown) => Err(format!("{shown} is not a string")),
+                } {
+                    Ok(spec) => chain.push(spec),
+                    Err(e) => out.notes.push(format!("`{key}`: {e}; ignored")),
+                }
+            }
+            out.chains.insert(task, chain);
         }
+        out
+    }
+
+    /// Defaults plus one note: the setting could not be used.
+    pub fn ignored(why: &str) -> Self {
+        Self { notes: vec![format!("JEV_CHAINS ignored: {why}")], ..Self::default() }
     }
 
     /// The override for `task`, if the user listed one.
     pub fn get(&self, task: TaskType) -> Option<&[&'static ModelSpec]> {
         self.chains.get(&task).map(Vec::as_slice)
     }
-}
-
-/// Parse `{ "feature": ["claude:claude-sonnet-5-5", ...], ... }`. Pure: the caller
-/// reads the file. Unknown task types, providers and model ids are skipped and
-/// reported in [`Overrides::notes`]; only text that is not a JSON object is an error.
-pub fn load_overrides(json: &str) -> Result<Overrides, String> {
-    let value: Value = serde_json::from_str(json).map_err(|e| format!("not valid JSON: {e}"))?;
-    let obj = value.as_object().ok_or("expected a JSON object of task type to list")?;
-    let mut out = Overrides::default();
-    for (key, list) in obj {
-        let Ok(task) = key.parse::<TaskType>() else {
-            out.notes.push(format!("unknown task type `{key}` ignored"));
-            continue;
-        };
-        let Some(items) = list.as_array() else {
-            out.notes.push(format!("`{key}` must be a list; ignored"));
-            continue;
-        };
-        let mut chain = Vec::new();
-        for item in items {
-            match item.as_str().ok_or_else(|| format!("{item} is not a string")).and_then(parse_model_ref) {
-                Ok(spec) => chain.push(spec),
-                Err(e) => out.notes.push(format!("`{key}`: {e}; ignored")),
-            }
-        }
-        out.chains.insert(task, chain);
-    }
-    Ok(out)
 }
 
 /// `"<provider>:<model id>"` to a catalog entry.

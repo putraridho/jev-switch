@@ -90,7 +90,7 @@ async fn startup_removes_abandoned_checkouts_and_prunes() {
     let running = wt.base.join("w1-running");
     std::fs::create_dir_all(&running).unwrap();
     let live = Saved { worker_id: "w1-running".into(), path: running.clone(), repo: wt.repo(), provider: "claude".into(), model: "m".into(), created_ms: system_now_ms(), running: true, shown: Default::default(), covered: Default::default(), merged: Default::default(), owner: None };
-    std::fs::write(state.join("workers").join("w1-running.json"), serde_json::to_string(&live).unwrap()).unwrap();
+    std::fs::write(state.join("workers").join("w1-running.json"), serde_json::to_string(&crate::orchestration::infrastructure::worker_wire::SavedWire::from(&live)).unwrap()).unwrap();
     std::mem::drop(first);
 
     // Now: the old worker is over 24 h, nothing else is. A brand new orphan is left alone.
@@ -245,7 +245,8 @@ fn what_recovery_does_with_a_record() {
     assert_eq!(fate(true, 25 * HOUR, true, false), Fate::Drop);
     // A record written before owners existed has none, and parses.
     let legacy = r#"{"worker_id":"w1","path":"/x/w1","repo":"/x","provider":"claude","model":"m","created_ms":1}"#;
-    assert_eq!(serde_json::from_str::<Saved>(legacy).unwrap().owner, None);
+    let wire = serde_json::from_str::<crate::orchestration::infrastructure::worker_wire::SavedWire>(legacy).unwrap();
+    assert_eq!(Saved::from(wire).owner, None);
 }
 
 pub(super) fn running_on(d: &Delegator, p: ProviderId) -> usize {

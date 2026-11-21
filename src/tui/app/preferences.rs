@@ -5,8 +5,8 @@
 
 use std::path::Path;
 
-use crate::approval::domain::mode;
 use crate::approval::domain::mode::Mode;
+use crate::approval::infrastructure::mode_store;
 
 /// An on/off setting that is kept.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -55,7 +55,7 @@ pub struct Saved {
 impl Saved {
     pub fn load(state_dir: &Path) -> Self {
         Self {
-            mode: mode::load_saved(state_dir),
+            mode: mode_store::load_saved(state_dir),
             orchestrate: load_flag(state_dir, Flag::Orchestrate),
             routing: load_flag(state_dir, Flag::Routing),
             thinking: load_flag(state_dir, Flag::Thinking),

@@ -57,8 +57,5 @@ async fn orchestration_p_keeps_the_raw_judgment_and_the_veto() {
     let (url, seen) = fake_jev(multi_part_but_sequential).await;
     let j = router_at(&url, 2000).orchestration_p("do 1, then 2, then 3", "").await.expect("answered");
     assert_eq!((j.multi_part_p, j.sequential_p, j.vetoed), (0.95, Some(0.9), true));
-    let fields = Orchestration::fields(Some(&j));
-    assert_eq!(fields["multi_part_p"], 0.95, "the log keeps the raw judgment");
-    assert_eq!((fields["sequential_p"].clone(), fields["vetoed"].clone()), (json!(0.9), json!(true)));
     assert_eq!(seen.lock().unwrap().len(), 1, "one request carries both questions");
 }

@@ -60,7 +60,7 @@ impl EngineApprover<'_> {
         }
         // What Claude Code is told with `--allowedTools`, for the CLIs that ask jev-code instead.
         // Not in plan mode, where Claude Code would still refuse anything that changes things.
-        if self.mode != Mode::Plan && permission_rule::allowed_by(self.allowed_tools, &req.tool, &req.input) {
+        if self.mode != Mode::Plan && permission_rule::allowed_by(self.allowed_tools, &req.tool, req.input.get("command").and_then(|value| value.as_str())) {
             lock_ui(self.ui).event(&Event::Hint(permission_request::allowed_by_setting(&req.summary)));
             return Decision::Allow;
         }

@@ -3,8 +3,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 
-use serde::{Deserialize, Serialize};
-
 use crate::backend::ProviderId;
 use crate::catalog::domain::model_table::ModelSpec;
 
@@ -66,15 +64,14 @@ impl Worker {
 /// A server process: its pid plus a start-time token that survives pid reuse (a new
 /// process with a recycled pid has a different start time). `start` is `None` where the
 /// platform cannot say, and the pid alone is compared then.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Owner {
     pub pid: u32,
-    #[serde(default)]
     pub start: Option<u64>,
 }
 
 /// A worker as written to disk. Plain data: provider as its name.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
 pub struct Saved {
     pub worker_id: String,
     pub path: PathBuf,
@@ -82,17 +79,12 @@ pub struct Saved {
     pub provider: String,
     pub model: String,
     pub created_ms: u64,
-    #[serde(default)]
     pub running: bool,
-    #[serde(default)]
     pub shown: BTreeSet<String>,
-    #[serde(default)]
     pub covered: BTreeMap<String, usize>,
-    #[serde(default)]
     pub merged: BTreeSet<String>,
     /// The server that owns the worker. A record without one (written before owners were
     /// stamped) counts as owned by a dead server.
-    #[serde(default)]
     pub owner: Option<Owner>,
 }
 

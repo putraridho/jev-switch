@@ -8,6 +8,7 @@ use crate::orchestration::domain::recovery::{Found, Scan};
 use crate::orchestration::domain::worker::Saved;
 
 use super::delegation_log::handoff_key;
+use super::worker_wire::SavedWire;
 
 /// One JSON file per worker under `<state dir>/workers`, so two servers sharing a state
 /// directory never overwrite each other's records. Writes are atomic (temp file, then
@@ -43,7 +44,7 @@ impl Records for Store {
             return;
         }
         let tmp = self.dir.join(format!("{}.json.tmp", s.worker_id));
-        let Ok(text) = serde_json::to_string(s) else { return };
+        let Ok(text) = serde_json::to_string(&SavedWire::from(s)) else { return };
         if std::fs::write(&tmp, text).is_ok() && std::fs::rename(&tmp, self.file(&s.worker_id)).is_err() {
             let _ = std::fs::remove_file(&tmp);
         }
@@ -69,7 +70,7 @@ impl Records for Store {
             .filter_map(|e| e.ok())
             .map(|e| e.path())
             .filter(|p| p.extension().is_some_and(|x| x == "json"))
-            .filter_map(|p| serde_json::from_slice::<Saved>(&std::fs::read(p).ok()?).ok())
+            .filter_map(|p| serde_json::from_slice::<SavedWire>(&std::fs::read(p).ok()?).ok().map(Saved::from))
             .filter(|s| plain_id(&s.worker_id))
             .collect();
         out.sort_by(|a, b| a.worker_id.cmp(&b.worker_id));

@@ -1,8 +1,6 @@
-use serde::{Deserialize, Serialize};
-
 /// One turn in the conversation. This is the canonical, provider-neutral unit
 /// the transcript stores and replays to whichever model handles the turn.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug)]
 pub struct Message {
     pub role: String,
     pub content: String,

@@ -90,7 +90,13 @@ pub(super) async fn orchestrate_check(State(app): State<Arc<App>>, Json(c): Json
 /// `multi_part_p`, `sequential_p`, `vetoed`; `orch_report` and `orch_tune` read the raw
 /// values to see what the sequence veto held back) beside the gateway's own `rest`.
 fn check_record(judgment: Option<&Orchestration>, rest: Value) -> Value {
-    let mut record = Orchestration::fields(judgment);
+    // All null when Jev gave no answer. The raw probabilities and the veto are all logged, so
+    // a report can say what a cutoff would have triggered and what the veto held back.
+    let mut record = json!({
+        "multi_part_p": judgment.map(|j| j.multi_part_p),
+        "sequential_p": judgment.map(|j| j.sequential_p),
+        "vetoed": judgment.map(|j| j.vetoed),
+    });
     if let (Some(fields), Value::Object(rest)) = (record.as_object_mut(), rest) {
         fields.extend(rest);
     }

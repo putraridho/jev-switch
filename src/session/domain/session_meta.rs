@@ -6,18 +6,13 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 
-use serde::{Deserialize, Serialize};
-
 /// One session's marks.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Meta {
-    #[serde(default)]
     pub tags: Vec<String>,
     /// Kept at the top of lists and never deleted by the keep-ten rule or `/sessions clean`.
-    #[serde(default)]
     pub pinned: bool,
     /// Left out of `/resume` and of the default listing; searchable with `archived`.
-    #[serde(default)]
     pub archived: bool,
 }
 

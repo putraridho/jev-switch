@@ -9,23 +9,25 @@ fn command_line_rules_split_outside_parentheses_only() {
 #[test]
 fn command_line_rules_allow_what_they_name_and_nothing_more() {
     use super::{allowed_by, split_rules};
-    let bash = |c: &str| serde_json::json!({ "command": c });
+    fn bash(command: &str) -> Option<&str> { Some(command) }
     let rules = split_rules("Bash(python3 *) Bash(git status:*) Bash(cargo test) Edit");
     // The command from a real Antigravity run: `;` and parentheses inside quotes are text.
-    assert!(allowed_by(&rules, "Bash", &bash("python3 -c 'import m; print(m.add(2,3))'")));
-    assert!(allowed_by(&rules, "Bash", &bash("git status --short")));
-    assert!(allowed_by(&rules, "Bash", &bash("cargo test")));
-    assert!(allowed_by(&rules, "Bash", &bash("cargo test && git status")));
-    assert!(allowed_by(&rules, "Edit", &serde_json::json!({ "file_path": "m.py" })));
+    assert!(allowed_by(&rules, "Bash", bash("python3 -c 'import m; print(m.add(2,3))'")));
+    assert!(allowed_by(&rules, "Bash", bash("git status --short")));
+    assert!(allowed_by(&rules, "Bash", bash("cargo test")));
+    assert!(allowed_by(&rules, "Bash", bash("cargo test && git status")));
+    assert!(allowed_by(&rules, "Edit", None));
     // Not named, or more than named.
-    assert!(!allowed_by(&rules, "Bash", &bash("cargo test --release")));
-    assert!(!allowed_by(&rules, "Bash", &bash("git statusx")));
-    assert!(!allowed_by(&rules, "Bash", &bash("python3 x.py && rm -rf build")));
-    assert!(!allowed_by(&rules, "Bash", &bash("python3 $(cat cmd)")));
-    assert!(!allowed_by(&rules, "Bash", &bash("python3 x.py > out.txt")));
-    assert!(!allowed_by(&rules, "Write", &serde_json::json!({ "file_path": "m.py" })));
-    assert!(!allowed_by(&[], "Bash", &bash("ls")));
-    assert!(allowed_by(&split_rules("Bash"), "Bash", &bash("anything at all")));
+    assert!(!allowed_by(&rules, "Bash", bash("cargo test --release")));
+    assert!(!allowed_by(&rules, "Bash", bash("git statusx")));
+    assert!(!allowed_by(&rules, "Bash", bash("python3 x.py && rm -rf build")));
+    assert!(!allowed_by(&rules, "Bash", bash("python3 $(cat cmd)")));
+    assert!(!allowed_by(&rules, "Bash", bash("python3 x.py > out.txt")));
+    assert!(!allowed_by(&rules, "Write", None));
+    assert!(!allowed_by(&rules, "Bash", None));
+    assert!(!allowed_by(&[], "Bash", bash("ls")));
+    assert!(allowed_by(&split_rules("Bash"), "Bash", None));
+    assert!(allowed_by(&split_rules("Bash"), "Bash", bash("anything at all")));
 }
 
 #[test]

@@ -1,8 +1,6 @@
 //! Claude Code's allow-rule syntax: checking a rule and matching a call against rules.
 
-use serde_json::Value;
 use crate::approval::domain::shell_words::split_chain;
-use crate::approval::domain::tool_input::str_field;
 
 // ------------------------------------------------------------------ the rule syntax
 
@@ -66,7 +64,7 @@ pub fn split_rules(list: &str) -> Vec<String> {
 /// a prefix (`Bash(git status:*)`) or a `*` wildcard (`Bash(python3 *)`). Every simple command
 /// of a chain must match, and a command [`split_chain`] refuses (`$`, backticks, subshells, a
 /// redirection to a file) never does. Anything else (`Edit(src/**)`) is left to asking.
-pub fn allowed_by(rules: &[String], tool: &str, input: &Value) -> bool {
+pub fn allowed_by(rules: &[String], tool: &str, command: Option<&str>) -> bool {
     if rules.iter().any(|r| r == tool) {
         return true;
     }
@@ -74,7 +72,7 @@ pub fn allowed_by(rules: &[String], tool: &str, input: &Value) -> bool {
         return false;
     }
     let specs: Vec<&str> = rules.iter().filter_map(|r| r.strip_prefix("Bash(")?.strip_suffix(')')).collect();
-    let Some(command) = str_field(input, "command") else { return false };
+    let Some(command) = command else { return false };
     let Ok(segments) = split_chain(command) else { return false };
     !specs.is_empty()
         && segments.iter().all(|segment| {

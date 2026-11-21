@@ -6,5 +6,6 @@ pub mod mcp_discovery;
 pub mod mcp_health_check;
 pub mod mcp_server;
 pub mod outcome_wire;
+pub mod plan_usage_file;
 pub mod process;
 pub mod select;

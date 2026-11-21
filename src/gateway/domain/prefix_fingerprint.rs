@@ -4,25 +4,63 @@
 //! Anthropic's prompt cache matches on the request prefix (tools, system, then
 //! messages in order). A cache read shorter than the previous request's context
 //! means something early in the prefix changed. The usage log has token counts but
-//! not content, so this module fingerprints each request and, when the prefix
-//! diverges, records what kind of block moved. Only hashes are kept in memory and
-//! only a short description of the first differing block reaches the log.
+//! not content, so each request is fingerprinted and, when the prefix diverges, a
+//! description of what kind of block moved is produced. Only hashes are kept in memory
+//! and only a short description of the first differing block reaches the log.
 //!
-//! `cache_control` markers are ignored: the client moves them every request and they
-//! are not part of the cached content.
+//! Reading a request body into a [`RequestFp`] and writing a [`PrefixDiff`] to the log is
+//! the infrastructure adapter's job; this module compares fingerprints.
 
 use std::collections::{HashMap, VecDeque};
-use std::hash::{DefaultHasher, Hash, Hasher};
 use std::sync::Mutex;
-
-use serde_json::{json, Value};
 
 /// Earlier requests remembered per session and class. Parallel subagents interleave,
 /// so one chain is not enough; more than this and the match gets slow and noisy.
 const KEEP: usize = 12;
-/// Characters of text shown for a differing block.
-const SNIPPET: usize = 80;
 
+/// One content block of a message: its hash and what the log shows of it.
+pub struct BlockFp {
+    pub hash: u64,
+    pub kind: String,
+    pub bytes: usize,
+    /// The first characters of its text, for text and thinking blocks.
+    pub text: Option<String>,
+}
+
+pub struct MessageFp {
+    pub hash: u64,
+    pub role: Option<String>,
+    pub blocks: Vec<BlockFp>,
+}
+
+/// A request reduced to what the comparison needs.
+pub struct RequestFp {
+    pub system: u64,
+    pub tools: u64,
+    pub msgs: Vec<MessageFp>,
+}
+
+/// The message at the divergence point: its role and the first block that differs
+/// from the earlier request's message at the same position (if there was one).
+pub struct Divergence {
+    pub role: Option<String>,
+    pub blocks: usize,
+    pub prev_blocks: Option<usize>,
+    pub block_index: Option<usize>,
+    pub block: Option<BlockFp>,
+}
+
+pub struct PrefixDiff {
+    pub intact: bool,
+    pub tail_only: bool,
+    pub system_changed: bool,
+    pub tools_changed: bool,
+    pub prev_messages: usize,
+    pub shared_messages: usize,
+    pub first_diff: Option<Divergence>,
+}
+
+/// What is kept of an earlier request.
 struct Fp {
     system: u64,
     tools: u64,
@@ -36,78 +74,15 @@ pub struct PrefixWatch {
     recent: Mutex<HashMap<String, VecDeque<Fp>>>,
 }
 
-fn hash_value(v: &Value, h: &mut DefaultHasher) {
-    match v {
-        Value::Null => 0u8.hash(h),
-        Value::Bool(b) => b.hash(h),
-        Value::Number(n) => n.to_string().hash(h),
-        Value::String(s) => s.hash(h),
-        Value::Array(a) => {
-            a.len().hash(h);
-            a.iter().for_each(|x| hash_value(x, h));
-        }
-        Value::Object(o) => {
-            for (k, x) in o.iter().filter(|(k, _)| k.as_str() != "cache_control") {
-                k.hash(h);
-                hash_value(x, h);
-            }
-        }
-    }
-}
-
-fn hash_of(v: Option<&Value>) -> u64 {
-    let mut h = DefaultHasher::new();
-    if let Some(v) = v {
-        hash_value(v, &mut h);
-    }
-    h.finish()
-}
-
-fn fingerprint(req: &Value) -> Fp {
-    let messages: &[Value] = req.get("messages").and_then(Value::as_array).map(Vec::as_slice).unwrap_or_default();
-    Fp {
-        system: hash_of(req.get("system")),
-        tools: hash_of(req.get("tools")),
-        msgs: messages.iter().map(|m| hash_of(Some(m))).collect(),
-        blocks: messages.iter().map(|m| blocks(m).iter().map(|b| hash_of(Some(b))).collect()).collect(),
-    }
-}
-
-/// A message's content as a list of blocks (a plain string counts as one text block).
-fn blocks(msg: &Value) -> Vec<Value> {
-    match msg.get("content") {
-        Some(Value::Array(a)) => a.clone(),
-        Some(Value::String(s)) => vec![json!({ "type": "text", "text": s })],
-        _ => Vec::new(),
-    }
-}
-
-fn describe_block(b: &Value) -> Value {
-    let kind = b.get("type").and_then(Value::as_str).unwrap_or("?");
-    let text = match kind {
-        "text" => b.get("text").and_then(Value::as_str),
-        "thinking" => b.get("thinking").and_then(Value::as_str),
-        _ => None,
-    };
-    json!({
-        "type": kind,
-        "bytes": b.to_string().len(),
-        "text": text.map(|t| t.chars().take(SNIPPET).collect::<String>()),
-    })
-}
-
-/// The message at the divergence point: its role and the first block that differs
-/// from the earlier request's message at the same position (if there was one).
-fn describe_message(msg: Option<&Value>, old_blocks: Option<&Vec<u64>>) -> Value {
-    let Some(msg) = msg else { return Value::Null };
-    let mine = blocks(msg);
-    let at = (0..mine.len()).find(|&j| old_blocks.and_then(|o| o.get(j)) != Some(&hash_of(mine.get(j))));
-    json!({
-        "role": msg.get("role"),
-        "blocks": mine.len(),
-        "prev_blocks": old_blocks.map(Vec::len),
-        "block_index": at,
-        "block": at.and_then(|j| mine.get(j)).map(describe_block),
+fn describe_message(msg: Option<MessageFp>, old_blocks: Option<&Vec<u64>>) -> Option<Divergence> {
+    let msg = msg?;
+    let at = (0..msg.blocks.len()).find(|&j| old_blocks.and_then(|o| o.get(j)) != Some(&msg.blocks[j].hash));
+    Some(Divergence {
+        role: msg.role,
+        blocks: msg.blocks.len(),
+        prev_blocks: old_blocks.map(Vec::len),
+        block_index: at,
+        block: at.and_then(|j| msg.blocks.into_iter().nth(j)),
     })
 }
 
@@ -117,10 +92,16 @@ impl PrefixWatch {
     }
 
     /// Compare `req` with the earlier request of this session and class that shares
-    /// the most prefix, remember it, and describe the difference. Returns `Null` for
+    /// the most prefix, remember it, and describe the difference. Returns `None` for
     /// a request with no comparable predecessor.
-    pub fn observe(&self, session: &str, class: &str, req: &Value) -> Value {
-        let fp = fingerprint(req);
+    pub fn observe(&self, session: &str, class: &str, req: RequestFp) -> Option<PrefixDiff> {
+        let fp = Fp {
+            system: req.system,
+            tools: req.tools,
+            msgs: req.msgs.iter().map(|m| m.hash).collect(),
+            blocks: req.msgs.iter().map(|m| m.blocks.iter().map(|b| b.hash).collect()).collect(),
+        };
+        let mut messages: Vec<Option<MessageFp>> = req.msgs.into_iter().map(Some).collect();
         let key = format!("{session}|{class}");
         let mut all = self.recent.lock().unwrap();
         let list = all.entry(key).or_default();
@@ -133,140 +114,32 @@ impl PrefixWatch {
             let (sys, tools) = (p.system != fp.system, p.tools != fp.tools);
             // The prefix is intact when the earlier request is wholly contained in this one.
             let intact = !sys && !tools && n == p.msgs.len();
-            let messages = req.get("messages").and_then(Value::as_array);
-            let diverged = (!intact && !sys && !tools).then(|| {
+            let diverged = if !intact && !sys && !tools {
                 // `n` is where the shared prefix ends: the earlier message there was edited
                 // (or the conversation was rewound or compacted and it no longer exists).
-                describe_message(messages.and_then(|m| m.get(n)), p.blocks.get(n))
-            });
+                describe_message(messages.get_mut(n).and_then(Option::take), p.blocks.get(n))
+            } else {
+                None
+            };
             // Only the earlier request's last message changed (Claude Code rewrites the
             // trailing message, e.g. its reminders). On 291 logged main requests this
             // cost ~6k cache tokens each, against 45k-725k for a real break, so count it apart.
             let tail_only = !intact && !sys && !tools && n + 1 == p.msgs.len();
-            json!({
-                "intact": intact,
-                "tail_only": tail_only,
-                "system_changed": sys,
-                "tools_changed": tools,
-                "prev_messages": p.msgs.len(),
-                "shared_messages": n,
-                "first_diff": diverged,
-            })
+            PrefixDiff {
+                intact,
+                tail_only,
+                system_changed: sys,
+                tools_changed: tools,
+                prev_messages: p.msgs.len(),
+                shared_messages: n,
+                first_diff: diverged,
+            }
         });
 
         list.push_back(fp);
         if list.len() > KEEP {
             list.pop_front();
         }
-        out.unwrap_or(Value::Null)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn req(system: &str, msgs: Vec<Value>) -> Value {
-        json!({ "system": system, "tools": [{ "name": "Bash" }], "messages": msgs })
-    }
-    fn user(text: &str) -> Value {
-        json!({ "role": "user", "content": [{ "type": "text", "text": text }] })
-    }
-    fn marked(text: &str) -> Value {
-        json!({ "role": "user", "content": [{ "type": "text", "text": text, "cache_control": { "type": "ephemeral" } }] })
-    }
-
-    /// The usage log's `prefix` field is what `observe` returns, written as `to_string`.
-    #[test]
-    fn golden_usage_prefix() {
-        const MASKED: &str = "# masked: nothing";
-        const GOLDEN: &str = golden!("gateway/usage_prefix.txt");
-        let parse = |s: &str| serde_json::from_str::<Value>(s).unwrap();
-        let watch = PrefixWatch::new();
-        let mut out = String::new();
-        let mut step = |name: &str, session: &str, class: &str, text: &str| {
-            out.push_str(&format!("=== {name}\n{}\n", watch.observe(session, class, &parse(text))));
-        };
-        // Two requests that differ only in where `cache_control` sits and in key order: intact.
-        step("first_has_no_predecessor", "s1", "main", r#"{"system":"sys","tools":[{"name":"Bash","description":"d"}],"messages":[{"role":"user","content":[{"type":"text","text":"a","cache_control":{"type":"ephemeral"}}]}]}"#);
-        step("cache_control_moved_and_keys_reordered", "s1", "main", r#"{"messages":[{"content":[{"text":"a","type":"text"}],"role":"user"},{"role":"user","content":[{"type":"text","text":"b","cache_control":{"type":"ephemeral"}}]}],"tools":[{"description":"d","name":"Bash"}],"system":"sys"}"#);
-        // Every optional part present: an earlier message edited, with a long text and a non-text block.
-        let long = "x".repeat(100);
-        let before = format!(r#"{{"system":"sys","tools":[],"messages":[{{"role":"user","content":[{{"type":"text","text":"{long}"}}]}},{{"role":"assistant","content":[{{"type":"tool_use","id":"t","name":"Bash","input":{{}}}}]}},{{"role":"user","content":"tail"}}]}}"#);
-        let after = format!(r#"{{"system":"sys","tools":[],"messages":[{{"role":"user","content":[{{"type":"text","text":"{long}!"}}]}},{{"role":"assistant","content":[{{"type":"tool_use","id":"t","name":"Bash","input":{{}}}}]}},{{"role":"user","content":"tail"}},{{"role":"user","content":"new"}}]}}"#);
-        step("edited_early_message_first", "s2", "subagent", &before);
-        step("edited_early_message", "s2", "subagent", &after);
-        // System and tools changed, and the other class and session are separate chains.
-        step("system_and_tools_changed", "s2", "subagent", r#"{"system":"sys2","tools":[{"name":"T"}],"messages":[]}"#);
-        step("other_class_has_no_predecessor", "s2", "main", r#"{"system":"sys","messages":[]}"#);
-        let actual = out;
-        let (head, body) = GOLDEN.split_once('\n').unwrap();
-        assert_eq!(head, MASKED);
-        assert_eq!(body, actual);
-    }
-
-    #[test]
-    fn first_request_has_no_predecessor() {
-        let w = PrefixWatch::new();
-        assert!(w.observe("s", "main", &req("sys", vec![user("a")])).is_null());
-    }
-
-    #[test]
-    fn appending_messages_keeps_the_prefix_even_if_cache_control_moves() {
-        let w = PrefixWatch::new();
-        w.observe("s", "main", &req("sys", vec![marked("a")]));
-        let d = w.observe("s", "main", &req("sys", vec![user("a"), marked("b")]));
-        assert_eq!(d["intact"], true);
-        assert_eq!(d["shared_messages"], 1);
-    }
-
-    #[test]
-    fn an_edited_early_message_is_reported_with_its_position() {
-        let w = PrefixWatch::new();
-        w.observe("s", "main", &req("sys", vec![user("<system-reminder> tools: A"), user("b")]));
-        let d = w.observe("s", "main", &req("sys", vec![user("<system-reminder> tools: A, B"), user("b"), user("c")]));
-        assert_eq!(d["intact"], false);
-        assert_eq!(d["shared_messages"], 0);
-        assert_eq!(d["first_diff"]["block"]["type"], "text");
-        assert!(d["first_diff"]["block"]["text"].as_str().unwrap().contains("tools: A, B"));
-    }
-
-    #[test]
-    fn a_rewritten_last_message_is_a_tail_change_not_a_break() {
-        let w = PrefixWatch::new();
-        w.observe("s", "main", &req("sys", vec![user("a"), user("b <reminder>")]));
-        let d = w.observe("s", "main", &req("sys", vec![user("a"), user("b"), user("c")]));
-        assert_eq!(d["intact"], false);
-        assert_eq!(d["tail_only"], true);
-        // An edit further back is a real break.
-        let w = PrefixWatch::new();
-        w.observe("s", "main", &req("sys", vec![user("a"), user("b"), user("c")]));
-        let d = w.observe("s", "main", &req("sys", vec![user("a2"), user("b"), user("c"), user("d")]));
-        assert_eq!(d["tail_only"], false);
-    }
-
-    #[test]
-    fn system_and_tool_changes_are_flagged_separately() {
-        let w = PrefixWatch::new();
-        w.observe("s", "main", &req("sys", vec![user("a")]));
-        let d = w.observe("s", "main", &req("sys2", vec![user("a"), user("b")]));
-        assert_eq!(d["system_changed"], true);
-        assert_eq!(d["tools_changed"], false);
-    }
-
-    #[test]
-    fn parallel_chains_match_their_own_predecessor() {
-        let w = PrefixWatch::new();
-        w.observe("s", "subagent", &req("sys", vec![user("x1")]));
-        w.observe("s", "subagent", &req("sys", vec![user("y1")]));
-        let d = w.observe("s", "subagent", &req("sys", vec![user("x1"), user("x2")]));
-        assert_eq!(d["intact"], true);
-    }
-
-    #[test]
-    fn sessions_do_not_mix() {
-        let w = PrefixWatch::new();
-        w.observe("s1", "main", &req("sys", vec![user("a")]));
-        assert!(w.observe("s2", "main", &req("sys", vec![user("a")])).is_null());
+        out
     }
 }

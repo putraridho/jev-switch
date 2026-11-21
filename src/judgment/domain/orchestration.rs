@@ -1,5 +1,3 @@
-use serde_json::{json, Value};
-
 use super::thresholds::SEQUENTIAL_VETO_P;
 
 /// Jev's judgment of whether a request should be orchestrated: the two raw answers and the
@@ -27,17 +25,6 @@ impl Orchestration {
     pub fn judged(multi_part_p: f64, sequential_p: Option<f64>) -> Self {
         Self { multi_part_p, sequential_p, vetoed: sequential_p.is_some_and(|p| p >= SEQUENTIAL_VETO_P) }
     }
-
-    /// The fields of an orchestrate check's log row and response; all null when Jev gave
-    /// no answer (`None`). The raw probabilities and the veto are all logged, so a report can
-    /// say what a cutoff would have triggered and what the veto held back.
-    pub fn fields(judgment: Option<&Self>) -> Value {
-        json!({
-            "multi_part_p": judgment.map(|j| j.multi_part_p),
-            "sequential_p": judgment.map(|j| j.sequential_p),
-            "vetoed": judgment.map(|j| j.vetoed),
-        })
-    }
 }
 
 #[cfg(test)]
@@ -48,11 +35,8 @@ mod tests {
     fn a_parallel_request_is_not_vetoed_and_no_answer_logs_nulls() {
         let j = Orchestration::new(0.9, 0.2);
         assert_eq!((j.multi_part_p, j.vetoed), (0.9, false));
-        assert_eq!(Orchestration::fields(Some(&j))["vetoed"], false);
-        let none = Orchestration::fields(None);
-        for key in ["multi_part_p", "sequential_p", "vetoed"] {
-            assert!(none[key].is_null(), "{key}");
-        }
+        assert_eq!(j.sequential_p, Some(0.2));
+        assert!(!Orchestration::judged(0.9, None).vetoed, "no sequential answer, no veto");
     }
 
     #[test]

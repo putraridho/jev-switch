@@ -1,7 +1,5 @@
 //! The Codex probe: `codex login status`, the plan from `auth.json`, the model cache.
 
-use serde_json::Value;
-
 use super::{avail, Availability, State};
 use crate::backend::ProviderId;
 
@@ -40,17 +38,6 @@ pub(crate) fn decode_base64url(s: &str) -> Option<Vec<u8>> {
         }
     }
     Some(out)
-}
-
-/// The ChatGPT plan ("free", "plus", ...) from `~/.codex/auth.json`: the
-/// `chatgpt_plan_type` claim inside the `id_token` JWT. The token is only read, not
-/// verified: the plan is shown to the user, never trusted for a decision.
-pub(crate) fn codex_plan_from_auth(auth_json: &str) -> Option<String> {
-    let auth: Value = serde_json::from_str(auth_json).ok()?;
-    let payload = auth.pointer("/tokens/id_token")?.as_str()?.split('.').nth(1)?;
-    let claims: Value = serde_json::from_slice(&decode_base64url(payload)?).ok()?;
-    let plan = claims.pointer("/https:~1~1api.openai.com~1auth/chatgpt_plan_type")?.as_str()?;
-    (!plan.is_empty()).then(|| plan.to_string())
 }
 
 /// `login_ok` is `None` when `codex login status` could not be run or read.

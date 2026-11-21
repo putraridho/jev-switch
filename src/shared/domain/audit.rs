@@ -8,8 +8,6 @@
 
 use std::collections::BTreeMap;
 
-use serde::{Deserialize, Serialize};
-
 use crate::shared::domain::redact::redact;
 use crate::shared::domain::utc::utc_stamp;
 
@@ -17,8 +15,7 @@ use crate::shared::domain::utc::utc_stamp;
 pub const PREVIEW_CHARS: usize = 120;
 
 /// How a turn ended, as written in the log.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Outcome {
     Answered,
     NoRoute,
@@ -27,8 +24,7 @@ pub enum Outcome {
 }
 
 /// What happened.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "event", rename_all = "snake_case")]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Event {
     Turn {
         model: String,
@@ -38,13 +34,10 @@ pub enum Event {
         out_tokens: u64,
         prompt: String,
         /// The cached share of `in_tokens`. Older lines and providers that do not say: 0.
-        #[serde(default)]
         cached_tokens: u64,
         /// The size of the turn's last request, when the CLI reports it: 0 when it does not.
-        #[serde(default)]
         context_tokens: u64,
         /// Tool calls of the attempt that ended the turn. Older lines: 0.
-        #[serde(default)]
         tool_calls: u32,
     },
     Export { path: String },
@@ -52,11 +45,10 @@ pub enum Event {
 }
 
 /// One line of the log.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Entry {
     pub ts_ms: u64,
     pub project: String,
-    #[serde(flatten)]
     pub event: Event,
 }
 
