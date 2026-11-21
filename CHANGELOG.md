@@ -4,6 +4,27 @@ See [docs/changelog-guide.md](docs/changelog-guide.md) for changelog formatting,
 
 ## Unreleased
 
+## 1.10.0
+
+`/mcp` becomes a list you can navigate: one row per server, live status, a card per server, and login from the list.
+
+- **`/mcp` is a list you can move around in.** Each server shows once, however many providers have it, with a status dot that fills in while you look: `●` connected, `◐` needs login, `✗` failed, `○` off, `·` not checked. The dots come from `claude mcp list` (which connects to each server) and `codex mcp list --json` (which says whether a sign-in is missing), run in the background. ↑↓ move, typing narrows the list (by name, URL, transport or provider), Enter or → opens a server's card with its full target, how each provider sees it (and why one failed), and a `Log in with claude` / `Log in with codex` action. ← or Esc goes back; Esc clears a search before it closes the list.
+- **`/mcp login` without a name opens the same list**, and Tab completes server names after `/mcp login`. `/mcp list` still prints the plain table, as does `/mcp` when there is no terminal.
+
+## 1.9.3
+
+Bug fix: the context meter no longer reads full after one busy Codex turn.
+
+- **The context meter is right after a Codex turn.** Codex reports one token count per turn, the sum over every request the turn made, and an agent turn re-sends the conversation on each tool call. jev-code took that sum as the context size, so a short session with one busy Codex turn showed 100% (878K "used" when the conversation was 51K), warned that switching away would rebuild 878K tokens, and weighed staying with Codex on that inflated cache. It now reads the last request's size from Codex's session file (`~/.codex/sessions/…/rollout-…-<thread>.jsonl`, or under `CODEX_HOME`), and falls back to the turn total only when that file has none.
+
+## 1.9.2
+
+Bug fix: `/update` works again when a local tag differs from the one on GitHub.
+
+- **`/update` no longer fails on a clashing tag.** It fetched with `--tags`, so one local tag that differed from the remote one (`! [rejected] v1.0.0 -> v1.0.0 (would clobber existing tag)`) failed the whole check with only "failed" to show. It now does a plain fetch, which still picks up new release tags but leaves your existing tags alone.
+- **Update failures show Git's diagnostics and exit status.** `/update` keeps messages from Git and its transport helpers, including helpers that write to standard output, so fetch failures are easier to diagnose.
+- **`/update`'s help says `main`.** It still named `master`, the branch's old name; the update follows `origin/main`.
+
 ## 1.9.1
 
 Bug fixes: a turn now moves on from a Gemini CLI that Google retired, and a failed tool shows a clean message.

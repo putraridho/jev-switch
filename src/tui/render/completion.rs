@@ -13,6 +13,8 @@ pub struct CompleteCtx {
     pub changed_files: Vec<String>,
     /// The skills `/skill` may name.
     pub skills: Vec<SkillChoice>,
+    /// Configured MCP server names, for `/mcp login <server>`.
+    pub mcp_servers: Vec<String>,
 }
 
 /// One skill as the menu shows it.
@@ -98,10 +100,13 @@ pub fn complete(line: &str, ctx: &CompleteCtx) -> Vec<Candidate> {
             .collect();
     }
     let (arg_index, prefix) = if typing_next { (words.len() - 1, "") } else { (words.len() - 2, words[words.len() - 1]) };
-    if arg_index != 0 {
-        return Vec::new();
-    }
-    arg_choices(words[0], ctx)
+    let choices = match (arg_index, words[0], words.get(1).copied()) {
+        (0, command, _) => arg_choices(command, ctx),
+        // `/mcp login <server>`: the second word is a configured server.
+        (1, "/mcp", Some("login" | "auth")) => ctx.mcp_servers.clone(),
+        _ => return Vec::new(),
+    };
+    choices
         .into_iter()
         .filter(|w| starts_with_ci(w, prefix))
         .map(|w| Candidate { display: w.clone(), replacement: w })
@@ -143,7 +148,17 @@ mod tests {
             models: vec!["claude:claude-sonnet-5-5".into(), "codex:gpt-6.1-sol".into(), "codex:gpt-6-luna".into()],
             changed_files: vec!["src/a.rs".into(), "src/b.rs".into(), "README.md".into(), "has space.txt".into()],
             skills: vec![SkillChoice { name: "db".into(), ..Default::default() }],
+            mcp_servers: vec!["lunagraph".into(), "lunagraph-remote".into(), "posthog".into()],
         }
+    }
+
+    #[test]
+    fn mcp_login_completes_server_names() {
+        assert_eq!(replacements("/mcp login "), ["lunagraph", "lunagraph-remote", "posthog"]);
+        assert_eq!(replacements("/mcp login luna"), ["lunagraph", "lunagraph-remote"]);
+        assert_eq!(replacements("/mcp auth p"), ["posthog"]);
+        assert_eq!(replacements("/mcp list "), Vec::<String>::new());
+        assert_eq!(replacements("/mcp login posthog "), Vec::<String>::new());
     }
 
     fn replacements(line: &str) -> Vec<String> {

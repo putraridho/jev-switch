@@ -3,6 +3,8 @@ pub mod codex;
 pub mod gemini;
 pub mod grok;
 pub mod mcp_discovery;
+pub mod mcp_health_check;
+pub mod mcp_server;
 pub mod outcome_wire;
 pub mod process;
 pub mod select;

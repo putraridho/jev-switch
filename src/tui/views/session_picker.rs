@@ -188,71 +188,18 @@ pub fn page_for(rows: Option<usize>) -> usize {
 /// person left. Without a terminal to read keys from there is nobody to choose: `None`.
 #[cfg(unix)]
 pub fn run(entries: Vec<SessionEntry>, now_ms: u64, style: Style, rows: Option<usize>, width: usize) -> Option<usize> {
-    use std::io::Write;
+    use super::raw_keys::{Block, RawKeys, Read};
 
-    let fd = libc::STDIN_FILENO;
-    if !std::io::IsTerminal::is_terminal(&std::io::stdin()) {
-        return None;
-    }
-    let _owner = crate::tui::input::line_editor::STDIN_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-    // SAFETY: termios is plain data; tcgetattr fills it or fails.
-    let mut saved: libc::termios = unsafe { std::mem::zeroed() };
-    if unsafe { libc::tcgetattr(fd, &mut saved) } != 0 {
-        return None;
-    }
-    let mut raw = saved;
-    raw.c_lflag &= !(libc::ICANON | libc::ECHO | libc::ISIG);
-    raw.c_cc[libc::VMIN] = 1;
-    raw.c_cc[libc::VTIME] = 0;
-    // SAFETY: both calls only change the terminal's own state.
-    unsafe {
-        libc::tcflush(fd, libc::TCIFLUSH);
-        libc::tcsetattr(fd, libc::TCSANOW, &raw);
-    }
+    let keys = RawKeys::enter()?;
     let mut picker = Picker::new(entries, page_for(rows));
-    let mut drawn = 0usize;
-    let draw = |picker: &Picker, drawn: &mut usize| {
-        let mut out = std::io::stdout().lock();
-        if *drawn > 0 {
-            let _ = write!(out, "\x1b[{}A", *drawn);
-        }
-        let _ = write!(out, "\r\x1b[J");
-        let lines = picker.render(now_ms, width, style);
-        for line in &lines {
-            let _ = writeln!(out, "{line}");
-        }
-        let _ = out.flush();
-        *drawn = lines.len();
-    };
-    draw(&picker, &mut drawn);
-    let mut buf = [0u8; 64];
+    let mut block = Block::default();
+    block.draw(&picker.render(now_ms, width, style));
     let chosen = 'keys: loop {
-        // SAFETY: reads at most buf.len() bytes into a live local buffer.
-        let n = unsafe { libc::read(fd, buf.as_mut_ptr().cast(), buf.len()) };
-        if n == 0 {
-            break None;
-        }
-        if n < 0 {
-            if std::io::Error::last_os_error().kind() == std::io::ErrorKind::Interrupted {
-                continue;
-            }
-            break None;
-        }
-        let mut bytes = buf[..n as usize].to_vec();
-        // A lone Esc is a key; Esc with more is an arrow. Wait a tenth of a second to tell.
-        if bytes == [0x1b] {
-            let mut quick = raw;
-            quick.c_cc[libc::VMIN] = 0;
-            quick.c_cc[libc::VTIME] = 1;
-            // SAFETY: as above, and the read stays inside the buffer.
-            unsafe { libc::tcsetattr(fd, libc::TCSANOW, &quick) };
-            let more = unsafe { libc::read(fd, buf.as_mut_ptr().cast(), buf.len()) };
-            // SAFETY: as above.
-            unsafe { libc::tcsetattr(fd, libc::TCSANOW, &raw) };
-            if more > 0 {
-                bytes.extend_from_slice(&buf[..more as usize]);
-            }
-        }
+        let bytes = match keys.read(None) {
+            Read::Bytes(bytes) => bytes,
+            Read::Timeout => continue,
+            Read::Closed => break None,
+        };
         for key in decode(&bytes) {
             match picker.press(key) {
                 Outcome::Continue => {}
@@ -260,17 +207,9 @@ pub fn run(entries: Vec<SessionEntry>, now_ms: u64, style: Style, rows: Option<u
                 Outcome::Cancelled => break 'keys None,
             }
         }
-        draw(&picker, &mut drawn);
+        block.draw(&picker.render(now_ms, width, style));
     };
-    // Take the list off the screen and put the terminal back as it was.
-    let mut out = std::io::stdout().lock();
-    if drawn > 0 {
-        let _ = write!(out, "\x1b[{drawn}A");
-    }
-    let _ = write!(out, "\r\x1b[J");
-    let _ = out.flush();
-    // SAFETY: puts back what tcgetattr read.
-    unsafe { libc::tcsetattr(fd, libc::TCSANOW, &saved) };
+    block.clear();
     chosen
 }
 

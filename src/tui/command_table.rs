@@ -76,12 +76,12 @@ pub const COMMANDS: [Cmd; 59] = [
     Cmd { name: "/scoreboard", args: "", group: Group::Info, about: "Show how each provider did this session: answers, failures, speed", example: "", hint: "" },
     Cmd { name: "/config", args: "", group: Group::Info, about: "Show the effective settings and where to change them", example: "/config", hint: "" },
     Cmd { name: "/providers", args: "[refresh]", group: Group::Info, about: "Show what was detected; `refresh` probes again", example: "/providers refresh", hint: "[refresh]" },
-    Cmd { name: "/mcp", args: "[list|login <server>]", group: Group::Info, about: "Show configured MCP servers across ready providers, or log in", example: "/mcp login lunagraph-remote", hint: "[list|login <server>]" },
+    Cmd { name: "/mcp", args: "[list|login <server>]", group: Group::Info, about: "Browse MCP servers: status, details, log in", example: "/mcp login lunagraph-remote", hint: "[list|login <server>]" },
     Cmd { name: "/tips", args: "", group: Group::Info, about: "Show short tips for getting more out of jev-code", example: "", hint: "" },
     Cmd { name: "/keys", args: "", group: Group::Info, about: "Show the key cheat sheet (also ? on an empty box)", example: "", hint: "" },
     Cmd { name: "/whatsnew", args: "[all]", group: Group::Info, about: "Show what changed in this version, or in every version", example: "/whatsnew all", hint: "[all]" },
     Cmd { name: "/doctor", args: "", group: Group::Info, about: "Check the setup and show how to fix problems", example: "", hint: "" },
-    Cmd { name: "/update", args: "", group: Group::Info, about: "Update jev-code to the newest version on master and reinstall it", example: "", hint: "" },
+    Cmd { name: "/update", args: "", group: Group::Info, about: "Update jev-code to the newest version on main and reinstall it", example: "", hint: "" },
     Cmd { name: "/terminal-setup", args: "[install]", group: Group::Info, about: "Make Shift-Enter insert a new line in your terminal", example: "/terminal-setup install", hint: "[install]" },
 ];
 

@@ -478,52 +478,6 @@ impl Repl {
         }
     }
 
-    /// `/mcp [list | login <server>]`.
-    pub(super) fn mcp(&mut self, cmd: crate::tui::command::McpCmd) {
-        match cmd {
-            crate::tui::command::McpCmd::List => {
-                let servers = crate::backend::infrastructure::mcp_discovery::discover(self.engine.dir(), self.home.as_deref().map(Path::new), self.engine.orchestrate());
-                let style = self.out_style();
-                self.page_out(&uifmt::mcp_text(&servers, style));
-            }
-            crate::tui::command::McpCmd::Login(server) => {
-                self.mcp_login(&server);
-            }
-        }
-    }
-
-    fn mcp_login(&mut self, server: &str) {
-        let style = self.out_style();
-        let servers = crate::backend::infrastructure::mcp_discovery::discover(self.engine.dir(), self.home.as_deref().map(Path::new), self.engine.orchestrate());
-        let matching: Vec<_> = servers.iter().filter(|s| s.name == server).collect();
-        if matching.is_empty() {
-            self.console.out(&format!("{} Server `{server}` is not configured in any provider.", style.yellow("⚠")));
-            return;
-        }
-
-        let provider = matching.iter().find_map(|s| match s.scope {
-            crate::backend::infrastructure::mcp_discovery::McpScope::Claude => Some("claude"),
-            crate::backend::infrastructure::mcp_discovery::McpScope::Codex => Some("codex"),
-            _ => None,
-        });
-
-        let Some(bin) = provider else {
-            self.console.out(&format!(
-                "  {}",
-                style.dim(&format!("Server `{server}` is configured under {}, which does not need a login command.", matching[0].scope))
-            ));
-            return;
-        };
-
-        self.console.out(&format!("  {}", style.dim(&format!("Logging in to `{server}` via `{bin} mcp login`..."))));
-        let status = self.console.with_terminal(|| std::process::Command::new(bin).args(["mcp", "login", server]).status());
-
-        match status {
-            Ok(s) if s.success() => self.console.out(&format!("{} Signed in to `{server}`.", style.green("✓"))),
-            Ok(s) => self.console.out(&format!("{} Login failed with exit code: {:?}", style.yellow("⚠"), s.code())),
-            Err(e) => self.console.out(&format!("{} Failed to run `{bin}`: {e}", style.red("✗"))),
-        }
-    }
 }
 
 /// A path the person typed: `~/` from home, relative ones from the project.

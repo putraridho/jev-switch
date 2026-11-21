@@ -14,7 +14,11 @@ use crate::tui::render as uifmt;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum McpCmd {
+    /// `/mcp` or `/mcp login`: the interactive list (the table when there is no terminal).
+    Browse,
+    /// `/mcp list`: the plain table.
     List,
+    /// `/mcp login <server>`.
     Login(String),
 }
 
@@ -292,8 +296,8 @@ pub fn parse(line: &str) -> Command {
             _ => invalid("usage: /providers [refresh]"),
         },
         "/mcp" => match (arg, extra) {
-            (None, _) | (Some("list"), false) => Command::Mcp(McpCmd::List),
-            (Some("login" | "auth"), false) => invalid("usage: /mcp [list | login <server>]"),
+            (None, _) | (Some("login" | "auth"), false) => Command::Mcp(McpCmd::Browse),
+            (Some("list"), false) => Command::Mcp(McpCmd::List),
             (Some("login" | "auth"), true) => {
                 let rest_words: Vec<&str> = line[head.len()..].split_whitespace().collect();
                 if rest_words.len() == 2 {
@@ -335,11 +339,11 @@ mod tests {
         assert_eq!(parse("/providers"), Command::Providers { refresh: false });
         assert_eq!(parse("/providers refresh"), Command::Providers { refresh: true });
         assert!(matches!(parse("/providers nope"), Command::Invalid(_)));
-        assert_eq!(parse("/mcp"), Command::Mcp(McpCmd::List));
+        assert_eq!(parse("/mcp"), Command::Mcp(McpCmd::Browse));
         assert_eq!(parse("/mcp list"), Command::Mcp(McpCmd::List));
         assert_eq!(parse("/mcp login my-server"), Command::Mcp(McpCmd::Login("my-server".into())));
         assert_eq!(parse("/mcp auth my-server"), Command::Mcp(McpCmd::Login("my-server".into())));
-        assert!(matches!(parse("/mcp login"), Command::Invalid(_)));
+        assert_eq!(parse("/mcp login"), Command::Mcp(McpCmd::Browse));
         assert!(matches!(parse("/mcp login a b"), Command::Invalid(_)));
         assert!(matches!(parse("/mcp nope"), Command::Invalid(_)));
     }

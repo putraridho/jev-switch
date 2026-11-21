@@ -89,6 +89,20 @@ if [ "$1" = "auth" ]; then
   echo '{"loggedIn": true, "planTier": "pro"}'
   exit 0
 fi
+# `/mcp` asks `claude mcp list` for health; `mcp login <server>` records what it was asked.
+if [ "$1" = "mcp" ] && [ "$2" = "list" ]; then
+  sleep 0.5
+  echo 'Checking MCP server health...'
+  echo ''
+  echo 'docs: https://docs.example/mcp (HTTP) - ✔ Connected'
+  echo 'tracker: https://tracker.example/mcp (HTTP) - ⚠ Needs authentication'
+  echo 'files: npx files-mcp - ✗ Failed to connect'
+  exit 0
+fi
+if [ "$1" = "mcp" ] && [ "$2" = "login" ]; then
+  echo "$3" > "$FAKE_PIDS/mcp-login.txt"
+  exit 0
+fi
 host=0
 stream=0
 for arg in "$@"; do
@@ -860,7 +874,7 @@ def update_shows_the_new_commits_asks_then_pulls_and_reinstalls(w):
     with open(os.path.join(up, "scripts", "install.sh"), "w") as f:
         f.write("#!/bin/sh\necho FAKE INSTALL RAN\n: > installed\n")
     os.chmod(os.path.join(up, "scripts", "install.sh"), 0o755)
-    git(up, "init", "-q", "-b", "master")
+    git(up, "init", "-q", "-b", "main")
     git(up, "add", "-A")
     git(up, "commit", "-qm", "first")
     git(w.tmp, "clone", "-q", up, clone)
@@ -872,7 +886,7 @@ def update_shows_the_new_commits_asks_then_pulls_and_reinstalls(w):
     try:
         prompt_ready(p)
         p.send("/update\r")
-        p.expect("→ 9.9.9: 1 new commit on origin/master", 15, "the version change and the commit count")
+        p.expect("→ 9.9.9: 1 new commit on origin/main", 15, "the version change and the commit count")
         p.expect("release 9.9.9", 5, "the incoming commit")
         p.expect("Pull it and reinstall jev-code now?", 10, "the confirmation card")
         p.settle(0.3)
@@ -1930,6 +1944,51 @@ def rename_names_the_session_in_the_header_and_in_resume(w):
         quit_with_ctrl_d(q)
     finally:
         q.close()
+
+
+@scenario
+def mcp_picker_shows_health_opens_a_card_and_logs_in(w):
+    # Three servers under claude: the fake `claude mcp list` says docs is connected, tracker
+    # needs a login and files failed.
+    servers = {
+        "docs": {"type": "http", "url": "https://docs.example/mcp"},
+        "tracker": {"type": "http", "url": "https://tracker.example/mcp"},
+        "files": {"command": "npx", "args": ["files-mcp"]},
+    }
+    with open(os.path.join(w.home, ".claude.json"), "w") as f:
+        json.dump({"mcpServers": servers}, f)
+    p = Pty(w, [w.repo], "mcp-picker")
+    try:
+        prompt_ready(p)
+        p.send("/mcp\r")
+        p.expect("MCP servers", 10, "the picker opens")
+        p.expect("checking servers", 5, "it says the check is running")
+        p.expect("needs login", 10, "the health check fills in the rows")
+        p.settle(0.5)
+        screen = p.visible()
+        for needle in ["● docs", "◐ tracker", "✗ files", "http · claude", "stdio · claude"]:
+            if needle not in screen:
+                raise Fail(f"the list should show {needle!r}:\n{p.screen_tail()}")
+        # Esc leaves without doing anything.
+        p.send("\x1b")
+        wait_prompt(p, 5, "the prompt after Esc")
+        # Type to find it, open its card, log in.
+        p.send("/mcp\r")
+        p.expect("MCP servers", 10, "the picker opens again")
+        p.settle(0.3)
+        p.send("track")
+        p.settle(0.5)
+        p.send("\r")
+        p.expect("Log in with claude", 10, "the card offers the login")
+        p.send("\r")
+        p.expect("Signed in to `tracker`", 10, "the login ran")
+        wait_prompt(p, 5)
+        with open(os.path.join(w.pids, "mcp-login.txt")) as f:
+            if f.read().strip() != "tracker":
+                raise Fail("`claude mcp login` should have been run for tracker")
+        quit_with_ctrl_d(p)
+    finally:
+        p.close()
 
 
 @scenario
