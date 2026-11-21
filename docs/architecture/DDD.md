@@ -608,7 +608,7 @@ jev-router/
     │   │                     block_reason.rs  reaction.rs  allowances_rule.rs  setup_guide.rs
     │   │                     late_probe.rs
     │   │                     probe_facts/  claude.rs  codex.rs  gemini.rs  grok.rs  deepseek.rs
-    │   ├── application/      ports.rs  provider_registry.rs  probe_providers.rs  retry_slow_probes.rs
+    │   ├── application/      ports.rs  provider_registry.rs  provider_registry/{probing,usable,plan,react,render}.rs  probe_providers.rs  retry_slow_probes.rs
     │   └── infrastructure/   cooldown_file.rs  cooldown_wire.rs  system_date.rs  config.rs
     │                         probes/  claude_probe.rs  codex_probe.rs  codex_auth_wire.rs
     │                                  gemini_probe.rs  grok_probe.rs  deepseek_probe.rs

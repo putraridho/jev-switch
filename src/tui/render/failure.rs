@@ -30,7 +30,7 @@ fn reset_label(resets_at: Option<&str>) -> Option<String> {
 /// How to log in to `provider`, from the one table in [`crate::doctor::domain::diagnose`].
 fn login_hint(provider: &str) -> String {
     match provider.parse::<ProviderId>() {
-        Ok(p) => crate::providers::application::provider_registry::login_instruction(p),
+        Ok(p) => crate::providers::domain::login_hints::login_instruction(p),
         Err(_) => format!("log in to {provider}"),
     }
 }
@@ -290,7 +290,7 @@ mod tests {
     use crate::tui::render::{strip_ansi, display_width};
     use crate::tui::render::test_facts::*;
     use crate::doctor::domain::diagnose::login_steps;
-    use crate::providers::application::provider_registry::{install_hint, login_command, login_instruction};
+    use crate::providers::domain::login_hints::{install_hint, login_command, login_instruction};
     use crate::shared::ALL_PROVIDERS;
 
     #[test]
