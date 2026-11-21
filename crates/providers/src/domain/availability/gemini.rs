@@ -20,16 +20,16 @@ pub struct GeminiFacts {
     pub agy_creds: bool,
 }
 
-/// Which sign-in was found, for the detail line.
+/// Which sign-in was found, for the detail line. With `agy` installed only what reaches `agy`
+/// counts (its own login, or an API key passed on): the turn runs `agy` then, so an old Gemini
+/// CLI login must not make Gemini look ready.
 pub fn gemini_auth_source(f: &GeminiFacts) -> Option<&'static str> {
-    [
-        (f.api_key_env, "API key in environment"),
-        (f.settings_auth, "auth type set in ~/.gemini/settings.json"),
-        (f.oauth_creds, "cached OAuth login"),
-        (f.agy_creds, "agy login"),
-    ]
-    .into_iter()
-    .find_map(|(present, what)| present.then_some(what))
+    let signs: &[(bool, &str)] = if f.agy_installed {
+        &[(f.agy_creds, "agy login"), (f.api_key_env, "API key in environment")]
+    } else {
+        &[(f.api_key_env, "API key in environment"), (f.settings_auth, "auth type set in ~/.gemini/settings.json"), (f.oauth_creds, "cached OAuth login")]
+    };
+    signs.iter().find_map(|(present, what)| present.then_some(*what))
 }
 
 pub fn decide_gemini(f: GeminiFacts) -> Availability {
@@ -39,6 +39,7 @@ pub fn decide_gemini(f: GeminiFacts) -> Availability {
     }
     match gemini_auth_source(&f) {
         Some(source) => avail(id, State::Ready, source),
+        None if f.agy_installed => avail(id, State::NotLoggedIn, "`agy` is not logged in: run `agy` once and sign in"),
         None => avail(id, State::NotLoggedIn, "no API key, settings auth type or login found (`gemini` exits 41 without auth)"),
     }
 }

@@ -12,7 +12,7 @@ pub fn install_hint(provider: ProviderId) -> &'static str {
         // DeepSeek is the claude CLI pointed at another API.
         ProviderId::Claude | ProviderId::DeepSeek => "Install Claude Code: https://code.claude.com/docs/en/quickstart",
         ProviderId::Codex => "npm i -g @openai/codex (or see the vendor's install page)",
-        ProviderId::Gemini => "npm i -g @google/gemini-cli",
+        ProviderId::Gemini => "Install Antigravity (`agy`): see Google's Antigravity page (Gemini CLI's own login is retired)",
         ProviderId::Grok => {
             "Install the Grok CLI: see the vendor's install page (if `grok` is a lazy mise wrapper, running `grok` once installs it)"
         }
@@ -27,8 +27,8 @@ pub fn login_command(provider: ProviderId) -> Option<&'static str> {
     match provider {
         ProviderId::Claude => Some("claude auth login"),
         ProviderId::Codex => Some("codex login"),
-        // Running the CLI starts its own sign-in flow.
-        ProviderId::Gemini => Some("gemini"),
+        // Running the CLI starts its own sign-in flow. `agy` is the CLI jev-code runs for Gemini.
+        ProviderId::Gemini => Some("agy"),
         ProviderId::Grok => Some("grok"),
         ProviderId::DeepSeek => None,
     }
@@ -42,8 +42,7 @@ pub fn login_verified(provider: ProviderId) -> bool {
 /// [`login_command`] as one sentence for a message: `run `codex login``.
 pub fn login_instruction(provider: ProviderId) -> String {
     match (provider, login_command(provider)) {
-        (ProviderId::Gemini, Some(cmd)) => format!("run `{cmd}` and choose a login"),
-        (ProviderId::Grok, Some(cmd)) => format!("run `{cmd}` and sign in"),
+        (ProviderId::Gemini | ProviderId::Grok, Some(cmd)) => format!("run `{cmd}` and sign in"),
         (_, Some(cmd)) => format!("run `{cmd}`"),
         (_, None) => format!("add `DEEPSEEK_API_KEY` to {DEFAULT_ENV_PATH}"),
     }
@@ -61,7 +60,7 @@ pub fn unsupported_hint(provider: ProviderId) -> &'static str {
 pub fn unusable_here_hint(provider: ProviderId) -> &'static str {
     match provider {
         ProviderId::Codex => "needs a git repository here (git init, or work in a repo)",
-        ProviderId::Gemini => "needs a trusted workspace here (run gemini in this directory once to trust it)",
+        ProviderId::Gemini => "needs a trusted workspace here (run agy in this directory once to trust it)",
         _ => "refuses to run in this directory",
     }
 }
@@ -71,7 +70,7 @@ pub fn login_target(provider: ProviderId) -> &'static str {
     match provider {
         ProviderId::Claude => "claude",
         ProviderId::Codex => "codex",
-        ProviderId::Gemini => "gemini (or agy)",
+        ProviderId::Gemini => "agy",
         ProviderId::Grok => "grok",
         ProviderId::DeepSeek => "DeepSeek: check DEEPSEEK_API_KEY",
     }

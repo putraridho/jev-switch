@@ -18,8 +18,8 @@ fn provider_state_table_gives_severity_and_exact_first_fix() {
         (Codex, NotInstalled, Severity::Info, "npm i -g @openai/codex (or see the vendor's install page)"),
         (Codex, Unknown, Severity::Warn, "codex login status"),
         (Gemini, Ready, Severity::Ok, ""),
-        (Gemini, NotLoggedIn, Severity::Warn, "Run `gemini` once and choose a login"),
-        (Gemini, NotInstalled, Severity::Info, "npm i -g @google/gemini-cli"),
+        (Gemini, NotLoggedIn, Severity::Warn, "Run `agy` once and sign in"),
+        (Gemini, NotInstalled, Severity::Info, "Install Antigravity (`agy`)"),
         (Grok, Ready, Severity::Ok, ""),
         (Grok, NotLoggedIn, Severity::Warn, "grok (first run installs it, which can take minutes)"),
         (Grok, NotInstalled, Severity::Info, "Install the Grok CLI"),
@@ -59,11 +59,12 @@ fn not_installed_gives_install_then_login_steps() {
 }
 
 #[test]
-fn gemini_fix_offers_key_or_login_and_flags_agy_unverified() {
+fn gemini_fix_offers_the_agy_login_or_a_key_and_says_gemini_cli_is_retired() {
     let r = diagnose(&inputs(vec![av(Gemini, State::NotLoggedIn)]));
     let fix = find(&r, "provider-gemini").fix.join("\n");
     assert!(fix.contains("GEMINI_API_KEY=<key> in ~/.jev-router.env"));
-    assert!(fix.contains("unverified: Antigravity users run `agy` and sign in"));
+    assert!(fix.contains("Run `agy` once and sign in"), "{fix}");
+    assert!(fix.contains("Gemini CLI's own login is retired"), "{fix}");
 }
 
 #[test]
@@ -112,7 +113,7 @@ fn env_path_override_shows_up_in_key_fixes() {
 fn login_commands_have_one_source_and_the_verified_ones_are_named() {
     assert_eq!(login_command(Claude), Some("claude auth login"));
     assert_eq!(login_command(Codex), Some("codex login"));
-    assert_eq!(login_command(Gemini), Some("gemini"));
+    assert_eq!(login_command(Gemini), Some("agy"));
     assert_eq!(login_command(Grok), Some("grok"));
     assert_eq!(login_command(DeepSeek), None);
     for p in ALL_PROVIDERS {

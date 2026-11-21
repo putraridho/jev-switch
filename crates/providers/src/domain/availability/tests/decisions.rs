@@ -81,6 +81,20 @@ fn gemini_decisions() {
     assert_eq!(decide_gemini(GeminiFacts { oauth_creds: true, ..Default::default() }).state, State::NotInstalled);
 }
 
+#[test]
+fn with_agy_installed_only_what_reaches_agy_counts() {
+    // The turn runs `agy`, so the retired Gemini CLI's own login does not make Gemini ready.
+    let both = GeminiFacts { gemini_installed: true, agy_installed: true, ..Default::default() };
+    for old_login in [GeminiFacts { oauth_creds: true, ..both }, GeminiFacts { settings_auth: true, ..both }] {
+        let a = decide_gemini(old_login);
+        assert_eq!(a.state, State::NotLoggedIn);
+        assert!(a.detail.contains("agy"), "{}", a.detail);
+    }
+    let signed_in = decide_gemini(GeminiFacts { agy_creds: true, oauth_creds: true, ..both });
+    assert_eq!((signed_in.state, signed_in.detail.as_str()), (State::Ready, "agy login"));
+    assert_eq!(decide_gemini(GeminiFacts { api_key_env: true, ..both }).state, State::Ready, "an API key is passed on to agy");
+}
+
 // ---- Grok
 
 #[test]

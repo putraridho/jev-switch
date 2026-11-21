@@ -499,13 +499,13 @@ What each needs, and how far to trust it:
 | -------- | --------------------------------------------------------------------------- | ------------------------- | ------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------- |
 | claude   | `claude` installed and logged in                                            | `claude auth login`       | your plan; Fable only with `JEV_ALLOW_CREDITS=1` (automatic on Max/Ultra) | yes                                                                                         |
 | codex    | `codex` installed and logged in (ChatGPT plan); it needs a git repository   | `codex login`             | your plan                                                                 | yes                                                                                         |
-| gemini   | `gemini` with auth configured, else `agy` (Antigravity)                     | `gemini` (choose a login) | your plan                                                                 | no, from documentation only                                                                 |
+| gemini   | `agy` (Antigravity) logged in; `gemini` with auth only when `agy` is absent | `agy` (sign in)           | your plan                                                                 | no, from documentation only                                                                 |
 | grok     | Grok Build installed (never executed by the probe)                          | `grok` (sign in)          | your plan                                                                 | no, from documentation only                                                                 |
 | deepseek | `claude` installed and `DEEPSEEK_API_KEY` in the env or `~/.jev-router.env` | add the key               | per token; setting the key is the opt-in                                  | key check yes; that it really bypasses your Claude login and reaches DeepSeek is unverified |
 
-Provider IDs are the names of the CLIs jev-code drives. `gemini` runs Gemini CLI, or Antigravity (`agy`) when Gemini CLI isn't set up; the header row and `/providers` show `agy` when that is the one in use.
+Provider IDs are the names of the CLIs jev-code drives. `gemini` runs Antigravity (`agy`) whenever it is installed, since Google retired Gemini CLI's own login; Gemini CLI is used only on a machine without `agy` where it has auth. The header row and `/providers` show which one is in use.
 
-The login commands are written once (`src/doctor.rs`) and used by `doctor`, the first-run
+The login commands are written once (`crates/providers/src/domain/login_hints.rs`) and used by `doctor`, the first-run
 hint and every error message, so they cannot drift apart. `/providers` marks the unverified
 adapters; expect corrections on first real use of gemini, agy and grok.
 

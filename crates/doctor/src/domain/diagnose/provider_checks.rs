@@ -90,9 +90,9 @@ pub fn login_steps(provider: ProviderId, env_path: &str) -> Vec<String> {
         ProviderId::Claude => vec![cmd.to_string()],
         ProviderId::Codex => vec![cmd.to_string(), format!("{cmd} --device-auth (if this machine is headless)")],
         ProviderId::Gemini => vec![
-            format!("Run `{cmd}` once and choose a login"),
+            format!("Run `{cmd}` once and sign in"),
             format!("or set GEMINI_API_KEY=<key> in {env_path} (unverified: the probe reads an exported GEMINI_API_KEY today; if Gemini stays not ready, `export GEMINI_API_KEY=<key>` in your shell)"),
-            "unverified: Antigravity users run `agy` and sign in".to_string(),
+            "Gemini CLI's own login is retired by Google; `gemini` is used only where `agy` is not installed".to_string(),
         ],
         ProviderId::Grok => vec![
             format!("{cmd} (first run installs it, which can take minutes)"),

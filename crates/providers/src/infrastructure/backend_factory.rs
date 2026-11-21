@@ -72,7 +72,8 @@ fn detect_gemini_flavor() -> Flavor {
         .and_then(|h| std::fs::read_to_string(PathBuf::from(h).join(".gemini/settings.json")).ok());
     // The same rule the availability probe uses, so "ready" and "which CLI" agree.
     let configured = jev_backend::infrastructure::gemini::gemini_cli::auth::is_configured(settings.as_deref(), |n| envfile::lookup(n).is_some());
-    choose_gemini_flavor(crate::infrastructure::probe_host::installed_for_real(&GeminiBackend::gemini_cli().bin), configured)
+    let installed = crate::infrastructure::probe_host::installed_for_real;
+    choose_gemini_flavor(installed(&GeminiBackend::antigravity().bin), installed(&GeminiBackend::gemini_cli().bin), configured)
 }
 
 #[cfg(test)]
@@ -100,11 +101,18 @@ mod tests {
     }
 
     #[test]
-    fn gemini_cli_needs_both_binary_and_auth() {
-        assert_eq!(choose_gemini_flavor(true, true), Flavor::GeminiCli);
-        assert_eq!(choose_gemini_flavor(true, false), Flavor::Antigravity);
-        assert_eq!(choose_gemini_flavor(false, true), Flavor::Antigravity);
-        assert_eq!(choose_gemini_flavor(false, false), Flavor::Antigravity);
+    fn agy_wins_whenever_installed_and_gemini_cli_needs_both_binary_and_auth() {
+        // agy installed: always agy, whatever the old Gemini CLI has.
+        for gemini in [true, false] {
+            for configured in [true, false] {
+                assert_eq!(choose_gemini_flavor(true, gemini, configured), Flavor::Antigravity, "gemini {gemini}, configured {configured}");
+            }
+        }
+        // No agy: the Gemini CLI only with its binary and auth.
+        assert_eq!(choose_gemini_flavor(false, true, true), Flavor::GeminiCli);
+        assert_eq!(choose_gemini_flavor(false, true, false), Flavor::Antigravity);
+        assert_eq!(choose_gemini_flavor(false, false, true), Flavor::Antigravity);
+        assert_eq!(choose_gemini_flavor(false, false, false), Flavor::Antigravity);
     }
 
     #[test]

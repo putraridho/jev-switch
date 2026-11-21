@@ -38,7 +38,7 @@ fn login_hint(provider: &str) -> String {
 fn unusable_here_hint(provider: &str) -> String {
     match provider {
         "codex" => "it needs a git repository here (run `git init`, or work in a repo)".into(),
-        "gemini" => "it needs a trusted folder (run `gemini` here once and trust it)".into(),
+        "gemini" => "it needs a trusted folder (run `agy` here once and trust it)".into(),
         _ => "it refuses to run in this directory".into(),
     }
 }
@@ -331,7 +331,7 @@ mod tests {
             (ErrorKind::Empty, "codex", "gpt", to, false, "⚠ codex:gpt gave an empty answer → trying codex · gpt-6.1-sol"),
             (ErrorKind::Stalled, "codex", "gpt", to, false, "⚠ codex:gpt stopped answering → trying codex · gpt-6.1-sol"),
             (ErrorKind::UnusableHere, "codex", "gpt", Some(("claude", "sonnet")), false, "⚠ codex can't run in this directory: it needs a git repository here (run `git init`, or work in a repo) → trying claude · sonnet"),
-            (ErrorKind::UnusableHere, "gemini", "x", None, false, "⚠ gemini can't run in this directory: it needs a trusted folder (run `gemini` here once and trust it)"),
+            (ErrorKind::UnusableHere, "gemini", "x", None, false, "⚠ gemini can't run in this directory: it needs a trusted folder (run `agy` here once and trust it)"),
             (ErrorKind::Other, "grok", "g5", Some(("claude", "sonnet")), false, "⚠ grok:g5 failed → trying claude · sonnet"),
             (quota(), "claude", "opus", to, true, "⚠ claude hit its limit (resets 5pm) → trying codex · gpt-6.1-sol (partial output discarded)"),
         ];

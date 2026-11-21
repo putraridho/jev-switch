@@ -4,6 +4,7 @@ See [docs/changelog-guide.md](docs/changelog-guide.md) for changelog formatting,
 
 ## Unreleased
 
+- **Gemini runs on Antigravity (`agy`) whenever it is installed.** Google retired Gemini CLI's own login, yet jev-code kept choosing `gemini` when it found that old login, so a Gemini turn failed and fell over to another provider. Now `agy` is used whenever it is on PATH, and `gemini` only on a machine without `agy`. Gemini counts as ready only when `agy` is signed in (or an API key is set), and the install, login and trust hints name `agy`.
 - **A queued message you take back to edit is no longer sent twice.** While a turn runs, Enter queues your message and offers it to the running turn. Pressing ↑ to take it back out and edit it used to leave that first copy with the turn, so the turn received both the original and your edited message. Taking a message back now withdraws the copy the turn was offered, and only the edited message is sent.
 
 ## 1.10.0

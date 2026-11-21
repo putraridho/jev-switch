@@ -21,10 +21,11 @@ pub fn deepseek_env(key: &str) -> Vec<(String, String)> {
     ]
 }
 
-/// Gemini CLI when it is installed and has auth; otherwise Antigravity. Gemini CLI
-/// without auth exits immediately, so installed alone is not enough to prefer it.
-pub fn choose_gemini_flavor(gemini_on_path: bool, gemini_configured: bool) -> Flavor {
-    if gemini_on_path && gemini_configured {
+/// Antigravity (`agy`) whenever it is installed: Google retired the Gemini CLI's own login, so
+/// `gemini` is only the fallback on a machine without `agy`, and only when it has auth (without
+/// auth it exits at once). With neither, Antigravity, so the error names the CLI to install.
+pub fn choose_gemini_flavor(agy_on_path: bool, gemini_on_path: bool, gemini_configured: bool) -> Flavor {
+    if !agy_on_path && gemini_on_path && gemini_configured {
         Flavor::GeminiCli
     } else {
         Flavor::Antigravity
