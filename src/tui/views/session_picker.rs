@@ -7,7 +7,7 @@
 
 use crate::session::domain::saved_session::SessionEntry;
 use crate::tui::render::{display_width, truncate_to_width, Style};
-use crate::tui::views::status_facts::human_ago;
+use crate::tui::views::status_facts::startup::human_ago;
 
 /// A key the list understands.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

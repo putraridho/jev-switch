@@ -18,7 +18,7 @@ impl Repl {
             self.console.out(&style.dim("  checking providers..."));
             self.engine.refresh_providers().await;
         }
-        let rows = views::avail_rows(&self.engine.runtime, self.now());
+        let rows = views::providers::avail_rows(&self.engine.runtime, self.now());
         let mut text = uifmt::providers_table(&rows, style, self.console.width());
         for note in &self.engine.runtime.overrides.notes {
             text.push_str(&format!("\n  {}", style.dim(&format!("override: {note}"))));
@@ -29,7 +29,7 @@ impl Repl {
     /// The doctor's screen for this session.
     pub async fn doctor_text(&self) -> String {
         let inputs = gather(&self.engine.runtime, self.engine.dir()).await;
-        views::doctor_text(&doctor::diagnose(&inputs), self.out_style(), self.console.width())
+        views::doctor::doctor_text(&doctor::diagnose(&inputs), self.out_style(), self.console.width())
     }
 
     /// `/permissions`: the rules of this project, and changing them. Claude Code reads the
@@ -82,7 +82,7 @@ impl Repl {
             .into_iter()
             .skip(skip)
             .map(|d| uifmt::DelegationRow {
-                ago: views::human_ago(now.saturating_sub(d.ts_ms)),
+                ago: views::startup::human_ago(now.saturating_sub(d.ts_ms)),
                 id: d.worker_id.unwrap_or_else(|| "-".into()),
                 task: d.task.unwrap_or_else(|| "-".into()),
                 provider: d.provider,

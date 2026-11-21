@@ -6,7 +6,7 @@ use super::query::Query;
 use super::*;
 use crate::backend::ProviderId;
 use crate::tui::render::Style;
-use crate::tui::views::status_facts::human_ago;
+use crate::tui::views::status_facts::startup::human_ago;
 
 /// One session that answers a query, and the line that matched its words.
 #[derive(Debug, Clone)]

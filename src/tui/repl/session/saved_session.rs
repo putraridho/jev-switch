@@ -78,7 +78,7 @@ impl Repl {
                 self.last_summary = None;
                 self.log.clear();
                 self.carry.clear();
-                self.console.out(&views::resumed_line(&info, self.now(), style));
+                self.console.out(&views::startup::resumed_line(&info, self.now(), style));
             }
             Err(e) => self.resume_failed(&e),
         }

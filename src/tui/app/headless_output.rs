@@ -95,7 +95,7 @@ impl JsonResult {
     pub fn of(report: &TurnReport, elapsed_ms: u64) -> Self {
         Self {
             status: report.status.into(),
-            exit_code: views::exit_code(report.status),
+            exit_code: views::turns::exit_code(report.status),
             answer: report.text.trim_end().to_string(),
             message: report.message.clone(),
             provider: report.provider.map(|p| p.as_str().to_string()),

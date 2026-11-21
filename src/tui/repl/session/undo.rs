@@ -25,7 +25,7 @@ impl Repl {
         if let Some(w) = summary.outside.warning() {
             self.console.out(&format!("  {} {}", style.yellow("⚠"), w));
         }
-        let files = views::file_changes(&summary);
+        let files = views::turns::file_changes(&summary);
         let noun = if files.len() == 1 { "file" } else { "files" };
         self.console.out(&format!("  Would revert {} {noun}:", files.len()));
         self.console.out(&uifmt::changes_block(&files, style, self.console.width()));

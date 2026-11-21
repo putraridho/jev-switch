@@ -221,7 +221,7 @@ fn alt(k: &KeyEvent) -> bool {
 
 impl App {
     pub fn new(project: PathBuf, history: History, mode: Mode, route: String, tracked: Vec<String>) -> Self {
-        let place = crate::tui::views::status_facts::display_path(&project, std::env::var("HOME").ok().as_deref());
+        let place = crate::tui::views::status_facts::startup::display_path(&project, std::env::var("HOME").ok().as_deref());
         Self {
             place,
             editor: Editor::default(),
