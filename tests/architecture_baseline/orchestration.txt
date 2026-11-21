@@ -1,6 +1,7 @@
 T1 | src/orchestration/application/delegator.rs | crate::turn | 3
 T1 | src/orchestration/application/delegator/attempt.rs | crate::approval | 2
 T1 | src/orchestration/application/delegator/run.rs | crate::turn | 1
+T1 | src/orchestration/interface/mcp/lazy_delegator.rs | crate::turn | 1
 T2 | src/orchestration/application/delegator.rs | crate::backend::infrastructure | 1
 T2 | src/orchestration/application/delegator.rs | crate::orchestration::infrastructure | 3
 T2 | src/orchestration/application/delegator.rs | crate::providers::infrastructure | 1

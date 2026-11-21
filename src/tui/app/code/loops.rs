@@ -6,6 +6,7 @@ use crate::tui::command as commands;
 use crate::tui::console::terminal_ui::Console;
 use crate::tui::input::line_editor as lineedit;
 use crate::tui::input::line_editor::interrupt::InterruptGuard;
+use crate::tui::input::line_editor::Input;
 use crate::shared::infrastructure::jsonl_log as log;
 use crate::approval::domain::mode;
 use crate::tui::repl::session::turn_race::{Interrupt, SigInt};

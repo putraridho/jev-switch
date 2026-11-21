@@ -17,7 +17,7 @@ use super::term::Term;
 /// `jev-code doctor`: the report on stdout; exit 1 when something is a Problem.
 pub(super) async fn doctor(dir: &Path, console: &Console) -> i32 {
     let (runtime, _) = start_runtime(console, ProbeMode::Live).await;
-    let inputs = crate::doctor::domain::diagnose::gather(&runtime, dir).await;
+    let inputs = crate::doctor::infrastructure::gather_inputs::gather(&runtime, dir).await;
     let report = crate::doctor::domain::diagnose::diagnose(&inputs);
     console.out(&views::doctor::doctor_text(&report, console.out_style(), console.width()));
     i32::from(views::doctor::has_problem(&report))
