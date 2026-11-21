@@ -1,3 +1,0 @@
-T1 | src/approval/application/extension_library.rs | crate::tui | 1
-T2 | src/approval/domain/mode.rs | crate::shared::infrastructure | 1
-T2 | src/approval/domain/rule_policy.rs | crate::shared::infrastructure | 1

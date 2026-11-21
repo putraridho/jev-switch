@@ -1,1 +1,0 @@
-T2 | src/chat/domain/transcript.rs | crate::chat::infrastructure | 1
