@@ -248,7 +248,7 @@ mod git_tests {
 /// plan window is used, and those cooling down after a limit.
 fn provider_chips(repl: &Repl) -> Vec<crate::tui::app::screen_state::ProviderChip> {
     let rt = &repl.engine.runtime;
-    views::avail_rows(rt, log::now_ms())
+    views::providers::avail_rows(rt, log::now_ms())
         .into_iter()
         .filter(|r| r.status == crate::tui::render::ProviderStatus::Ready)
         .map(|r| {
@@ -262,7 +262,7 @@ fn provider_chips(repl: &Repl) -> Vec<crate::tui::app::screen_state::ProviderChi
 /// Bring the screen's view of the session up to date (between lines).
 fn refresh(app: &mut App, repl: &Repl) {
     app.route = route_label(repl);
-    app.ctx = views::complete_ctx(&repl.engine, log::now_ms());
+    app.ctx = views::providers::complete_ctx(&repl.engine, log::now_ms());
     app.git = git_line(repl.engine.dir());
     app.context = repl.context_percent();
     app.session_name = repl.engine.sessions.name().map(String::from);
@@ -283,7 +283,7 @@ fn worker_chips(state_dir: Option<&std::path::Path>, project: &std::path::Path) 
 
 /// The footer's routing word: the pin, `claude only`, or `auto`.
 fn route_label(repl: &Repl) -> String {
-    views::prompt_label(repl.engine.pin(), repl.engine.enabled()).unwrap_or_else(|| "auto".to_string())
+    views::prompt::prompt_label(repl.engine.pin(), repl.engine.enabled()).unwrap_or_else(|| "auto".to_string())
 }
 
 

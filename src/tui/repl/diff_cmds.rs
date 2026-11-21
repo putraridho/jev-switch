@@ -60,7 +60,7 @@ impl Repl {
             return self.review_hunks(&files, &opts, newest_only, io);
         }
         let rendered = uifmt::render_diff(&files, &opts, style);
-        if self.paging && views::should_page(&rendered, terminal::rows(), true) && self.console.with_terminal(|| page(&rendered)) {
+        if self.paging && views::pager::should_page(&rendered, terminal::rows(), true) && self.console.with_terminal(|| page(&rendered)) {
             return;
         }
         self.console.out(&rendered);

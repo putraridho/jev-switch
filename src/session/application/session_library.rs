@@ -13,7 +13,7 @@ use crate::session::domain::saved_session::SavedSession;
 use crate::session::domain::session::Sessions;
 use crate::session::infrastructure::session_meta::{Meta, MetaStore};
 use crate::tui::render::Style;
-use crate::tui::views::status_facts::human_ago;
+use crate::tui::views::status_facts::startup::human_ago;
 
 const DAY_MS: u64 = 86_400_000;
 

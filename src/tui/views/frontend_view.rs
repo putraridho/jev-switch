@@ -367,7 +367,7 @@ fn header_row(app: &App, w: usize, th: &Theme) -> String {
     // The folder gives way first, from its front (`…/project`): the branch, the session's
     // name and the router's side are what a glance looks for.
     let room = w.saturating_sub(display_width(&right) + 3 + display_width(&branch) + display_width(&name));
-    let place = if room >= 8 { crate::tui::views::status_facts::keep_tail(&app.place, room) } else { app.place.clone() };
+    let place = if room >= 8 { crate::tui::views::status_facts::startup::keep_tail(&app.place, room) } else { app.place.clone() };
     spread(&format!(" {branch}{place}{name}"), &right, w)
 }
 

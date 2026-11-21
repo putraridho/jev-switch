@@ -1,3 +1,4 @@
+pub mod code;
 pub mod extension_cli;
 pub mod frontend;
 pub mod frontend_loop;

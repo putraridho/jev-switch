@@ -60,7 +60,7 @@ impl Repl {
             TurnEnd::Done(report, elapsed) => {
                 self.console.out(&JsonResult::of(&report, elapsed.as_millis() as u64).line());
                 self.finish(&report, elapsed);
-                views::exit_code(report.status)
+                views::turns::exit_code(report.status)
             }
         }
     }

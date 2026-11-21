@@ -18,7 +18,7 @@ impl Repl {
             Command::Help => self.page_out(&uifmt::help_text(style, self.console.width())),
             Command::Learn(learn) => self.page_out(&learn.render(style, self.console.width())),
             Command::Status => {
-                let facts = views::status_facts(&self.engine, self.last_summary.as_ref(), self.home.as_deref(), self.now());
+                let facts = views::providers::status_facts(&self.engine, self.last_summary.as_ref(), self.home.as_deref(), self.now());
                 self.page_out(&uifmt::status_text(&facts, style));
             }
             Command::Providers { refresh } => self.providers(refresh).await,
@@ -51,9 +51,9 @@ impl Repl {
             Command::Trust(cmd) => return self.trust(cmd, io).await,
             Command::SetMode(mode) => {
                 let mode = self.adopt_mode(mode);
-                self.console.out(&format!("  mode: {}", views::mode_line(mode)));
+                self.console.out(&format!("  mode: {}", views::prompt::mode_line(mode)));
             }
-            Command::ShowMode => self.console.out(&format!("  mode: {}", views::mode_line(self.engine.mode()))),
+            Command::ShowMode => self.console.out(&format!("  mode: {}", views::prompt::mode_line(self.engine.mode()))),
             Command::New => {
                 self.fresh_session();
                 self.console.out(&format!("{} new session", style.green("✓")));

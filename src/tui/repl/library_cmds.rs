@@ -13,7 +13,7 @@ use crate::session::infrastructure::session_import::Found;
 use crate::session::application::session_library as sessionlib;
 use crate::session::application::session_library::{human_bytes, Mark, Query};
 use crate::turn::domain::session_log::utc_stamp;
-use crate::tui::views::status_facts::human_ago;
+use crate::tui::views::status_facts::startup::human_ago;
 
 /// Most results printed at once; the rest are reachable by narrowing the search.
 const SHOWN: usize = 15;

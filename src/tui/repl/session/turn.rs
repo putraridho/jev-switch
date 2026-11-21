@@ -86,7 +86,7 @@ impl Repl {
     pub(crate) fn finish(&mut self, report: &TurnReport, elapsed: Duration) {
         let style = self.console.err_style();
         if let Some(task) = self.console.take_no_route() {
-            let rows = views::avail_rows(&self.engine.runtime, self.now());
+            let rows = views::providers::avail_rows(&self.engine.runtime, self.now());
             self.console.err(&format!("{}\n", uifmt::no_route_message(&task, &rows, style)));
         }
         if report.attempts == 0 && report.status != TurnStatus::Cancelled {
@@ -94,8 +94,8 @@ impl Repl {
             self.console.err("");
             return;
         }
-        let facts = views::summary_facts(report, elapsed.as_millis() as u64, &self.engine.runtime);
-        let files = report.changes.as_ref().map(views::file_changes).unwrap_or_default();
+        let facts = views::turns::summary_facts(report, elapsed.as_millis() as u64, &self.engine.runtime);
+        let files = report.changes.as_ref().map(views::turns::file_changes).unwrap_or_default();
         self.console.turn_end(&facts, &files);
         let outcome = if report.status == TurnStatus::Answered { "answered" } else { "failed" };
         crate::approval::application::extension_hooks::fire(self.engine.hooks(), crate::approval::application::extension_hooks::Event::TurnEnd, None, Some(outcome));
@@ -122,7 +122,7 @@ impl Repl {
                     self.console.out(&text);
                 }
                 self.finish(&report, elapsed);
-                views::exit_code(report.status)
+                views::turns::exit_code(report.status)
             }
         }
     }
