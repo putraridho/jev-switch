@@ -626,7 +626,7 @@ signals, attempt number and failover notes). A crash writes a short note to
 `<state dir>/panic.log`; the terminal is restored first and no Rust message is printed.
 
 Provider names, tiers and chains in the catalog come from the vendors' pages as of
-2026-11-17; the task-to-model chains are defaults, not calibrated on your work.
+2026-11-21; the task-to-model chains are defaults, not calibrated on your work.
 
 #### Orchestration across providers
 

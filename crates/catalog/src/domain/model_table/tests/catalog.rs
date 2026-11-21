@@ -14,6 +14,20 @@ fn model_ids_are_unique_and_chains_resolve() {
 }
 
 #[test]
+fn gemini_neon_comes_before_argon_in_the_frontier_chains() {
+    let neon = find(Gemini, "gemini-4-neon").expect("neon is catalogued");
+    assert_eq!(neon.tier, Tier::Top);
+    assert!(!neon.very_hard_only);
+    for task in [TaskType::Security, TaskType::HardDebug, TaskType::Review] {
+        let ids: Vec<_> = default_chain(task, false).iter().map(|s| s.id).collect();
+        let at = |id: &str| ids.iter().position(|i| *i == id);
+        let (neon_at, argon_at) = (at("gemini-4-neon"), at("gemini-4-argon"));
+        assert!(neon_at.is_some() && argon_at.is_some(), "{task}");
+        assert!(neon_at < argon_at, "{task}");
+    }
+}
+
+#[test]
 fn task_type_round_trips() {
     for t in TaskType::ALL {
         assert_eq!(t.as_str().parse::<TaskType>().unwrap(), t);

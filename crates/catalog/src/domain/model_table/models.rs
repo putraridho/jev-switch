@@ -28,11 +28,11 @@ use Billing::{Credits, PerToken, Subscription};
 use ProviderId::{Claude, Codex, DeepSeek, Gemini, Grok};
 use Tier::{Everyday, Light, Top};
 
-/// Facts verified from the vendors' own pages on 2026-11-17. Ids are unique across
+/// Facts verified from the vendors' own pages on 2026-11-21. Ids are unique across
 /// providers, which lets the chain tables below name a model by id alone.
 /// DeepSeek Flash also serves Light work; it is listed once and Light-task chains
 /// simply include it.
-static MODELS: [ModelSpec; 16] = [
+static MODELS: [ModelSpec; 17] = [
     spec(Claude, "claude-opus-5-5", Top, Subscription, M, false),
     spec(Claude, "claude-sonnet-5-5", Everyday, Subscription, M, false),
     spec(Claude, "claude-haiku-5-5", Light, Subscription, M, false),
@@ -42,6 +42,7 @@ static MODELS: [ModelSpec; 16] = [
     spec(Codex, "gpt-6.1-terra", Everyday, Subscription, 500 * K, false),
     spec(Codex, "gpt-6-luna", Light, Subscription, 500 * K, false),
     spec(Gemini, "gemini-4-carbon", Top, Subscription, M, true),
+    spec(Gemini, "gemini-4-neon", Top, Subscription, M, false),
     spec(Gemini, "gemini-4-argon", Top, Subscription, M, false),
     spec(Gemini, "gemini-4-hydrogen", Everyday, Subscription, M, false),
     spec(Gemini, "gemini-3.8-flash", Light, Subscription, M, false),

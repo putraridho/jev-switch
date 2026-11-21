@@ -12,6 +12,7 @@ fn default_ids(task: TaskType) -> &'static [&'static str] {
             "claude-opus-5-5",
             "gpt-6.1-sol",
             "gemini-4-carbon",
+            "gemini-4-neon",
             "gemini-4-argon",
         ],
         TaskType::HardDebug => &[
@@ -20,10 +21,17 @@ fn default_ids(task: TaskType) -> &'static [&'static str] {
             "gpt-6.1-sol",
             "claude-opus-5-5",
             "gemini-4-carbon",
+            "gemini-4-neon",
             "gemini-4-argon",
             "deepseek-v4-pro",
         ],
-        TaskType::Review => &["gpt-6.1-sol", "gemini-4-argon", "claude-opus-5-5", "deepseek-v4-pro"],
+        TaskType::Review => &[
+            "gpt-6.1-sol",
+            "gemini-4-neon",
+            "gemini-4-argon",
+            "claude-opus-5-5",
+            "deepseek-v4-pro",
+        ],
         TaskType::Feature | TaskType::Frontend | TaskType::Docs => {
             &["claude-sonnet-5-5", "gpt-6.1-terra", "gemini-4-hydrogen", "deepseek-v4-pro"]
         }

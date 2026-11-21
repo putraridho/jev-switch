@@ -65,7 +65,7 @@ fn a_session_bigger_than_the_window_skips_the_model() {
     assert_eq!(pick(&chain, TaskType::Review, &usable, &open(), 400_000).unwrap().spec.id, "gpt-6.1-sol");
     let p = pick(&chain, TaskType::Review, &usable, &open(), 600_000).unwrap();
     assert_eq!(p.spec.id, "claude-opus-5-5");
-    assert_eq!(p.rank, 2);
+    assert_eq!(p.rank, 3);
     assert!(pick(&chain, TaskType::Review, &usable, &open(), 2_000_000).is_none());
 }
 

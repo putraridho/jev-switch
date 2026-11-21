@@ -4,6 +4,12 @@ See [docs/changelog-guide.md](docs/changelog-guide.md) for changelog formatting,
 
 ## Unreleased
 
+## 1.11.4
+
+Gemini 4 Neon joins the model catalog.
+
+- **Gemini 4 Neon (`gemini-4-neon`) is routable.** Google's new frontier model is listed as a Top-tier Gemini model, available on the Google AI Pro/Ultra subscription. It is now the Gemini pick for security, hard debugging and review turns, ahead of Gemini 4 Argon, which stays as the next Gemini fallback. Like Argon, it is not reserved for very hard turns only. The catalog was re-checked against every provider on 2026-11-21; no other current, generally available model was missing.
+
 ## 1.11.3
 
 A prompt with a dash or another multibyte character before a secret-looking name no longer crashes the turn.
