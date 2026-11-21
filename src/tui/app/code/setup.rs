@@ -87,7 +87,7 @@ pub(super) fn engine_for(args: &Args, runtime: Runtime, router: Router, dir: Pat
         .with_enabled(routing)
         .with_mode(mode)
         .with_orchestrate(orchestrate)
-        .with_orch_setup(Setup::detect(crate::shared::infrastructure::jsonl_log::state_dir(), envfile::lookup("JEV_DELEGATE_BIN"), std::env::current_exe().ok().as_deref()))
+        .with_orch_setup(Setup::detect(crate::shared::infrastructure::jsonl_log::state_dir(), envfile::lookup("JEV_DELEGATE_BIN"), std::env::current_exe().ok().as_deref(), &|p| p.is_file()))
         .with_hooks(hooks)
         .with_downgrade_after(envfile::lookup_f64("DOWNGRADE_AFTER", 2.0) as u32);
     match &args.pin {

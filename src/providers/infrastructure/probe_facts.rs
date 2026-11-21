@@ -95,6 +95,25 @@ async fn probe_grok() -> Availability {
 pub struct SystemProbes;
 
 impl ProviderHost for SystemProbes {
+    fn load_cooldowns(&self, path: &Path) -> crate::providers::domain::reset_time::cooldowns::Cooldowns {
+        super::cooldown_file::load(path)
+    }
+
+    fn save_cooldowns(&self, path: &Path, cooldowns: &crate::providers::domain::reset_time::cooldowns::Cooldowns, now_ms: u64) -> std::io::Result<crate::providers::domain::reset_time::cooldowns::Cooldowns> {
+        super::cooldown_file::save(path, cooldowns, now_ms)
+    }
+
+    fn cooldown_stamp(&self, path: &Path) -> Option<(std::time::SystemTime, u64)> {
+        super::cooldown_file::stamp(path)
+    }
+
+    fn resolve_reset_time(&self, text: &str, zone: Option<&str>) -> Option<u64> {
+        super::clock_facts::system_date(text, zone)
+    }
+
+    fn reset_zone_exists(&self, zone: &str) -> bool {
+        super::clock_facts::system_zone_exists(zone)
+    }
     fn probe(&self, provider: ProviderId) -> BoxFuture<Availability> {
         Box::pin(probe_provider(provider))
     }

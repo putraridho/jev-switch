@@ -67,7 +67,7 @@ fn header(you: &str) -> String {
 }
 
 /// `s` cut to `n` chars, with an ellipsis when something was removed.
-pub(super) fn truncate_chars(s: &str, n: usize) -> String {
+pub(in crate::session) fn truncate_chars(s: &str, n: usize) -> String {
     if char_count(s) <= n {
         return s.to_string();
     }

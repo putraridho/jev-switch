@@ -11,7 +11,7 @@ use crate::providers::domain::reset_time::cooldowns::Cooldowns;
         let mut rt = runtime();
         rt.cooldown_path = Some(path.clone());
         rt.cool_down(Codex, Some("1760003600"), NOW);
-        let loaded = Cooldowns::load(&path);
+        let loaded = rt.host.load_cooldowns(&path);
         let _ = std::fs::remove_file(&path);
         assert_eq!(loaded.active(Codex, NOW), Some(3_600_000));
         assert!(rt.cooldowns.active(Codex, NOW).is_some());
@@ -37,7 +37,7 @@ use crate::providers::domain::reset_time::cooldowns::Cooldowns;
         b.cool_down(Claude, None, NOW);
 
         // The file holds both, because B's save merged with A's.
-        let on_disk = Cooldowns::load(&path);
+        let on_disk = a.host.load_cooldowns(&path);
         assert!(on_disk.active(Codex, NOW).is_some() && on_disk.active(Claude, NOW).is_some());
         // A never cooled Claude itself, yet stops offering it, and still skips Codex.
         let usable = a.usable(NOW + 1);
@@ -62,8 +62,8 @@ use crate::providers::domain::reset_time::cooldowns::Cooldowns;
         assert_eq!(reloads(&a), 0, "no file, nothing to read");
 
         let mut other = Cooldowns::default();
-        other.start(Claude, None, NOW);
-        other.save(&path, NOW).unwrap();
+        other.start_in(Claude, None, NOW, &|_, _| None, &|_| false);
+        a.host.save_cooldowns(&path, &other, NOW).unwrap();
         assert!(!a.usable(NOW + 1).contains(some_model(Claude)));
         assert_eq!(reloads(&a), 1);
         for _ in 0..5 {
@@ -82,7 +82,7 @@ use crate::providers::domain::reset_time::cooldowns::Cooldowns;
         assert!(a.usable(NOW).contains(some_model(Claude)));
         a.cool_down(Claude, None, NOW);
         assert!(!a.usable(NOW + 1).contains(some_model(Claude)));
-        assert!(Cooldowns::load(&path).active(Claude, NOW).is_some(), "rewritten as valid json");
+        assert!(a.host.load_cooldowns(&path).active(Claude, NOW).is_some(), "rewritten as valid json");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

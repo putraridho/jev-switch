@@ -5,7 +5,7 @@ use std::path::Path;
 use crate::doctor::domain::diagnose::Inputs;
 use super::machine_facts::{env_file_facts, in_git_repo, jev_status, state_dir_writable};
 use crate::providers::application::provider_registry::{BlockReason, Runtime};
-use crate::providers::domain::reset_time::cooldowns::Cooldowns;
+use crate::providers::infrastructure::cooldown_file;
 use crate::shared::domain::duration_text::format_left;
 use crate::shared::ProviderId;
 use crate::shared::ALL_PROVIDERS;
@@ -29,7 +29,7 @@ pub async fn gather(runtime: &Runtime, dir: &Path) -> Inputs {
 /// In-memory cooldowns plus whatever other processes saved.
 fn cooldown_lines(runtime: &Runtime) -> Vec<String> {
     let now = now_ms();
-    let saved = runtime.cooldown_path.as_deref().map(Cooldowns::load).unwrap_or_default();
+    let saved = runtime.cooldown_path.as_deref().map(cooldown_file::load).unwrap_or_default();
     let all = runtime.cooldowns.union(&saved);
     ALL_PROVIDERS.iter().filter_map(|p| Some(format!("{p} cooling for {}", format_left(all.active(*p, now)?)))).collect()
 }

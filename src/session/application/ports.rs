@@ -12,6 +12,10 @@ use crate::session::domain::session_meta::MetaStore;
 
 /// Where saved sessions live and how they are read, listed, pruned and marked.
 pub trait SessionStore: Send + Sync {
+    /// Render a session in the saved-session format.
+    fn render_session(&self, saved: &SavedSession) -> String;
+    /// Parse a saved-session file.
+    fn parse_session(&self, text: &str) -> Result<SavedSession, String>;
     /// The project folder as it is keyed on disk.
     fn project_key(&self, dir: &Path) -> String;
     /// The folder of one project's session files.

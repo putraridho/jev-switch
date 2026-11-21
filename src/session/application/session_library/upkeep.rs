@@ -4,7 +4,6 @@ use std::path::{Path, PathBuf};
 
 use super::*;
 use crate::session::application::ports::SessionStore;
-use crate::session::domain::saved_session::SavedSession;
 use crate::shared::application::host::Host;
 
 // ------------------------------------------------------------ disk and clean
@@ -67,7 +66,7 @@ pub fn clean(store: &dyn SessionStore, state_dir: &Path, older_than_days: u64, n
         if meta.is_pinned(&path) {
             continue;
         }
-        let old = SavedSession::parse(&std::fs::read_to_string(&path).unwrap_or_default())
+        let old = store.parse_session(&std::fs::read_to_string(&path).unwrap_or_default())
             .map_or(true, |s| now_ms.saturating_sub(s.saved_ms) > max_age_ms || s.sessions.turns() == 0);
         if old || !readable.contains(&path) {
             let bytes = std::fs::metadata(&path).map_or(0, |m| m.len());
@@ -94,10 +93,10 @@ pub fn migrate_legacy(store: &dyn SessionStore, host: &dyn Host, state_dir: &Pat
         if !path.is_file() || path.extension().is_none_or(|x| x != "json") {
             continue;
         }
-        let Some(saved) = std::fs::read_to_string(&path).ok().and_then(|t| SavedSession::parse(&t).ok()) else { continue };
+        let Some(saved) = std::fs::read_to_string(&path).ok().and_then(|t| store.parse_session(&t).ok()) else { continue };
         let dest_dir = store.project_sessions_dir(state_dir, Path::new(&saved.project));
         let dest = dest_dir.join(format!("{}-legacy.json", saved.saved_ms));
-        let written = dest.exists() || host.write_private(&dest, &saved.render()).is_ok();
+        let written = dest.exists() || host.write_private(&dest, &store.render_session(&saved)).is_ok();
         if written && std::fs::remove_file(&path).is_ok() {
             moved += 1;
         }

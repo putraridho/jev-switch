@@ -39,7 +39,7 @@ fn legacy_single_files_move_into_their_project_folder_once() {
     sessions.record(turn(ProviderId::Claude, "old work", "ok", &[]));
     let saved = SavedSession { project: session_file::project_key(&project), saved_ms: NOW - DAY_MS, sessions, current: None };
     let legacy = session_file::legacy_session_file(&state, &project);
-    write_atomic(&legacy, &saved.render()).unwrap();
+    write_atomic(&legacy, &FileSessions.render_session(&saved)).unwrap();
     std::fs::write(state.join("sessions").join("zzz.json"), "not a session").unwrap();
     assert_eq!(migrate_legacy(&FileSessions, &SystemHost, &state), 1);
     assert!(!legacy.exists());

@@ -14,7 +14,7 @@ use super::*;
     #[test]
     fn usable_excludes_cooling_provider_until_it_resets() {
         let mut rt = runtime();
-        rt.cooldowns.start(Claude, None, NOW);
+        rt.cooldowns.start_in(Claude, None, NOW, &|_, _| None, &|_| false);
         assert!(!rt.usable(NOW + 1).contains(some_model(Claude)));
         assert!(rt.usable(NOW + 1).contains(some_model(Codex)));
         // Default cooldown is an hour; after that the provider is back.

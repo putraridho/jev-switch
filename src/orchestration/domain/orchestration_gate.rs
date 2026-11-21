@@ -161,12 +161,13 @@ pub struct Setup {
 impl Setup {
     /// `delegate_bin` (what `JEV_DELEGATE_BIN` says), else `delegate_mcp` beside `exe`, the
     /// running executable (where `cargo build` and `install.sh` put it). The config goes in
-    /// `state_dir`. The caller reads the environment and the state directory.
-    pub fn detect(state_dir: Option<PathBuf>, delegate_bin: Option<String>, exe: Option<&Path>) -> Option<Self> {
+    /// `state_dir`. The caller reads the environment and the state directory, and says which
+    /// paths are files (`is_file`).
+    pub fn detect(state_dir: Option<PathBuf>, delegate_bin: Option<String>, exe: Option<&Path>, is_file: &dyn Fn(&Path) -> bool) -> Option<Self> {
         let config_dir = state_dir?;
         let bin = match delegate_bin {
-            Some(path) => Some(PathBuf::from(path)).filter(|p| p.is_file()),
-            None => exe.and_then(beside),
+            Some(path) => Some(PathBuf::from(path)).filter(|p| is_file(p)),
+            None => exe.and_then(|exe| beside(exe, is_file)),
         };
         Some(Self { bin, config_dir })
     }
@@ -179,9 +180,10 @@ impl Setup {
 }
 
 /// The delegate binary next to `exe`: [`DELEGATE_BIN`] (where `cargo build` puts it)
-/// or [`DELEGATE_BIN_INSTALLED`] (where `scripts/install.sh` puts it), whichever exists.
-pub fn beside(exe: &Path) -> Option<PathBuf> {
-    [DELEGATE_BIN, DELEGATE_BIN_INSTALLED].iter().map(|name| exe.with_file_name(name)).find(|p| p.is_file())
+/// or [`DELEGATE_BIN_INSTALLED`] (where `scripts/install.sh` puts it), whichever `is_file`
+/// says exists.
+pub fn beside(exe: &Path, is_file: &dyn Fn(&Path) -> bool) -> Option<PathBuf> {
+    [DELEGATE_BIN, DELEGATE_BIN_INSTALLED].iter().map(|name| exe.with_file_name(name)).find(|p| is_file(p))
 }
 
 /// The server entry for one planner. `instance` (the process id) keeps two `jev-code`
@@ -363,11 +365,11 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("jev-orch-beside-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let exe = dir.join("jev-code");
-        assert_eq!(beside(&exe), None, "nothing installed");
+        assert_eq!(beside(&exe, &|p| p.is_file()), None, "nothing installed");
         std::fs::write(dir.join(DELEGATE_BIN_INSTALLED), "").unwrap();
-        assert_eq!(beside(&exe), Some(dir.join(DELEGATE_BIN_INSTALLED)), "the installed name");
+        assert_eq!(beside(&exe, &|p| p.is_file()), Some(dir.join(DELEGATE_BIN_INSTALLED)), "the installed name");
         std::fs::write(dir.join(DELEGATE_BIN), "").unwrap();
-        assert_eq!(beside(&exe), Some(dir.join(DELEGATE_BIN)), "the cargo build name wins");
+        assert_eq!(beside(&exe, &|p| p.is_file()), Some(dir.join(DELEGATE_BIN)), "the cargo build name wins");
         std::fs::remove_dir_all(&dir).ok();
     }
 

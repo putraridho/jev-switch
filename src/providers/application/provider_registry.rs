@@ -9,6 +9,7 @@
 //! ([`usability`](crate::providers::domain::usability), [`login_hints`](crate::providers::domain::login_hints)).
 
 mod plan;
+pub(crate) mod disk_watch;
 mod probing;
 mod react;
 mod render;
@@ -25,7 +26,8 @@ use crate::backend::{PlanUsage, ProviderId};
 use crate::catalog::domain::model_table::{Allowances, Overrides};
 use crate::providers::application::ports::ProviderHost;
 use crate::providers::domain::availability::Availability;
-use crate::providers::domain::reset_time::cooldowns::{Cooldowns, DiskWatch};
+use crate::providers::domain::reset_time::cooldowns::Cooldowns;
+use disk_watch::DiskWatch;
 
 /// What the router knows about providers right now. Availability comes from probes;
 /// cooldowns persist across runs; unusable models and plan utilization live only for

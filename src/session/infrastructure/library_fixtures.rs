@@ -35,7 +35,7 @@ pub fn put(state: &Path, project: &Path, at_days_ago: u64, turns: Vec<TurnRecord
     }
     let saved = SavedSession { project: session_file::project_key(project), saved_ms: NOW - at_days_ago * DAY_MS, sessions, current: None };
     let path = session_file::new_session_file(state, project, saved.saved_ms);
-    write_atomic(&path, &saved.render()).unwrap();
+    write_atomic(&path, &super::saved_session_wire::render(&saved)).unwrap();
     path
 }
 

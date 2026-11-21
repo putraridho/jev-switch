@@ -18,7 +18,7 @@ impl Runtime {
     pub(super) fn current_cooldowns(&self) -> Cow<'_, Cooldowns> {
         let Some(path) = &self.cooldown_path else { return Cow::Borrowed(&self.cooldowns) };
         let mut disk = self.disk.lock().unwrap_or_else(PoisonError::into_inner);
-        Cow::Owned(self.cooldowns.union(disk.refresh(path)))
+        Cow::Owned(self.cooldowns.union(disk.refresh(path, &*self.host)))
     }
 
     /// The (provider, model) pairs routing may pick right now.
@@ -42,9 +42,9 @@ impl Runtime {
     /// other processes saved) becomes this process's set. A failed save costs only the
     /// persistence, so it is reported and otherwise ignored.
     pub fn cool_down(&mut self, p: ProviderId, resets_at: Option<&str>, now_ms: u64) {
-        self.cooldowns.start(p, resets_at, now_ms);
+        self.cooldowns.start_in(p, resets_at, now_ms, &|text, zone| self.host.resolve_reset_time(text, zone), &|zone| self.host.reset_zone_exists(zone));
         let Some(path) = &self.cooldown_path else { return };
-        match self.cooldowns.save(path, now_ms) {
+        match self.host.save_cooldowns(path, &self.cooldowns, now_ms) {
             Ok(merged) => self.cooldowns = merged,
             Err(e) => eprintln!("could not save cooldowns to {}: {e}", path.display()),
         }

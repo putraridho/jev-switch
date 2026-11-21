@@ -73,7 +73,7 @@ pub fn scan_all(store: &dyn SessionStore, state_dir: &Path) -> Vec<LibraryEntry>
         .filter(|p| p.extension().is_some_and(|x| x == "json"))
         .filter_map(|path| {
             let text = std::fs::read_to_string(&path).ok()?;
-            let saved = SavedSession::parse(&text).ok().filter(|s| s.sessions.turns() > 0)?;
+            let saved = store.parse_session(&text).ok().filter(|s| s.sessions.turns() > 0)?;
             Some(LibraryEntry { bytes: text.len() as u64, meta: meta.get(&path), path, saved })
         })
         .collect();

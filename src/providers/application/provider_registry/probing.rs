@@ -8,7 +8,6 @@ use crate::providers::application::ports::ProviderHost;
 use crate::providers::domain::availability;
 use crate::providers::domain::availability::{Availability, State};
 use crate::providers::domain::probe_source::ProbeSource;
-use crate::providers::domain::reset_time::cooldowns::Cooldowns;
 use crate::providers::domain::usability::allowances_for;
 use crate::shared::ALL_PROVIDERS;
 
@@ -19,7 +18,7 @@ impl Runtime {
     pub async fn start(host: Arc<dyn ProviderHost>) -> Self {
         let avail = availability::probe_all(|p| host.probe(p)).await;
         let cooldown_path = cooldown_path(&*host);
-        let cooldowns = cooldown_path.as_deref().map(Cooldowns::load).unwrap_or_default();
+        let cooldowns = cooldown_path.as_deref().map(|path| host.load_cooldowns(path)).unwrap_or_default();
         let allow = allowances_for(host.env("JEV_ALLOW_CREDITS").as_deref(), &avail);
         let mut runtime = Self::build(avail, cooldowns, allow, crate::catalog::application::chain_overrides::from_setting(host.env("JEV_CHAINS")), cooldown_path, host);
         runtime.seed_usage();
@@ -55,7 +54,7 @@ impl Runtime {
             return (runtime, ProbeSource::Live);
         };
         let cooldown_path = cooldown_path(&*host);
-        let cooldowns = cooldown_path.as_deref().map(Cooldowns::load).unwrap_or_default();
+        let cooldowns = cooldown_path.as_deref().map(|path| host.load_cooldowns(path)).unwrap_or_default();
         let allow = allowances_for(host.env("JEV_ALLOW_CREDITS").as_deref(), &cached);
         let mut runtime = Self::build(cached.clone(), cooldowns, allow, crate::catalog::application::chain_overrides::from_setting(host.env("JEV_CHAINS")), cooldown_path, host);
         runtime.seed_usage();

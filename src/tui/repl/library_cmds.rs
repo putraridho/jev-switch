@@ -114,7 +114,7 @@ impl Repl {
             Some(f) => resolve(f, self.engine.dir(), self.home.as_deref()),
             None => self.engine.dir().join(format!("jev-session-{}.json", utc_stamp(self.now()).1)),
         };
-        match transfer::export_to(&SystemHost, &entry, &dest) {
+        match transfer::export_to(&FileSessions, &SystemHost, &entry, &dest) {
             Ok(()) => self.console.out(&format!("{} exported \u{201c}{}\u{201d} to {} {}", style.green("✓"), entry.title(), dest.display(), style.dim("· /sessions import <file> reads it back"))),
             Err(e) => self.console.out(&format!("{} not exported: {e}", style.yellow("⚠"))),
         }
@@ -227,7 +227,7 @@ mod tests {
         let now = crate::shared::infrastructure::jsonl_log::now_ms();
         let saved = SavedSession { project: session_file::project_key(&r.project), saved_ms: now, sessions, current: None };
         let path = session_file::new_session_file(&r.state, &r.project, now + prompt.len() as u64);
-        crate::shared::infrastructure::private_file::write_atomic(&path, &saved.render()).unwrap();
+        crate::shared::infrastructure::private_file::write_atomic(&path, &crate::session::infrastructure::saved_session_wire::render(&saved)).unwrap();
     }
 
     fn run(r: &mut Rig, line: &str) -> String {

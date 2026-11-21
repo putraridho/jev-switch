@@ -6,13 +6,13 @@ use super::{Resolver, ZoneExists, DAY_MS, MAX_MS, MAX_TEXT_LEN};
 
 /// Text `date -d` may be given: letters, digits, spaces and `, : / _ + - . ( )` only.
 /// No quotes, `$`, `@` (epoch syntax), backticks, `;`, `&`, `|`, newlines or non-ASCII.
-pub(super) fn is_safe_text(text: &str) -> bool {
+pub(crate) fn is_safe_text(text: &str) -> bool {
     text.len() <= MAX_TEXT_LEN && text.bytes().all(|b| b.is_ascii_alphanumeric() || b" ,:/_+-.()".contains(&b))
 }
 
 /// `"5pm (Asia/Jakarta)"` into `("5pm", Some("Asia/Jakarta"))`; without a trailing
 /// parenthesis the whole text is the body.
-pub(super) fn split_zone(text: &str) -> Option<(&str, Option<&str>)> {
+pub(crate) fn split_zone(text: &str) -> Option<(&str, Option<&str>)> {
     let Some(inner) = text.strip_suffix(')') else { return (!text.contains(['(', ')'])).then_some((text, None)) };
     let open = inner.rfind('(')?;
     let (body, zone) = (inner[..open].trim_end(), inner[open + 1..].trim());
@@ -34,7 +34,7 @@ pub(super) fn is_bare_time_of_day(body: &str) -> bool {
 /// GNU `date` rejects "Nov 20, 5pm" and "Nov 20 at 5pm" but takes "Nov 20 5pm": drop
 /// the commas and the word "at" from spaced text. Text without spaces (ISO-8601) is
 /// left alone.
-pub(super) fn normalize_for_date(body: &str) -> String {
+pub(crate) fn normalize_for_date(body: &str) -> String {
     if !body.contains(' ') {
         return body.to_string();
     }

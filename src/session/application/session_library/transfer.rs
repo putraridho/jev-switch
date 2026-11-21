@@ -12,11 +12,12 @@ use crate::shared::application::host::Host;
 
 /// The session as a file anyone can carry to another machine: the saved-session format
 /// itself, which `import` reads back. Secrets are masked in the exported copy.
-pub fn export_to(host: &dyn Host, entry: &LibraryEntry, dest: &Path) -> std::io::Result<()> {
+pub fn export_to(store: &dyn SessionStore, host: &dyn Host, entry: &LibraryEntry, dest: &Path) -> std::io::Result<()> {
     if dest.exists() {
         return Err(std::io::Error::new(std::io::ErrorKind::AlreadyExists, format!("{} exists already", dest.display())));
     }
-    let mut value = entry.saved.to_json();
+    let mut value: serde_json::Value = serde_json::from_str(&store.render_session(&entry.saved))
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
     redact_export(&mut value);
     host.write_private(dest, &value.to_string())
 }
@@ -52,7 +53,7 @@ impl std::fmt::Display for ImportError {
 /// keeps its time). Returns the new session file.
 pub fn import_file(store: &dyn SessionStore, host: &dyn Host, state_dir: &Path, project_dir: &Path, source: &Path, now_ms: u64) -> Result<PathBuf, ImportError> {
     let text = std::fs::read_to_string(source).map_err(|e| ImportError::Unreadable(e.to_string()))?;
-    let saved = SavedSession::parse(&text).map_err(ImportError::NotASession)?;
+    let saved = store.parse_session(&text).map_err(ImportError::NotASession)?;
     adopt(store, host, state_dir, project_dir, saved, now_ms)
 }
 
@@ -65,7 +66,7 @@ pub fn adopt(store: &dyn SessionStore, host: &dyn Host, state_dir: &Path, projec
     // Another machine's CLI sessions mean nothing here.
     saved.sessions = strip_cli_ids(saved.sessions);
     let path = store.new_session_file(state_dir, project_dir, now_ms);
-    host.write_private(&path, &saved.render()).map_err(|e| ImportError::Unreadable(e.to_string()))?;
+    host.write_private(&path, &store.render_session(&saved)).map_err(|e| ImportError::Unreadable(e.to_string()))?;
     Ok(path)
 }
 

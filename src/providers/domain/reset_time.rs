@@ -8,12 +8,11 @@
 
 pub mod cooldowns;
 mod duration;
-mod resolver;
+pub(crate) mod resolver;
 #[cfg(test)]
 mod tests;
-mod wall_clock;
+pub(crate) mod wall_clock;
 
-use resolver::{system_date, system_zone_exists};
 use wall_clock::wall_clock_ms;
 
 const SECOND_MS: u64 = 1000;
@@ -35,32 +34,21 @@ const MS_THRESHOLD: u64 = 100_000_000_000;
 const MAX_TEXT_LEN: usize = 64;
 
 /// Turns wall-clock text (and an optional IANA zone) into epoch seconds, or `None`.
-/// Injected so tests never run `date`; production passes [`system_date`].
+/// Injected so the domain never runs `date`.
 pub type Resolver<'a> = &'a dyn Fn(&str, Option<&str>) -> Option<u64>;
 
 /// Whether a zone name is a real IANA zone. Injected so tests need no zone database;
-/// production passes [`system_zone_exists`].
+/// production supplies the system zone database.
 pub type ZoneExists<'a> = &'a dyn Fn(&str) -> bool;
 
 
-/// Milliseconds a provider should be skipped, given the CLI's reset text, resolving
-/// wall-clock forms with the system `date`. See [`cooldown_ms_in`].
-pub fn cooldown_ms(resets_at: Option<&str>, now_ms: u64) -> u64 {
-    cooldown_ms_with(resets_at, now_ms, &system_date)
-}
-
-/// Milliseconds a provider should be skipped, given the CLI's reset text.
-///
-/// Understood forms: epoch seconds or milliseconds as digits; a duration
-/// ("3h20m5s", "20m", "90 minutes", "2 hours"); a time of day or date and time
-/// ("5pm (Asia/Jakarta)", "Nov 20, 5pm (Asia/Jakarta)") and ISO-8601, both resolved
-/// by `resolve`. Zones are checked against the system zone database. See
-/// [`cooldown_ms_in`] for the rules.
+/// Parse a reset time without accepting named zones, using an injected resolver.
+#[cfg(test)]
 pub fn cooldown_ms_with(resets_at: Option<&str>, now_ms: u64, resolve: Resolver) -> u64 {
-    cooldown_ms_in(resets_at, now_ms, resolve, &system_zone_exists)
+    cooldown_ms_in(resets_at, now_ms, resolve, &|_| false)
 }
 
-/// [`cooldown_ms_with`] with an injected zone check: a zone is accepted only if it is
+/// A zone is accepted only if it is
 /// exactly `UTC`/`GMT` or `zone_exists` says it is a real IANA zone. An abbreviation
 /// such as `PST` is ambiguous (and `date` would silently read it as UTC), so it is as
 /// unreadable as any other unknown zone.

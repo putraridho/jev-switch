@@ -6,7 +6,7 @@ use crate::providers::domain::availability;
     #[test]
     fn render_mentions_cooldown_refusals_allowances_and_overrides() {
         let mut rt = runtime();
-        rt.cooldowns.start(Claude, None, NOW);
+        rt.cooldowns.start_in(Claude, None, NOW, &|_, _| None, &|_| false);
         rt.mark_unusable(Codex, "some-model");
         rt.overrides.notes.push("JEV_CHAINS ignored: boom".to_string());
         let text = rt.render(NOW + 12 * MINUTE_MS);

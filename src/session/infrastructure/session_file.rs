@@ -55,7 +55,7 @@ fn read_session(path: &Path, project_dir: &Path) -> Result<SavedSession, ResumeE
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Err(ResumeError::NotFound),
         Err(e) => return Err(ResumeError::Io(e.to_string())),
     };
-    let saved = SavedSession::parse(&text).map_err(ResumeError::Corrupt)?;
+    let saved = crate::session::infrastructure::saved_session_wire::parse(&text).map_err(ResumeError::Corrupt)?;
     if saved.project != project_key(project_dir) {
         return Err(ResumeError::NotFound);
     }
@@ -156,6 +156,12 @@ pub fn saved_session_info(project_dir: &Path) -> Option<SessionInfo> {
 pub struct FileSessions;
 
 impl SessionStore for FileSessions {
+    fn render_session(&self, saved: &SavedSession) -> String {
+        crate::session::infrastructure::saved_session_wire::render(saved)
+    }
+    fn parse_session(&self, text: &str) -> Result<SavedSession, String> {
+        crate::session::infrastructure::saved_session_wire::parse(text)
+    }
     fn project_key(&self, dir: &Path) -> String {
         project_key(dir)
     }
@@ -235,7 +241,7 @@ mod tests {
 
     fn store(state: &Path, dir: &Path, saved: &SavedSession) -> PathBuf {
         let path = new_session_file(state, dir, saved.saved_ms);
-        write_atomic(&path, &saved.to_json().to_string()).unwrap();
+        write_atomic(&path, &crate::session::infrastructure::saved_session_wire::render(saved)).unwrap();
         path
     }
 
@@ -274,7 +280,7 @@ mod tests {
         // A file that says it is for another project is not ours.
         let mut other = saved_for(&project.0, NOW);
         other.project = "/somewhere/else".into();
-        write_atomic(&file, &other.to_json().to_string()).unwrap();
+        write_atomic(&file, &crate::session::infrastructure::saved_session_wire::render(&other)).unwrap();
         assert_eq!(load_latest(&state.0, &project.0, NOW, None).unwrap_err(), ResumeError::NotFound);
     }
 
@@ -283,7 +289,7 @@ mod tests {
         let (state, project) = (TempState::new("age-state"), TempState::new("age-proj"));
         let file = store(&state.0, &project.0, &saved_for(&project.0, NOW - 13 * DAY));
         assert!(saved_session_info_in(&state.0, &project.0, NOW).is_some());
-        write_atomic(&file, &saved_for(&project.0, NOW - 15 * DAY).to_json().to_string()).unwrap();
+        write_atomic(&file, &crate::session::infrastructure::saved_session_wire::render(&saved_for(&project.0, NOW - 15 * DAY))).unwrap();
         assert_eq!(saved_session_info_in(&state.0, &project.0, NOW), None);
         assert_eq!(load_latest(&state.0, &project.0, NOW, None).unwrap_err(), ResumeError::NotFound);
     }
@@ -305,7 +311,7 @@ mod tests {
     fn the_old_single_file_is_still_found_and_ranks_by_its_time() {
         let (state, project) = (TempState::new("legacy-state"), TempState::new("legacy-proj"));
         let legacy = legacy_session_file(&state.0, &project.0);
-        write_atomic(&legacy, &saved_for(&project.0, NOW - DAY).to_json().to_string()).unwrap();
+        write_atomic(&legacy, &crate::session::infrastructure::saved_session_wire::render(&saved_for(&project.0, NOW - DAY))).unwrap();
         assert_eq!(load_latest(&state.0, &project.0, NOW, None).unwrap().0, legacy);
         assert_eq!(saved_session_info_in(&state.0, &project.0, NOW).unwrap().turns, 1);
         let newer = store(&state.0, &project.0, &saved_for(&project.0, NOW - 1000));
@@ -377,7 +383,7 @@ mod tests {
         let state = TempState::new("golden-state");
         let written = |name: &str, saved: &SavedSession| {
             let path = state.0.join(name);
-            write_atomic(&path, &saved.render()).unwrap();
+            write_atomic(&path, &crate::session::infrastructure::saved_session_wire::render(saved)).unwrap();
             std::fs::read_to_string(&path).unwrap()
         };
         let mut typical = Sessions::new();

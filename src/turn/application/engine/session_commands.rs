@@ -61,7 +61,7 @@ impl Engine {
             sessions: self.sessions.clone(),
             current: self.routing.current.clone(),
         };
-        self.host.write_private(&path, &saved.to_json().to_string())?;
+        self.host.write_private(&path, &self.session_store.render_session(&saved))?;
         self.session_store.prune(&state, &self.dir, &path);
         self.session_file = Some(path);
         Ok(())

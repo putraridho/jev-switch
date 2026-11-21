@@ -6,8 +6,8 @@ fn an_export_imports_into_another_project_and_resumes_there() {
     let (state, a, _) = library("export");
     let entry = scan_all(&FileSessions, &state).into_iter().find(|e| e.title() == "fix the lexer").unwrap();
     let file = state.join("out.json");
-    export_to(&SystemHost, &entry, &file).unwrap();
-    assert!(export_to(&SystemHost, &entry, &file).is_err(), "never overwrites");
+    export_to(&FileSessions, &SystemHost, &entry, &file).unwrap();
+    assert!(export_to(&FileSessions, &SystemHost, &entry, &file).is_err(), "never overwrites");
     let other = state.join("proj-c");
     std::fs::create_dir_all(&other).unwrap();
     let moved = import_file(&FileSessions, &SystemHost, &state, &other, &file, NOW).unwrap();
@@ -37,13 +37,13 @@ fn export_masks_secrets_without_changing_the_stored_session() {
     let original = std::fs::read_to_string(&original_path).unwrap();
     let entry = scan_all(&FileSessions, &state).into_iter().next().unwrap();
     let output = state.join("export.json");
-    export_to(&SystemHost, &entry, &output).unwrap();
+    export_to(&FileSessions, &SystemHost, &entry, &output).unwrap();
     let exported = std::fs::read_to_string(&output).unwrap();
     for secret in ["hunter2", "replysecret", "toolpassword", "xai-abcdefghijklmnopqrstuvwx"] {
         assert!(!exported.contains(secret), "{exported}");
         assert!(original.contains(secret));
     }
-    let saved = SavedSession::parse(&exported).unwrap();
+    let saved = FileSessions.parse_session(&exported).unwrap();
     let turn = &saved.sessions.log()[0];
     assert!(turn.prompt.contains("[REDACTED]"));
     assert!(turn.reply.contains("[REDACTED]"));

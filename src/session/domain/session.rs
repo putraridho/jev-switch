@@ -13,11 +13,11 @@ use crate::shared::ProviderId;
 /// (by the caller's contract) caught up first, so it never has holes.
 #[derive(Debug, Clone, Default)]
 pub struct Sessions {
-    pub(super) ids: HashMap<ProviderId, String>,
-    pub(super) seen: HashMap<ProviderId, usize>,
-    pub(super) log: Vec<TurnRecord>,
+    pub(in crate::session) ids: HashMap<ProviderId, String>,
+    pub(in crate::session) seen: HashMap<ProviderId, usize>,
+    pub(in crate::session) log: Vec<TurnRecord>,
     /// The name the person gave the session (`/rename`), shown in place of its first message.
-    pub(super) name: Option<String>,
+    pub(in crate::session) name: Option<String>,
 }
 
 impl Sessions {

@@ -13,6 +13,7 @@ use std::pin::Pin;
 
 use crate::backend::{PlanUsage, ProviderId};
 use crate::providers::domain::availability::Availability;
+use crate::providers::domain::reset_time::cooldowns::Cooldowns;
 
 /// A boxed future the port hands back, so the trait stays object safe.
 pub type BoxFuture<T> = Pin<Box<dyn Future<Output = T> + Send>>;
@@ -25,6 +26,11 @@ pub trait ProviderHost: Debug + Send + Sync {
     /// A saved probe answer that is still fresh and was made under `fingerprint`.
     fn load_probe_cache(&self, path: &Path, now_ms: u64, fingerprint: u64) -> Option<Vec<Availability>>;
     fn save_probe_cache(&self, path: &Path, now_ms: u64, fingerprint: u64, avail: &[Availability]);
+    fn load_cooldowns(&self, path: &Path) -> Cooldowns;
+    fn save_cooldowns(&self, path: &Path, cooldowns: &Cooldowns, now_ms: u64) -> std::io::Result<Cooldowns>;
+    fn cooldown_stamp(&self, path: &Path) -> Option<(std::time::SystemTime, u64)>;
+    fn resolve_reset_time(&self, text: &str, zone: Option<&str>) -> Option<u64>;
+    fn reset_zone_exists(&self, zone: &str) -> bool;
     /// Where plan readings are saved; `None` without a state directory.
     fn plan_path(&self) -> Option<PathBuf>;
     fn load_plans(&self, path: &Path) -> HashMap<ProviderId, PlanUsage>;

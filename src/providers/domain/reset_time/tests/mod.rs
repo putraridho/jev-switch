@@ -8,7 +8,6 @@ mod wall_clock;
 mod zone;
 
 use std::cell::RefCell;
-use std::path::PathBuf;
 
 use super::{cooldown_ms_in, Resolver};
 
@@ -41,8 +40,4 @@ pub(super) fn fixed(at_secs: u64, seen: &RefCell<Vec<(String, Option<String>)>>)
         seen.borrow_mut().push((text.to_string(), zone.map(str::to_string)));
         Some(at_secs)
     }
-}
-
-pub(super) fn temp_dir(name: &str) -> PathBuf {
-    crate::testkit::scratch_dir::scratch_dir("cooldown", name)
 }
