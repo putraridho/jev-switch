@@ -55,10 +55,10 @@ impl Sticky {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::Value;
+    use crate::judgment::domain::want::JevSignals;
 
     fn want(tier: usize, confident: bool) -> CodeWant {
-        CodeWant { tier, confident, reason: String::new(), signals: Value::Null }
+        CodeWant { tier, confident, reason: String::new(), signals: JevSignals::default() }
     }
 
     #[test]

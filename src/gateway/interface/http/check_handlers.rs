@@ -59,7 +59,7 @@ pub(super) async fn orchestrate_check(State(app): State<Arc<App>>, Json(c): Json
         let want = app.router.code_want(&words, &c.context, 1).await;
         if !want.signals.is_null() {
             route_tier = Some(want.tier);
-            hard_p = want.signals["hard_p"].as_f64();
+            hard_p = want.signals.to_json()["hard_p"].as_f64();
         }
     }
     let gate = orch_gate(judgment.as_ref(), app.orch.cutoff, route_tier, app.orch.require_opus);

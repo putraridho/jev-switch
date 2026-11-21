@@ -153,9 +153,9 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let mut g = Guards::default();
         run(GuardCmd::BudgetSet(Cap::Usd(3.0)), &mut g, Some(&dir), &[]);
-        assert_eq!(Guards::load(&SystemHost, Some(&dir), &dir).budget.cap, Some(Cap::Usd(3.0)));
+        assert_eq!(Guards::load(&SystemHost, std::sync::Arc::new(crate::turn::infrastructure::privacy_audit::FilePrivacyAudit), Some(&dir), &dir).budget.cap, Some(Cap::Usd(3.0)));
         run(GuardCmd::BudgetClear, &mut g, Some(&dir), &[]);
-        assert_eq!(Guards::load(&SystemHost, Some(&dir), &dir).budget.cap, None);
+        assert_eq!(Guards::load(&SystemHost, std::sync::Arc::new(crate::turn::infrastructure::privacy_audit::FilePrivacyAudit), Some(&dir), &dir).budget.cap, None);
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

@@ -1,44 +1,43 @@
-//! Reading the privacy policy files from disk (the only IO besides the audit log).
+//! Reading the privacy policy files from disk.
 
 use std::path::{Path, PathBuf};
 
-use super::{Policy, PolicyError, Source};
+use crate::shared::application::host::Host;
+use crate::turn::domain::privacy::{Policy, PolicyError, Source};
 
 const RULES_FILE: &str = "privacy.rules";
 
-impl Policy {
-    /// The policy files, user's first: `<state>/privacy.rules`, then `<project>/.jev/privacy.rules`.
-    /// A missing file is an empty policy; an unreadable file forces local-only mode.
-    pub fn load(state_dir: Option<&Path>, project: &Path) -> (Self, Vec<(PathBuf, PolicyError)>) {
-        let mut policy = Self::default();
-        let mut errors = Vec::new();
-        let files = [
-            (state_dir.map(|d| d.join(RULES_FILE)), Source::User),
-            (Some(project.join(".jev").join(RULES_FILE)), Source::Project),
-        ];
-        for (path, source) in files {
-            let Some(path) = path else { continue };
-            let text = match std::fs::read_to_string(&path) {
-                Ok(text) => text,
-                // A folder on the way that is a file means there is no rules file either.
-                Err(error) if matches!(error.kind(), std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory) => continue,
-                Err(error) => {
-                    policy = policy.with_local_only(true);
-                    errors.push((path, PolicyError { line: 0, message: format!("could not read privacy rules: {error}; local-only mode is on") }));
-                    continue;
-                }
-            };
-            let (loaded, errs) = Self::parse(&text, source);
-            errors.extend(errs.into_iter().map(|e| (path.clone(), e)));
-            policy = policy.merged(loaded);
-        }
-        (policy, errors)
+/// The policy files, user's first: `<state>/privacy.rules`, then `<project>/.jev/privacy.rules`.
+/// A missing file is an empty policy; an unreadable file forces local-only mode.
+pub fn load(host: &dyn Host, state_dir: Option<&Path>, project: &Path) -> (Policy, Vec<(PathBuf, PolicyError)>) {
+    let mut policy = Policy::default();
+    let mut errors = Vec::new();
+    let files = [
+        (state_dir.map(|d| d.join(RULES_FILE)), Source::User),
+        (Some(project.join(".jev").join(RULES_FILE)), Source::Project),
+    ];
+    for (path, source) in files {
+        let Some(path) = path else { continue };
+        let text = match host.read_text(&path) {
+            Ok(text) => text,
+            Err(error) if matches!(error.kind(), std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory) => continue,
+            Err(error) => {
+                policy = policy.with_local_only(true);
+                errors.push((path, PolicyError { line: 0, message: format!("could not read privacy rules: {error}; local-only mode is on") }));
+                continue;
+            }
+        };
+        let (loaded, errs) = Policy::parse(&text, source);
+        errors.extend(errs.into_iter().map(|e| (path.clone(), e)));
+        policy = policy.merged(loaded);
     }
+    (policy, errors)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::shared::infrastructure::system_host::SystemHost;
 
     fn temp(name: &str) -> PathBuf {
         let d = std::env::temp_dir().join(format!("jev-privacy-{name}-{}", std::process::id()));
@@ -54,13 +53,13 @@ mod tests {
         std::fs::create_dir_all(project.join(".jev")).unwrap();
         std::fs::write(state.join("privacy.rules"), "redact off\nblock a/** from grok\n").unwrap();
         std::fs::write(project.join(".jev/privacy.rules"), "local-only on\nredact off\n").unwrap();
-        let (p, errors) = Policy::load(Some(&state), &project);
+        let (p, errors) = load(&SystemHost, Some(&state), &project);
         assert!(p.local_only());
         assert_eq!(p.rule_count(), 1);
         assert_eq!(errors.len(), 1, "the project's `redact off` is refused");
         assert!(errors[0].0.ends_with(".jev/privacy.rules"));
         // Neither file: the default.
-        let (none, errs) = Policy::load(None, &temp("empty"));
+        let (none, errs) = load(&SystemHost, None, &temp("empty"));
         assert_eq!(none, Policy::default());
         assert!(errs.is_empty());
     }
@@ -71,7 +70,7 @@ mod tests {
         let project = temp("unreadable-project");
         let file = state.join("privacy.rules");
         std::fs::write(&file, [0xff, 0xfe]).unwrap();
-        let (mut p, errors) = Policy::load(Some(&state), &project);
+        let (mut p, errors) = load(&SystemHost, Some(&state), &project);
         assert!(p.local_only());
         assert!(p.set_local_only(false).is_err());
         assert!(crate::shared::ALL_PROVIDERS.iter().all(|provider| !p.check(Path::new("/work/app"), "hello", &[], None).permits(*provider)));
@@ -82,7 +81,7 @@ mod tests {
 
         std::fs::remove_file(&file).unwrap();
         std::fs::create_dir(&file).unwrap();
-        let (p, errors) = Policy::load(Some(&state), &project);
+        let (p, errors) = load(&SystemHost, Some(&state), &project);
         assert!(p.local_only());
         assert_eq!(errors.len(), 1);
         assert_eq!(errors[0].0, file);

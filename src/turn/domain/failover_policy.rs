@@ -62,10 +62,6 @@ impl FailoverPolicy {
         policy
     }
 
-    pub fn load(state_dir: Option<&Path>) -> Self {
-        state_dir.and_then(|d| std::fs::read_to_string(d.join(FILE)).ok()).map(|t| Self::parse(&t)).unwrap_or_default()
-    }
-
     /// The file in the state folder that keeps the policy.
     pub fn file_path(state_dir: &Path) -> std::path::PathBuf {
         state_dir.join(FILE)

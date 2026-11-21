@@ -7,6 +7,20 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use std::collections::HashMap;
 
+use crate::judgment::domain::want::JevSignals;
+
+impl From<Value> for JevSignals {
+    fn from(value: Value) -> Self {
+        Self::new(value.to_string(), value["choice"].as_str().map(str::to_owned), value["confidence"].as_f64(), value["edit_p"].as_f64())
+    }
+}
+
+impl JevSignals {
+    pub fn to_json(&self) -> Value {
+        serde_json::from_str(self.raw()).unwrap_or(Value::Null)
+    }
+}
+
 #[derive(Debug, Deserialize)]
 pub struct ChoiceAnswer {
     pub choice: String,

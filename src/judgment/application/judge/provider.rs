@@ -105,7 +105,7 @@ fn decode_provider_want(answers: &Value, request: &str, with_previous: bool, wit
         correction_p,
         orchestration,
         security_keywords,
-        signals,
+        signals: signals.into(),
     })
 }
 

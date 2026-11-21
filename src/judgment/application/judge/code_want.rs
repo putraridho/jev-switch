@@ -19,7 +19,7 @@ impl Router {
             return None;
         }
         let alias = worker_alias(want.tier, &want.signals, self.worker_cheap, allow_opus);
-        Some((alias, want.reason, want.signals))
+        Some((alias, want.reason, want.signals.to_json()))
     }
 
 
@@ -38,12 +38,14 @@ impl Router {
         }
         // Only Opus-bound turns pay for the extra judgment. If Jev fails or is slow, stay on Opus.
         if let Ok(Ok(p)) = tokio::time::timeout(self.jev_timeout, self.very_hard(request, recent_context)).await {
-            match &mut want.signals {
+            let mut signals = want.signals.to_json();
+            match &mut signals {
                 Value::Object(o) => {
                     o.insert("hard_p".into(), json!(p));
                 }
                 s => *s = json!({ "hard_p": p }),
             }
+            want.signals = signals.into();
             if p >= cutoff {
                 want.tier = 3;
                 want.reason = format!("very hard (hard p {p:.2}): {}", want.reason);
@@ -68,14 +70,14 @@ impl Router {
                 tier: 2,
                 confident: true,
                 reason: "security-sensitive".into(),
-                signals: json!({ "security": "strong" }),
+                signals: json!({ "security": "strong" }).into(),
             };
         }
         let unavailable = |why: String| CodeWant {
             tier: fallback,
             confident: false,
             reason: format!("jev unavailable ({why})"),
-            signals: Value::Null,
+            signals: Value::Null.into(),
         };
         let judged = tokio::time::timeout(self.jev_timeout, async {
             tokio::join!(
@@ -94,7 +96,7 @@ impl Router {
         let signals = json!({
             "choice": ans.choice, "confidence": ans.confidence, "edit_p": edit_p, "sec_p": sec_p,
             "security": format!("{security:?}").to_lowercase(),
-        });
+        }).into();
         if sec_p >= CODE_SECURITY_P {
             return CodeWant { tier: 2, confident: true, reason: format!("security review ({tag})"), signals };
         }

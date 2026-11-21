@@ -20,6 +20,8 @@ pub trait Host: Send + Sync {
     fn now_ms(&self) -> u64;
     /// The directory holding logs, sessions and caches, created on first use.
     fn state_dir(&self) -> Option<PathBuf>;
+    /// Read a UTF-8 text file.
+    fn read_text(&self, path: &Path) -> std::io::Result<String>;
     /// Replace `path` with `text`, readable by the owner only, never leaving half a file.
     fn write_private(&self, path: &Path, text: &str) -> std::io::Result<()>;
     /// Append one line to the log at `path`; never fails the caller.

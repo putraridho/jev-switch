@@ -15,9 +15,7 @@
 //! this keeps a named path from being sent to the wrong vendor; it is not a sandbox, which
 //! is what `/permissions` and `/mode` are for.
 //!
-//! Everything here is pure except `files` (reads the policy files) and `audit` (appends what
-//! happened, never the prompt, never a secret, to a file). The child modules split it by
-//! job: `parse` reads policy text, `settings` combines and toggles policies, `matching`
+//! The child modules split the policy by job: `parse` reads policy text, `settings` combines and toggles policies, `matching`
 //! checks a prompt against the rules, `verdict` is the answer and its refusal text,
 //! `outgoing` blanks secrets before a prompt leaves.
 
@@ -25,7 +23,6 @@ pub mod audit;
 pub mod outgoing;
 pub mod verdict;
 
-mod files;
 mod matching;
 mod parse;
 mod settings;

@@ -15,8 +15,8 @@ async fn provider_want_decodes_every_answer_from_one_request() {
     assert_eq!(w.correction_p, Some(0.55));
     assert_eq!(w.orchestration.multi_part_p, 0.66);
     assert_eq!(w.security_keywords, Security::None);
-    assert_eq!(w.signals["task"], "frontend");
-    assert_eq!(w.signals["security_p"], 0.33);
+    assert_eq!(w.signals.to_json()["task"], "frontend");
+    assert_eq!(w.signals.to_json()["security_p"], 0.33);
     // exactly one request carried all seven questions and the previous exchange
     let seen = seen.lock().unwrap();
     assert_eq!(seen.len(), 1, "one HTTP request, not one per question");
@@ -30,7 +30,7 @@ async fn provider_want_without_a_previous_turn_omits_the_correction_question() {
     let (url, seen) = fake_jev(answer_all).await;
     let w = router_at(&url, 2000).provider_want("rename usr to user", "", None, true).await.expect("answered");
     assert_eq!(w.correction_p, None);
-    assert!(w.signals["correction_p"].is_null());
+    assert!(w.signals.to_json()["correction_p"].is_null());
     let seen = seen.lock().unwrap();
     let questions = seen[0]["questions"].as_object().unwrap();
     assert_eq!(questions.len(), 7);

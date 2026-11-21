@@ -154,6 +154,15 @@ pub type GitStatus = Box<dyn Fn(&Path) -> String + Send + Sync>;
 /// Writes the MCP config file a planner CLI reads.
 pub type McpWriter = Box<dyn Fn(&McpAttachment) -> std::io::Result<()> + Send + Sync>;
 
+/// Where the privacy audit log is kept: one record per prompt sent or kept back, never the
+/// prompt itself. Real: `turn::infrastructure::privacy_audit::FilePrivacyAudit`.
+pub trait PrivacyAudit: std::fmt::Debug + Send + Sync {
+    /// Append `record` to the log at `path`; never fails the turn.
+    fn record(&self, path: &Path, record: &crate::turn::domain::privacy::audit::AuditRecord);
+    /// The last `count` records of the log at `path`, oldest first; unreadable lines are skipped.
+    fn tail(&self, path: &Path, count: usize) -> Vec<crate::turn::domain::privacy::audit::AuditRecord>;
+}
+
 /// The adapters an [`Engine`](crate::turn::application::engine::Engine) cannot build itself
 /// (they live in outer layers or other contexts); the composition root passes them to
 /// `Engine::new`.
@@ -167,4 +176,6 @@ pub struct Adapters {
     pub host: Arc<dyn Host>,
     /// Where saved sessions are kept.
     pub sessions: Arc<dyn SessionStore>,
+    /// Where the privacy audit log is written.
+    pub privacy_audit: Arc<dyn PrivacyAudit>,
 }

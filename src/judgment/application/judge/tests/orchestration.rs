@@ -7,7 +7,7 @@ async fn with_orchestration_off_the_sequence_veto_is_not_asked() {
     let (url, seen) = fake_jev(answer_all).await;
     let w = router_at(&url, 2000).provider_want("rename usr to user", "", None, false).await.expect("answered");
     assert_eq!((w.orchestration.multi_part_p, w.orchestration.sequential_p, w.orchestration.vetoed), (0.66, None, false));
-    assert!(w.signals["sequential_p"].is_null() && w.signals.get("sequential_error").is_none());
+    assert!(w.signals.to_json()["sequential_p"].is_null() && w.signals.to_json().get("sequential_error").is_none());
     let seen = seen.lock().unwrap();
     let questions = seen[0]["questions"].as_object().unwrap();
     assert_eq!(questions.len(), 6);
@@ -32,7 +32,7 @@ async fn an_unreadable_sequential_answer_loses_only_the_veto() {
     assert_eq!(w.task, TaskType::Frontend);
     assert_eq!((w.continues_p, w.edit_p, w.security_p, w.very_hard_p), (0.11, 0.22, 0.33, 0.44));
     assert_eq!((w.orchestration.multi_part_p, w.orchestration.sequential_p, w.orchestration.vetoed), (0.66, None, false));
-    assert!(w.signals["sequential_error"].as_str().is_some_and(|e| !e.is_empty()), "the log says why: {}", w.signals);
+    assert!(w.signals.to_json()["sequential_error"].as_str().is_some_and(|e| !e.is_empty()), "the log says why: {}", w.signals.to_json());
     // The gateway's check degrades the same way.
     let j = router.orchestration_p("make the sidebar collapse", "").await.expect("multi_part was readable");
     assert_eq!((j.multi_part_p, j.sequential_p, j.vetoed), (0.66, None, false));

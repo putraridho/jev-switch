@@ -14,7 +14,10 @@ use crate::turn::domain::failover_policy::FailoverPolicy;
 use crate::turn::domain::privacy::outgoing::{self, Outgoing};
 use crate::turn::domain::privacy::verdict::Verdict;
 use crate::turn::domain::privacy::Policy;
-use crate::turn::domain::privacy::audit::{AuditLog, AuditRecord};
+use crate::turn::application::privacy_audit::AuditLog;
+use crate::turn::application::ports::PrivacyAudit;
+use crate::turn::domain::privacy::audit::AuditRecord;
+use std::sync::Arc;
 use crate::routing::domain::user_rules as routing_rules;
 use crate::routing::domain::user_rules::Rules;
 use crate::turn::domain::scoreboard::Scoreboard;
@@ -65,8 +68,8 @@ impl Guards {
     /// Every setting file of the user's state folder and the project. A missing file is
     /// the default; a broken line is kept in `problems` and skipped. `JEV_LOCAL_ONLY=1`
     /// turns local-only mode on whatever the files say.
-    pub fn load(host: &dyn Host, state_dir: Option<&Path>, project: &Path) -> Self {
-        let (privacy, privacy_errors) = Policy::load(state_dir, project);
+    pub fn load(host: &dyn Host, audit: Arc<dyn PrivacyAudit>, state_dir: Option<&Path>, project: &Path) -> Self {
+        let (privacy, privacy_errors) = super::privacy_files::load(host, state_dir, project);
         let (rules, rule_errors) = crate::routing::application::rule_files::load(state_dir, project);
         let local_only = host.env("JEV_LOCAL_ONLY").is_some_and(|v| matches!(v.trim(), "1" | "on" | "true" | "yes"));
         let mut problems: Vec<String> = privacy_errors.iter().map(|(file, e)| format!("{}: {e}", file.display())).collect();
@@ -74,11 +77,11 @@ impl Guards {
         Self {
             home: host.home(),
             privacy: privacy.with_local_only(local_only),
-            audit: state_dir.map(AuditLog::in_state_dir),
+            audit: state_dir.map(|dir| AuditLog::in_state_dir(dir, audit)),
             rules,
-            budget: Budget::load(state_dir),
-            prices: PriceTable::load(state_dir),
-            failover: FailoverPolicy::load(state_dir),
+            budget: super::guard_store::load_budget(host, state_dir),
+            prices: super::guard_store::load_prices(host, state_dir),
+            failover: super::guard_store::load_failover(host, state_dir),
             problems,
             ..Self::default()
         }
@@ -288,7 +291,7 @@ mod tests {
         let d = std::env::temp_dir().join(format!("jev-guard-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(&d).unwrap();
-        let g = Guards { audit: Some(AuditLog::in_state_dir(&d)), ..Guards::default() };
+        let g = Guards { audit: Some(AuditLog::in_state_dir(&d, Arc::new(crate::turn::infrastructure::privacy_audit::FilePrivacyAudit))), ..Guards::default() };
         let out = g.outgoing("use DB_PASSWORD=hunter2hunter2", ProviderId::Claude, "opus", 7);
         assert_eq!(out.prompt, "use DB_PASSWORD=[REDACTED:named-secret]");
         g.audit_blocked(&[(ProviderId::Grok, "local-only mode is on".into())], 8);
@@ -309,7 +312,7 @@ mod tests {
         std::fs::write(state.join("routing.rules"), "prefer claude\n").unwrap();
         std::fs::write(state.join("budget"), "usd 3").unwrap();
         std::fs::write(state.join("failover"), "max-attempts 2").unwrap();
-        let g = Guards::load(&crate::shared::infrastructure::system_host::SystemHost, Some(&state), &project);
+        let g = Guards::load(&crate::shared::infrastructure::system_host::SystemHost, Arc::new(crate::turn::infrastructure::privacy_audit::FilePrivacyAudit), Some(&state), &project);
         assert_eq!(g.privacy.rule_count(), 1);
         assert_eq!(g.problems.len(), 1);
         assert_eq!(g.budget.cap, Some(Cap::Usd(3.0)));

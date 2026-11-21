@@ -43,7 +43,7 @@ impl Delegator {
             None => None,
         };
         let signals = want.as_ref().map_or_else(BriefSignals::unjudged, |w| signals_of(w, req.read_only));
-        let jev = want.map_or(Value::Null, |w| w.signals);
+        let jev = want.map_or(Value::Null, |w| w.signals.to_json());
         let mut retries: Vec<String> = Vec::new();
         for attempt in 1..=MAX_WORKER_ATTEMPTS {
             match self.attempt(&req, &signals, &jev, &excluded, attempt).await {

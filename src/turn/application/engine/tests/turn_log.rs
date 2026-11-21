@@ -49,7 +49,7 @@ async fn logged_rows(tag: &str, script: Option<&'static str>, signals: Value) ->
     if let Some(s) = script {
         r.script(first_choice(TaskType::Feature, &ready), s);
     }
-    r.turn("add a retry to the client", ProviderWant { signals, ..want(TaskType::Feature) }).await;
+    r.turn("add a retry to the client", ProviderWant { signals: signals.into(), ..want(TaskType::Feature) }).await;
     let text = std::fs::read_to_string(&path).unwrap();
     let _ = std::fs::remove_file(&path);
     mask_number(&mask_number(&text, "ts_ms", "\"<TS>\""), "wall_ms", "\"<MS>\"")

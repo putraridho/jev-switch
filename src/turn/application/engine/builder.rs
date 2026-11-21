@@ -43,6 +43,7 @@ impl Engine {
             git_status: adapters.git_status,
             now: Box::new(move || clock.now_ms()),
             host,
+            privacy_audit: adapters.privacy_audit,
             session_store: adapters.sessions,
             idle_timeout: adapters.idle_timeout,
             stream_text: false,
@@ -91,7 +92,7 @@ impl Engine {
     /// budget, failover, routing rules) from `settings`: a one-shot keeps no session yet still
     /// obeys them.
     pub fn with_persistence_and_settings(mut self, persist: Option<PathBuf>, settings: Option<&std::path::Path>) -> Self {
-        self.guards = Guards::load(&*self.host, settings, &self.dir);
+        self.guards = Guards::load(&*self.host, self.privacy_audit.clone(), settings, &self.dir);
         self.persist = persist;
         self.settings = settings.map(Path::to_path_buf);
         self

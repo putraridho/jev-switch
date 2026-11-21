@@ -30,6 +30,10 @@ impl Host for SystemHost {
         jsonl_log::state_dir()
     }
 
+    fn read_text(&self, path: &Path) -> std::io::Result<String> {
+        std::fs::read_to_string(path)
+    }
+
     fn write_private(&self, path: &Path, text: &str) -> std::io::Result<()> {
         private_file::write_atomic(path, text)
     }

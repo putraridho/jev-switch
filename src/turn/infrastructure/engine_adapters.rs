@@ -23,5 +23,6 @@ pub fn real() -> Adapters {
         write_mcp: Box::new(write_mcp_config),
         host: Arc::new(SystemHost),
         sessions: Arc::new(FileSessions),
+        privacy_audit: Arc::new(super::privacy_audit::FilePrivacyAudit),
     }
 }

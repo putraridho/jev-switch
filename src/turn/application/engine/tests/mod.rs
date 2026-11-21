@@ -251,7 +251,7 @@ fn want(task: TaskType) -> ProviderWant {
         correction_p: None,
         orchestration: crate::judgment::domain::orchestration::Orchestration::default(),
         security_keywords: Security::None,
-        signals: json!({ "task": task.as_str() }),
+        signals: json!({ "task": task.as_str() }).into(),
     }
 }
 

@@ -128,7 +128,7 @@ pub(super) async fn choose_model(app: &App, meta: &Meta, req: &Value) -> Option<
     st.prompt_id = prompt_id.clone();
     st.orch_planner = None;
     st.model = Some(TIERS[tier]);
-    let decision = json!({ "tier": tier, "reason": reason, "confident": want.confident, "signals": want.signals, "orchestrate": orch_check });
+    let decision = json!({ "tier": tier, "reason": reason, "confident": want.confident, "signals": want.signals.to_json(), "orchestrate": orch_check });
     st.decision = Some(decision.clone());
     log_decision(app, &session_id, prompt_id.as_deref(), TIERS[tier], &decision, &words);
     Some(Picked { model: TIERS[tier], new_turn: true, decision: Some(decision) })

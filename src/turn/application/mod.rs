@@ -7,5 +7,7 @@ pub mod guard_store;
 pub mod guards;
 pub mod judged;
 pub mod ports;
+pub mod privacy_files;
+pub mod privacy_audit;
 pub mod team_rules;
 pub mod turn_report;

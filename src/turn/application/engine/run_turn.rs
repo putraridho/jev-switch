@@ -50,7 +50,7 @@ impl Engine {
                 Judged::Providers(None)
             } else {
                 let tier = self.sticky.tier.unwrap_or(1);
-                Judged::Legacy(CodeWant { tier, confident: false, reason: "jev not asked (privacy policy)".into(), signals: Value::Null })
+                Judged::Legacy(CodeWant { tier, confident: false, reason: "jev not asked (privacy policy)".into(), signals: Value::Null.into() })
             };
         }
         // What does go to Jev has its secrets blanked, as for any provider.

@@ -23,9 +23,9 @@ impl Judged {
     /// Jev's numbers for the turn log.
     pub(super) fn log_signals(&self) -> Value {
         match self {
-            Self::Providers(Some(w)) => w.signals.clone(),
+            Self::Providers(Some(w)) => w.signals.to_json(),
             Self::Providers(None) => Value::Null,
-            Self::Legacy(w) => w.signals.clone(),
+            Self::Legacy(w) => w.signals.to_json(),
         }
     }
 }

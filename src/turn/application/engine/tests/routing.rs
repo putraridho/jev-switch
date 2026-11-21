@@ -157,7 +157,7 @@ async fn a_pin_that_becomes_unusable_is_reported_not_swapped() {
 async fn routing_off_is_claude_only_with_one_attempt() {
     let mut r = rig(&[Codex]);
     r.engine.set_enabled(false);
-    let strong = CodeWant { tier: 2, confident: true, reason: "confidently reasoning".into(), signals: Value::Null };
+    let strong = CodeWant { tier: 2, confident: true, reason: "confidently reasoning".into(), signals: Value::Null.into() };
     let report = r.engine.run_judged("why is this slow", Judged::Legacy(strong), &mut r.ui).await;
     assert_eq!(report.status, TurnStatus::Answered);
     assert_eq!((report.provider, report.model.as_deref()), (Some(Claude), Some(MODEL_STRONG)));
@@ -165,13 +165,13 @@ async fn routing_off_is_claude_only_with_one_attempt() {
     assert!(r.ui.routes[0].contains("claude") && r.ui.routes[0].contains(MODEL_STRONG));
 
     // An easier turn holds Opus (warm cache) instead of dropping at once.
-    let easy = CodeWant { tier: 1, confident: true, reason: "everyday".into(), signals: Value::Null };
+    let easy = CodeWant { tier: 1, confident: true, reason: "everyday".into(), signals: Value::Null.into() };
     let report = r.engine.run_judged("thanks", Judged::Legacy(easy), &mut r.ui).await;
     assert_eq!(report.model.as_deref(), Some(MODEL_STRONG));
 
     // A failure is reported; there is no failover in this mode.
     r.script(Claude, QUOTA);
-    let again = CodeWant { tier: 1, confident: true, reason: "everyday".into(), signals: Value::Null };
+    let again = CodeWant { tier: 1, confident: true, reason: "everyday".into(), signals: Value::Null.into() };
     let before = r.started().len();
     let report = r.engine.run_judged("and now", Judged::Legacy(again), &mut r.ui).await;
     assert_eq!(report.status, TurnStatus::Failed);
@@ -181,7 +181,7 @@ async fn routing_off_is_claude_only_with_one_attempt() {
 #[tokio::test]
 async fn routing_off_honours_a_claude_pin_and_ignores_another_providers() {
     let mut r = rig(&[Claude]);
-    let w = || CodeWant { tier: 2, confident: true, reason: "r".into(), signals: Value::Null };
+    let w = || CodeWant { tier: 2, confident: true, reason: "r".into(), signals: Value::Null.into() };
     r.engine.set_pin(Pin::parse("sonnet").unwrap());
     let report = r.engine.run_judged("x", Judged::Legacy(w()), &mut r.ui).await;
     assert_eq!(report.model.as_deref(), Some(MODEL_MID));

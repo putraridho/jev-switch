@@ -1,18 +1,13 @@
 //! The privacy audit log: what happened to each prompt (sent, or kept back), never the prompt.
-//! The one part of the policy that writes to disk, so it has its own file.
+//! Audit records never include the prompt or secrets.
 
 use std::fmt;
-use std::io::Write as _;
-use std::path::{Path, PathBuf};
-
-use serde::{Deserialize, Serialize};
 
 use crate::shared::ProviderId;
 use super::outgoing::Outgoing;
 
 /// What the audit log records about one thing that happened to a prompt.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AuditAction {
     /// The prompt went to the provider (with secrets blanked, when `redacted` is not empty).
     Sent,
@@ -22,7 +17,7 @@ pub enum AuditAction {
 
 /// One line of the audit log. It never holds the prompt or a secret: only sizes, secret
 /// kinds and the policy's own words.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AuditRecord {
     pub ts_ms: u64,
     pub action: AuditAction,
@@ -59,48 +54,6 @@ impl AuditRecord {
     }
 }
 
-/// Append-only, one JSON line per record, readable only by its owner.
-#[derive(Debug, Clone)]
-pub struct AuditLog {
-    path: PathBuf,
-}
-
-impl AuditLog {
-    pub fn new(path: PathBuf) -> Self {
-        Self { path }
-    }
-
-    /// `<state>/privacy-audit.jsonl`.
-    pub fn in_state_dir(dir: &Path) -> Self {
-        Self::new(dir.join("privacy-audit.jsonl"))
-    }
-
-    pub fn path(&self) -> &Path {
-        &self.path
-    }
-
-    /// Never fails the turn: an audit line that cannot be written is dropped.
-    pub fn record(&self, rec: &AuditRecord) {
-        let Ok(mut line) = serde_json::to_string(rec) else { return };
-        line.push('\n');
-        let mut opts = std::fs::OpenOptions::new();
-        opts.create(true).append(true);
-        #[cfg(unix)]
-        std::os::unix::fs::OpenOptionsExt::mode(&mut opts, 0o600);
-        if let Ok(mut f) = opts.open(&self.path) {
-            let _ = f.write_all(line.as_bytes());
-        }
-    }
-
-    /// The last `n` records, oldest first; lines that do not parse are skipped.
-    pub fn tail(&self, n: usize) -> Vec<AuditRecord> {
-        let text = std::fs::read_to_string(&self.path).unwrap_or_default();
-        let all: Vec<AuditRecord> = text.lines().filter_map(|l| serde_json::from_str(l).ok()).collect();
-        let skip = all.len().saturating_sub(n);
-        all.into_iter().skip(skip).collect()
-    }
-}
-
 impl fmt::Display for AuditRecord {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self.action {
@@ -114,6 +67,10 @@ impl fmt::Display for AuditRecord {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
+    use std::sync::Arc;
+    use crate::turn::application::privacy_audit::AuditLog;
+    use crate::turn::infrastructure::privacy_audit::FilePrivacyAudit;
     use crate::turn::domain::privacy::outgoing::prepare;
     use crate::turn::domain::privacy::Policy;
 
@@ -127,12 +84,13 @@ mod tests {
     #[test]
     fn the_audit_log_records_sizes_and_kinds_never_the_prompt() {
         let dir = temp("audit");
-        let log = AuditLog::in_state_dir(&dir);
+        let log = AuditLog::in_state_dir(&dir, Arc::new(FilePrivacyAudit));
         let out = prepare(&Policy::default(), "x DB_PASSWORD=hunter2hunter2");
         log.record(&AuditRecord::sent(1, ProviderId::Claude, "opus", &out));
         log.record(&AuditRecord::blocked(2, ProviderId::Grok, "local-only mode is on".into()));
         log.record(&AuditRecord::sent(3, ProviderId::Codex, "gpt", &prepare(&Policy::default(), "plain")));
         let raw = std::fs::read_to_string(log.path()).unwrap();
+        assert_eq!(raw.lines().next().unwrap(), r#"{"ts_ms":1,"action":"sent","provider":"claude","model":"opus","prompt_bytes":37,"redacted":["named-secret"],"reason":null}"#);
         assert!(!raw.contains("hunter2") && !raw.contains("DB_PASSWORD"));
         let tail = log.tail(2);
         assert_eq!(tail.len(), 2);
@@ -143,6 +101,6 @@ mod tests {
         #[cfg(unix)]
         assert_eq!(std::os::unix::fs::PermissionsExt::mode(&std::fs::metadata(log.path()).unwrap().permissions()) & 0o777, 0o600);
         // A missing log is an empty tail.
-        assert!(AuditLog::new(dir.join("none.jsonl")).tail(5).is_empty());
+        assert!(AuditLog::new(dir.join("none.jsonl"), Arc::new(FilePrivacyAudit)).tail(5).is_empty());
     }
 }

@@ -99,7 +99,7 @@ async fn judged_turn(r: &mut Rig, prompt: &str) -> TurnEnd {
         correction_p: None,
         orchestration: crate::judgment::domain::orchestration::Orchestration::default(),
         security_keywords: crate::judgment::domain::security::Security::None,
-        signals: serde_json::json!({}),
+        signals: serde_json::json!({}).into(),
     };
     let started = Instant::now();
     let mut ui = r.repl.console.clone();

@@ -70,6 +70,7 @@ pub struct Engine {
     now: Clock,
     /// Settings, the state directory and private file writes.
     host: Arc<dyn Host>,
+    privacy_audit: Arc<dyn crate::turn::application::ports::PrivacyAudit>,
     /// Where saved sessions are kept.
     session_store: Arc<dyn SessionStore>,
     idle_timeout: Duration,

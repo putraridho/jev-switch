@@ -69,9 +69,9 @@ impl PriceTable {
         (Self(table), bad)
     }
 
-    pub fn load(state_dir: Option<&Path>) -> Self {
-        let text = state_dir.and_then(|d| std::fs::read_to_string(d.join(PRICE_FILE)).ok()).unwrap_or_default();
-        Self::parse(&text).0
+    /// The file in the state folder that holds the user's own prices.
+    pub fn file_path(state_dir: &Path) -> std::path::PathBuf {
+        state_dir.join(PRICE_FILE)
     }
 
     pub fn price(&self, model: &str) -> Option<&Price> {
@@ -230,11 +230,6 @@ impl Budget {
     /// Whether a paid model may still be picked.
     pub fn allows_paid(&self, meter: &Meter) -> bool {
         self.standing(meter) != Standing::Over
-    }
-
-    pub fn load(state_dir: Option<&Path>) -> Self {
-        let cap = state_dir.and_then(|d| std::fs::read_to_string(d.join(BUDGET_FILE)).ok()).and_then(|t| Cap::parse(&t).ok());
-        Self { cap }
     }
 
     /// The file in the state folder that keeps the cap.
