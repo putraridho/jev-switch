@@ -1,5 +1,4 @@
 T2 | src/judgment/application/judge.rs | crate::judgment::infrastructure | 2
-T2 | src/judgment/application/judge.rs | crate::shared::infrastructure | 1
 T2 | src/judgment/application/judge/provider.rs | crate::judgment::infrastructure | 2
 T2 | src/judgment/application/judge/questions.rs | crate::judgment::infrastructure | 2
 T2 | src/judgment/application/judge/signals.rs | crate::judgment::infrastructure | 1

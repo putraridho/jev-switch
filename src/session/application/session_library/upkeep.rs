@@ -6,7 +6,7 @@ use super::*;
 use crate::session::domain::saved_session::SavedSession;
 use crate::session::infrastructure::session_file;
 use crate::session::infrastructure::session_meta::MetaStore;
-use crate::shared::infrastructure::private_file::write_atomic;
+use crate::shared::application::host::write_private as write_atomic;
 
 // ------------------------------------------------------------ disk and clean
 

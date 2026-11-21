@@ -15,7 +15,7 @@ use std::time::Instant;
 use serde_json::{json, Map, Value};
 
 use super::turns::{ReqEnd, Turns};
-use crate::shared::infrastructure::jsonl_log as log;
+use crate::shared::application::host;
 
 /// Cap on the text a tap keeps while parsing; usage fields are tiny, content is not.
 const TAP_BUF_MAX: usize = 8 * 1024 * 1024;
@@ -198,7 +198,7 @@ impl Drop for UsageTap {
                 self.stopped = true;
             }
         }
-        let end_ms = log::now_ms();
+        let end_ms = host::now_ms();
         if self.status.is_some_and(|s| s >= 400) || self.error.is_some() {
             // Failures of routed requests would otherwise only show up in the log file.
             let model = self.record.get("model").and_then(Value::as_str).unwrap_or("?");
@@ -233,7 +233,7 @@ impl Drop for UsageTap {
         r.insert("resp_bytes".into(), json!(self.bytes));
         r.insert("complete".into(), json!(self.stopped));
         r.insert("error".into(), self.error.take().unwrap_or(Value::Null));
-        log::append(&self.path, &Value::Object(r));
+        host::append_line(&self.path, &Value::Object(r).to_string());
     }
 }
 

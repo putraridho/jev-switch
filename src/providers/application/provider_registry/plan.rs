@@ -16,7 +16,7 @@ impl Runtime {
     /// Fetch DeepSeek's balance off the prompt's path when it has a key. The answer lands
     /// in `balance` whenever it arrives; until then (or on any failure) none is shown.
     pub(super) fn refresh_balance(&self) {
-        let Some(key) = crate::shared::infrastructure::env_file::lookup("DEEPSEEK_API_KEY").filter(|k| !k.trim().is_empty()) else { return };
+        let Some(key) = crate::shared::application::host::env("DEEPSEEK_API_KEY").filter(|k| !k.trim().is_empty()) else { return };
         let Ok(handle) = tokio::runtime::Handle::try_current() else { return };
         let slot = self.balance.clone();
         handle.spawn(async move {
@@ -56,7 +56,7 @@ impl Runtime {
     /// Fraction of the plan window used (as the CLI reported it), if a reading exists and
     /// its window has not reset since.
     pub fn plan_utilization(&self, p: ProviderId) -> Option<f64> {
-        let now_s = crate::shared::infrastructure::jsonl_log::now_ms() / 1000;
+        let now_s = crate::shared::application::host::now_ms() / 1000;
         self.plan.get(&p).filter(|u| crate::providers::infrastructure::plan_store::is_current(u, now_s)).map(|u| u.utilization)
     }
 }

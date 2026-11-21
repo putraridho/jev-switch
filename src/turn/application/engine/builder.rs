@@ -9,7 +9,7 @@ use crate::changes::domain::turn_activity::TurnActivity;
 use crate::turn::application::guards::Guards;
 use crate::approval::application::extension_hooks::Hooks;
 use crate::session::domain::session::Sessions;
-use crate::shared::infrastructure::jsonl_log as log;
+use crate::shared::application::host;
 use crate::approval::domain::mode::Mode;
 use crate::orchestration::domain::orchestration_gate::Setup;
 use crate::approval::domain::permission_rule;
@@ -39,10 +39,10 @@ impl Engine {
             enabled: true,
             backend_factory: Box::new(crate::providers::infrastructure::backend_factory::session_backend_for),
             git_status: Box::new(git_status_short),
-            now: Box::new(log::now_ms),
+            now: Box::new(host::now_ms),
             idle_timeout: idle_timeout_from_env(),
             stream_text: false,
-            turn_log: log::path_from_env("JEV_CODE_LOG", "code-turns.jsonl"),
+            turn_log: host::path_from_env("JEV_CODE_LOG", "code-turns.jsonl"),
             previous: None,
             last_context_tokens: 0,
             sticky: Sticky::default(),
@@ -60,7 +60,7 @@ impl Engine {
             session_file: None,
             mode: Mode::default(),
             effort: EffortSetting::default(),
-            allowed_tools: permission_rule::split_rules(&crate::shared::infrastructure::env_file::lookup("CODE_ALLOWED_TOOLS").unwrap_or_default()),
+            allowed_tools: permission_rule::split_rules(&crate::shared::application::host::env("CODE_ALLOWED_TOOLS").unwrap_or_default()),
         }
     }
 
@@ -73,7 +73,7 @@ impl Engine {
 
     /// Save the session after every turn under `state_dir/sessions/` so it can be resumed
     /// after a restart. `None` (the default of the library) saves nothing; the binary
-    /// passes [`log::state_dir`].
+    /// passes [`host::state_dir`].
     pub fn with_persistence(self, state_dir: Option<PathBuf>) -> Self {
         // The settings that fence in the router live beside the saved sessions.
         let settings = state_dir.clone();

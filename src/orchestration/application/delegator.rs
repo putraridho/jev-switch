@@ -82,7 +82,7 @@ use crate::orchestration::infrastructure::process_liveness::ProcLiveness;
 use crate::orchestration::infrastructure::worker_check::ProjectChecks;
 use crate::orchestration::infrastructure::worker_file::Store;
 use crate::providers::application::provider_registry::Runtime;
-use crate::shared::infrastructure::jsonl_log as log;
+use crate::shared::application::host;
 
 use super::ports::{BoxFut, Checks, DelegateApi, Judge, Liveness, Records, Worktrees};
 use background::Task;
@@ -167,7 +167,7 @@ impl Delegator {
             liveness,
             counter: AtomicU64::new(1),
             run_tag: run_tag(std::process::id(), nanos, INSTANCES.fetch_add(1, Ordering::SeqCst)),
-            now: Box::new(log::now_ms),
+            now: Box::new(host::now_ms),
             idle_timeout: idle_timeout_from_env(),
             log_path: None,
             planner: String::new(),

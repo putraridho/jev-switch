@@ -62,7 +62,7 @@ impl Engine {
             sessions: self.sessions.clone(),
             current: self.routing.current.clone(),
         };
-        crate::shared::infrastructure::private_file::write_atomic(&path, &saved.to_json().to_string())?;
+        crate::shared::application::host::write_private(&path, &saved.to_json().to_string())?;
         session_file::prune(&state, &self.dir, &path);
         self.session_file = Some(path);
         Ok(())

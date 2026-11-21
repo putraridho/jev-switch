@@ -124,7 +124,7 @@ pub fn checkpoint_list(history: &[ChangeSummary], style: Style) -> String {
 
 fn git_apply(root: &Path, patch: &str, extra: &[&str]) -> Result<(), String> {
     let mut cmd = Command::new("git");
-    cmd.arg("-C").arg(root).args(crate::shared::infrastructure::git_guard::no_repo_programs(root)).args(["apply", "--whitespace=nowarn"]).args(extra);
+    cmd.arg("-C").arg(root).args(crate::shared::application::host::no_repo_programs(root)).args(["apply", "--whitespace=nowarn"]).args(extra);
     cmd.env_remove("GIT_DIR").env_remove("GIT_WORK_TREE").env_remove("GIT_INDEX_FILE");
     cmd.stdin(Stdio::piped()).stdout(Stdio::null()).stderr(Stdio::piped());
     let mut child = cmd.spawn().map_err(|e| format!("could not run git: {e}"))?;

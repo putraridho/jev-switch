@@ -40,7 +40,7 @@ pub struct Router {
 
 impl Router {
     pub fn new(ts: TypeSafe, cheap_threshold: f64) -> Self {
-        let ms = crate::shared::infrastructure::env_file::lookup("JEV_TIMEOUT_MS").and_then(|v| v.parse().ok()).unwrap_or(JEV_TIMEOUT_MS);
+        let ms = crate::shared::application::host::env("JEV_TIMEOUT_MS").and_then(|v| v.parse().ok()).unwrap_or(JEV_TIMEOUT_MS);
         Self {
             ts,
             cheap_threshold,

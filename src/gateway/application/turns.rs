@@ -7,7 +7,7 @@ use std::sync::{Arc, Mutex};
 use serde_json::{json, Map, Value};
 
 use crate::gateway::domain::request_signals::{find_cwd, project_of, similarity};
-use crate::shared::infrastructure::jsonl_log as log;
+use crate::shared::application::host;
 
 /// Token fields summed into turn records.
 const TOKEN_FIELDS: [&str; 4] =
@@ -254,7 +254,7 @@ impl Turns {
             }
             .into()
         });
-        log::append(
+        host::append_line(
             path,
             &json!({
                 "ts_ms": a.ts_ms, "end_ms": a.last_end_ms, "wall_ms": a.last_end_ms.saturating_sub(a.ts_ms),
@@ -264,7 +264,8 @@ impl Turns {
                 "decision": a.decision, "followup": a.followup,
                 "requests": a.requests, "by_class": a.by_class, "models": a.models,
                 "tokens": a.tokens, "tools": a.tools, "errors": a.errors, "ended": ended,
-            }),
+            })
+            .to_string(),
         );
     }
 }

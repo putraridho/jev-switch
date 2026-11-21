@@ -82,7 +82,7 @@ fn load_registry(user: &Path) -> Registry {
 fn save_registry(user: &Path, registry: &Registry) -> Result<(), MarketError> {
     let text = serde_json::to_string_pretty(registry).map_err(|e| MarketError(e.to_string()))?;
     std::fs::create_dir_all(user).map_err(|e| MarketError(format!("{}: {e}", user.display())))?;
-    crate::shared::infrastructure::private_file::write_atomic(&user.join(REGISTRY), &text).map_err(|e| MarketError(format!("cannot save the extension list: {e}")))
+    crate::shared::application::host::write_private(&user.join(REGISTRY), &text).map_err(|e| MarketError(format!("cannot save the extension list: {e}")))
 }
 
 pub mod installer;

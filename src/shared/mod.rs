@@ -2,6 +2,7 @@
 //! any other module of this crate.
 
 
+pub mod application;
 pub mod domain;
 pub mod infrastructure;
 

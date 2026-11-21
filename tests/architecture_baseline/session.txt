@@ -6,6 +6,4 @@ T2 | src/session/application/session_library.rs | crate::session::infrastructure
 T2 | src/session/application/session_library/marks.rs | crate::session::infrastructure | 1
 T2 | src/session/application/session_library/query.rs | crate::session::infrastructure | 1
 T2 | src/session/application/session_library/transfer.rs | crate::session::infrastructure | 1
-T2 | src/session/application/session_library/transfer.rs | crate::shared::infrastructure | 1
 T2 | src/session/application/session_library/upkeep.rs | crate::session::infrastructure | 2
-T2 | src/session/application/session_library/upkeep.rs | crate::shared::infrastructure | 1

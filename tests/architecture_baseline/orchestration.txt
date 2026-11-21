@@ -5,7 +5,6 @@ T1 | src/orchestration/interface/mcp/lazy_delegator.rs | crate::turn | 1
 T2 | src/orchestration/application/delegator.rs | crate::backend::infrastructure | 1
 T2 | src/orchestration/application/delegator.rs | crate::orchestration::infrastructure | 3
 T2 | src/orchestration/application/delegator.rs | crate::providers::infrastructure | 1
-T2 | src/orchestration/application/delegator.rs | crate::shared::infrastructure | 1
 T2 | src/orchestration/application/delegator/attempt.rs | crate::orchestration::infrastructure | 2
 T2 | src/orchestration/application/delegator/recover.rs | crate::orchestration::infrastructure | 1
 T2 | src/orchestration/domain/orchestration_gate.rs | crate::backend::infrastructure | 1

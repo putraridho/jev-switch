@@ -66,7 +66,7 @@ impl Guards {
     pub fn load(state_dir: Option<&Path>, project: &Path) -> Self {
         let (privacy, privacy_errors) = Policy::load(state_dir, project);
         let (rules, rule_errors) = Rules::load(state_dir, project);
-        let local_only = crate::shared::infrastructure::env_file::lookup("JEV_LOCAL_ONLY").is_some_and(|v| matches!(v.trim(), "1" | "on" | "true" | "yes"));
+        let local_only = crate::shared::application::host::env("JEV_LOCAL_ONLY").is_some_and(|v| matches!(v.trim(), "1" | "on" | "true" | "yes"));
         let mut problems: Vec<String> = privacy_errors.iter().map(|(file, e)| format!("{}: {e}", file.display())).collect();
         problems.extend(rule_errors.iter().map(|e| format!("routing.rules line {}: {}", e.line, e.message)));
         Self {

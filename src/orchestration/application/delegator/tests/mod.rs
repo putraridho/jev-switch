@@ -27,6 +27,7 @@ use crate::orchestration::infrastructure::git_worktrees::GitWorktrees;
 use crate::orchestration::application::ports::CheckRun;
 use crate::orchestration::infrastructure::worker_file::{has_leftovers, open_workers, plain_id};
 use crate::testkit::unified_patch::{big_patch, file_patch};
+use crate::shared::application::host;
 use anyhow::bail;
 use std::time::Instant;
 use super::*;

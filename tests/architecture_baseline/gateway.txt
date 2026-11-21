@@ -1,2 +1,0 @@
-T2 | src/gateway/application/turns.rs | crate::shared::infrastructure | 1
-T2 | src/gateway/application/usage_tap.rs | crate::shared::infrastructure | 1
