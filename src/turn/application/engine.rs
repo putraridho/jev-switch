@@ -26,7 +26,8 @@ use crate::approval::domain::mode::Mode;
 use crate::orchestration::domain::orchestration_gate::Setup;
 use crate::providers::application::provider_registry::Runtime;
 use crate::judgment::application::judge::Router;
-use crate::routing::domain::decide::{Pin, PinOrigin, RoutingState, Sticky};
+use crate::routing::domain::decide::{Pin, PinOrigin, RoutingState};
+use crate::routing::domain::sticky::Sticky;
 
 use crate::backend::BackendFactory;
 
