@@ -6,7 +6,7 @@ use super::*;
 
 /// A multi-part request: Jev's `multi_part` is above the cutoff.
 fn multi(task: TaskType) -> ProviderWant {
-    ProviderWant { orchestration: crate::judgment::application::judge::Orchestration::new(0.9, 0.1), continues_p: 0.1, ..want(task) }
+    ProviderWant { orchestration: crate::judgment::domain::orchestration::Orchestration::new(0.9, 0.1), continues_p: 0.1, ..want(task) }
 }
 
 fn orchestrating(mut r: Rig) -> Rig {

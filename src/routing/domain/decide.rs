@@ -20,7 +20,10 @@ use crate::shared::ProviderId;
 use crate::turn::domain::cache;
 use crate::turn::domain::cache::WarmCache;
 use crate::catalog::domain::model_table::{Allowances, ModelSpec, Overrides, Pick, TaskType, Usable, allowed_for, chain_with, find, models, pick};
-use crate::judgment::application::judge::{CodeWant, Orchestration, CODE_EDIT_P, CODE_SECURITY_P, MAX_HOLD, ProviderWant, Security, TOP_THRESHOLD};
+use crate::judgment::domain::orchestration::Orchestration;
+use crate::judgment::domain::security::Security;
+use crate::judgment::domain::thresholds::{CODE_EDIT_P, CODE_SECURITY_P, MAX_HOLD, TOP_THRESHOLD};
+use crate::judgment::domain::want::{CodeWant, ProviderWant};
 
 /// Jev says a new task is a clear provider-switch candidate only from this
 /// `task_confidence`; below it the turn is too vague to justify a cold session.
@@ -29,7 +32,7 @@ const MIN_BOUNDARY_CONFIDENCE: f64 = 0.5;
 /// turn is a new task.
 const CONTINUES_P: f64 = 0.5;
 /// At or below this many words a prompt is a short, context-dependent follow-up
-/// ("go on", "why?"). Mirrors [`crate::judgment::application::judge::is_short_follow_up`], which takes text
+/// ("go on", "why?"). Mirrors [`crate::judgment::domain::security::is_short_follow_up`], which takes text
 /// rather than the word count this pure module is handed; a test keeps them equal.
 const SHORT_FOLLOW_UP_WORDS: usize = 8;
 /// Below this task confidence a boundary keeps the current provider when it already
@@ -909,7 +912,7 @@ mod tests {
     fn short_follow_up_limit_matches_the_router() {
         let words = |n: usize| vec!["w"; n].join(" ");
         for n in 0..20 {
-            assert_eq!(n <= SHORT_FOLLOW_UP_WORDS, crate::judgment::application::judge::is_short_follow_up(&words(n)), "{n}");
+            assert_eq!(n <= SHORT_FOLLOW_UP_WORDS, crate::judgment::domain::security::is_short_follow_up(&words(n)), "{n}");
         }
     }
 

@@ -14,7 +14,8 @@ use crate::backend::testing::{ScriptedCli, SessionId};
 use crate::backend::{ErrorKind, ProviderId, Usage};
 use crate::backend::ProviderId::{Claude, Codex, DeepSeek, Gemini, Grok};
 use crate::catalog::domain::model_table::TaskType;
-use crate::judgment::application::judge::{ProviderWant, Security};
+use crate::judgment::domain::security::Security;
+use crate::judgment::domain::want::ProviderWant;
 use crate::orchestration::domain::delegation::*;
 use crate::providers::domain::availability::{Availability, State};
 use crate::backend::{TurnError, TurnOutcome};
@@ -180,7 +181,7 @@ fn want(task: TaskType) -> ProviderWant {
         edit_p: 0.9,
         continues_p: 0.0,
         correction_p: None,
-        orchestration: crate::judgment::application::judge::Orchestration::default(),
+        orchestration: crate::judgment::domain::orchestration::Orchestration::default(),
         security_keywords: Security::None,
         signals: json!({ "task": task.as_str() }),
     }

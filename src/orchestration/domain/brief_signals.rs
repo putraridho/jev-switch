@@ -2,7 +2,7 @@
 //! that read it: which task type picks the chain, and the lowest tier a worker may run on.
 
 use crate::catalog::domain::model_table::{TaskType, Tier};
-use crate::judgment::application::judge::{CODE_EDIT_P, CODE_SECURITY_P};
+use crate::judgment::domain::thresholds::{CODE_EDIT_P, CODE_SECURITY_P};
 
 /// What Jev said about a brief, reduced to what choosing a worker needs.
 #[derive(Debug, Clone, PartialEq)]

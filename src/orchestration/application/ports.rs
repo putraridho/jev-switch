@@ -9,7 +9,8 @@ use std::time::Duration;
 
 use anyhow::Result;
 
-use crate::judgment::application::judge::{ProviderWant, Router};
+use crate::judgment::application::judge::Router;
+use crate::judgment::domain::want::ProviderWant;
 use crate::orchestration::domain::delegation::DelegateRequest;
 use crate::orchestration::domain::worker::{Owner, Saved};
 

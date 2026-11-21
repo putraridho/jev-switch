@@ -35,7 +35,8 @@ use crate::approval::domain::mode::Mode;
 use crate::orchestration::domain::orchestration_gate::Setup;
 use crate::approval::domain::always_plan::{Offer, Settled};
 use crate::providers::application::provider_registry::Runtime;
-use crate::judgment::application::judge::{CodeWant, ProviderWant, Router};
+use crate::judgment::application::judge::Router;
+use crate::judgment::domain::want::{CodeWant, ProviderWant};
 use crate::routing::domain::decide::{Pin, Signals};
 use serde_json::{json, Value};
 use crate::turn::application::cancel::Cancel;
@@ -60,7 +61,7 @@ use crate::backend::testing::{Attached, ScriptedCli, SessionId};
 use crate::backend::Backend;
 use crate::backend::classify_common;
 use crate::catalog::domain::model_table::{default_chain, pick, Allowances, TaskType, Usable};
-use crate::judgment::application::judge::Security;
+use crate::judgment::domain::security::Security;
 use crate::judgment::infrastructure::typesafe_http::TypeSafe;
 use ProviderId::{Claude, Codex, DeepSeek, Gemini, Grok};
 
@@ -247,7 +248,7 @@ fn want(task: TaskType) -> ProviderWant {
         edit_p: 0.3,
         continues_p: 0.9,
         correction_p: None,
-        orchestration: crate::judgment::application::judge::Orchestration::default(),
+        orchestration: crate::judgment::domain::orchestration::Orchestration::default(),
         security_keywords: Security::None,
         signals: json!({ "task": task.as_str() }),
     }

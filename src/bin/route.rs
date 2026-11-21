@@ -35,7 +35,10 @@ use jev_router::catalog::domain::model_table as catalog;
 use jev_router::catalog::domain::model_table::{Allowances, Overrides, Usable};
 use jev_router::routing::domain::decide as routing;
 use jev_router::routing::domain::decide::{Pin, RouteInput, RoutingState, Signals};
-use jev_router::judgment::application::judge::{security_level, Decision, Router, CODE_STRONG_THRESHOLD};
+use jev_router::judgment::application::judge::Router;
+use jev_router::judgment::domain::security::security_level;
+use jev_router::judgment::domain::thresholds::CODE_STRONG_THRESHOLD;
+use jev_router::judgment::domain::want::Decision;
 
 const TIERS: [&str; 3] = [MODEL_CHEAP, MODEL_MID, MODEL_STRONG];
 use jev_router::judgment::infrastructure::typesafe_http::TypeSafe;
