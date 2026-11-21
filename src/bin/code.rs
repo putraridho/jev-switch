@@ -341,7 +341,7 @@ fn engine_for(args: &Args, runtime: Runtime, router: Router, dir: PathBuf, can_a
 /// `jev-code doctor`: the report on stdout; exit 1 when something is a Problem.
 async fn doctor(dir: &Path, console: &Console) -> i32 {
     let (runtime, _) = start_runtime(console, ProbeMode::Live).await;
-    let inputs = jev_router::doctor::domain::diagnose::gather(&runtime, dir).await;
+    let inputs = jev_router::doctor::infrastructure::gather_inputs::gather(&runtime, dir).await;
     let report = jev_router::doctor::domain::diagnose::diagnose(&inputs);
     console.out(&views::doctor_text(&report, console.out_style(), console.width()));
     i32::from(views::has_problem(&report))

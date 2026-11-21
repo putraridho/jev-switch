@@ -1,6 +1,7 @@
 //! Commands that read or change the setup: `/providers`, `/doctor`, `/permissions`,
 //! `/workflows`.
 
+use crate::doctor::infrastructure::gather_inputs::gather;
 use crate::doctor::domain::diagnose as doctor;
 use crate::approval::application::claude_settings_file;
 use crate::approval::domain::settings_document;
@@ -27,7 +28,7 @@ impl Repl {
 
     /// The doctor's screen for this session.
     pub async fn doctor_text(&self) -> String {
-        let inputs = doctor::gather(&self.engine.runtime, self.engine.dir()).await;
+        let inputs = gather(&self.engine.runtime, self.engine.dir()).await;
         views::doctor_text(&doctor::diagnose(&inputs), self.out_style(), self.console.width())
     }
 
