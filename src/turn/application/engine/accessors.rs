@@ -3,7 +3,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use crate::turn::domain::cache::WarmCache;
+use crate::routing::domain::warm_cache::WarmCache;
 use crate::turn::domain::effort::EffortSetting;
 use crate::approval::application::extension_hooks::Hooks;
 use crate::approval::domain::mode::Mode;
@@ -11,13 +11,10 @@ use crate::routing::domain::decide::{Pin, PinOrigin};
 use super::Engine;
 
 impl Engine {
-    /// Run `/budget`, `/privacy`, `/failover` or `/health` against this session's guards.
-    pub fn run_guard_command(&mut self, cmd: crate::tui::repl::guard_commands::GuardCmd) -> String {
-        let plans: Vec<(String, f64)> = crate::shared::ALL_PROVIDERS
-            .into_iter()
-            .filter_map(|p| self.runtime.plan_utilization(p).map(|u| (p.to_string(), u)))
-            .collect();
-        crate::tui::repl::guard_commands::run(cmd, &mut self.guards, self.settings.as_deref(), &plans)
+    /// The guards and the folder their settings are saved in: what `/budget`, `/privacy`,
+    /// `/failover` and `/health` act on.
+    pub fn guards_and_settings(&mut self) -> (&mut crate::turn::application::guards::Guards, Option<&Path>) {
+        (&mut self.guards, self.settings.as_deref())
     }
 
     pub fn dir(&self) -> &Path {

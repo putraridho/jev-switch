@@ -1,5 +1,6 @@
 mod approve_tool;
 pub mod attach;
+pub mod bench;
 pub mod cancel;
 pub mod engine;
 pub mod guards;

@@ -7,7 +7,7 @@ use crate::backend::{
     self, ErrorKind, Event, ProviderId, TurnError,
     TurnRequest,
 };
-use crate::turn::domain::cache;
+use crate::routing::domain::warm_cache as cache;
 use crate::approval::application::extension_hooks as hooks;
 use crate::orchestration::domain::orchestration_gate as orchestrate;
 use crate::turn::application::approve_tool::{lock_ui, EngineApprover, SharedUi};
@@ -60,7 +60,7 @@ impl Engine {
         // Claude Code (and DeepSeek through it) has this in its system note; the other CLIs
         // take none, so it follows the prompt.
         if !matches!(provider, ProviderId::Claude | ProviderId::DeepSeek) {
-            sent = crate::turn::domain::background::with_note(&sent);
+            sent = crate::shared::domain::background::with_note(&sent);
         }
         let req = TurnRequest {
             dir: self.dir.clone(),
@@ -124,8 +124,8 @@ impl Engine {
                         }
                         Event::Plan(plan) => runtime.note_plan(provider, plan.clone()),
                         Event::Steered(text) => steered.push(text.clone()),
-                        Event::ToolResult { text, .. } if crate::turn::domain::background::result_reports_background(text) => background_results += 1,
-                        Event::Hint(t) if t.starts_with(crate::turn::domain::background::NOTICE_PREFIX) => background_noticed = true,
+                        Event::ToolResult { text, .. } if crate::shared::domain::background::result_reports_background(text) => background_results += 1,
+                        Event::Hint(t) if t.starts_with(crate::shared::domain::background::NOTICE_PREFIX) => background_noticed = true,
                         _ => {}
                     }
                 }

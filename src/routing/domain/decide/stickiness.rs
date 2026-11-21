@@ -8,7 +8,7 @@ use super::task::TaskSource;
 use super::{Choice, RouteInput, RoutingState};
 use crate::catalog::domain::model_table::{ModelSpec, Pick, TaskType};
 use crate::judgment::domain::thresholds::MAX_HOLD;
-use crate::turn::domain::cache;
+use crate::routing::domain::warm_cache as cache;
 
 /// Apply stickiness to the chain's best pick.
 pub(super) fn sticky(

@@ -4,13 +4,13 @@
 //! a power cut, `kill -9`), and the next `jev-code` in that folder says so and shows the
 //! prompt, so it is not lost.
 //!
-//! The marker keeps only the redacted first line of the prompt (see [`crate::turn::infrastructure::audit::preview`]).
+//! The marker keeps only the redacted first line of the prompt (see [`crate::shared::domain::audit::preview`]).
 
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use crate::turn::domain::session_log::utc_stamp;
+use crate::shared::domain::utc::utc_stamp;
 
 const PREFIX: &str = "inflight-";
 
@@ -29,7 +29,7 @@ fn marker_path(state_dir: &Path, pid: u32) -> PathBuf {
 
 /// Note that a turn started. Failing to write is not worth a lost turn, so it is ignored.
 pub fn begin(state_dir: &Path, project: &Path, prompt: &str, now_ms: u64) {
-    let marker = Marker { pid: std::process::id(), started_ms: now_ms, project: project.to_string_lossy().into_owned(), prompt: crate::turn::infrastructure::audit::preview(prompt) };
+    let marker = Marker { pid: std::process::id(), started_ms: now_ms, project: project.to_string_lossy().into_owned(), prompt: crate::shared::domain::audit::preview(prompt) };
     if let Ok(text) = serde_json::to_string(&marker) {
         let _ = crate::shared::infrastructure::private_file::write_atomic(&marker_path(state_dir, marker.pid), &text);
     }

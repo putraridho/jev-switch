@@ -106,8 +106,8 @@ impl Engine {
                     // A model cannot come back by itself: say so when it left work running or
                     // promised to report later.
                     if !attempt.background_noticed {
-                        let running = crate::turn::domain::background::spawned(&attempt.tools) + attempt.background_results;
-                        if let Some(notice) = crate::turn::domain::background::notice(running, crate::turn::domain::background::promises_update(&out.text)) {
+                        let running = crate::shared::domain::background::spawned(&attempt.tools) + attempt.background_results;
+                        if let Some(notice) = crate::shared::domain::background::notice(running, crate::shared::domain::background::promises_update(&out.text)) {
                             ui.event(&Event::Hint(notice));
                         }
                     }

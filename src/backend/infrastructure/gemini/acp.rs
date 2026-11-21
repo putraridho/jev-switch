@@ -142,7 +142,7 @@ impl Acp {
                 // A command still reported as running when the turn ends was left in the
                 // background (Antigravity moves slow commands there): nothing will report on it.
                 let running = self.calls.values().filter(|c| c["kind"] == "execute" && c["status"] == "in_progress").count();
-                let mut out: Vec<Event> = crate::turn::domain::background::notice(running, false).filter(|_| running > 0).map(Event::Hint).into_iter().collect();
+                let mut out: Vec<Event> = crate::shared::domain::background::notice(running, false).filter(|_| running > 0).map(Event::Hint).into_iter().collect();
                 out.push(finish_or_empty(&self.text, self.session.clone(), self.usage, ""));
                 return out;
             }

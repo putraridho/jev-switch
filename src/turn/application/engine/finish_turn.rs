@@ -6,7 +6,7 @@ use serde_json::Value;
 
 use crate::backend::{ProviderId, TurnError, TurnOutcome};
 use crate::turn::domain::turn_status::TurnStatus;
-use crate::turn::domain::cache::WarmCache;
+use crate::routing::domain::warm_cache::WarmCache;
 use crate::catalog::domain::model_table as catalog;
 use crate::session::domain::turn_record::TurnRecord;
 use crate::routing::domain::decide as routing;

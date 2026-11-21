@@ -13,7 +13,7 @@ mod turn_log;
 
 /// What the user asked, without the note every non-Claude prompt ends with.
 fn asked(prompt: &str) -> &str {
-    prompt.strip_suffix(crate::turn::domain::background::with_note("").as_str()).unwrap_or(prompt)
+    prompt.strip_suffix(crate::shared::domain::background::with_note("").as_str()).unwrap_or(prompt)
 }
 
 use std::path::{Path, PathBuf};
