@@ -102,5 +102,5 @@ pub(super) fn engine_for(args: &Args, runtime: Runtime, router: Router, dir: Pat
 
 pub(super) fn router_for(ts: TypeSafe) -> Router {
     // The strong threshold only matters with routing off (the Claude-only tier rule).
-    Router::new(ts, 1.0).with_strong_threshold(envfile::lookup_f64("CODE_STRONG_THRESHOLD", CODE_STRONG_THRESHOLD))
+    Router::new(ts, 1.0).with_jev_timeout_from(&crate::shared::infrastructure::system_host::SystemHost).with_strong_threshold(envfile::lookup_f64("CODE_STRONG_THRESHOLD", CODE_STRONG_THRESHOLD))
 }

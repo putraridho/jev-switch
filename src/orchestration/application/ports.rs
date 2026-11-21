@@ -178,4 +178,6 @@ pub struct Adapters {
     pub log: Arc<dyn DelegationLog>,
     pub scan: Scanner,
     pub policy: Arc<dyn WorkerPolicy>,
+    /// Unix time in milliseconds.
+    pub now: Box<dyn Fn() -> u64 + Send + Sync>,
 }

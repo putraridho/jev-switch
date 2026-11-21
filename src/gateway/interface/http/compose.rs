@@ -55,7 +55,7 @@ pub async fn run() -> Result<()> {
     };
     anyhow::ensure!(max_inflight > 0 && max_inflight <= Semaphore::MAX_PERMITS, "JEV_GATEWAY_MAX_INFLIGHT is out of range");
     let app = Arc::new(App {
-        router: Router::new(TypeSafe::from_env()?, 1.0).with_strong_threshold(env_f64("CODE_STRONG_THRESHOLD", CODE_STRONG_THRESHOLD))
+        router: Router::new(TypeSafe::from_env()?, 1.0).with_jev_timeout_from(&crate::shared::infrastructure::system_host::SystemHost).with_strong_threshold(env_f64("CODE_STRONG_THRESHOLD", CODE_STRONG_THRESHOLD))
             // Fable for the hardest Opus-bound turns; JEV_FABLE=off keeps tiers 0-2.
             .with_worker_cheap(std::env::var("WORKER_CHEAP_P").ok().and_then(|v| v.parse().ok()))
             .with_top_threshold(std::env::var("JEV_FABLE").map_or(true, |v| v != "off").then(|| env_f64("FABLE_THRESHOLD", TOP_THRESHOLD))),
@@ -67,7 +67,7 @@ pub async fn run() -> Result<()> {
             .trim_end_matches('/')
             .to_string(),
         downgrade_after: env_f64("DOWNGRADE_AFTER", 2.0) as u32,
-        sessions: Mutex::new(Sessions::default()),
+        sessions: Mutex::new(Sessions::new(Arc::new(crate::shared::infrastructure::system_host::SystemHost))),
         log_path,
         usage_path,
         turns_path: log::path_from_env("JEV_TURNS_LOG", "turns.jsonl"),

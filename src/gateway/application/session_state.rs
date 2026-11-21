@@ -9,6 +9,7 @@ use serde_json::Value;
 use crate::gateway::application::turns::Turns;
 use crate::gateway::domain::prefix_fingerprint::PrefixWatch;
 use crate::routing::domain::sticky::Sticky;
+use crate::shared::application::host::Host;
 
 const MAX_SESSIONS: usize = 1024;
 
@@ -34,10 +35,14 @@ pub(crate) struct SessionTracking {
     pub(crate) prefix: PrefixWatch,
 }
 
-#[derive(Default)]
-pub(crate) struct Sessions(HashMap<String, SessionState>);
+/// The sessions by id, and the host each one's turn log writes through.
+pub(crate) struct Sessions(HashMap<String, SessionState>, Arc<dyn Host>);
 
 impl Sessions {
+    pub(crate) fn new(host: Arc<dyn Host>) -> Self {
+        Self(HashMap::new(), host)
+    }
+
     pub(crate) fn entry(&mut self, id: &str, turns_path: &Option<String>) -> &mut SessionState {
         if !self.0.contains_key(id) && self.0.len() >= MAX_SESSIONS {
             if let Some(oldest) = self.0.iter().min_by_key(|(_, state)| state.touched).map(|(key, _)| key.clone()) {
@@ -46,7 +51,7 @@ impl Sessions {
         }
         let state = self.0.entry(id.to_string()).or_insert_with(|| SessionState {
             touched: Instant::now(),
-            tracking: Arc::new(SessionTracking { turns: Turns::new(turns_path.clone()), prefix: PrefixWatch::new() }),
+            tracking: Arc::new(SessionTracking { turns: Turns::new(turns_path.clone(), self.1.clone()), prefix: PrefixWatch::new() }),
             sticky: Sticky::default(),
             prompt_id: None,
             model: None,
@@ -71,7 +76,7 @@ mod tests {
 
     #[test]
     fn sessions_evict_the_oldest_tracking_with_their_routing_state() {
-        let mut sessions = Sessions::default();
+        let mut sessions = Sessions::new(Arc::new(crate::shared::infrastructure::system_host::SystemHost));
         let evicted = Arc::downgrade(&sessions.entry("oldest", &None).tracking);
         sessions.entry("oldest", &None).touched = Instant::now() - std::time::Duration::from_secs(10);
         for index in 0..MAX_SESSIONS - 1 {

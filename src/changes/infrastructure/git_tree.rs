@@ -17,6 +17,10 @@ use crate::changes::infrastructure::undo_files;
 pub struct GitWorkingTree;
 
 impl WorkingTree for GitWorkingTree {
+    fn no_repo_programs(&self, dir: &Path) -> Vec<String> {
+        crate::shared::infrastructure::git_guard::no_repo_programs(dir)
+    }
+
     fn snapshot(&self, dir: &Path) -> Option<Snapshot> {
         tree::snapshot(dir)
     }

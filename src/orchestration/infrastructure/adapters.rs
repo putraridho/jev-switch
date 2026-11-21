@@ -7,6 +7,8 @@ use std::sync::Arc;
 use crate::backend::idle_timeout_from_env;
 use crate::orchestration::application::ports::{Adapters, WorkerPolicy};
 use crate::providers::infrastructure::backend_factory::backend_for;
+use crate::shared::application::host::Host;
+use crate::shared::infrastructure::system_host::SystemHost;
 
 use super::delegation_log::JsonlLog;
 use super::process_liveness::ProcLiveness;
@@ -22,5 +24,6 @@ pub fn real(policy: Arc<dyn WorkerPolicy>) -> Adapters {
         log: Arc::new(JsonlLog),
         scan: Arc::new(gather_scan),
         policy,
+        now: Box::new(|| SystemHost.now_ms()),
     }
 }

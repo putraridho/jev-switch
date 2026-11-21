@@ -1,6 +1,6 @@
-//! The doors the provider use cases have to the machine, besides the settings and the clock
-//! ([`crate::shared::application::host`]): the provider probes, the probe cache, the saved plan
-//! readings, Codex's own plan reading and DeepSeek's balance.
+//! The doors the provider use cases have to the machine: the provider probes, the probe cache,
+//! the saved plan readings, Codex's own plan reading, DeepSeek's balance, and the settings,
+//! clock and state directory they need.
 //!
 //! The adapter is `providers::infrastructure::probe_facts::SystemProbes`; the composition
 //! roots (the binaries and the TUI start) hand it to [`Runtime`](super::provider_registry::Runtime).
@@ -35,4 +35,10 @@ pub trait ProviderHost: Debug + Send + Sync {
     fn latest_codex_plan(&self) -> Option<PlanUsage>;
     /// DeepSeek's remaining balance for display (`$12.34 left`); `None` on any failure.
     fn fetch_credit(&self, key: String) -> BoxFuture<Option<String>>;
+    /// A setting (`JEV_ALLOW_CREDITS`, `DEEPSEEK_API_KEY`): the environment first, then the key file.
+    fn env(&self, name: &str) -> Option<String>;
+    /// Unix time in milliseconds.
+    fn now_ms(&self) -> u64;
+    /// The directory holding logs, sessions and caches; `None` without one.
+    fn state_dir(&self) -> Option<PathBuf>;
 }

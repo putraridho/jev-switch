@@ -34,7 +34,7 @@ pub(super) struct Lazy {
 
 impl Lazy {
     async fn build(&self) -> Result<Arc<Delegator>> {
-        let router = Arc::new(Router::new(TypeSafe::from_env()?, 1.0));
+        let router = Arc::new(Router::new(TypeSafe::from_env()?, 1.0).with_jev_timeout_from(&crate::shared::infrastructure::system_host::SystemHost));
         let state = log::state_dir().context("no state directory (is HOME set?)")?;
         let worktrees = GitWorktrees::new(&self.dir, state.join("worktrees"))?;
         let runtime = Runtime::start(std::sync::Arc::new(crate::providers::infrastructure::probe_facts::SystemProbes)).await;

@@ -7,7 +7,7 @@ use std::sync::{Arc, Mutex};
 use serde_json::{json, Map, Value};
 
 use crate::gateway::domain::request_signals::{find_cwd, project_of, similarity};
-use crate::shared::application::host;
+use crate::shared::application::host::Host;
 
 /// Token fields summed into turn records.
 const TOKEN_FIELDS: [&str; 4] =
@@ -75,11 +75,13 @@ struct TurnsInner {
 pub struct Turns {
     path: Option<String>,
     inner: Mutex<TurnsInner>,
+    /// The log writer and clock, shared with this session's usage taps.
+    pub(super) host: Arc<dyn Host>,
 }
 
 impl Turns {
-    pub fn new(path: Option<String>) -> Arc<Self> {
-        Arc::new(Self { path, inner: Mutex::new(TurnsInner::default()) })
+    pub fn new(path: Option<String>, host: Arc<dyn Host>) -> Arc<Self> {
+        Arc::new(Self { path, inner: Mutex::new(TurnsInner::default()), host })
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, TurnsInner> {
@@ -254,7 +256,7 @@ impl Turns {
             }
             .into()
         });
-        host::append_line(
+        self.host.append_line(
             path,
             &json!({
                 "ts_ms": a.ts_ms, "end_ms": a.last_end_ms, "wall_ms": a.last_end_ms.saturating_sub(a.ts_ms),
@@ -276,7 +278,7 @@ mod tests {
 
     #[test]
     fn cwd_learned_mid_turn_reaches_the_open_turn() {
-        let turns = Turns::new(None);
+        let turns = Turns::new(None, Arc::new(crate::shared::infrastructure::system_host::SystemHost));
         let usage = Map::new();
         turns.observe("s", Some("p1"), "main", &json!({"messages": []}), "m", Some("hi"), 1);
         let with_cwd = json!({"system": "Primary working directory: /home/u/app", "messages": []});
@@ -294,7 +296,7 @@ mod tests {
 
     #[test]
     fn turn_stays_open_across_tool_calls_and_closes_on_end_turn() {
-        let turns = Turns::new(None);
+        let turns = Turns::new(None, Arc::new(crate::shared::infrastructure::system_host::SystemHost));
         let req = json!({"messages": []});
         let usage = Map::new();
         assert!(turns.observe("s", Some("p1"), "main", &req, "m", Some("hi"), 1).is_some());
@@ -308,7 +310,7 @@ mod tests {
 
     #[test]
     fn closed_turn_waits_for_pending_check_and_new_turn_sweeps_the_old() {
-        let turns = Turns::new(None);
+        let turns = Turns::new(None, Arc::new(crate::shared::infrastructure::system_host::SystemHost));
         let req = json!({"messages": []});
         let usage = Map::new();
         turns.observe("s", Some("p1"), "main", &req, "m", Some("hi"), 1);
