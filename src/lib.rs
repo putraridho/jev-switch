@@ -8,22 +8,19 @@
 //!    the `tune` binary sweeps it over a labeled set and reports the savings/miss
 //!    curve so you read the number off your own data.
 
-#[cfg(test)]
-#[macro_use]
-pub mod testkit;
-pub mod approval;
-pub mod backend;
-pub mod calibration;
-pub mod catalog;
-pub mod changes;
-pub mod chat;
-pub mod doctor;
-pub mod gateway;
-pub mod judgment;
-pub mod orchestration;
-pub mod providers;
-pub mod routing;
-pub mod session;
-pub mod shared;
-pub mod tui;
-pub mod turn;
+pub use jev_shared as shared;
+pub use jev_catalog as catalog;
+pub use jev_approval as approval;
+pub use jev_changes as changes;
+pub use jev_judgment as judgment;
+pub use jev_backend as backend;
+pub use jev_routing as routing;
+pub use jev_providers as providers;
+pub use jev_session as session;
+pub use jev_orchestration as orchestration;
+pub use jev_doctor as doctor;
+pub use jev_chat as chat;
+pub use jev_turn as turn;
+pub use jev_gateway as gateway;
+pub use jev_tui as tui;
+pub use jev_calibration as calibration;

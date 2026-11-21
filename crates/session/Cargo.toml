@@ -1,0 +1,24 @@
+[package]
+name = "jev-session"
+version.workspace = true
+edition.workspace = true
+publish = false
+
+[lib]
+doctest = false
+
+[features]
+# Test helpers other crates' tests use.
+testing = ["jev-backend/testing", "jev-shared/testing"]
+
+[dependencies]
+jev-backend = { path = "../backend" }
+jev-shared = { path = "../shared" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+[dev-dependencies]
+jev-testkit = { path = "../testkit" }
+tokio = { workspace = true, features = ["net"] }
+jev-backend = { path = "../backend", features = ["testing"] }
+jev-shared = { path = "../shared", features = ["testing"] }

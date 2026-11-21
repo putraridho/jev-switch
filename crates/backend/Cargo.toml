@@ -1,0 +1,28 @@
+[package]
+name = "jev-backend"
+version.workspace = true
+edition.workspace = true
+publish = false
+
+[lib]
+doctest = false
+
+[features]
+# Test helpers other crates' tests use.
+testing = ["jev-approval/testing", "jev-shared/testing"]
+
+[dependencies]
+jev-approval = { path = "../approval" }
+jev-shared = { path = "../shared" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+
+[target.'cfg(unix)'.dependencies]
+libc = { workspace = true }
+
+[dev-dependencies]
+jev-testkit = { path = "../testkit" }
+tokio = { workspace = true, features = ["net"] }
+jev-approval = { path = "../approval", features = ["testing"] }
+jev-shared = { path = "../shared", features = ["testing"] }

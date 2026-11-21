@@ -1,0 +1,23 @@
+[package]
+name = "jev-shared"
+version.workspace = true
+edition.workspace = true
+publish = false
+
+[lib]
+doctest = false
+
+[features]
+# Test helpers other crates' tests use.
+testing = []
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+[target.'cfg(unix)'.dependencies]
+libc = { workspace = true }
+
+[dev-dependencies]
+jev-testkit = { path = "../testkit" }
+tokio = { workspace = true, features = ["net"] }

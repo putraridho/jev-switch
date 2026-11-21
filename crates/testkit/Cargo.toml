@@ -1,0 +1,12 @@
+[package]
+name = "jev-testkit"
+version.workspace = true
+edition.workspace = true
+publish = false
+
+[lib]
+doctest = false
+
+[dependencies]
+serde_json = { workspace = true }
+tokio = { workspace = true }

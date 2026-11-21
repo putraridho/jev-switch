@@ -3,7 +3,7 @@
 #
 #   scripts/cached-test.sh                 every cargo test (lib, bins, tests/)
 #   scripts/cached-test.sh changed         only the lib test modules of the files changed
-#                                          since HEAD (a quick check, not the gate)
+#                                          since HEAD, crate by crate (a quick check, not the gate)
 #   scripts/cached-test.sh pty [names...]  the PTY scenarios (all, or those matching names)
 #   scripts/cached-test.sh clear           forget every cached pass
 #
@@ -23,7 +23,7 @@ hash_files() { # stdin: file names; stdout: one hash of their names and contents
 }
 
 sources_hash() { # tracked and untracked (not ignored) inputs of the Rust build
-  git ls-files -co --exclude-standard -- src tests Cargo.toml Cargo.lock .cargo | LC_ALL=C sort | hash_files
+  git ls-files -co --exclude-standard -- src crates tests Cargo.toml Cargo.lock .cargo | LC_ALL=C sort | hash_files
 }
 
 cached_run() { # key description command...
@@ -41,25 +41,37 @@ case "$mode" in
     cached_run "all-$(sources_hash)" "cargo test" cargo test -q
     ;;
   changed)
-    # src/a/b.rs -> a::b, src/a/mod.rs -> a; a manifest, lib.rs or main module change -> all.
-    files=$( { git diff --name-only HEAD; git ls-files -o --exclude-standard; } | grep -E '^(src/.*\.rs|Cargo\.(toml|lock)|\.cargo/)' | sort -u || true)
+    # crates/<ctx>/src/a/b.rs -> `-p jev-<ctx>` filtered to a::b (mod.rs -> its folder); a crate's
+    # lib.rs or Cargo.toml -> that whole crate; the test kit, the root manifest, the lock or the
+    # cargo config -> everything. Binaries (src/bin) have no tests of their own.
+    files=$( { git diff --name-only HEAD; git ls-files -o --exclude-standard; } | grep -E '^(crates/[^/]+/(src/.*\.rs|Cargo\.toml)|Cargo\.(toml|lock)|\.cargo/)' | sort -u || true)
     if [ -z "$files" ]; then echo "nothing changed since HEAD"; exit 0; fi
-    filters=()
+    plan="" # one "<package> <filter>" line per changed file; "-" as the filter means the whole crate
+    everything=0
     while IFS= read -r f; do
       case "$f" in
-        src/lib.rs|Cargo.*|.cargo/*) filters=(); break ;;
-        src/bin/*) continue ;;
+        Cargo.*|.cargo/*|crates/testkit/*) everything=1; break ;;
       esac
-      m="${f#src/}"; m="${m%.rs}"; m="${m%/mod}"; filters+=("${m//\//::}::")
+      rest="${f#crates/}"; ctx="${rest%%/*}"
+      case "$rest" in
+        "$ctx/Cargo.toml"|"$ctx/src/lib.rs") plan="${plan}jev-$ctx -"$'\n' ;;
+        *) m="${rest#"$ctx"/src/}"; m="${m%.rs}"; m="${m%/mod}"; plan="${plan}jev-$ctx ${m//\//::}::"$'\n' ;;
+      esac
     done <<< "$files"
-    if [ ${#filters[@]} -eq 0 ]; then
+    if [ "$everything" = 1 ]; then
       cached_run "all-$(sources_hash)" "cargo test" cargo test -q
-    else
-      key="changed-$(sources_hash)-$(printf '%s\n' "${filters[@]}" | shasum -a 256 | cut -c1-8)"
-      echo "testing: ${filters[*]}"
-      # The test harness takes several filters and runs every test matching any of them.
-      cached_run "$key" "the changed modules" cargo test -q --lib -- "${filters[@]}"
+      exit 0
     fi
+    for pkg in $(printf '%s' "$plan" | awk 'NF {print $1}' | sort -u); do
+      filters=()
+      if ! printf '%s' "$plan" | grep -qx "$pkg -"; then
+        while IFS= read -r filter; do filters+=("$filter"); done < <(printf '%s' "$plan" | awk -v p="$pkg" '$1 == p {print $2}' | sort -u)
+      fi
+      key="changed-$(sources_hash)-$pkg-$(printf '%s\n' ${filters[@]+"${filters[@]}"} | shasum -a 256 | cut -c1-8)"
+      echo "testing $pkg: ${filters[*]:-every test}"
+      # The test harness takes several filters and runs every test matching any of them.
+      cached_run "$key" "$pkg" cargo test -q -p "$pkg" --lib -- ${filters[@]+"${filters[@]}"}
+    done
     ;;
   pty)
     cargo build -q --bin code

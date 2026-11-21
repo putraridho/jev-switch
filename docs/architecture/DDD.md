@@ -259,6 +259,17 @@ Where each outside crate is used today, which fixes which `Cargo.toml` may list 
 
 ### 3.2 One crate per context (decision U1)
 
+> **Status (2026-11-21): done.** Each context of 1.2 is a library crate `crates/<context>`
+> named `jev-<context>`; `crates/testkit` (`jev-testkit`) is the shared test kit, a
+> dev-dependency. Each crate's `Cargo.toml` lists only the contexts its row of 1.3 allows,
+> and `tests/architecture.rs` checks that, the layer rule and domain purity with an empty
+> baseline. Where it differs from this section: there is no separate `cli` crate (the root
+> package `jev-router` holds the binaries and a facade, `pub use jev_<context> as <context>;`);
+> `embed` was not created; rule 2's private layer modules is not enforced (the layer modules
+> are `pub mod`, and other crates name layer paths such as `jev_backend::infrastructure::...`
+> only from infrastructure and interface code, which the layer rule allows); and test helpers
+> another crate's tests need are behind each crate's `testing` feature.
+
 The workspace has 19 members: the 16 contexts of 1.2 as library crates, plus `embed`,
 `testkit` and `cli`. Folder `crates/<context>/`, package `jev-<context>`, library
 `jev_<context>`. The package in `crates/cli/` keeps the name `jev-router`.

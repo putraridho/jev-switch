@@ -1,0 +1,24 @@
+[package]
+name = "jev-routing"
+version.workspace = true
+edition.workspace = true
+publish = false
+
+[lib]
+doctest = false
+
+[features]
+# Test helpers other crates' tests use.
+testing = ["jev-catalog/testing", "jev-judgment/testing", "jev-shared/testing"]
+
+[dependencies]
+jev-catalog = { path = "../catalog" }
+jev-judgment = { path = "../judgment" }
+jev-shared = { path = "../shared" }
+
+[dev-dependencies]
+jev-testkit = { path = "../testkit" }
+tokio = { workspace = true, features = ["net"] }
+jev-catalog = { path = "../catalog", features = ["testing"] }
+jev-judgment = { path = "../judgment", features = ["testing"] }
+jev-shared = { path = "../shared", features = ["testing"] }

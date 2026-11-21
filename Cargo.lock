@@ -599,6 +599,147 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8f42a60cbdf9a97f5d2305f08a87dc4e09308d1276d28c869c684d7777685682"
 
 [[package]]
+name = "jev-approval"
+version = "1.10.0"
+dependencies = [
+ "jev-shared",
+ "jev-testkit",
+ "libc",
+ "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
+name = "jev-backend"
+version = "1.10.0"
+dependencies = [
+ "jev-approval",
+ "jev-shared",
+ "jev-testkit",
+ "libc",
+ "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
+name = "jev-calibration"
+version = "1.10.0"
+dependencies = [
+ "jev-testkit",
+ "tokio",
+]
+
+[[package]]
+name = "jev-catalog"
+version = "1.10.0"
+dependencies = [
+ "jev-shared",
+ "jev-testkit",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
+name = "jev-changes"
+version = "1.10.0"
+dependencies = [
+ "jev-shared",
+ "jev-testkit",
+ "tokio",
+]
+
+[[package]]
+name = "jev-chat"
+version = "1.10.0"
+dependencies = [
+ "anyhow",
+ "jev-catalog",
+ "jev-shared",
+ "jev-testkit",
+ "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
+name = "jev-doctor"
+version = "1.10.0"
+dependencies = [
+ "jev-judgment",
+ "jev-providers",
+ "jev-shared",
+ "jev-testkit",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
+name = "jev-gateway"
+version = "1.10.0"
+dependencies = [
+ "anyhow",
+ "axum",
+ "futures-util",
+ "jev-catalog",
+ "jev-judgment",
+ "jev-orchestration",
+ "jev-routing",
+ "jev-shared",
+ "jev-testkit",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
+name = "jev-judgment"
+version = "1.10.0"
+dependencies = [
+ "anyhow",
+ "jev-catalog",
+ "jev-shared",
+ "jev-testkit",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
+name = "jev-orchestration"
+version = "1.10.0"
+dependencies = [
+ "anyhow",
+ "jev-backend",
+ "jev-catalog",
+ "jev-judgment",
+ "jev-providers",
+ "jev-shared",
+ "jev-testkit",
+ "libc",
+ "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
+name = "jev-providers"
+version = "1.10.0"
+dependencies = [
+ "jev-backend",
+ "jev-catalog",
+ "jev-shared",
+ "jev-testkit",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "jev-router"
 version = "1.10.0"
 dependencies = [
@@ -606,6 +747,23 @@ dependencies = [
  "axum",
  "crossterm",
  "futures-util",
+ "jev-approval",
+ "jev-backend",
+ "jev-calibration",
+ "jev-catalog",
+ "jev-changes",
+ "jev-chat",
+ "jev-doctor",
+ "jev-gateway",
+ "jev-judgment",
+ "jev-orchestration",
+ "jev-providers",
+ "jev-routing",
+ "jev-session",
+ "jev-shared",
+ "jev-testkit",
+ "jev-tui",
+ "jev-turn",
  "libc",
  "reqwest",
  "rustyline",
@@ -613,6 +771,96 @@ dependencies = [
  "serde_json",
  "tokio",
  "unicode-width 0.2.2",
+]
+
+[[package]]
+name = "jev-routing"
+version = "1.10.0"
+dependencies = [
+ "jev-catalog",
+ "jev-judgment",
+ "jev-shared",
+ "jev-testkit",
+ "tokio",
+]
+
+[[package]]
+name = "jev-session"
+version = "1.10.0"
+dependencies = [
+ "jev-backend",
+ "jev-shared",
+ "jev-testkit",
+ "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
+name = "jev-shared"
+version = "1.10.0"
+dependencies = [
+ "jev-testkit",
+ "libc",
+ "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
+name = "jev-testkit"
+version = "1.10.0"
+dependencies = [
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
+name = "jev-tui"
+version = "1.10.0"
+dependencies = [
+ "crossterm",
+ "futures-util",
+ "jev-approval",
+ "jev-backend",
+ "jev-catalog",
+ "jev-changes",
+ "jev-doctor",
+ "jev-judgment",
+ "jev-orchestration",
+ "jev-providers",
+ "jev-routing",
+ "jev-session",
+ "jev-shared",
+ "jev-testkit",
+ "jev-turn",
+ "libc",
+ "rustyline",
+ "serde",
+ "serde_json",
+ "tokio",
+ "unicode-width 0.2.2",
+]
+
+[[package]]
+name = "jev-turn"
+version = "1.10.0"
+dependencies = [
+ "jev-approval",
+ "jev-backend",
+ "jev-catalog",
+ "jev-changes",
+ "jev-judgment",
+ "jev-orchestration",
+ "jev-providers",
+ "jev-routing",
+ "jev-session",
+ "jev-shared",
+ "jev-testkit",
+ "libc",
+ "serde",
+ "serde_json",
+ "tokio",
 ]
 
 [[package]]

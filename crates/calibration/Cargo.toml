@@ -1,0 +1,18 @@
+[package]
+name = "jev-calibration"
+version.workspace = true
+edition.workspace = true
+publish = false
+
+[lib]
+doctest = false
+
+[features]
+# Test helpers other crates' tests use.
+testing = []
+
+[dependencies]
+
+[dev-dependencies]
+jev-testkit = { path = "../testkit" }
+tokio = { workspace = true, features = ["net"] }

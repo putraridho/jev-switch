@@ -271,7 +271,7 @@ fn source_files(dir: &Path, files: &mut Vec<PathBuf>) {
         let name = path.file_name().unwrap().to_string_lossy();
         if kind.is_dir() {
             if !matches!(name.as_ref(), "bin" | "tests" | "testing" | "testkit") { source_files(&path, files); }
-        } else if kind.is_file() && path.extension().is_some_and(|ext| ext == "rs") && !matches!(name.as_ref(), "lib.rs" | "tests.rs" | "test_facts.rs" | "testing.rs" | "testkit.rs") && !name.ends_with("_tests.rs") {
+        } else if kind.is_file() && path.extension().is_some_and(|ext| ext == "rs") && !matches!(name.as_ref(), "tests.rs" | "test_facts.rs" | "testing.rs" | "testkit.rs") && !name.ends_with("_tests.rs") {
             files.push(path);
         }
     }
@@ -306,12 +306,54 @@ fn test_module_files(file: &Path, tokens: &[Token]) -> Vec<PathBuf> {
     result
 }
 
+/// `crates/<ctx>/src/a/b.rs` as the module path `[ctx, a, b]`; a crate's `lib.rs` is `[ctx]`.
 fn module_path(path: &Path) -> Vec<String> {
-    let relative = path.strip_prefix("src").unwrap();
+    let relative = path.strip_prefix("crates").unwrap();
     let mut parts: Vec<String> = relative.iter().map(|part| part.to_string_lossy().into_owned()).collect();
+    assert_eq!(parts.get(1).map(String::as_str), Some("src"), "{} is not under crates/<context>/src", path.display());
+    parts.remove(1);
     let last = parts.pop().unwrap();
-    if last != "mod.rs" { parts.push(last.trim_end_matches(".rs").to_owned()); }
+    if !matches!(last.as_str(), "mod.rs" | "lib.rs") { parts.push(last.trim_end_matches(".rs").to_owned()); }
     parts
+}
+
+/// The tokens of a file in context `ctx` with every path made absolute the way the rules read
+/// them: `crate::x` (this crate) becomes `crate::<ctx>::x`, and `jev_<other>` (another context's
+/// crate) becomes `crate::<other>`.
+fn normalize(tokens: Vec<Token>, ctx: &str) -> Vec<Token> {
+    let mut out = Vec::with_capacity(tokens.len());
+    for (index, token) in tokens.iter().enumerate() {
+        let line = token.line;
+        let next_is_path = tokens.get(index + 1).is_some_and(|next| next.text == "::");
+        if token.text == "crate" && next_is_path {
+            out.push(token.clone());
+            out.push(Token { text: "::".into(), line });
+            out.push(Token { text: ctx.into(), line });
+        } else if let Some(other) = token.text.strip_prefix("jev_").filter(|name| *name == "testkit" || EDGES.iter().any(|(context, _)| context == name)) {
+            out.push(Token { text: "crate".into(), line });
+            out.push(Token { text: "::".into(), line });
+            out.push(Token { text: other.into(), line });
+        } else {
+            out.push(token.clone());
+        }
+    }
+    out
+}
+
+/// Every context crate's sources: `(context, files)`, the shared test kit left out.
+fn context_files(root: &Path) -> Vec<(String, Vec<PathBuf>)> {
+    let mut contexts = Vec::new();
+    for entry in fs::read_dir(root.join("crates")).unwrap() {
+        let path = entry.unwrap().path();
+        let name = path.file_name().unwrap().to_string_lossy().into_owned();
+        if name == "testkit" || !path.join("src").is_dir() { continue; }
+        let mut files = Vec::new();
+        source_files(&path.join("src"), &mut files);
+        files.sort();
+        contexts.push((name, files));
+    }
+    contexts.sort();
+    contexts
 }
 
 /// Where a name that a context's `mod.rs` exports comes from.
@@ -346,14 +388,14 @@ fn pub_items(source: &str) -> Vec<String> {
     names
 }
 
-/// For each context, the names its `mod.rs` hands out (`pub use ...` and items defined there)
+/// For each context, the names its crate root (`lib.rs`) hands out (`pub use ...` and items defined there)
 /// and the layer each one comes from. The rest of the crate says `crate::backend::TurnRequest`;
 /// the layer rule needs to know that `TurnRequest` is a domain name.
-fn front_doors(source_dir: &Path) -> BTreeMap<String, BTreeMap<String, Origin>> {
+fn front_doors(root: &Path) -> BTreeMap<String, BTreeMap<String, Origin>> {
     let mut doors = BTreeMap::new();
     for (context, _) in EDGES {
-        let Ok(text) = fs::read_to_string(source_dir.join(context).join("mod.rs")) else { continue };
-        let tokens = without_tests(&lex(&text));
+        let Ok(text) = fs::read_to_string(root.join("crates").join(context).join("src").join("lib.rs")) else { continue };
+        let tokens = without_tests(&normalize(lex(&text), context));
         let mut table: BTreeMap<String, Origin> = BTreeMap::new();
         let mut index = 0;
         while index < tokens.len() {
@@ -376,7 +418,7 @@ fn front_doors(source_dir: &Path) -> BTreeMap<String, BTreeMap<String, Origin>> 
                         let Some(first) = rest.first() else { continue };
                         if glob {
                             if layer_rank(first).is_none() { continue; }
-                            let file = source_dir.join(&origin_context).join(format!("{}.rs", rest.join("/")));
+                            let file = root.join("crates").join(&origin_context).join("src").join(format!("{}.rs", rest.join("/")));
                             for name in fs::read_to_string(file).map(|text| pub_items(&text)).unwrap_or_default() {
                                 table.entry(name).or_insert(Origin::Layer(first.clone()));
                             }
@@ -446,7 +488,7 @@ fn impure_uses(tokens: &[Token]) -> Vec<(String, usize)> {
 
 #[test]
 fn front_door_names_resolve_to_the_layer_they_come_from() {
-    let doors = front_doors(&Path::new(env!("CARGO_MANIFEST_DIR")).join("src"));
+    let doors = front_doors(Path::new(env!("CARGO_MANIFEST_DIR")));
     let layer = |context: &str, name: &str| door_layer(&doors, context, name, 0);
     assert_eq!(layer("backend", "TurnRequest").as_deref(), Some("domain"));
     assert_eq!(layer("backend", "Event").as_deref(), Some("domain"));
@@ -463,19 +505,12 @@ fn front_door_names_resolve_to_the_layer_they_come_from() {
 #[test]
 fn architecture() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let mut files = Vec::new();
-    let source_dir = root.join("src");
-    assert!(fs::symlink_metadata(&source_dir).unwrap().file_type().is_dir());
-    let doors = front_doors(&source_dir);
-    source_files(&source_dir, &mut files);
-    files.sort();
+    let doors = front_doors(root);
+    let files: Vec<PathBuf> = context_files(root).into_iter().flat_map(|(_, files)| files).collect();
     let mut test_paths = Vec::new();
     for file in &files {
         test_paths.extend(test_module_files(file, &lex(&fs::read_to_string(file).unwrap())));
     }
-    let lib = source_dir.join("lib.rs");
-    assert!(fs::symlink_metadata(&lib).unwrap().file_type().is_file());
-    test_paths.extend(test_module_files(&lib, &lex(&fs::read_to_string(&lib).unwrap())));
     let mut violations: BTreeMap<(String, String, String, String), Vec<usize>> = BTreeMap::new();
     for file in files {
         if test_paths.iter().any(|path| file.starts_with(path)) { continue; }
@@ -484,7 +519,8 @@ fn architecture() {
         let context = module[0].as_str();
         assert!(EDGES.iter().any(|(name, _)| *name == context), "{} is in no known context folder", relative.display());
         let allowed = EDGES.iter().find(|(name, _)| *name == context).unwrap().1;
-        for (target, line) in paths(&without_tests(&lex(&fs::read_to_string(&file).unwrap())), &module) {
+        let tokens = without_tests(&normalize(lex(&fs::read_to_string(&file).unwrap()), context));
+        for (target, line) in paths(&tokens, &module) {
             let parts: Vec<&str> = target.trim_start_matches("crate::").split("::").collect();
             let target_context = parts[0];
             if target_context == "testkit" { continue; }
@@ -508,7 +544,7 @@ fn architecture() {
         // T3: domain code is pure (DDD.md section 3): no serde, no files, environment, processes
         // or network, and no `Path` method that asks the disk. Facts come in as arguments.
         if module.get(1).map(String::as_str) == Some("domain") {
-            for (what, line) in impure_uses(&without_tests(&lex(&fs::read_to_string(&file).unwrap()))) {
+            for (what, line) in impure_uses(&tokens) {
                 violations.entry(("T3".into(), context.into(), relative.to_string_lossy().into_owned(), what)).or_default().push(line);
             }
         }
@@ -601,4 +637,46 @@ fn finds_what_domain_code_may_not_use() {
     let found: Vec<String> = impure_uses(&lex(source)).into_iter().map(|(what, _)| what).collect();
     assert_eq!(found, ["serde", "std::fs", "std::env", ".is_dir()"]);
     assert!(impure_uses(&without_tests(&lex("#[cfg(test)] mod tests { use std::fs; }"))).is_empty(), "test code may");
+}
+
+#[test]
+fn crate_dependencies_follow_the_context_map() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    for (context, _) in context_files(root) {
+        let manifest = fs::read_to_string(root.join("crates").join(&context).join("Cargo.toml")).unwrap();
+        let allowed = EDGES.iter().find(|(name, _)| *name == context).unwrap_or_else(|| panic!("crates/{context} is no context of the map")).1;
+        let mut section = String::new();
+        for line in manifest.lines().map(str::trim) {
+            if line.starts_with('[') { section = line.to_owned(); continue; }
+            let Some(dep) = line.split_whitespace().next().and_then(|word| word.strip_prefix("jev-")) else { continue };
+            if section == "[dependencies]" {
+                assert!(allowed.contains(&dep), "crates/{context}/Cargo.toml depends on jev-{dep}, which the context map does not allow");
+            } else if section == "[dev-dependencies]" {
+                assert!(dep == "testkit" || allowed.contains(&dep), "crates/{context}/Cargo.toml dev-depends on jev-{dep}, which the context map does not allow");
+            }
+        }
+    }
+}
+
+/// The version is written twice: in `[package]` (what a release bumps, and what `/update` of an
+/// installed copy reads) and in `[workspace.package]` (what every context crate takes, so their
+/// `CARGO_PKG_VERSION` is the program's). The two must agree.
+#[test]
+fn the_package_and_workspace_versions_agree() {
+    let manifest = fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml")).unwrap();
+    let version_in = |section: &str| {
+        let mut current = "";
+        for line in manifest.lines().map(str::trim) {
+            if line.starts_with('[') { current = line; continue; }
+            if current == section {
+                if let Some(value) = line.strip_prefix("version").map(str::trim_start).and_then(|rest| rest.strip_prefix('=')) {
+                    return Some(value.trim().trim_matches('"').to_owned());
+                }
+            }
+        }
+        None
+    };
+    let package = version_in("[package]").expect("[package] has a version");
+    assert_eq!(Some(package.clone()), version_in("[workspace.package]"), "bump both versions in Cargo.toml");
+    assert_eq!(package, env!("CARGO_PKG_VERSION"));
 }

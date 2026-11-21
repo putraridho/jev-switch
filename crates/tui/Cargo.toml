@@ -1,0 +1,52 @@
+[package]
+name = "jev-tui"
+version.workspace = true
+edition.workspace = true
+publish = false
+
+[lib]
+doctest = false
+
+[features]
+# Test helpers other crates' tests use.
+testing = ["jev-approval/testing", "jev-backend/testing", "jev-catalog/testing", "jev-changes/testing", "jev-doctor/testing", "jev-judgment/testing", "jev-orchestration/testing", "jev-providers/testing", "jev-routing/testing", "jev-session/testing", "jev-shared/testing", "jev-turn/testing"]
+
+[dependencies]
+jev-approval = { path = "../approval" }
+jev-backend = { path = "../backend" }
+jev-catalog = { path = "../catalog" }
+jev-changes = { path = "../changes" }
+jev-doctor = { path = "../doctor" }
+jev-judgment = { path = "../judgment" }
+jev-orchestration = { path = "../orchestration" }
+jev-providers = { path = "../providers" }
+jev-routing = { path = "../routing" }
+jev-session = { path = "../session" }
+jev-shared = { path = "../shared" }
+jev-turn = { path = "../turn" }
+crossterm = { workspace = true }
+futures-util = { workspace = true }
+rustyline = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+unicode-width = { workspace = true }
+
+[target.'cfg(unix)'.dependencies]
+libc = { workspace = true }
+
+[dev-dependencies]
+jev-testkit = { path = "../testkit" }
+tokio = { workspace = true, features = ["net"] }
+jev-approval = { path = "../approval", features = ["testing"] }
+jev-backend = { path = "../backend", features = ["testing"] }
+jev-catalog = { path = "../catalog", features = ["testing"] }
+jev-changes = { path = "../changes", features = ["testing"] }
+jev-doctor = { path = "../doctor", features = ["testing"] }
+jev-judgment = { path = "../judgment", features = ["testing"] }
+jev-orchestration = { path = "../orchestration", features = ["testing"] }
+jev-providers = { path = "../providers", features = ["testing"] }
+jev-routing = { path = "../routing", features = ["testing"] }
+jev-session = { path = "../session", features = ["testing"] }
+jev-shared = { path = "../shared", features = ["testing"] }
+jev-turn = { path = "../turn", features = ["testing"] }
