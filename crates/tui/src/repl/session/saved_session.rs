@@ -78,6 +78,10 @@ impl Repl {
                 self.last_summary = None;
                 self.log.clear();
                 self.carry.clear();
+                let history = crate::views::resumed_history::history_block(self.engine.sessions.records(), style, terminal::width());
+                if !history.is_empty() {
+                    self.console.out(&history);
+                }
                 self.console.out(&views::startup::resumed_line(&info, self.now(), style));
             }
             Err(e) => self.resume_failed(&e),

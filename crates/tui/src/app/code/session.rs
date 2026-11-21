@@ -114,7 +114,13 @@ pub(super) fn startup(repl: &mut Repl, args: &Args, term: &Term, console: &Conso
     }
     if args.resume {
         match repl.engine.resume() {
-            Ok(info) => console.out(&views::startup::resumed_line(&info, now, style)),
+            Ok(info) => {
+                let history = crate::views::resumed_history::history_block(repl.engine.sessions.records(), style, width);
+                if !history.is_empty() {
+                    console.out(&history);
+                }
+                console.out(&views::startup::resumed_line(&info, now, style));
+            }
             Err(e) => console.out(&style.dim(&format!("no session to continue ({e}); starting fresh"))),
         }
     } else if let Some(info) = state_dir.and_then(|d| session_file::saved_session_info_in(d, repl.engine.dir(), now)) {

@@ -9,6 +9,7 @@ pub mod gimmicks;
 pub mod learn;
 pub mod mcp_picker;
 pub mod raw_keys;
+pub mod resumed_history;
 pub mod session_hits;
 pub mod session_picker;
 pub mod status_facts;

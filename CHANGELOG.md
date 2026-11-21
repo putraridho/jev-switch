@@ -4,6 +4,12 @@ See [docs/changelog-guide.md](docs/changelog-guide.md) for changelog formatting,
 
 ## Unreleased
 
+## 1.11.2
+
+Resuming a session brings its conversation back onto the screen.
+
+- **`/resume` and `-c` bring the old conversation back onto the screen.** Resuming a session only printed a line such as `resumed 12 turns`, so the scrollback stayed empty even though the session was loaded. It now draws the saved turns as they looked when they ran: what you sent, the model that answered, its tool calls and the answer. A session of more than 30 turns shows the latest 30 and says how many earlier ones are not shown.
+
 ## 1.11.1
 
 A long pasted prompt is routed on what you asked, not on the paste.
