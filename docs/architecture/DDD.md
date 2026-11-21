@@ -595,7 +595,7 @@ jev-router/
     │   │   ├── path_lookup.rs  mise_install.rs  outcome_wire.rs  lenient.rs
     │   │   ├── process/      child.rs  output_pump.rs  stdin_feed.rs  stderr_tail.rs
     │   │   │                 process_group.rs  prompt_files.rs  idle_watchdog.rs
-    │   │   ├── claude/       mod.rs  claude_cli.rs  claude_wire.rs  permission_wire.rs  mcp_config.rs
+    │   │   ├── claude/       mod.rs  claude_cli.rs  claude_cli/{command,stream_events,stream_input,permission_wire,mcp_config,tool_summary}.rs  claude_cli/tests/
     │   │   ├── codex/        mod.rs  codex_cli.rs  codex_wire.rs
     │   │   ├── gemini/       mod.rs  gemini_cli.rs  gemini_wire.rs  agy_wire.rs  flavor.rs
     │   │   ├── grok/         mod.rs  grok_cli.rs  grok_wire.rs

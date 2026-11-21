@@ -16,7 +16,7 @@ use tokio::process::Command;
 
 use crate::approval::domain::mode::Mode;
 
-use crate::backend::infrastructure::claude::claude_cli::tool_summary;
+use crate::backend::infrastructure::claude::claude_cli::tool_summary::tool_summary;
 use crate::backend::{
     classify_common, Backend, Decision, ErrorKind, Event, Finish, PermissionRequest, ProviderId, TurnRequest, Usage,
 };

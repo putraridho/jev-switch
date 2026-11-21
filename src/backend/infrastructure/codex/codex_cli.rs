@@ -12,7 +12,7 @@ use std::sync::{Mutex, MutexGuard};
 use serde_json::{json, Value};
 use tokio::process::Command;
 
-use crate::backend::infrastructure::claude::claude_cli::tool_summary;
+use crate::backend::infrastructure::claude::claude_cli::tool_summary::tool_summary;
 use crate::backend::{classify_common, Backend, ErrorKind, Event, Finish, McpAttachment, ProviderId, TurnRequest, Usage};
 
 /// The only sandboxes this backend will ever pass on. Anything else, in particular

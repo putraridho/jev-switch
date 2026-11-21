@@ -198,7 +198,7 @@ pub fn attachment(bin: &Path, project: &Path, planner: &ModelSpec, config_dir: &
     }
 }
 
-pub use crate::backend::infrastructure::claude::claude_cli::write_mcp_config;
+pub use crate::backend::infrastructure::claude::claude_cli::mcp_config::write_mcp_config;
 
 /// Put in front of the prompt of an orchestrated turn so the planner uses the tool
 /// instead of doing every piece itself. It says nothing about models: Jev picks them.
