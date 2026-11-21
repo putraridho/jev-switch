@@ -82,6 +82,7 @@ pub(super) fn engine_for(args: &Args, runtime: Runtime, router: Router, dir: Pat
     let orchestrate = orchestrate::start(saved.orchestrate, envfile::lookup("JEV_ORCHESTRATE").as_deref(), session.is_some());
     let hooks = std::sync::Arc::new(crate::approval::application::extension_hooks::Hooks::load(&crate::approval::application::extensions::Places::from_env(&dir)));
     let engine = Engine::new(runtime, router, dir)
+        .with_working_tree(std::sync::Arc::new(crate::changes::infrastructure::git_tree::GitWorkingTree))
         .with_backend_factory(Box::new(crate::providers::infrastructure::backend_factory::run_backends(can_ask)))
         .with_enabled(routing)
         .with_mode(mode)

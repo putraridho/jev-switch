@@ -1,5 +1,6 @@
 pub mod git_output;
 pub mod git_temp_index;
+pub mod git_tree;
 pub mod git_working_tree;
 pub mod undo_files;
 #[cfg(test)]

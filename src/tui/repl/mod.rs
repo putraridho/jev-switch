@@ -1,4 +1,5 @@
 pub mod cache_cmds;
+pub mod diff_args;
 pub mod diff_cmds;
 pub mod ext_cmds;
 pub mod extended_commands;

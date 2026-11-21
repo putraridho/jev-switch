@@ -102,7 +102,7 @@ impl Engine {
         if !self.track_changes {
             return None;
         }
-        snapshot_until(self.dir.clone(), stop_signal(cancel, honor_cancel)).await
+        snapshot_until(self.working_tree.clone()?, self.dir.clone(), stop_signal(cancel, honor_cancel)).await
     }
 
     /// What differs from the `before` snapshot now; `None` if there is no `before`, git
@@ -110,7 +110,7 @@ impl Engine {
     async fn changes_since(&self, before: Option<Snapshot>, activity: TurnActivity, cancel: &Cancel, honor_cancel: bool) -> Option<ChangeSummary> {
         let before = before?;
         let after = self.snapshot_tree(cancel, honor_cancel).await?;
-        let summary = summarize_until(self.dir.clone(), before, after, activity, stop_signal(cancel, honor_cancel)).await?;
+        let summary = summarize_until(self.working_tree.clone()?, self.dir.clone(), before, after, activity, stop_signal(cancel, honor_cancel)).await?;
         (!summary.is_empty()).then_some(summary)
     }
 }

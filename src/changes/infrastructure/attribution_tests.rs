@@ -2,6 +2,7 @@
 
 
 use crate::changes::application::undo_turn::undo;
+use crate::changes::infrastructure::git_tree::GitWorkingTree;
 use crate::changes::domain::turn_activity::TurnActivity;
 use crate::changes::domain::undo_report::UndoError;
 use crate::changes::infrastructure::git_working_tree::{diff_text, snapshot, summarize, summarize_turn};
@@ -30,7 +31,7 @@ fn a_branch_switched_by_someone_else_during_a_read_only_turn_is_not_the_turns() 
     let warning = sum.outside.warning().unwrap();
     assert!(warning.contains("2 files changed outside this turn") && warning.contains("not included"), "{warning}");
     assert!(!sum.is_empty(), "the warning must survive to the end of the turn");
-    assert!(matches!(undo(s.path(), &sum), Err(UndoError::RepoMoved(_))));
+    assert!(matches!(undo(&GitWorkingTree, s.path(), &sum), Err(UndoError::RepoMoved(_))));
     assert_eq!(s.read("a.txt"), "merged\n", "nothing was reverted");
     assert_eq!(diff_text(s.path(), &sum, None).as_deref(), Some(""), "/diff shows none of it");
 }
@@ -45,7 +46,7 @@ fn a_moved_head_refuses_undo_even_for_files_the_turn_wrote() {
     let abs = s.path().join("a.txt");
     let sum = summarize_turn(s.path(), &before, &after, &tools(&[&format!("Edit {}", abs.display())])).unwrap();
     assert_eq!(sum.files.len(), 1, "the edit is still shown");
-    assert!(matches!(undo(s.path(), &sum), Err(UndoError::RepoMoved(_))));
+    assert!(matches!(undo(&GitWorkingTree, s.path(), &sum), Err(UndoError::RepoMoved(_))));
     assert_eq!(s.read("a.txt"), "mine\n");
 }
 
@@ -60,7 +61,7 @@ fn a_doc_written_by_someone_else_during_a_read_only_turn_is_outside() {
     assert_eq!(sum.outside.files.iter().map(|f| f.path.as_str()).collect::<Vec<_>>(), ["docs/notes.md"]);
     assert!(sum.outside.moved.is_none() && !sum.outside.uncertain);
     assert!(sum.outside.warning().unwrap().contains("1 file changed outside this turn"));
-    assert!(matches!(undo(s.path(), &sum), Err(UndoError::NothingToUndo)));
+    assert!(matches!(undo(&GitWorkingTree, s.path(), &sum), Err(UndoError::NothingToUndo)));
     assert_eq!(s.read("docs/notes.md"), "from another session\n");
 }
 
@@ -80,7 +81,7 @@ fn only_the_files_the_edit_tools_named_are_attributed_and_undone() {
     assert_eq!(outside, ["b.txt", "theirs.txt"]);
     let diff = diff_text(s.path(), &sum, None).unwrap();
     assert!(diff.contains("a.txt") && !diff.contains("b.txt"), "{diff}");
-    undo(s.path(), &sum).unwrap();
+    undo(&GitWorkingTree, s.path(), &sum).unwrap();
     assert_eq!(s.read("a.txt"), "one\ntwo\nthree\n");
     assert_eq!(s.read("b.txt"), "someone else edits b\n");
     assert_eq!(s.read("theirs.txt"), "not mine\n");
@@ -125,8 +126,8 @@ fn undo_refuses_when_the_branch_changed_after_the_turn() {
     let abs = s.path().join("a.txt");
     let sum = summarize_turn(s.path(), &before, &after, &tools(&[&format!("Edit {}", abs.display())])).unwrap();
     run_git(s.path(), &["checkout", "-q", "-b", "later"]);
-    assert!(matches!(undo(s.path(), &sum), Err(UndoError::RepoMoved(_))));
+    assert!(matches!(undo(&GitWorkingTree, s.path(), &sum), Err(UndoError::RepoMoved(_))));
     assert_eq!(s.read("a.txt"), "one\nTWO\nthree\n");
     run_git(s.path(), &["checkout", "-q", "-"]);
-    undo(s.path(), &sum).unwrap();
+    undo(&GitWorkingTree, s.path(), &sum).unwrap();
 }

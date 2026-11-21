@@ -1,13 +1,21 @@
 //! `/diff`, `/undo` and `/rewind`: what the last turns changed.
 
 use crate::changes::application::undo_turn::undo;
-use crate::changes::infrastructure::git_working_tree as changes;
+use crate::changes::application::ports::WorkingTree;
+use std::sync::Arc;
 use crate::changes::domain::change_set::ChangeSummary;
 use crate::changes::domain::undo_report::UndoError;
 use crate::changes::domain::undo_report::UndoReport;
 use super::Engine;
 
 impl Engine {
+    /// The working tree the changes of each turn are read from. Without one nothing is
+    /// tracked, so `/diff` and `/undo` have nothing to work on.
+    pub fn with_working_tree(mut self, tree: Arc<dyn WorkingTree>) -> Self {
+        self.working_tree = Some(tree);
+        self
+    }
+
     /// What the last turn changed, if it changed anything in a git working tree.
     pub fn last_changes(&self) -> Option<&ChangeSummary> {
         self.last_changes.as_ref()
@@ -43,7 +51,8 @@ impl Engine {
     /// `/rewind` keep working instead of reading the change as someone else's edit.
     /// Returns false when there is no checkpoint or the tree cannot be read.
     pub fn adopt_working_tree(&mut self) -> bool {
-        let Some(now) = changes::snapshot(&self.dir) else { return false };
+        let Some(tree) = &self.working_tree else { return false };
+        let Some(now) = tree.snapshot(&self.dir) else { return false };
         let Some(newest) = self.change_history.last_mut() else { return false };
         newest.after = now.tree.clone();
         // Untracked files the turn added: follow their new look, drop the ones now gone.
@@ -59,7 +68,7 @@ impl Engine {
     /// text, for the UI to colour. `None` when there is no summary or git fails.
     pub fn last_diff(&self, path: Option<&str>) -> Option<String> {
         let c = self.last_changes.as_ref()?;
-        changes::diff_text(&self.dir, c, path)
+        self.working_tree.as_ref()?.diff_text(&self.dir, c, path)
     }
 
     /// Put back what the last turn changed, and only that, if nothing it touched was
@@ -68,7 +77,8 @@ impl Engine {
     /// (a few git runs), like any user command.
     pub fn undo_last(&mut self) -> Result<UndoReport, UndoError> {
         let summary = self.last_changes.clone().ok_or(UndoError::NothingToUndo)?;
-        let report = undo(&self.dir, &summary)?;
+        let tree = self.working_tree.as_ref().ok_or_else(|| UndoError::Failed("changes are not tracked".into()))?;
+        let report = undo(tree.as_ref(), &self.dir, &summary)?;
         self.last_changes = None;
         self.change_history.pop();
         self.sessions.record_undo();

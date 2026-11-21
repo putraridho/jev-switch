@@ -7,6 +7,7 @@ use crate::changes::application::undo_turn::undo;
 use crate::changes::domain::change_set::ChangeSummary;
 use crate::changes::domain::file_change::{ChangeStatus, FileChange};
 use crate::changes::domain::undo_report::UndoError;
+use crate::changes::infrastructure::git_tree::GitWorkingTree;
 use crate::changes::infrastructure::git_working_tree::{snapshot, summarize};
 use crate::changes::test_support::{fake_turn, files_by_path, repo, Scratch};
 use crate::testkit::git_repo::git as run_git;
@@ -22,7 +23,7 @@ fn a_plain_move_is_a_deleted_and_an_added_file_and_undo_moves_it_back() {
     assert_eq!(sum.files.len(), 2, "{:?}", sum.files);
     assert_eq!((by["a.txt"].status, by["renamed.txt"].status), (ChangeStatus::Deleted, ChangeStatus::Added));
     assert_eq!(by["renamed.txt"].added, 3);
-    undo(s.path(), &sum).unwrap();
+    undo(&GitWorkingTree, s.path(), &sum).unwrap();
     assert_eq!(s.read("a.txt"), "one\ntwo\nthree\n");
     assert!(!s.exists("renamed.txt"));
 }
@@ -37,7 +38,7 @@ fn a_git_mv_is_a_rename_and_undo_moves_it_back() {
     assert_eq!(sum.files.len(), 1, "{:?}", sum.files);
     let f = &sum.files[0];
     assert_eq!((f.status, f.path.as_str(), f.old_path.as_deref()), (ChangeStatus::Renamed, "renamed.txt", Some("a.txt")));
-    let report = undo(s.path(), &sum).unwrap();
+    let report = undo(&GitWorkingTree, s.path(), &sum).unwrap();
     assert_eq!(report.removed, ["renamed.txt"]);
     assert_eq!(report.recreated, ["a.txt"]);
     assert_eq!(s.read("a.txt"), "one\ntwo\nthree\n");
@@ -53,7 +54,7 @@ fn undo_restores_modified_added_and_deleted_files_and_leaves_ignored_ones_alone(
     let after = snapshot(s.path()).unwrap();
     let sum = summarize(s.path(), &before, &after).unwrap();
 
-    let report = undo(s.path(), &sum).unwrap();
+    let report = undo(&GitWorkingTree, s.path(), &sum).unwrap();
     assert_eq!(report.restored, ["a.txt"]);
     assert_eq!(report.recreated, ["b.txt"]);
     let mut removed = report.removed.clone();
@@ -84,7 +85,7 @@ fn undo_puts_the_executable_bit_and_symlinks_back() {
     s.write("link", "now a plain file\n");
     let after = snapshot(s.path()).unwrap();
     let sum = summarize(s.path(), &before, &after).unwrap();
-    undo(s.path(), &sum).unwrap();
+    undo(&GitWorkingTree, s.path(), &sum).unwrap();
     let mode = std::fs::metadata(s.path().join("run.sh")).unwrap().permissions().mode();
     assert_eq!(mode & 0o111, 0o111);
     assert_eq!(std::fs::read_link(s.path().join("link")).unwrap(), Path::new("a.txt"));
@@ -101,7 +102,7 @@ fn undo_refuses_when_a_changed_file_was_edited_again_and_touches_nothing() {
 
     s.write("new.txt", "x\ny\nz\nand the user added this\n");
     s.write("unrelated.txt", "not part of the turn\n");
-    let err = undo(s.path(), &sum).unwrap_err();
+    let err = undo(&GitWorkingTree, s.path(), &sum).unwrap_err();
     assert_eq!(err, UndoError::ChangedSince(vec!["new.txt".into()]), "only the edited file is named, not unrelated ones");
     assert!(err.to_string().contains("new.txt"));
     assert_eq!(s.read("a.txt"), "one\nTWO\nthree\nfour\n", "nothing was undone");
@@ -113,7 +114,7 @@ fn undo_refuses_when_a_changed_file_was_edited_again_and_touches_nothing() {
     s.write("new.txt", "x\ny\nz\n");
     s.write("b.txt", "back again\n");
     s.write("a.txt", "edited again\n");
-    match undo(s.path(), &sum).unwrap_err() {
+    match undo(&GitWorkingTree, s.path(), &sum).unwrap_err() {
         UndoError::ChangedSince(mut files) => {
             files.sort();
             assert_eq!(files, ["a.txt", "b.txt", "new.txt"]);
@@ -131,7 +132,7 @@ fn undo_works_from_a_subdirectory_of_the_repository() {
     let after = snapshot(&sub).unwrap();
     let sum = summarize(&sub, &before, &after).unwrap();
     assert!(files_by_path(&sum).contains_key("a.txt"), "paths are relative to the repository root");
-    undo(&sub, &sum).unwrap();
+    undo(&GitWorkingTree, &sub, &sum).unwrap();
     assert_eq!(s.read("a.txt"), "one\ntwo\nthree\n");
 }
 
@@ -147,7 +148,7 @@ fn undo_refuses_a_summary_with_a_path_outside_the_repository() {
         ..ChangeSummary::default()
     };
     std::fs::write(s.path().parent().unwrap().join("escape.txt"), "mine").ok();
-    assert!(matches!(undo(s.path(), &evil), Err(UndoError::UnsafePath(_))));
+    assert!(matches!(undo(&GitWorkingTree, s.path(), &evil), Err(UndoError::UnsafePath(_))));
     assert_eq!(std::fs::read_to_string(s.path().parent().unwrap().join("escape.txt")).unwrap(), "mine");
     let _ = std::fs::remove_file(s.path().parent().unwrap().join("escape.txt"));
 }
@@ -183,7 +184,7 @@ fn a_changed_untracked_file_is_reported_and_undo_refuses_to_touch_anything() {
     assert_eq!(by["notes.txt"].status, ChangeStatus::ModifiedUntracked);
     assert_eq!(by["gone.txt"].status, ChangeStatus::ModifiedUntracked);
 
-    let err = undo(s.path(), &sum).unwrap_err();
+    let err = undo(&GitWorkingTree, s.path(), &sum).unwrap_err();
     assert_eq!(err, UndoError::UntrackedModified(vec!["gone.txt".into(), "notes.txt".into()]));
     let msg = err.to_string();
     assert!(msg.contains("notes.txt") && msg.contains("gone.txt") && msg.contains("no earlier copy"), "{msg}");
@@ -204,10 +205,10 @@ fn an_untracked_file_the_turn_added_is_deleted_by_undo_only_while_it_is_as_the_t
     assert!(sum.added_stamps.contains_key("new.txt"));
 
     write_at(&s, t0, "new.txt", "made by the turn\n", 9); // touched by someone since
-    assert_eq!(undo(s.path(), &sum), Err(UndoError::ChangedSince(vec!["new.txt".into()])));
+    assert_eq!(undo(&GitWorkingTree, s.path(), &sum), Err(UndoError::ChangedSince(vec!["new.txt".into()])));
     assert!(s.exists("new.txt"));
     write_at(&s, t0, "new.txt", "made by the turn\n", 0);
-    assert_eq!(undo(s.path(), &sum).unwrap().removed, ["new.txt"]);
+    assert_eq!(undo(&GitWorkingTree, s.path(), &sum).unwrap().removed, ["new.txt"]);
     assert!(!s.exists("new.txt"));
 }
 
@@ -219,7 +220,7 @@ fn an_untracked_file_the_user_recreated_at_a_deleted_path_is_not_overwritten() {
     let after = snapshot(s.path()).unwrap();
     let sum = summarize(s.path(), &before, &after).unwrap();
     s.write("b.txt", "the user wrote this meanwhile\n"); // untracked now
-    assert_eq!(undo(s.path(), &sum), Err(UndoError::ChangedSince(vec!["b.txt".into()])));
+    assert_eq!(undo(&GitWorkingTree, s.path(), &sum), Err(UndoError::ChangedSince(vec!["b.txt".into()])));
     assert_eq!(s.read("b.txt"), "the user wrote this meanwhile\n");
 }
 
@@ -234,7 +235,7 @@ fn a_pre_existing_untracked_file_the_turn_only_staged_is_not_an_addition_to_dele
     let after = snapshot(s.path()).unwrap();
     let sum = summarize(s.path(), &before, &after).unwrap();
     assert_eq!(sum.files.iter().map(|f| f.path.as_str()).collect::<Vec<_>>(), ["a.txt"]);
-    undo(s.path(), &sum).unwrap();
+    undo(&GitWorkingTree, s.path(), &sum).unwrap();
     assert_eq!(s.read("notes.txt"), "mine\n", "it was there before the turn");
 }
 
@@ -246,7 +247,7 @@ fn commit_change_undo(s: &Scratch, rel: &str, text: &str, changed: &str) -> Vec<
     let before = snapshot(s.path()).unwrap();
     std::fs::write(s.path().join(rel), changed).unwrap();
     let sum = summarize(s.path(), &before, &snapshot(s.path()).unwrap()).unwrap();
-    undo(s.path(), &sum).unwrap_or_else(|e| panic!("{e}"));
+    undo(&GitWorkingTree, s.path(), &sum).unwrap_or_else(|e| panic!("{e}"));
     std::fs::read(s.path().join(rel)).unwrap()
 }
 
@@ -296,7 +297,7 @@ fn restoring_leaves_the_real_index_alone() {
     run_git(s.path(), &["add", "a.txt"]); // the user stages work after the turn
     let index_before = std::fs::read(s.path().join(".git/index")).unwrap();
     // a.txt is staged now, but its working copy is still as the turn left it.
-    undo(s.path(), &sum).unwrap_or_else(|e| panic!("{e}"));
+    undo(&GitWorkingTree, s.path(), &sum).unwrap_or_else(|e| panic!("{e}"));
     assert_eq!(std::fs::read(s.path().join(".git/index")).unwrap(), index_before);
     assert_eq!(std::fs::read(s.path().join("w.txt")).unwrap(), b"x\r\ny\r\n");
 }
