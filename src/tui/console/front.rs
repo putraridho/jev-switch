@@ -10,7 +10,7 @@ use std::sync::mpsc as std_mpsc;
 
 use tokio::sync::{mpsc, oneshot};
 
-use crate::tui::input::line_editor::AnswerKey;
+use crate::tui::input::line_editor::approval::AnswerKey;
 
 /// A tool approval waiting for its answer.
 #[derive(Debug)]

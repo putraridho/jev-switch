@@ -16,7 +16,7 @@ pub(super) fn page_on_terminal(text: &str) -> bool {
     }
     // The pager owns the keyboard: the type-ahead reader stays off it, and the terminal is in
     // the mode it had before the turn, which is what the pager expects to find and put back.
-    let _owner = lineedit::STDIN_LOCK.lock().unwrap_or_else(PoisonError::into_inner);
+    let _owner = lineedit::approval::STDIN_LOCK.lock().unwrap_or_else(PoisonError::into_inner);
     crate::tui::input::typeahead::restore_turn_mode();
     crate::tui::repl::session::pager::page(text)
 }

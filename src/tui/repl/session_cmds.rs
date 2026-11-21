@@ -369,7 +369,7 @@ impl Repl {
         }
         files.push(("permissions".into(), tilde(&self.engine.dir().join(settings_document::LOCAL_SETTINGS))));
         if let Some(s) = &state {
-            files.push(("history".into(), tilde(&crate::tui::input::line_editor::history_path(s))));
+            files.push(("history".into(), tilde(&crate::tui::input::line_editor::history::history_path(s))));
             files.push(("logs".into(), tilde(s)));
         }
         if let Some(p) = self.engine.session_path() {

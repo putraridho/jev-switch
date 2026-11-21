@@ -4,7 +4,7 @@
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
-use crate::tui::input::line_editor::{prepare_history_file, HISTORY_MAX};
+use crate::tui::input::line_editor::history::{prepare_history_file, HISTORY_MAX};
 
 const V2: &str = "#V2";
 

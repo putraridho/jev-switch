@@ -327,7 +327,7 @@ pub async fn run(repl: Repl, mut rx: mpsc::UnboundedReceiver<FrontMsg>, opts: Op
     let project = repl.engine.dir().to_path_buf();
     let state_dir = repl.state_dir().map(std::path::Path::to_path_buf);
     let mut workers_read = Instant::now();
-    let tracked = lineedit::tracked_files(&project);
+    let tracked = lineedit::completion::tracked_files(&project);
     let mut app = App::new(project.clone(), History::load(opts.history.as_deref()), repl.engine.mode(), route_label(&repl), tracked);
     app.fullscreen = FULLSCREEN.load(std::sync::atomic::Ordering::SeqCst);
     refresh(&mut app, &repl);

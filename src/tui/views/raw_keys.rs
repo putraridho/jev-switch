@@ -31,7 +31,7 @@ impl RawKeys {
         if !std::io::IsTerminal::is_terminal(&std::io::stdin()) {
             return None;
         }
-        let owner = crate::tui::input::line_editor::STDIN_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let owner = crate::tui::input::line_editor::approval::STDIN_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         // SAFETY: termios is plain data; tcgetattr fills it or fails.
         let mut saved: libc::termios = unsafe { std::mem::zeroed() };
         if unsafe { libc::tcgetattr(fd, &mut saved) } != 0 {

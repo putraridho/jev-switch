@@ -5,7 +5,7 @@
 //! the turn ends is put back into the prompt.
 //!
 //! The terminal is shared with the approval question, which reads one key itself: both
-//! take [`crate::tui::input::line_editor::STDIN_LOCK`] around every read, the question for its whole
+//! take [`crate::tui::input::line_editor::approval::STDIN_LOCK`] around every read, the question for its whole
 //! wait, so a key meant for a question is never taken as typing (and the reader stays
 //! away while a pager owns the screen). Ctrl-C is untouched: it stays a signal.
 //!
@@ -185,7 +185,7 @@ static TURN_MODE: std::sync::Mutex<Option<libc::termios>> = std::sync::Mutex::ne
 
 /// Put the terminal in the mode it had before the reader changed it (for a pager, which
 /// expects that mode). The reader puts its own back once paging ends. Call with
-/// [`crate::tui::input::line_editor::STDIN_LOCK`] held.
+/// [`crate::tui::input::line_editor::approval::STDIN_LOCK`] held.
 pub fn restore_turn_mode() {
     #[cfg(unix)]
     if let Some(saved) = *TURN_MODE.lock().unwrap_or_else(std::sync::PoisonError::into_inner) {
@@ -199,7 +199,7 @@ pub fn restore_turn_mode() {
 /// question.
 pub fn wait_for_reader() {
     for _ in 0..10 {
-        if crate::tui::input::line_editor::STDIN_LOCK.try_lock().is_ok() {
+        if crate::tui::input::line_editor::approval::STDIN_LOCK.try_lock().is_ok() {
             return;
         }
         std::thread::sleep(Duration::from_millis(10));
@@ -290,7 +290,7 @@ fn read_loop(console: &Console, stop: &AtomicBool, esc: &tokio::sync::Notify) {
     {
         // Read under the lock, so a question that took the terminal first (raw) is not
         // mistaken for the turn's mode.
-        let _owner = crate::tui::input::line_editor::STDIN_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _owner = crate::tui::input::line_editor::approval::STDIN_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         if unsafe { libc::tcgetattr(fd, &mut saved) } != 0 {
             return;
         }
@@ -305,7 +305,7 @@ fn read_loop(console: &Console, stop: &AtomicBool, esc: &tokio::sync::Notify) {
     if !draft.text.is_empty() {
         console.set_draft(&draft.text);
     }
-    let pause = Duration::from_millis(crate::tui::input::line_editor::KEY_POLL_MS as u64);
+    let pause = Duration::from_millis(crate::tui::input::line_editor::approval::KEY_POLL_MS as u64);
     // The reader's mode is (re)applied before its next read: at the start, and after a
     // pager put the turn's mode back.
     let mut apply_mode = true;
@@ -322,7 +322,7 @@ fn read_loop(console: &Console, stop: &AtomicBool, esc: &tokio::sync::Notify) {
             std::thread::sleep(pause);
             continue;
         }
-        let Ok(_owner) = crate::tui::input::line_editor::STDIN_LOCK.try_lock() else {
+        let Ok(_owner) = crate::tui::input::line_editor::approval::STDIN_LOCK.try_lock() else {
             std::thread::sleep(pause);
             continue;
         };
@@ -335,7 +335,7 @@ fn read_loop(console: &Console, stop: &AtomicBool, esc: &tokio::sync::Notify) {
             unsafe { libc::tcsetattr(fd, libc::TCSANOW, &keys_mode) };
             apply_mode = false;
         }
-        let mut chunk = read_ready(fd, crate::tui::input::line_editor::KEY_POLL_MS);
+        let mut chunk = read_ready(fd, crate::tui::input::line_editor::approval::KEY_POLL_MS);
         if chunk.last() == Some(&0x1b) {
             chunk.extend(read_ready(fd, ESC_WAIT_MS));
         }
@@ -345,7 +345,7 @@ fn read_loop(console: &Console, stop: &AtomicBool, esc: &tokio::sync::Notify) {
     }
     // What is still typed goes back to the prompt.
     console.keep_draft(&draft.text);
-    let _owner = crate::tui::input::line_editor::STDIN_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let _owner = crate::tui::input::line_editor::approval::STDIN_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     *TURN_MODE.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = None;
     // SAFETY: puts back what tcgetattr read.
     unsafe { libc::tcsetattr(fd, libc::TCSANOW, &saved) };
