@@ -4,6 +4,11 @@ See [docs/changelog-guide.md](docs/changelog-guide.md) for changelog formatting,
 
 ## Unreleased
 
+## 1.11.0
+
+Cross-provider subagents and delegation telemetry in jev-code, Gemini Antigravity (`agy`) integration, and queued message withdrawal fix.
+
+- **Subagents and delegation work seamlessly across all providers in `jev-code`.** Subagent and worker invocations across Claude (`Agent`, `Task`), Codex (`spawn_agent`, MCP tool calls), Antigravity/Gemini (`invoke_subagent`, `subagent`), and Jev's cross-provider orchestrator (`delegate`, `jev__delegate`, `mcp__jev__delegate`) now consistently display with the dedicated cyan `⇉ Delegate` marker in the transcript, stand alone instead of getting grouped into collapsed tool runs, and cleanly report active delegation on the working spinner. Codex tool calls, web searches, and subagent items are now streamed and completed live.
 - **Gemini runs on Antigravity (`agy`) whenever it is installed.** Google retired Gemini CLI's own login, yet jev-code kept choosing `gemini` when it found that old login, so a Gemini turn failed and fell over to another provider. Now `agy` is used whenever it is on PATH, and `gemini` only on a machine without `agy`. Gemini counts as ready only when `agy` is signed in (or an API key is set), and the install, login and trust hints name `agy`.
 - **A queued message you take back to edit is no longer sent twice.** While a turn runs, Enter queues your message and offers it to the running turn. Pressing ↑ to take it back out and edit it used to leave that first copy with the turn, so the turn received both the original and your edited message. Taking a message back now withdraws the copy the turn was offered, and only the edited message is sent.
 

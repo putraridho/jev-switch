@@ -14,6 +14,9 @@ use super::*;
     fn delegation_has_its_own_mark_and_a_worker_result_says_who_did_what() {
         let row = tool_row("mcp__jev__delegate write the parser tests", Path::new("/p"), OFF, 80);
         assert_eq!(row, "  ⇉ Delegate write the parser tests");
+        assert_eq!(tool_row("jev__delegate write the parser tests", Path::new("/p"), OFF, 80), "  ⇉ Delegate write the parser tests");
+        assert_eq!(tool_row("Agent write the parser tests", Path::new("/p"), OFF, 80), "  ⇉ Delegate write the parser tests");
+        assert_eq!(tool_row("spawn_agent write the parser tests", Path::new("/p"), OFF, 80), "  ⇉ Delegate write the parser tests");
         assert_eq!(tool_row("mcp__github__create_issue x", Path::new("/p"), OFF, 80), "  ⏺ github·create_issue x");
         let done = "worker w1 (gemini gemini-4-argon): done\nfiles changed (2):\n  a.rs +3 −1\nworker report:\nok";
         assert_eq!(tool_result_row("mcp__jev__delegate", true, done, OFF, 80).as_deref(), Some("    ⎿ ✓ worker w1 · gemini gemini-4-argon · done · 2 files"));

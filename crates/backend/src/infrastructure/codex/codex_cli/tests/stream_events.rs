@@ -111,3 +111,22 @@ use super::super::stream_events::{shell_script, started_events};
         let Event::Tool(s) = &started_events(&json!({"type":"command_execution","command":long}))[0] else { panic!() };
         assert_eq!(s.chars().count(), "shell ".len() + 100);
     }
+
+    #[test]
+    fn tool_calls_web_searches_and_subagents_are_announced_and_completed() {
+        let b = backend();
+        let mcp_start = r#"{"type":"item.started","item":{"type":"mcp_tool_call","tool":"delegate","arguments":{"brief":"write parser"}}}"#;
+        assert_eq!(b.parse_line(mcp_start), vec![Event::Tool("delegate write parser".into())]);
+        let mcp_done = r#"{"type":"item.completed","item":{"type":"mcp_tool_call","tool":"delegate","status":"completed","result":"worker w1: done"}}"#;
+        assert_eq!(b.parse_line(mcp_done), vec![Event::ToolResult { ok: true, text: "worker w1: done".into() }]);
+
+        let search_start = r#"{"type":"item.started","item":{"type":"web_search","query":"rust 1.83 release"}}"#;
+        assert_eq!(b.parse_line(search_start), vec![Event::Tool("web_search rust 1.83 release".into())]);
+        let search_done = r#"{"type":"item.completed","item":{"type":"web_search","status":"completed","result":"found"}}"#;
+        assert_eq!(b.parse_line(search_done), vec![Event::ToolResult { ok: true, text: "found".into() }]);
+
+        let agent_start = r#"{"type":"item.started","item":{"type":"spawn_agent","description":"test worker"}}"#;
+        assert_eq!(b.parse_line(agent_start), vec![Event::Tool("spawn_agent test worker".into())]);
+        let agent_done = r#"{"type":"item.completed","item":{"type":"spawn_agent","status":"completed","result":"done"}}"#;
+        assert_eq!(b.parse_line(agent_done), vec![Event::ToolResult { ok: true, text: "done".into() }]);
+    }

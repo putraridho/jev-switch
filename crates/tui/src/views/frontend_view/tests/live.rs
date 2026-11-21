@@ -44,6 +44,9 @@ fn the_working_row_says_what_is_happening_as_an_action() {
     assert_eq!(doing(Some("Bash cargo test")), "Running cargo test");
     assert_eq!(doing(Some("Read src/a.rs")), "Reading src/a.rs");
     assert_eq!(doing(Some("Grep TODO")), "Searching TODO");
+    assert_eq!(doing(Some("delegate write the tests")), "Delegating write the tests");
+    assert_eq!(doing(Some("mcp__jev__delegate parser")), "Delegating parser");
+    assert_eq!(doing(Some("spawn_agent search")), "Delegating search");
     assert_eq!(doing(Some("stopping...")), "stopping...");
 }
 

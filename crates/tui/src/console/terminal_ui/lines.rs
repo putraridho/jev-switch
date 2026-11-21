@@ -71,7 +71,9 @@ pub(super) fn group_tool_runs() -> bool {
 /// thing to watch).
 pub(super) fn stands_alone(tool: &str) -> bool {
     let t = tool.to_ascii_lowercase();
-    t == "delegate" || t.ends_with("__delegate")
+    t == "delegate"
+        || t.ends_with("__delegate")
+        || matches!(t.as_str(), "agent" | "task" | "spawn_agent" | "invoke_subagent" | "subagent")
 }
 
 /// The note that a call was allowed without asking (`✓ auto-allowed …`).

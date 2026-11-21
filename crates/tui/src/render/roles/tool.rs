@@ -10,17 +10,23 @@ use crate::render::width::{clamp_width, truncate_to_width};
 /// A tool's name as a person reads it: an MCP tool `mcp__jev__delegate` is the worker
 /// delegation, `Delegate`; another server's `mcp__srv__tool` is `srv·tool`.
 pub fn display_tool(name: &str) -> String {
-    let Some(rest) = name.strip_prefix("mcp__") else { return name.to_string() };
-    let (server, tool) = rest.split_once("__").unwrap_or(("", rest));
-    if server == "jev" {
+    let unadorned = name.strip_prefix("mcp__").unwrap_or(name);
+    let (server, tool) = unadorned.split_once("__").unwrap_or(("", unadorned));
+    if server == "jev" || tool == "delegate" {
         let mut c = tool.chars();
         return c.next().map(|f| f.to_uppercase().collect::<String>() + c.as_str()).unwrap_or_default().replace('_', " ");
     }
-    if server.is_empty() { tool.to_string() } else { format!("{server}·{tool}") }
+    match name.to_ascii_lowercase().as_str() {
+        "agent" | "task" | "spawn_agent" | "invoke_subagent" | "subagent" => "Delegate".to_string(),
+        _ => if server.is_empty() { tool.to_string() } else { format!("{server}·{tool}") }
+    }
 }
 
 pub(super) fn is_delegate(tool: &str) -> bool {
-    tool == "delegate" || tool.ends_with("__delegate")
+    let t = tool.to_ascii_lowercase();
+    t == "delegate"
+        || t.ends_with("__delegate")
+        || matches!(t.as_str(), "agent" | "task" | "spawn_agent" | "invoke_subagent" | "subagent")
 }
 
 /// One tool call: `  ⏺ Bash cargo test`, the marker and the details dim, the tool's name

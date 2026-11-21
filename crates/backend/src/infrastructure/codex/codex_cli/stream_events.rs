@@ -30,6 +30,21 @@ impl CodexBackend {
                 let text = item["aggregated_output"].as_str().unwrap_or("").to_string();
                 vec![Event::ToolResult { ok, text }]
             }
+            Some("mcp_tool_call" | "tool_call" | "custom_tool_call") => {
+                let ok = item["status"] != "failed" && item["error"].is_null();
+                let text = item["result"].as_str().or(item["output"].as_str()).unwrap_or("").to_string();
+                vec![Event::ToolResult { ok, text }]
+            }
+            Some("web_search") => {
+                let ok = item["status"] != "failed";
+                let text = item["result"].as_str().unwrap_or("").to_string();
+                vec![Event::ToolResult { ok, text }]
+            }
+            Some("spawn_agent" | "subagent") => {
+                let ok = item["status"] != "failed";
+                let text = item["result"].as_str().or(item["output"].as_str()).unwrap_or("").to_string();
+                vec![Event::ToolResult { ok, text }]
+            }
             _ => vec![],
         }
     }
@@ -76,6 +91,19 @@ pub(super) fn started_events(item: &Value) -> Vec<Event> {
         Some("command_execution") => {
             let script = shell_script(item["command"].as_str().unwrap_or(""));
             vec![Event::Tool(tool_summary("shell", &json!({"command": script})))]
+        }
+        Some("mcp_tool_call" | "tool_call" | "custom_tool_call") => {
+            let name = item["tool"].as_str().or(item["name"].as_str()).unwrap_or("tool");
+            let input = if item.get("arguments").is_some() { &item["arguments"] } else { &item["input"] };
+            vec![Event::Tool(tool_summary(name, input))]
+        }
+        Some("web_search") => {
+            let q = item["query"].as_str().unwrap_or("");
+            vec![Event::Tool(format!("web_search {q}"))]
+        }
+        Some("spawn_agent" | "subagent") => {
+            let desc = item["description"].as_str().or(item["prompt"].as_str()).unwrap_or("");
+            vec![Event::Tool(format!("spawn_agent {desc}"))]
         }
         _ => vec![],
     }

@@ -12,7 +12,8 @@ pub fn doing(activity: Option<&str>) -> String {
 
 /// [`doing`] in its two parts, the verb and what it acts on, so they can be weighted apart.
 fn doing_parts(activity: Option<&str>) -> (String, String) {
-    let Some(a) = activity.map(str::trim).filter(|a| !a.is_empty()) else { return ("Thinking".to_string(), String::new()) };
+    let Some(raw) = activity.map(str::trim).filter(|a| !a.is_empty()) else { return ("Thinking".to_string(), String::new()) };
+    let a = raw.strip_prefix("⎿ ").unwrap_or(raw);
     let (tool, rest) = a.split_once(' ').unwrap_or((a, ""));
     let verb = match tool.to_ascii_lowercase().as_str() {
         "bash" | "shell" => "Running",
@@ -20,8 +21,9 @@ fn doing_parts(activity: Option<&str>) -> (String, String) {
         "edit" | "multiedit" => "Editing",
         "write" => "Writing",
         "grep" | "glob" | "ls" => "Searching",
-        "webfetch" | "websearch" => "Looking up",
-        "task" | "agent" => "Delegating",
+        "webfetch" | "websearch" | "web_search" => "Looking up",
+        "task" | "agent" | "delegate" | "spawn_agent" | "invoke_subagent" | "subagent" => "Delegating",
+        t if t.ends_with("__delegate") => "Delegating",
         _ => return (a.to_string(), String::new()),
     };
     (verb.to_string(), rest.to_string())
