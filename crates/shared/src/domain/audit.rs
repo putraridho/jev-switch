@@ -24,6 +24,13 @@ pub enum Outcome {
     Cancelled,
 }
 
+/// What the project's tests said about a turn's changes, when they were run and decided.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Verdict {
+    Passed,
+    Failed,
+}
+
 /// What happened.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Event {
@@ -41,6 +48,8 @@ pub enum Event {
         context_tokens: u64,
         /// Tool calls of the attempt that ended the turn. Older lines: 0.
         tool_calls: u32,
+        /// The tests' verdict on the turn's changes; `None` when they were not run or did not decide. Older lines: `None`.
+        verdict: Option<Verdict>,
     },
     Export { path: String },
     Profile { name: String },

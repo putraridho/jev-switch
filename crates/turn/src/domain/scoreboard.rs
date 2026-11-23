@@ -5,6 +5,7 @@ use std::collections::BTreeMap;
 use std::fmt::Write as _;
 
 use jev_backend::{ErrorKind, ProviderId};
+use super::acceptance::Acceptance;
 
 /// Latencies kept per provider; older ones fall off.
 const KEEP: usize = 50;
@@ -13,6 +14,9 @@ const KEEP: usize = 50;
 pub struct Health {
     pub answered: u32,
     pub failed: u32,
+    /// Turns whose changes passed the project's tests, and turns whose changes failed them.
+    pub accepted: u32,
+    pub rejected: u32,
     /// Wall time of recent attempts, answered or failed, oldest first.
     latencies_ms: Vec<u64>,
     last_failure: Option<&'static str>,
@@ -73,6 +77,16 @@ impl Scoreboard {
         h.push(wall_ms);
     }
 
+    /// Count a verdict on a turn's changes; one that is no verdict (`Inconclusive`) counts for nothing.
+    pub fn record_acceptance(&mut self, provider: ProviderId, acceptance: &Acceptance) {
+        let h = self.by_provider.entry(provider).or_default();
+        match acceptance {
+            Acceptance::Passed => h.accepted += 1,
+            Acceptance::Failed { .. } => h.rejected += 1,
+            Acceptance::Inconclusive { .. } => {}
+        }
+    }
+
     pub fn health(&self, provider: ProviderId) -> Option<&Health> {
         self.by_provider.get(&provider)
     }
@@ -90,7 +104,8 @@ impl Scoreboard {
             let rate = h.success_rate().map_or("-".to_string(), |r| format!("{:.0}%", r * 100.0));
             let median = h.median_ms().map_or("-".to_string(), |ms| format!("{:.1}s", ms as f64 / 1000.0));
             let last = h.last_failure.map_or(String::new(), |l| format!("  last failure: {l}"));
-            let _ = writeln!(out, "  {:<9} {:>2} answered  {:>2} failed  {rate:>4} ok  median {median:>6}{last}", p.as_str(), h.answered, h.failed);
+            let verified = if h.accepted + h.rejected > 0 { format!("  tests passed {}/{}", h.accepted, h.accepted + h.rejected) } else { String::new() };
+            let _ = writeln!(out, "  {:<9} {:>2} answered  {:>2} failed  {rate:>4} ok  median {median:>6}{verified}{last}", p.as_str(), h.answered, h.failed);
         }
         out.trim_end().to_string()
     }
@@ -125,6 +140,18 @@ mod tests {
             s.record_answer(ProviderId::Codex, 1_000);
         }
         assert_eq!(s.health(ProviderId::Codex).unwrap().median_ms(), Some(1_000));
+    }
+
+    #[test]
+    fn verdicts_count_only_when_the_tests_decided() {
+        let mut s = Scoreboard::default();
+        s.record_answer(ProviderId::Claude, 1_000);
+        s.record_acceptance(ProviderId::Claude, &Acceptance::Passed);
+        s.record_acceptance(ProviderId::Claude, &Acceptance::Failed { output: "x".into() });
+        s.record_acceptance(ProviderId::Claude, &Acceptance::Inconclusive { why: "none".into() });
+        let h = s.health(ProviderId::Claude).unwrap();
+        assert_eq!((h.accepted, h.rejected), (1, 1));
+        assert!(s.text().contains("tests passed 1/2"));
     }
 
     #[test]

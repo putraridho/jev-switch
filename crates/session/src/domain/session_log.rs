@@ -22,6 +22,8 @@ pub struct TurnRecord {
     pub ended_ms: u64,
     /// Tool calls the model made in the attempt that ended the turn.
     pub tool_calls: u32,
+    /// What the project's tests said about the turn's changes, when they ran and decided.
+    pub verdict: Option<jev_shared::domain::audit::Verdict>,
 }
 
 /// Tokens and time of one model over the session.
@@ -131,6 +133,7 @@ mod tests {
             elapsed_ms: 1000,
             ended_ms: 0,
             tool_calls: 0,
+            verdict: None,
         }
     }
 

@@ -89,6 +89,7 @@ impl Engine {
             // A turn the user cancelled has spent its signal, so its summary is not raced
             // against it; a Ctrl-C while summarising a finished turn still returns at once.
             report.changes = self.changes_since(before, self.turn_activity.clone(), cancel, report.status != TurnStatus::Cancelled).await;
+            self.verify_report(&mut report, ui, cancel).await;
             self.last_changes = report.changes.clone();
             self.change_history.extend(report.changes.clone());
             self.save_quietly();

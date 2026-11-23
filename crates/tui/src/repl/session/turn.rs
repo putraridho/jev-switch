@@ -68,6 +68,7 @@ impl Repl {
             elapsed_ms: elapsed.as_millis() as u64,
             ended_ms: self.now(),
             tool_calls: report.tool_calls,
+            verdict: report.acceptance.as_ref().and_then(jev_turn::domain::acceptance::Acceptance::verdict),
         };
         self.audit_turn(&record);
         self.log.push(record);

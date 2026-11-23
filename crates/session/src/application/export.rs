@@ -109,7 +109,7 @@ mod tests {
 
     fn log_with(prompt: &str, answer: &str, status: TurnStatus) -> SessionLog {
         let mut log = SessionLog::default();
-        log.push(TurnRecord { prompt: prompt.into(), answer: answer.into(), status, model: "claude · s".into(), route: None, usage: None, elapsed_ms: 1, ended_ms: 0, tool_calls: 0 });
+        log.push(TurnRecord { prompt: prompt.into(), answer: answer.into(), status, model: "claude · s".into(), route: None, usage: None, elapsed_ms: 1, ended_ms: 0, tool_calls: 0, verdict: None });
         log
     }
 

@@ -93,6 +93,7 @@ Usage { input_tokens: input, cached_input_tokens: cached, output_tokens: 1, cont
             elapsed_ms: 1000,
             ended_ms,
             tool_calls: 0,
+            verdict: None,
         }
     }
 

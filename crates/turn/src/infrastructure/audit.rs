@@ -41,6 +41,7 @@ pub fn turn_entry(ts_ms: u64, project: &str, t: &TurnRecord) -> Entry {
             cached_tokens: usage.cached_input_tokens,
             context_tokens: usage.context_tokens.unwrap_or(0),
             tool_calls: t.tool_calls,
+            verdict: t.verdict,
         },
     }
 }
@@ -80,6 +81,7 @@ mod tests {
             elapsed_ms: 2500,
             ended_ms: 0,
             tool_calls: 0,
+            verdict: None,
         }
     }
 
@@ -111,6 +113,18 @@ mod tests {
         let Event::Turn { cached_tokens, context_tokens, tool_calls, measurement, .. } = Entry::from(serde_json::from_str::<EntryWire>(old).unwrap()).event else { panic!() };
         assert_eq!((cached_tokens, context_tokens, tool_calls), (0, 0, 0));
         assert_eq!(measurement, Measurement::Reported);
+    }
+
+    #[test]
+    fn a_verdict_is_written_only_when_there_is_one_and_round_trips() {
+        let mut r = record("x", "claude · s", TurnStatus::Answered);
+        let none = serde_json::to_value(EntryWire::from(&turn_entry(1, "/p", &r))).unwrap();
+        assert!(none.get("verdict").is_none(), "{none}");
+        r.verdict = Some(jev_shared::domain::audit::Verdict::Failed);
+        let entry = turn_entry(1, "/p", &r);
+        let value = serde_json::to_value(EntryWire::from(&entry)).unwrap();
+        assert_eq!(value["verdict"], "failed");
+        assert_eq!(Entry::from(serde_json::from_value::<EntryWire>(value).unwrap()), entry);
     }
 
     #[test]

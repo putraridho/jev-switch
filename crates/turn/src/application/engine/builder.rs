@@ -10,6 +10,7 @@ use crate::application::guards::Guards;
 use jev_approval::application::extension_hooks::Hooks;
 use jev_session::domain::session::Sessions;
 use jev_approval::domain::mode::Mode;
+use jev_orchestration::application::ports::Checks;
 use jev_orchestration::domain::orchestration_gate::Setup;
 use jev_approval::domain::permission_rule;
 use jev_providers::application::provider_registry::Runtime;
@@ -71,6 +72,8 @@ impl Engine {
             mode: Mode::default(),
             effort: EffortSetting::default(),
             allowed_tools,
+            verify: false,
+            checks: None,
         }
     }
 
@@ -115,6 +118,14 @@ impl Engine {
     /// Start with orchestration on or off (the binary reads `JEV_ORCHESTRATE`).
     pub fn with_orchestrate(mut self, on: bool) -> Self {
         self.orchestrate = on;
+        self
+    }
+
+    /// Check each turn's changes with the project's own tests, run by `checks` (the binary
+    /// reads `JEV_VERIFY`). Without `checks` nothing is verified.
+    pub fn with_verify(mut self, on: bool, checks: Option<Arc<dyn Checks>>) -> Self {
+        self.verify = on;
+        self.checks = checks;
         self
     }
 

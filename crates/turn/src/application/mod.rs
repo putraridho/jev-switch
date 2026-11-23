@@ -11,3 +11,4 @@ pub mod privacy_files;
 pub mod privacy_audit;
 pub mod team_rules;
 pub mod turn_report;
+pub mod verify;

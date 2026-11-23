@@ -18,6 +18,7 @@ use std::time::Duration;
 
 use crate::domain::effort::EffortSetting;
 use jev_changes::application::ports::WorkingTree;
+use jev_orchestration::application::ports::Checks;
 use jev_changes::domain::change_set::ChangeSummary;
 use jev_changes::domain::turn_activity::TurnActivity;
 use crate::application::guards::Guards;
@@ -45,6 +46,7 @@ mod plan_orchestration;
 mod run_attempt;
 mod run_attempts;
 mod run_turn;
+mod verify_turn;
 mod session_commands;
 #[cfg(test)]
 mod tests;
@@ -132,6 +134,11 @@ pub struct Engine {
     hooks: Arc<Hooks>,
     /// `CODE_ALLOWED_TOOLS`, split into rules: what a turn may do without asking, on every CLI.
     allowed_tools: Vec<String>,
+    /// Run the project's tests after a turn that changed files and say what they showed.
+    /// Off until asked for: tests can take minutes and run on the user's machine.
+    verify: bool,
+    /// What runs those tests; `None` verifies nothing.
+    checks: Option<Arc<dyn Checks>>,
 }
 
 pub struct SummaryContext<'a> {

@@ -107,6 +107,14 @@ impl Engine {
         self.orchestrate = on;
     }
 
+    pub fn verify(&self) -> bool {
+        self.verify
+    }
+
+    pub fn set_verify(&mut self, on: bool) {
+        self.verify = on;
+    }
+
     /// Images to send with the next turn (and only that one).
     pub fn attach_images(&mut self, images: Vec<PathBuf>) {
         self.images = images;

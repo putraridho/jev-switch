@@ -167,6 +167,7 @@ mod tests {
             elapsed_ms: 1000,
             ended_ms,
             tool_calls: 0,
+            verdict: None,
         }
     }
 

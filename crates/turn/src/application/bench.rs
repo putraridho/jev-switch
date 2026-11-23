@@ -10,7 +10,7 @@ use std::path::Path;
 
 use serde::Deserialize;
 
-use jev_shared::domain::audit::{Entry, Event, Outcome};
+use jev_shared::domain::audit::{Entry, Event, Outcome, Verdict};
 
 /// One model's record.
 #[derive(Debug, Clone, PartialEq)]
@@ -20,6 +20,10 @@ pub struct Rank {
     pub answered: u64,
     pub median_ms: u64,
     pub avg_out_tokens: u64,
+    /// Turns whose changes the project's tests passed, and failed (turns the tests did not
+    /// decide are in neither).
+    pub tests_passed: u64,
+    pub tests_failed: u64,
 }
 
 impl Rank {
@@ -49,16 +53,23 @@ pub fn rank(entries: &[Entry]) -> Vec<Rank> {
         answered: u64,
         times: Vec<u64>,
         out: u64,
+        passed: u64,
+        failed: u64,
     }
     let mut by_model: std::collections::BTreeMap<&str, Acc> = std::collections::BTreeMap::new();
     for e in entries {
-        let Event::Turn { model, outcome, elapsed_ms, out_tokens, .. } = &e.event else { continue };
+        let Event::Turn { model, outcome, elapsed_ms, out_tokens, verdict, .. } = &e.event else { continue };
         if model.is_empty() {
             continue;
         }
         let a = by_model.entry(model).or_default();
         a.turns += 1;
         a.out += out_tokens;
+        match verdict {
+            Some(Verdict::Passed) => a.passed += 1,
+            Some(Verdict::Failed) => a.failed += 1,
+            None => {}
+        }
         if *outcome == Outcome::Answered {
             a.answered += 1;
             a.times.push(*elapsed_ms);
@@ -69,7 +80,7 @@ pub fn rank(entries: &[Entry]) -> Vec<Rank> {
         .filter(|(_, a)| a.turns >= MIN_TURNS)
         .map(|(model, mut a)| {
             a.times.sort_unstable();
-            Rank { model: model.to_string(), turns: a.turns, answered: a.answered, median_ms: median(&a.times), avg_out_tokens: a.out / a.turns }
+            Rank { model: model.to_string(), turns: a.turns, answered: a.answered, median_ms: median(&a.times), avg_out_tokens: a.out / a.turns, tests_passed: a.passed, tests_failed: a.failed }
         })
         .collect();
     ranks.sort_by(|a, b| b.success_pct().cmp(&a.success_pct()).then(a.median_ms.cmp(&b.median_ms)).then(a.model.cmp(&b.model)));
@@ -92,8 +103,9 @@ pub fn bench_text(ranks: &[Rank], project: &Path) -> String {
     } else {
         lines.push("  Your models, best first (from your own turns)".to_string());
         for (i, r) in ranks.iter().enumerate() {
+            let tests = if r.tests_passed + r.tests_failed > 0 { format!("  tests passed {}/{}", r.tests_passed, r.tests_passed + r.tests_failed) } else { String::new() };
             lines.push(format!(
-                "  {}. {:<34} {:>3}% answered of {:<3} median {:>5.1}s  ~{} output tokens",
+                "  {}. {:<34} {:>3}% answered of {:<3} median {:>5.1}s  ~{} output tokens{tests}",
                 i + 1,
                 r.model,
                 r.success_pct(),
@@ -117,7 +129,7 @@ mod tests {
     use super::*;
 
     fn turn(model: &str, outcome: Outcome, ms: u64, out: u64) -> Entry {
-        Entry { ts_ms: 0, project: "/p".into(), event: Event::Turn { model: model.into(), outcome, measurement: jev_shared::Measurement::Reported, elapsed_ms: ms, in_tokens: 1, out_tokens: out, prompt: String::new(), cached_tokens: 0, context_tokens: 0, tool_calls: 0 } }
+        Entry { ts_ms: 0, project: "/p".into(), event: Event::Turn { model: model.into(), outcome, measurement: jev_shared::Measurement::Reported, elapsed_ms: ms, in_tokens: 1, out_tokens: out, prompt: String::new(), cached_tokens: 0, context_tokens: 0, tool_calls: 0, verdict: None } }
     }
 
     #[test]
@@ -154,8 +166,25 @@ mod tests {
     }
 
     #[test]
+    fn test_verdicts_are_counted_per_model_and_shown_only_when_there_are_any() {
+        let with = |v: Option<Verdict>| {
+            let mut e = turn("a", Outcome::Answered, 10, 1);
+            if let Event::Turn { verdict, .. } = &mut e.event {
+                *verdict = v;
+            }
+            e
+        };
+        let entries = [with(Some(Verdict::Passed)), with(Some(Verdict::Failed)), with(Some(Verdict::Passed)), with(None)];
+        let ranks = rank(&entries);
+        assert_eq!((ranks[0].tests_passed, ranks[0].tests_failed), (2, 1));
+        assert!(bench_text(&ranks, Path::new("/nowhere")).contains("tests passed 2/3"));
+        let plain = rank(&[turn("b", Outcome::Answered, 1, 1), turn("b", Outcome::Answered, 1, 1), turn("b", Outcome::Answered, 1, 1)]);
+        assert!(!bench_text(&plain, Path::new("/nowhere")).contains("tests passed"));
+    }
+
+    #[test]
     fn the_ranking_text_lists_each_model() {
-        let r = Rank { model: "claude · s".into(), turns: 4, answered: 3, median_ms: 1500, avg_out_tokens: 42 };
+        let r = Rank { model: "claude · s".into(), turns: 4, answered: 3, median_ms: 1500, avg_out_tokens: 42, tests_passed: 0, tests_failed: 0 };
         let text = bench_text(&[r], Path::new("/nowhere"));
         assert!(text.contains("1. claude · s") && text.contains(" 75% answered of 4") && text.contains("median   1.5s"), "{text}");
     }

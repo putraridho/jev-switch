@@ -196,6 +196,7 @@ impl Repl {
             elapsed_ms: elapsed.as_millis() as u64,
             ended_ms: self.now(),
             tool_calls: 0,
+            verdict: None,
         };
         self.audit_turn(&record);
     }
@@ -286,7 +287,7 @@ mod tests {
         let entry = |project: &str, prompt: &str| jev_shared::domain::audit::Entry {
             ts_ms: 1000,
             project: project.into(),
-            event: jev_shared::domain::audit::Event::Turn { model: "m".into(), outcome: jev_shared::domain::audit::Outcome::Answered, measurement: jev_shared::Measurement::Reported, elapsed_ms: 1, in_tokens: 1, out_tokens: 1, prompt: prompt.into(), cached_tokens: 0, context_tokens: 0, tool_calls: 0 },
+            event: jev_shared::domain::audit::Event::Turn { model: "m".into(), outcome: jev_shared::domain::audit::Outcome::Answered, measurement: jev_shared::Measurement::Reported, elapsed_ms: 1, in_tokens: 1, out_tokens: 1, prompt: prompt.into(), cached_tokens: 0, context_tokens: 0, tool_calls: 0, verdict: None },
         };
         let path = jev_turn::infrastructure::audit::path_in(&state);
         jev_turn::infrastructure::audit::append(&path, &entry("/somewhere/else", "other project prompt"));

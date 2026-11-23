@@ -42,7 +42,7 @@ mod tests {
     use jev_session::domain::turn_status::TurnStatus;
 
     fn turn(prompt: &str, answer: &str) -> TurnRecord {
-        TurnRecord { prompt: prompt.into(), answer: answer.into(), status: TurnStatus::Answered, model: String::new(), route: None, usage: None, elapsed_ms: 0, ended_ms: 0, tool_calls: 0 }
+        TurnRecord { prompt: prompt.into(), answer: answer.into(), status: TurnStatus::Answered, model: String::new(), route: None, usage: None, elapsed_ms: 0, ended_ms: 0, tool_calls: 0, verdict: None }
     }
 
     #[test]

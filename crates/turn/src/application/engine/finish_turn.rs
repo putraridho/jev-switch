@@ -52,6 +52,7 @@ impl Engine {
             attempts,
             tool_calls,
             changes: None,
+            acceptance: None,
         }
     }
 

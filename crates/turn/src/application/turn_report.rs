@@ -3,6 +3,7 @@
 use jev_backend::{ProviderId, Usage};
 use jev_session::domain::turn_status::TurnStatus;
 use jev_changes::domain::change_set::ChangeSummary;
+use crate::domain::acceptance::Acceptance;
 #[derive(Debug, Clone)]
 pub struct TurnReport {
     pub status: TurnStatus,
@@ -22,10 +23,13 @@ pub struct TurnReport {
     /// repository, git is missing or failed, no model was started, or the turn changed
     /// nothing (a summary kept here always lists at least one file).
     pub changes: Option<ChangeSummary>,
+    /// What the project's tests said about this turn's changes. `None` unless verification
+    /// is on and the turn answered and changed files.
+    pub acceptance: Option<Acceptance>,
 }
 
 impl TurnReport {
     pub(super) fn ended(status: TurnStatus, message: String, attempts: u32) -> Self {
-        Self { status, text: String::new(), message, provider: None, model: None, usage: None, attempts, tool_calls: 0, changes: None }
+        Self { status, text: String::new(), message, provider: None, model: None, usage: None, attempts, tool_calls: 0, changes: None, acceptance: None }
     }
 }
