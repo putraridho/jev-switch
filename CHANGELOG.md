@@ -4,6 +4,8 @@ See [docs/changelog-guide.md](docs/changelog-guide.md) for changelog formatting,
 
 ## Unreleased
 
+- **Billing follows how each CLI is actually funded, not the catalog's label.** jev-code now reads each provider's own configuration (presence and kind only, never a key): Codex's `model_provider` and sign-in mode, a Grok, Gemini or Claude API key against a saved login, a custom endpoint, and DeepSeek's key. A CLI that is not on its native login (an API key, a custom endpoint such as a non-OpenAI Codex provider, or no login that can be seen) is treated as paid use: the budget cap, the paid-fallback switch and the worker checks apply to it, and `/budget` shows "billing unknown" instead of inventing dollars. `/providers` and `jev-code doctor` show the kind per provider ("ChatGPT login", "API key (per token)", "custom endpoint (billing unknown)").
+
 ## 1.12.0
 
 Accepted work, steadier providers and a shared budget.

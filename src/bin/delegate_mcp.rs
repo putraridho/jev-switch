@@ -15,6 +15,9 @@
 async fn main() -> anyhow::Result<()> {
     jev_router::orchestration::interface::mcp::compose::run(Box::new(|state, dir| {
         let guards = jev_router::turn::application::guards::Guards::load(&jev_router::shared::infrastructure::system_host::SystemHost, std::sync::Arc::new(jev_router::turn::infrastructure::privacy_audit::FilePrivacyAudit), Some(state), dir);
+        // The workers' paid-use checks follow how each CLI is funded, as the planner's do.
+        let mut guards = guards;
+        guards.set_fundings(jev_router::providers::infrastructure::funding_probe::detect(&jev_router::providers::infrastructure::funding_probe::SystemAccountFacts));
         let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64);
         let guards = guards.with_ledger(
             std::sync::Arc::new(jev_router::turn::infrastructure::spend_ledger_file::FileSpendLedger),

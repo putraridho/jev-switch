@@ -1,6 +1,7 @@
 //! One check per provider, and the exact steps to get a provider from its state to ready.
 
 use jev_providers::domain::availability::{Availability, State};
+use jev_providers::domain::funding::Funding;
 use jev_providers::domain::login_hints::{install_hint, login_command};
 use jev_shared::ProviderId;
 
@@ -20,9 +21,11 @@ pub(super) fn no_provider_check(ready: &[ProviderId]) -> Option<Check> {
     })
 }
 
-pub(super) fn provider_check(a: &Availability, env_path: &str) -> Check {
+pub(super) fn provider_check(a: &Availability, env_path: &str, funding: Option<Funding>) -> Check {
     let name = a.provider.as_str();
     let (severity, title, mut fix) = match a.state {
+        // A ready provider on a key or endpoint is usable but not on the plan the catalog assumes.
+        State::Ready if funding.is_some_and(|f| !f.is_native()) => (Severity::Info, format!("{name} is ready, billing is not a plan"), Vec::new()),
         State::Ready => (Severity::Ok, format!("{name} is ready"), Vec::new()),
         State::NotInstalled => (Severity::Info, format!("{name} is not installed"), fix_steps(a.provider, a.state, env_path)),
         State::NotLoggedIn => (Severity::Warn, format!("{name} is installed but not logged in"), fix_steps(a.provider, a.state, env_path)),
@@ -30,7 +33,7 @@ pub(super) fn provider_check(a: &Availability, env_path: &str) -> Check {
         State::Unknown => (Severity::Warn, format!("{name}: could not tell if it is usable"), fix_steps(a.provider, a.state, env_path)),
     };
     fix.dedup();
-    check(provider_id(a.provider), title, severity, provider_detail(a), fix)
+    check(provider_id(a.provider), title, severity, provider_detail(a, funding), fix)
 }
 
 /// One stable id per provider, for renderers that want to find a check.
@@ -45,7 +48,7 @@ pub(super) fn provider_id(p: ProviderId) -> &'static str {
 }
 
 /// State, plan, models and the probe's own words, plus an unverified label.
-fn provider_detail(a: &Availability) -> String {
+fn provider_detail(a: &Availability, funding: Option<Funding>) -> String {
     let mut parts: Vec<String> = Vec::new();
     if a.state == State::Ready {
         if let Some(plan) = &a.plan {
@@ -58,6 +61,12 @@ fn provider_detail(a: &Availability) -> String {
     }
     if !a.detail.is_empty() {
         parts.push(a.detail.clone());
+    }
+    if let Some(funding) = funding.filter(|_| a.state == State::Ready) {
+        parts.push(format!("billing: {}", funding.label(a.provider)));
+        if !funding.is_native() {
+            parts.push("counts against the paid cap".to_string());
+        }
     }
     if a.provider == ProviderId::DeepSeek && a.state != State::NotInstalled {
         parts.push("billed per token; adding a key creates no subscription".to_string());

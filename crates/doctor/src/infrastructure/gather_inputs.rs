@@ -23,6 +23,7 @@ pub async fn gather(runtime: &Runtime, dir: &Path) -> Inputs {
         cooldown_lines: cooldown_lines(runtime),
         blocked: blocked(runtime),
         allow_credits: runtime.allow.credits,
+        fundings: runtime.fundings.clone(),
     }
 }
 

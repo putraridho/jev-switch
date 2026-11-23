@@ -173,6 +173,10 @@ impl ProviderHost for SystemProbes {
     fn state_dir(&self) -> Option<PathBuf> {
         SystemHost.state_dir()
     }
+
+    fn fundings(&self) -> crate::domain::funding::Fundings {
+        super::funding_probe::detect(&super::funding_probe::SystemAccountFacts)
+    }
 }
 
 #[cfg(test)]

@@ -13,8 +13,7 @@ use std::path::Path;
 
 use jev_backend::{ProviderId, Usage};
 use jev_shared::Measurement;
-use jev_catalog::domain::model_table as catalog;
-use jev_catalog::domain::model_table::Billing;
+use jev_providers::domain::funding::{Fundings, Funding};
 
 const PRICE_FILE: &str = "prices.txt";
 const BUDGET_FILE: &str = "budget";
@@ -102,9 +101,26 @@ pub struct Spend {
 #[derive(Debug, Clone, Default)]
 pub struct Meter {
     by_model: BTreeMap<(ProviderId, String), Spend>,
+    /// How each provider's CLI is funded; decides which rows are paid (see [`Meter::is_paid`]).
+    fundings: Fundings,
 }
 
 impl Meter {
+    /// Count paid use by the funding actually detected, not the catalog's label alone.
+    pub fn set_fundings(&mut self, fundings: Fundings) {
+        self.fundings = fundings;
+    }
+
+    pub fn fundings(&self) -> &Fundings {
+        &self.fundings
+    }
+
+    /// Whether using the model costs money beyond the flat plan, or may: see [`Fundings::is_paid`].
+    /// A custom endpoint or unknown billing is controlled like paid use, with no dollars invented.
+    pub fn is_paid(&self, provider: ProviderId, model: &str) -> bool {
+        self.fundings.is_paid(provider, model)
+    }
+
     pub fn record(&mut self, provider: ProviderId, model: &str, usage: &Usage, prices: &PriceTable) {
         let s = self.by_model.entry((provider, model.to_string())).or_default();
         s.turns += 1;
@@ -145,27 +161,21 @@ impl Meter {
 
     /// Dollars and tokens used by paid models (per-token API or credits).
     pub fn paid(&self) -> (f64, u64) {
-        self.rows().filter(|(p, m, _)| is_paid(*p, m)).fold((0.0, 0), |(usd, tok), (_, _, s)| (usd + s.usd, tok + s.input_tokens + s.output_tokens))
+        self.rows().filter(|(p, m, _)| self.is_paid(*p, m)).fold((0.0, 0), |(usd, tok), (_, _, s)| (usd + s.usd, tok + s.input_tokens + s.output_tokens))
     }
 
     /// Turns of paid models that have no price, so their dollars are unknown.
     pub fn unpriced_paid_turns(&self) -> u32 {
-        self.rows().filter(|(p, m, _)| is_paid(*p, m)).map(|(_, _, s)| s.unpriced_turns).sum()
+        self.rows().filter(|(p, m, _)| self.is_paid(*p, m)).map(|(_, _, s)| s.unpriced_turns).sum()
     }
 
     pub fn unreported_paid_turns(&self) -> u32 {
-        self.rows().filter(|(provider, model, _)| is_paid(*provider, model)).map(|(_, _, spend)| spend.unreported_turns).sum()
+        self.rows().filter(|(provider, model, _)| self.is_paid(*provider, model)).map(|(_, _, spend)| spend.unreported_turns).sum()
     }
 
     pub fn clear(&mut self) {
         self.by_model.clear();
     }
-}
-
-/// Whether using the model costs money beyond the flat plan. A model the catalog does not
-/// know counts as paid: the safe side of a cap.
-pub fn is_paid(provider: ProviderId, model: &str) -> bool {
-    catalog::find(provider, model).is_none_or(|m| m.billing != Billing::Subscription)
 }
 
 /// The limit on paid use for one session.
@@ -294,8 +304,10 @@ pub fn meter_text(meter: &Meter, budget: &Budget, plans: &[(String, f64)]) -> St
         out.push_str("  No model has answered yet in this session.\n");
     }
     for (provider, model, s) in meter.rows() {
-        let cost = match (is_paid(provider, model), s.unpriced_turns) {
+        let unknown_billing = matches!(meter.fundings().get(provider), Some(Funding::Custom | Funding::Unknown));
+        let cost = match (meter.is_paid(provider, model), s.unpriced_turns) {
             (false, _) => "plan".to_string(),
+            (true, _) if unknown_billing => "billing unknown".to_string(),
             (true, 0) => format!("${:.4}", s.usd),
             (true, n) if n == s.turns => "no price set".to_string(),
             (true, _) => format!("${:.4}+ (some turns unpriced)", s.usd),
@@ -356,6 +368,7 @@ pub fn meter_text(meter: &Meter, budget: &Budget, plans: &[(String, f64)]) -> St
 #[cfg(test)]
 mod tests {
     use super::*;
+    use jev_catalog::domain::model_table as catalog;
 
     fn usage(input: u64, cached: u64, output: u64) -> Usage {
         Usage { input_tokens: input, cached_input_tokens: cached, output_tokens: output, context_tokens: None, ..Usage::default() }
@@ -397,8 +410,8 @@ mod tests {
         // A paid model with no price counts tokens and flags the turn.
         m.record(ProviderId::DeepSeek, "deepseek-flash", &usage(100, 0, 100), &t);
         assert_eq!(m.rows().find(|(_, id, _)| *id == "deepseek-flash").map(|(_, _, s)| s.unpriced_turns), Some(1));
-        assert!(is_paid(ProviderId::Claude, "claude-fable-5-2"));
-        assert!(is_paid(ProviderId::Claude, "not-a-model"));
+        assert!(m.is_paid(ProviderId::Claude, "claude-fable-5-2"));
+        assert!(m.is_paid(ProviderId::Claude, "not-a-model"));
     }
 
     #[test]
@@ -508,5 +521,29 @@ mod tests {
         assert_eq!(short_count(12_400), "12.4k");
         assert_eq!(short_count(10_000), "10k");
         assert_eq!(short_count(3_200_000), "3.2m");
+    }
+
+    /// The reproduction from the inspection report: Codex configured with a custom model
+    /// provider is not on the ChatGPT plan the catalog assumes.
+    #[test]
+    fn a_custom_codex_backend_is_paid_controlled_and_shown_as_unknown_billing() {
+        let mut meter = Meter::default();
+        meter.set_fundings(Fundings::default().with(ProviderId::Codex, Funding::Custom));
+        assert!(meter.is_paid(ProviderId::Codex, "gpt-6.1-terra"));
+        assert!(!meter.is_paid(ProviderId::Claude, catalog::MODEL_MID), "other providers keep their plan");
+        meter.record(ProviderId::Codex, "gpt-6.1-terra", &usage(1_000, 0, 500), &PriceTable::default());
+        assert_eq!(meter.paid().1, 1_500, "its tokens count toward a token cap");
+        assert_eq!(meter.unpriced_paid_turns(), 1, "no dollars are invented");
+        let text = meter_text(&meter, &Budget::default(), &[]);
+        assert!(text.contains("billing unknown"), "{text}");
+    }
+
+    #[test]
+    fn a_native_login_behaves_as_before() {
+        let mut meter = Meter::default();
+        meter.set_fundings(Fundings::default().with(ProviderId::Codex, Funding::Login));
+        meter.record(ProviderId::Codex, "gpt-6.1-terra", &usage(1_000, 0, 500), &PriceTable::default());
+        assert_eq!(meter.paid(), (0.0, 0));
+        assert!(meter_text(&meter, &Budget::default(), &[]).contains("plan"));
     }
 }

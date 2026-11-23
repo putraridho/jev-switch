@@ -27,13 +27,15 @@ impl Engine {
     pub fn new(runtime: Runtime, router: Router, dir: PathBuf, adapters: Adapters) -> Self {
         let host = adapters.host;
         let clock = host.clone();
+        let mut guards = Guards { home: host.home(), ..Guards::default() };
+        guards.set_fundings(runtime.fundings.clone());
         let turn_log = host.env("JEV_CODE_LOG").or_else(|| Some(host.state_dir()?.join("code-turns.jsonl").to_string_lossy().into_owned()));
         let allowed_tools = permission_rule::split_rules(&host.env("CODE_ALLOWED_TOOLS").unwrap_or_default());
         Self {
             runtime,
             sessions: Sessions::new(),
             routing: RoutingState::default(),
-            guards: Guards { home: host.home(), ..Guards::default() },
+            guards,
             router,
             pin: Pin::Auto,
             pin_origin: PinOrigin::User,
@@ -99,6 +101,7 @@ impl Engine {
     /// obeys them.
     pub fn with_persistence_and_settings(mut self, persist: Option<PathBuf>, settings: Option<&std::path::Path>) -> Self {
         self.guards = Guards::load(&*self.host, self.privacy_audit.clone(), settings, &self.dir);
+        self.guards.set_fundings(self.runtime.fundings.clone());
         if let Some(state) = settings {
             // The workers' processes see this session's spend, and this one theirs.
             let now = self.host.now_ms();

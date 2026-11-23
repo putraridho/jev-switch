@@ -99,6 +99,7 @@ impl Runtime {
     /// The pure half of [`Runtime::refresh`].
     pub(super) fn apply_probe(&mut self, avail: Vec<Availability>) {
         self.avail = avail;
+        self.fundings = self.host.fundings();
         self.allow = allowances_for(self.host.env("JEV_ALLOW_CREDITS").as_deref(), &self.avail);
         let avail = &self.avail;
         self.blocked.retain(|p, reason| {

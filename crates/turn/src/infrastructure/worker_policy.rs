@@ -14,7 +14,6 @@ use jev_approval::domain::worker_command::worker_may_run;
 use jev_backend::{Approver, Decision, PermissionRequest, ProviderId, TurnRequest, Usage, NO_ONE_TO_ASK};
 use jev_orchestration::application::ports::{Screen, WorkerPolicy};
 use crate::application::guards::Guards;
-use crate::domain::budget::is_paid;
 use crate::domain::privacy::outgoing;
 
 /// Owns the worker guards and synchronizes admission with completed worker usage.
@@ -45,11 +44,8 @@ impl WorkerPolicy for GuardedWorkers {
     }
 
     fn admits(&self, provider: ProviderId, model: &str, attempts: u32) -> bool {
-        if !is_paid(provider, model) {
-            return true;
-        }
         let guards = self.guards();
-        guards.may_pay(attempts)
+        !guards.is_paid(provider, model) || guards.may_pay(attempts)
     }
 
     fn record_usage(&self, provider: ProviderId, model: &str, usage: &Usage) {
@@ -212,6 +208,18 @@ mod tests {
             assert!(!policy.admits(provider, model, 2));
         }
         assert!(policy.admits(ProviderId::Claude, "claude-sonnet-5-5", 1));
+    }
+
+    #[test]
+    fn a_worker_on_a_custom_codex_backend_needs_the_paid_fallback() {
+        use jev_providers::domain::funding::{Funding, Fundings};
+        let mut guards = Guards { failover: FailoverPolicy { max_attempts: 6, paid_fallback: false }, ..Guards::default() };
+        let native = GuardedWorkers::new(Guards { failover: guards.failover, ..Guards::default() });
+        assert!(native.admits(ProviderId::Codex, "gpt-6.1-terra", 1));
+        guards.set_fundings(Fundings::default().with(ProviderId::Codex, Funding::Custom));
+        let policy = GuardedWorkers::new(guards);
+        assert!(policy.admits(ProviderId::Codex, "gpt-6.1-terra", 0));
+        assert!(!policy.admits(ProviderId::Codex, "gpt-6.1-terra", 1));
     }
 
     #[test]

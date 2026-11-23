@@ -3,6 +3,7 @@ pub mod clock_facts;
 pub mod codex_models;
 pub mod cooldown_file;
 pub mod deepseek_balance;
+pub mod funding_probe;
 pub mod health_file;
 pub mod plan_store;
 pub mod probe_cache;

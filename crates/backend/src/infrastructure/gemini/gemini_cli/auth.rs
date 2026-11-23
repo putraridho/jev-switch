@@ -26,10 +26,16 @@ pub(super) fn auth_looks_configured(gemini_settings_json: Option<&str>, env_has_
 }
 
 fn names_auth_type(json: &str) -> bool {
+    selected_auth_type(json).is_some()
+}
+
+/// The auth type `settings.json` selects (`oauth-personal`, `gemini-api-key`, `vertex-ai`...),
+/// when it names one.
+pub fn selected_auth_type(json: &str) -> Option<String> {
     let uncommented: String =
         json.lines().filter(|l| !l.trim_start().starts_with("//")).collect::<Vec<_>>().join("\n");
-    let Ok(settings) = serde_json::from_str::<Value>(&uncommented) else { return false };
+    let settings: Value = serde_json::from_str(&uncommented).ok()?;
     // `security.auth.selectedType` is current; `selectedAuthType` is the older top-level key.
-    let named = settings["security"]["auth"]["selectedType"].as_str().or(settings["selectedAuthType"].as_str());
-    named.is_some_and(|t| !t.trim().is_empty())
+    let named = settings["security"]["auth"]["selectedType"].as_str().or(settings["selectedAuthType"].as_str())?;
+    (!named.trim().is_empty()).then(|| named.trim().to_string())
 }

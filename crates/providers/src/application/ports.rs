@@ -14,6 +14,7 @@ use std::pin::Pin;
 use jev_backend::{PlanUsage, ProviderId};
 use crate::domain::availability::Availability;
 use crate::domain::breaker::Breakers;
+use crate::domain::funding::Fundings;
 use crate::domain::reset_time::cooldowns::Cooldowns;
 
 /// A boxed future the port hands back, so the trait stays object safe.
@@ -55,4 +56,23 @@ pub trait ProviderHost: Debug + Send + Sync {
     fn now_ms(&self) -> u64;
     /// The directory holding logs, sessions and caches; `None` without one.
     fn state_dir(&self) -> Option<PathBuf>;
+    /// What funds each provider's CLI on this machine, from its configuration and credentials
+    /// (presence and kind only). Reads small files; never runs a CLI.
+    fn fundings(&self) -> Fundings;
+}
+
+/// What the funding probes may ask the machine. Answers are presence and file text, never
+/// a credential's value: a key is asked about with `*_set`, so it cannot be read, logged
+/// or leak into a label.
+pub trait AccountFacts: Debug + Send + Sync {
+    /// A setting is set and non-empty in the environment or `~/.jev-router.env`.
+    fn setting_set(&self, name: &str) -> bool;
+    /// A variable is set and non-empty in this process's own environment (what a child
+    /// CLI inherits; the key file is not).
+    fn process_env_set(&self, name: &str) -> bool;
+    fn home_dir(&self) -> Option<PathBuf>;
+    /// Codex's folder: `$CODEX_HOME`, else `~/.codex`.
+    fn codex_home(&self) -> Option<PathBuf>;
+    fn read_text(&self, path: &Path) -> Option<String>;
+    fn exists(&self, path: &Path) -> bool;
 }

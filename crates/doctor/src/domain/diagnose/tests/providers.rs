@@ -120,3 +120,18 @@ fn login_commands_have_one_source_and_the_verified_ones_are_named() {
         assert_eq!(login_verified(p), matches!(p, Claude | Codex), "{p}");
     }
 }
+
+#[test]
+fn a_ready_provider_shows_how_it_is_funded_and_is_not_called_a_plan_when_it_is_not() {
+    use jev_providers::domain::funding::{Funding, Fundings};
+    let mut i = inputs(vec![av(Claude, State::Ready), av(Codex, State::Ready)]);
+    i.fundings = Fundings::default().with(Claude, Funding::Login).with(Codex, Funding::Custom);
+    let r = diagnose(&i);
+    let claude = find(&r, provider_id(Claude));
+    assert_eq!(claude.severity, Severity::Ok);
+    assert!(claude.detail.contains("billing: Claude login"), "{}", claude.detail);
+    let codex = find(&r, provider_id(Codex));
+    assert_eq!(codex.severity, Severity::Info);
+    assert!(codex.detail.contains("billing: custom endpoint (billing unknown); counts against the paid cap"), "{}", codex.detail);
+    assert!(!find(&diagnose(&inputs(vec![av(Codex, State::Ready)])), provider_id(Codex)).detail.contains("billing:"), "not inspected, not claimed");
+}

@@ -75,6 +75,8 @@ impl Engine {
             pinned: !matches!(self.pin, Pin::Auto) && self.pin_origin == PinOrigin::User,
             attempts,
         };
+        // A /providers refresh may have found a key or endpoint the last turn did not have.
+        self.guards.set_fundings(self.runtime.fundings.clone());
         let restricted = self.guards.restrict(&usable, &turn).map_err(|why| NoRoute::Refused { why })?;
         if attempts == 0 {
             self.guards.audit_blocked(&restricted.blocked, now);

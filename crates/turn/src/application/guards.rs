@@ -84,6 +84,16 @@ pub(crate) struct SharedSpend {
 }
 
 impl Guards {
+    /// Use the detected funding of each provider's CLI to tell paid from plan use.
+    pub fn set_fundings(&mut self, fundings: jev_providers::domain::funding::Fundings) {
+        self.meter.set_fundings(fundings);
+    }
+
+    /// Whether using `model` is paid use under the detected funding.
+    pub fn is_paid(&self, provider: ProviderId, model: &str) -> bool {
+        self.meter.is_paid(provider, model)
+    }
+
     pub fn may_pay(&self, attempts: u32) -> bool {
         self.budget.allows_paid(&self.total_meter()) && (self.failover.paid_fallback || attempts == 0)
     }
@@ -158,7 +168,7 @@ impl Guards {
         }
         let may_pay = self.may_pay(turn.attempts);
         if !may_pay {
-            let free = current.filter(|p, m| !crate::domain::budget::is_paid(p, m));
+            let free = current.filter(|p, m| !self.meter.is_paid(p, m));
             if free.is_empty() && !current.is_empty() {
                 let why = if self.budget.allows_paid(&self.total_meter()) { "paid-fallback is off (/failover)" } else { "the budget cap is reached (/budget)" };
                 return Err(format!("only models that cost money are left, and {why}"));
@@ -295,6 +305,26 @@ mod tests {
         // Only paid models left: refused with the reason.
         let err = g.restrict(&Usable::all_of([ProviderId::DeepSeek]), &facts("x", 0)).unwrap_err();
         assert!(err.contains("budget cap is reached"), "{err}");
+    }
+
+    /// The inspection's reproduction: Codex configured with a custom model provider is
+    /// controlled like paid use, so the cap and the paid-fallback switch apply to it.
+    #[test]
+    fn a_custom_codex_backend_is_held_by_the_cap_and_the_failover_switch() {
+        use jev_providers::domain::funding::{Funding, Fundings};
+        let mut g = Guards { budget: Budget { cap: Some(Cap::Tokens(100)) }, ..Guards::default() };
+        let codex_only = Usable::all_of([ProviderId::Codex]);
+        assert!(g.restrict(&codex_only, &facts("x", 0)).is_ok());
+        g.set_fundings(Fundings::default().with(ProviderId::Codex, Funding::Custom));
+        let usage = jev_backend::Usage { input_tokens: 200, ..Default::default() };
+        g.meter.record(ProviderId::Codex, "gpt-6.1-terra", &usage, &g.prices);
+        let r = g.restrict(&all(), &facts("x", 0)).unwrap();
+        assert!(!has(&r.usable, ProviderId::Codex) && has(&r.usable, ProviderId::Claude), "capped once its tokens reach the cap");
+        assert!(g.restrict(&codex_only, &facts("x", 0)).unwrap_err().contains("budget cap is reached"));
+        let off = Guards { failover: FailoverPolicy { max_attempts: 6, paid_fallback: false }, ..Guards::default() };
+        let mut off = off;
+        off.set_fundings(Fundings::default().with(ProviderId::Codex, Funding::Custom));
+        assert!(!has(&off.restrict(&all(), &facts("x", 1)).unwrap().usable, ProviderId::Codex));
     }
 
     #[test]

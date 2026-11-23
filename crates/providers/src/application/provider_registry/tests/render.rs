@@ -22,3 +22,15 @@ use crate::domain::availability;
     fn render_without_events_has_no_cooldown_lines() {
         assert!(!runtime().render(NOW).contains("cooling"));
     }
+
+    #[test]
+    fn render_says_how_a_ready_provider_is_funded_and_never_claims_a_plan_it_cannot_see() {
+        use crate::domain::funding::{Funding, Fundings};
+        let mut rt = runtime();
+        assert!(!rt.render(NOW).contains("billing:"), "nothing inspected, nothing claimed");
+        rt.fundings = Fundings::default().with(Claude, Funding::Login).with(Codex, Funding::Custom).with(Gemini, Funding::ApiKey);
+        let text = rt.render(NOW);
+        assert!(text.contains("billing: claude Claude login\n"), "{text}");
+        assert!(text.contains("billing: codex custom endpoint (billing unknown); counts against the paid cap"), "{text}");
+        assert!(!text.contains("billing: gemini"), "not ready: {text}");
+    }

@@ -28,6 +28,7 @@ use jev_catalog::domain::model_table::{Allowances, Overrides};
 use crate::application::ports::ProviderHost;
 use crate::domain::availability::Availability;
 use crate::domain::breaker::Breakers;
+use crate::domain::funding::Fundings;
 use crate::domain::reset_time::cooldowns::Cooldowns;
 use disk_watch::DiskWatch;
 
@@ -39,6 +40,9 @@ pub struct Runtime {
     pub avail: Vec<Availability>,
     pub cooldowns: Cooldowns,
     pub allow: Allowances,
+    /// How each provider's CLI is funded, read from its configuration at start and at every
+    /// refresh. The catalog's billing label is trusted only where this says the native login.
+    pub fundings: Fundings,
     pub overrides: Overrides,
     /// Where cooldowns are saved; `None` when there is no state directory.
     pub cooldown_path: Option<PathBuf>,
@@ -136,6 +140,7 @@ impl Runtime {
             avail,
             cooldowns,
             allow,
+            fundings: host.fundings(),
             overrides,
             cooldown_path,
             disk: Mutex::new(DiskWatch::default()),
@@ -155,6 +160,8 @@ impl Runtime {
     #[cfg(any(test, feature = "testing"))]
     pub fn for_tests(avail: Vec<Availability>) -> Self {
         let allow = crate::domain::usability::allowances_for(None, &avail);
-        Self::build(avail, Cooldowns::default(), allow, Overrides::default(), None, Arc::new(crate::infrastructure::probe_facts::SystemProbes))
+        let mut runtime = Self::build(avail, Cooldowns::default(), allow, Overrides::default(), None, Arc::new(crate::infrastructure::probe_facts::SystemProbes));
+        runtime.fundings = Fundings::default();
+        runtime
     }
 }

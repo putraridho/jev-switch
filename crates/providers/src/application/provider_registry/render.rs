@@ -1,6 +1,7 @@
 //! The text of `/providers` and the startup summary.
 
 use crate::domain::availability;
+use crate::domain::availability::State;
 use crate::domain::login_hints::{login_target, unsupported_hint, unusable_here_hint};
 use jev_shared::domain::duration_text::format_left;
 use jev_shared::ALL_PROVIDERS;
@@ -11,6 +12,7 @@ impl Runtime {
     /// The text of `/providers`: probe results, then what has changed since.
     pub fn render(&self, now_ms: u64) -> String {
         let mut out = vec![availability::render::render(&self.avail)];
+        out.extend(self.billing_lines());
         out.extend(self.cooldown_lines(now_ms));
         out.extend(self.unusable_lines());
         out.extend(self.blocked_lines());
@@ -33,6 +35,20 @@ impl Runtime {
         lines.extend(self.cooldown_lines(now_ms));
         lines.push("/providers for details".to_string());
         lines.join("\n")
+    }
+
+    /// How each ready provider's CLI is funded, with the paid cap noted where the catalog's
+    /// plan cannot be assumed.
+    fn billing_lines(&self) -> Vec<String> {
+        self.avail
+            .iter()
+            .filter(|a| a.state == State::Ready)
+            .filter_map(|a| {
+                let funding = self.fundings.get(a.provider)?;
+                let cap = if funding.is_native() { "" } else { "; counts against the paid cap" };
+                Some(format!("billing: {} {}{cap}", a.provider, funding.label(a.provider)))
+            })
+            .collect()
     }
 
     fn cooldown_lines(&self, now_ms: u64) -> Vec<String> {

@@ -11,6 +11,7 @@ use std::cmp::Reverse;
 use std::path::PathBuf;
 
 use jev_providers::domain::availability::{Availability, State};
+use jev_providers::domain::funding::Fundings;
 use jev_providers::domain::login_hints::DEFAULT_ENV_PATH;
 use jev_shared::ProviderId;
 
@@ -81,6 +82,8 @@ pub struct Inputs {
     /// Providers skipped for this session, with why.
     pub blocked: Vec<(ProviderId, String)>,
     pub allow_credits: bool,
+    /// How each provider's CLI is funded; one not inspected is left out of the report.
+    pub fundings: Fundings,
 }
 
 // ---------------------------------------------------------------------- diagnose
@@ -94,7 +97,7 @@ pub fn diagnose(inputs: &Inputs) -> Report {
     checks.extend(no_provider_check(&ready));
     checks.push(jev_key_check(inputs.jev_key_present, &env_path));
     checks.extend(jev_reachable_check(inputs));
-    checks.extend(inputs.avail.iter().map(|a| provider_check(a, &env_path)));
+    checks.extend(inputs.avail.iter().map(|a| provider_check(a, &env_path, inputs.fundings.get(a.provider))));
     checks.extend(git_check(inputs.in_git_repo));
     checks.extend(state_dir_check(inputs.state_dir_writable));
     checks.extend(env_perms_check(inputs.env_file.as_ref()));
