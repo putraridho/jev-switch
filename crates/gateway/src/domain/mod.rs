@@ -1,3 +1,4 @@
+pub mod auxiliary_cooldown;
 pub mod haiku_adaptation;
 pub mod model_choice;
 pub mod orchestration_brief;

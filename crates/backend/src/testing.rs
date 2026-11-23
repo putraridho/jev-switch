@@ -104,7 +104,7 @@ impl Backend for ScriptedCli {
             f(req);
         }
         let mut c = Command::new("sh");
-        c.arg("-c").arg(&self.script).current_dir(&req.dir);
+        c.arg("-c").arg(&self.script).current_dir(&req.dir).env("JEV_FAILURE_LOG", "");
         if self.prompt_env {
             c.env("FAKE_PROMPT", &req.prompt).env("FAKE_SESSION_ID", req.session_id.as_deref().unwrap_or(""));
         }

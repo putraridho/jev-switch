@@ -35,6 +35,7 @@ impl Meta {
 /// A routed request: the real model, and the turn's decision for the usage log.
 pub(super) struct Picked {
     pub(super) model: &'static str,
+    pub(super) auxiliary_one_shot: bool,
     pub(super) new_turn: bool,
     pub(super) decision: Option<Value>,
 }
@@ -49,6 +50,7 @@ pub(super) async fn choose_model(app: &App, meta: &Meta, req: &Value) -> Option<
     let st = sessions.entry(&session_id, &app.turns_path);
     let same_turn = |st: &SessionState| Picked {
         model: st.model.unwrap_or(MODEL_MID),
+        auxiliary_one_shot: false,
         new_turn: false,
         decision: st.decision.clone(),
     };
@@ -58,14 +60,14 @@ pub(super) async fn choose_model(app: &App, meta: &Meta, req: &Value) -> Option<
         // prompt cache and can exceed Haiku's 200k window; only small one-shot
         // requests (titles, summaries) go to Haiku.
         let fork = req.get("tools").and_then(Value::as_array).is_some_and(|t| !t.is_empty());
-        return Some(if fork { same_turn(st) } else { Picked { model: MODEL_CHEAP, new_turn: false, decision: None } });
+        return Some(if fork { same_turn(st) } else { Picked { model: MODEL_CHEAP, auxiliary_one_shot: true, new_turn: false, decision: None } });
     }
     if class == "subagent" {
         // Subagents arriving as jev-code (the main model named no model) are mostly
         // searches and reads. Sonnet for every request keeps a run on one model, so a
         // main-model switch can't rebuild the subagent's cache mid-run. An explicit
         // model on the Agent tool never reaches here: only the alias is routed.
-        return Some(Picked { model: MODEL_MID, new_turn: false, decision: None });
+        return Some(Picked { model: MODEL_MID, auxiliary_one_shot: false, new_turn: false, decision: None });
     }
     if class != "main" {
         // Workflows, compaction: stay on the turn's model.
@@ -114,7 +116,7 @@ pub(super) async fn choose_model(app: &App, meta: &Meta, req: &Value) -> Option<
         st.decision = Some(decision.clone());
         let prompt = strip_orchestrate_block(&prompt);
         log_decision(app, &session_id, prompt_id.as_deref(), planner, &decision, &prompt);
-        return Some(Picked { model: planner, new_turn: true, decision: Some(decision) });
+        return Some(Picked { model: planner, auxiliary_one_shot: false, new_turn: true, decision: Some(decision) });
     }
     let context = recent_context(req);
     let fallback = st.sticky.tier.unwrap_or(1);
@@ -131,7 +133,7 @@ pub(super) async fn choose_model(app: &App, meta: &Meta, req: &Value) -> Option<
     let decision = json!({ "tier": tier, "reason": reason, "confident": want.confident, "signals": want.signals.to_json(), "orchestrate": orch_check });
     st.decision = Some(decision.clone());
     log_decision(app, &session_id, prompt_id.as_deref(), TIERS[tier], &decision, &words);
-    Some(Picked { model: TIERS[tier], new_turn: true, decision: Some(decision) })
+    Some(Picked { model: TIERS[tier], auxiliary_one_shot: false, new_turn: true, decision: Some(decision) })
 }
 
 fn log_decision(app: &App, session: &str, prompt_id: Option<&str>, model: &str, decision: &Value, prompt: &str) {

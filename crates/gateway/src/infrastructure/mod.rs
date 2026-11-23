@@ -1,4 +1,5 @@
 pub mod anthropic_wire;
+pub mod auxiliary_cooldown;
 pub mod haiku_adaptation;
 pub mod orchestration_brief;
 pub mod prefix_fingerprint;

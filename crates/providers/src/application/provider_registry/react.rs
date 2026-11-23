@@ -4,6 +4,7 @@
 use std::collections::HashSet;
 
 use jev_backend::{ErrorKind, ProviderId, TurnError};
+use jev_catalog::domain::model_table::models;
 use crate::domain::login_hints::{login_target, unsupported_hint, unusable_here_hint};
 
 use super::{BlockReason, Runtime};
@@ -51,6 +52,15 @@ impl Runtime {
             ErrorKind::Stalled | ErrorKind::Empty => {
                 excluded.insert((provider, model.to_string()));
                 let what = if err.kind == ErrorKind::Stalled { "stopped answering" } else { "gave an empty answer" };
+                if excluded.iter().filter(|(failed_provider, _)| *failed_provider == provider).count() >= 2 {
+                    excluded.extend(
+                        models()
+                            .iter()
+                            .filter(|candidate| candidate.provider == provider)
+                            .map(|candidate| (candidate.provider, candidate.id.to_string())),
+                    );
+                    return Some(format!("{provider} {what} on {model} too: skipping {provider} for this turn"));
+                }
                 Some(format!("{provider}:{model} {what}: trying the next model"))
             }
             ErrorKind::Other => None,

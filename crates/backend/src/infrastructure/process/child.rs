@@ -112,6 +112,7 @@ async fn run_child(
     steer: Option<Steering<'_>>,
 ) -> Result<TurnOutcome, TurnError> {
     let mut cmd = backend.command(req);
+    let failure_log = super::failure_record::path_for_command(&cmd);
     cmd.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).kill_on_drop(true);
     // Its own process group, so the whole tree can be killed (see [`GroupKill`]).
     #[cfg(unix)]
@@ -126,6 +127,7 @@ async fn run_child(
 
     let mut plan = None;
     let mut pump = Pump {
+        failure_log,
         backend,
         reader: BufReader::new(stdout),
         raw: Vec::new(),

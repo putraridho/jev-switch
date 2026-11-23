@@ -109,6 +109,10 @@ pub(super) struct Rig {
 
 impl Rig {
     pub(super) async fn new(name: &str, jev: fn(&str) -> (u16, &'static str, String)) -> Self {
+        Self::with_upstream(name, jev, anthropic_answers).await
+    }
+
+    pub(super) async fn with_upstream(name: &str, jev: fn(&str) -> (u16, &'static str, String), reply: fn(&str) -> (u16, &'static str, String)) -> Self {
         static RIGS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
         let n = RIGS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let dir = std::env::temp_dir().join(format!("jev-golden-gateway-{name}-{}-{n}", std::process::id()));
@@ -116,7 +120,7 @@ impl Rig {
         std::fs::create_dir_all(&dir).unwrap();
         let path = |f: &str| Some(dir.join(f).to_string_lossy().into_owned());
         let (jev_url, _) = fake_server(jev).await;
-        let (upstream_url, upstream) = fake_server(anthropic_answers).await;
+        let (upstream_url, upstream) = fake_server(reply).await;
         let app = Arc::new(App {
             router: Router::new(TypeSafe::with_url("k", &format!("{jev_url}/v1/systemone")), 1.0)
                 .with_strong_threshold(CODE_STRONG_THRESHOLD)
@@ -125,6 +129,7 @@ impl Rig {
             upstream: upstream_url,
             downgrade_after: 2,
             sessions: Mutex::new(Sessions::new(Arc::new(jev_shared::infrastructure::system_host::SystemHost))),
+            auxiliary_cooldown: Mutex::default(),
             log_path: path("gateway.jsonl"),
             usage_path: path("usage.jsonl"),
             turns_path: path("turns.jsonl"),
@@ -135,6 +140,10 @@ impl Rig {
 
     /// One `/v1/messages` request through `forward`, the response read to its end.
     pub(super) async fn send(&self, session: &str, prompt_id: Option<&str>, class: &str, body: &str) {
+        self.send_response(session, prompt_id, class, body).await;
+    }
+
+    pub(super) async fn send_response(&self, session: &str, prompt_id: Option<&str>, class: &str, body: &str) -> (axum::http::StatusCode, axum::http::HeaderMap, axum::body::Bytes) {
         let mut req = Request::builder()
             .method("POST")
             .uri("/v1/messages")
@@ -147,7 +156,8 @@ impl Rig {
             req = req.header("x-claude-code-prompt-id", p);
         }
         let resp = forward(&self.app, req.body(Body::from(body.to_string())).unwrap()).await.unwrap();
-        to_bytes(resp.into_body(), MAX_BODY).await.unwrap();
+        let (parts, body) = resp.into_parts();
+        (parts.status, parts.headers, to_bytes(body, MAX_BODY).await.unwrap())
     }
 
     /// The lines of one of the gateway's logs, with the values that change per run masked.

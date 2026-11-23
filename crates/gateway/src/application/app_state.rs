@@ -5,6 +5,7 @@ use reqwest::Client;
 use tokio::sync::Mutex;
 
 use crate::application::session_state::Sessions;
+use crate::domain::auxiliary_cooldown::AuxiliaryCooldown;
 use jev_judgment::application::judge::Router;
 
 pub struct App {
@@ -13,6 +14,7 @@ pub struct App {
     pub upstream: String,
     pub downgrade_after: u32,
     pub sessions: Mutex<Sessions>,
+    pub auxiliary_cooldown: Mutex<AuxiliaryCooldown>,
     pub log_path: Option<String>,
     pub usage_path: Option<String>,
     pub turns_path: Option<String>,

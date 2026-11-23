@@ -35,6 +35,7 @@ pub struct Idle;
 /// dying reach the runner while the person is still deciding. Events that arrive then are
 /// held and delivered, in order, once the question is over.
 pub struct Pump<'a> {
+    pub(super) failure_log: Option<String>,
     pub(super) backend: &'a dyn Backend,
     pub(super) reader: BufReader<ChildStdout>,
     /// The line being read. Kept until it is complete: a read that lost a `select!` race
@@ -100,7 +101,7 @@ impl Pump<'_> {
         }
         let line = String::from_utf8_lossy(&self.raw);
         let events = self.backend.parse_line(&line);
-        super::failure_record::note(self.backend.provider(), &line, &events);
+        super::failure_record::note(self.failure_log.as_deref(), self.backend.provider(), &line, &events);
         for response in self.backend.take_responses() {
             self.feed.send(response);
         }

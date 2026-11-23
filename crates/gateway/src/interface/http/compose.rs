@@ -68,6 +68,7 @@ pub async fn run() -> Result<()> {
             .to_string(),
         downgrade_after: env_f64("DOWNGRADE_AFTER", 2.0) as u32,
         sessions: Mutex::new(Sessions::new(Arc::new(jev_shared::infrastructure::system_host::SystemHost))),
+        auxiliary_cooldown: Mutex::default(),
         log_path,
         usage_path,
         turns_path: log::path_from_env("JEV_TURNS_LOG", "turns.jsonl"),

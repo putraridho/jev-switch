@@ -26,6 +26,45 @@ async fn failed_event_is_classified() {
 }
 
 #[tokio::test]
+async fn failure_logging_uses_the_command_override_and_can_be_disabled() {
+    struct LoggedCli {
+        backend: crate::testing::ScriptedCli,
+        log: String,
+    }
+    impl Backend for LoggedCli {
+        fn provider(&self) -> ProviderId {
+            self.backend.provider()
+        }
+        fn command(&self, request: &TurnRequest) -> Command {
+            let mut command = self.backend.command(request);
+            command.env("JEV_FAILURE_LOG", &self.log);
+            command
+        }
+        fn parse_line(&self, line: &str) -> Vec<Event> {
+            self.backend.parse_line(line)
+        }
+        fn classify_error(&self, message: &str) -> ErrorKind {
+            self.backend.classify_error(message)
+        }
+    }
+    let dir = jev_testkit::temp_folder::Dir::new();
+    let path = dir.path().join("failures.jsonl");
+    let mut backend = LoggedCli { backend: fake_cli("echo FAIL:boom"), log: String::new() };
+    let result = run_turn(&backend, &req(), Duration::from_secs(1), &mut |_| {}).await;
+    assert_eq!(result.unwrap_err().message, "boom");
+    assert!(!path.exists());
+
+    backend.log = path.to_string_lossy().into_owned();
+    let result = run_turn(&backend, &req(), Duration::from_secs(1), &mut |_| {}).await;
+    assert_eq!(result.unwrap_err().message, "boom");
+    let rows = std::fs::read_to_string(&path).unwrap();
+    assert_eq!(rows.lines().count(), 1);
+    let row: serde_json::Value = serde_json::from_str(rows.trim()).unwrap();
+    assert_eq!(row["message"], "boom");
+    assert_eq!(row["raw"], "FAIL:boom");
+}
+
+#[tokio::test]
 async fn silent_child_is_killed_as_stalled() {
     let started = std::time::Instant::now();
     let (r, _) = run("echo TEXT:start; exec sleep 30", 300).await;

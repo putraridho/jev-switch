@@ -8,6 +8,8 @@ mod proxy_handler;
 mod upstream;
 
 #[cfg(test)]
+mod auxiliary_tests;
+#[cfg(test)]
 mod golden_rig;
 #[cfg(test)]
 mod golden_tests;

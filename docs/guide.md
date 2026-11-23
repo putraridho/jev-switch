@@ -250,6 +250,14 @@ the usage row records `retries`. Nothing is retried once a request has reached A
 request (400/413/422) or rate-limits it (429), the gateway retries it once on Sonnet as the client sent it and
 records `fallback_from` (model, status, error) on the usage row.
 
+One-shot auxiliary requests also pause each model that returns 429 across sessions and turns.
+The local pause defaults to 60 seconds, or uses a numeric `Retry-After` bounded to 1–300 seconds;
+it is a retry backoff, not a claim about when your provider quota resets. During Haiku's pause,
+requests go directly to Sonnet without Haiku adaptation. When both are paused, the gateway
+returns 429 with `Retry-After` without making another upstream request. Concurrent requests
+share rejection and fallback handling, and a Sonnet-first request never retries Sonnet again.
+Main requests, tool-using auxiliary forks, subagents and explicit model requests are unchanged.
+
 ### Code mode (`jev-code`)
 
 A coding agent that uses whichever AI coding tools you already have (Claude Code, Codex,
@@ -536,7 +544,9 @@ prompt goes to the next model:
 
 A model your plan does not include is dropped for the run. A login failure blocks the provider
 for the session and tells you which command to run. An empty answer or a stall skips that model
-for this turn only. Any other error stops the turn, since it would likely recur everywhere, and
+for this turn only; after two different models from the same provider fail this way, its remaining
+models are skipped for the turn too. This does not set a cooldown, and a new turn can retry it.
+Any other error stops the turn, since it would likely recur everywhere, and
 is shown as a titled block with the CLI's message and the steps to try. At most 6 models are
 tried per turn, and a failed attempt's output is never shown as an answer.
 
@@ -689,7 +699,9 @@ When a provider CLI's output line is a failure, the line itself (secrets masked,
 characters) is also appended to `<state dir>/provider-failures.jsonl` as
 `{ts_ms, provider, message, truncated, raw}`. The turn log keeps only the extracted message,
 which can be one bare word (Grok's `cancelled`); this file shows what the CLI really sent.
-`JEV_FAILURE_LOG` moves it.
+`JEV_FAILURE_LOG` moves it. A backend command can override that path for its own run; an empty
+or removed command-local override disables recording. Scripted test backends use this to keep
+fake crashes and quota errors out of the real state folder, even in tests of downstream crates.
 
 #### Routing off (Claude only)
 

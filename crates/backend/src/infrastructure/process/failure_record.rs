@@ -5,6 +5,7 @@
 //! the line itself, redacted and cut short, to `provider-failures.jsonl` in the state folder.
 
 use serde_json::{json, Value};
+use tokio::process::Command;
 
 use crate::domain::event::Event;
 use jev_shared::domain::redact::redact;
@@ -13,6 +14,19 @@ use jev_shared::ProviderId;
 
 /// Most characters of a raw line kept.
 const MAX_CHARS: usize = 4000;
+const LOG_ENV: &str = "JEV_FAILURE_LOG";
+
+/// A command-local override isolates scripted CLIs without changing the host's
+/// environment. An empty or removed override disables recording for that command.
+pub(super) fn path_for_command(command: &Command) -> Option<String> {
+    if let Some((_, value)) = command.as_std().get_envs().find(|(name, _)| *name == LOG_ENV) {
+        return value.filter(|path| !path.is_empty()).map(|path| path.to_string_lossy().into_owned());
+    }
+    if cfg!(test) {
+        return None;
+    }
+    path_from_env(LOG_ENV, "provider-failures.jsonl").filter(|path| !path.is_empty())
+}
 
 /// The record for `line`, if it parsed to a failure.
 fn record(provider: ProviderId, line: &str, events: &[Event]) -> Option<Value> {
@@ -31,21 +45,40 @@ fn record(provider: ProviderId, line: &str, events: &[Event]) -> Option<Value> {
     }))
 }
 
-/// Append the record for `line` when it was a failure. Never fails the caller, and does
-/// nothing under `cargo test` so tests leave the real state folder alone.
-pub(super) fn note(provider: ProviderId, line: &str, events: &[Event]) {
-    if cfg!(test) {
-        return;
-    }
+/// Append a failure to the turn's configured log. Never fails the caller.
+pub(super) fn note(path: Option<&str>, provider: ProviderId, line: &str, events: &[Event]) {
+    let Some(path) = path else { return };
     let Some(row) = record(provider, line, events) else { return };
-    if let Some(path) = path_from_env("JEV_FAILURE_LOG", "provider-failures.jsonl") {
-        append(&path, &row);
-    }
+    append(path, &row);
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn command_local_log_settings_do_not_use_the_real_state_folder() {
+        let mut command = Command::new("sh");
+        command.env(LOG_ENV, "/tmp/jev-failure-test.jsonl");
+        assert_eq!(path_for_command(&command).as_deref(), Some("/tmp/jev-failure-test.jsonl"));
+        command.env(LOG_ENV, "");
+        assert_eq!(path_for_command(&command), None);
+        command.env_remove(LOG_ENV);
+        assert_eq!(path_for_command(&command), None);
+    }
+
+    #[test]
+    fn scripted_clis_disable_failure_logging_even_when_compiled_upstream() {
+        use crate::application::ports::Backend;
+        let backend = crate::testing::ScriptedCli::new(ProviderId::Claude, "echo FAIL:boom");
+        let command = backend.command(&crate::domain::turn_request::TurnRequest {
+            dir: std::env::temp_dir(), model: "m".into(), prompt: "hello".into(), images: vec![],
+            session_id: None, mode: Default::default(), trust_project_settings: false,
+        });
+        let setting = command.as_std().get_envs().find(|(name, _)| *name == LOG_ENV).unwrap();
+        assert_eq!(setting.1, Some(std::ffi::OsStr::new("")));
+        assert_eq!(path_for_command(&command), None);
+    }
 
     #[test]
     fn a_failure_line_is_kept_whole_with_secrets_masked() {

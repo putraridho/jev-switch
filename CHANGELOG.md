@@ -4,6 +4,14 @@ See [docs/changelog-guide.md](docs/changelog-guide.md) for changelog formatting,
 
 ## Unreleased
 
+## 1.11.10
+
+Failover moves past providers that stop answering, background gateway requests back off after rate limits, and fake CLI tests keep your failure logs clean.
+
+- **An empty or stalled provider no longer consumes the whole failover chain.** After two different models from one provider fail to answer, the remaining models from that provider are skipped for the current turn. Other providers can still answer, and the next turn can retry without a persisted cooldown.
+- **Fake CLI tests no longer write apparent crashes and usage-limit bursts into your failure log.** Scripted test backends disable failure recording for their own commands, including when another crate runs them. Real provider diagnostics remain enabled, and command-local `JEV_FAILURE_LOG` overrides can direct a run to an isolated log.
+- **Background gateway requests stop hammering models that just returned 429.** One-shot auxiliary requests remember each rejected model across turns, use Sonnet when Haiku is cooling down, and return a temporary 429 with `Retry-After` when both are unavailable. Concurrent requests share the same bounded fallback; main turns, tool-using forks, subagents and explicitly requested models are unaffected.
+
 ## 1.11.9
 
 Codex commands can use the network and local ports when you allow it, and say so when the sandbox blocks one.

@@ -18,6 +18,7 @@ use crate::application::usage_tap::UsageTap;
 use crate::domain::request_signals::project_of;
 use crate::domain::haiku_adaptation::haiku_declined;
 use crate::infrastructure::anthropic_wire::set_model;
+use crate::infrastructure::auxiliary_cooldown::retry_after;
 use crate::infrastructure::haiku_adaptation::adapt_for_haiku;
 use crate::infrastructure::prefix_fingerprint::observe_request;
 use crate::infrastructure::prompt_text::{last_user_prompt, recent_context};
@@ -56,6 +57,8 @@ pub(super) async fn forward(app: &Arc<App>, req: Request) -> Result<Response<Bod
     let mut for_haiku = false;
     // The request as sent by the client, on the main model: retried if Haiku rejects it.
     let mut fallback: Option<Bytes> = None;
+    let mut auxiliary_model = None;
+    let mut auxiliary_cooldown = None;
     if should_route_messages(&parts.method, parts.uri.path(), &parts.headers) {
         let meta = Meta::from_headers(&parts.headers);
         let tracking = app.sessions.lock().await.entry(&meta.session, &app.turns_path).tracking.clone();
@@ -69,10 +72,25 @@ pub(super) async fn forward(app: &Arc<App>, req: Request) -> Result<Response<Bod
                 spawn_outcome_check(app, tracking.turns.clone(), meta.session.clone(), pid.clone(), prompt, prev, recent_context(j));
             }
         }
-        let picked = match &json {
+        let mut picked = match &json {
             Some(j) => choose_model(app, &meta, j).await,
             None => None,
         };
+        if let Some(picked) = picked.as_mut().filter(|picked| picked.auxiliary_one_shot) {
+            let cooldown = app.auxiliary_cooldown.lock().await;
+            picked.model = match cooldown.select(Instant::now()) {
+                Ok(model) => model,
+                Err(remaining) => {
+                    return Ok(Response::builder()
+                        .status(StatusCode::TOO_MANY_REQUESTS)
+                        .header("content-type", "application/json")
+                        .header("retry-after", remaining.as_secs_f64().ceil().max(1.0).to_string())
+                        .body(Body::from(json!({ "type": "error", "error": { "type": "rate_limit_error", "message": "Auxiliary models are temporarily cooling down after HTTP 429 responses" } }).to_string()))?);
+                }
+            };
+            auxiliary_model = Some(picked.model);
+            auxiliary_cooldown = Some(cooldown);
+        }
         if let (Some(p), Some(pid)) = (&picked, &meta.prompt_id) {
             if let (true, Some(d)) = (p.new_turn, &p.decision) {
                 tracking.turns.set_decision(&meta.session, pid, d.clone());
@@ -140,9 +158,15 @@ pub(super) async fn forward(app: &Arc<App>, req: Request) -> Result<Response<Bod
             return Err(anyhow::Error::new(e).context("upstream request failed"));
         }
     };
+    if resp.status() == StatusCode::TOO_MANY_REQUESTS {
+        if let (Some(model), Some(cooldown)) = (auxiliary_model, &mut auxiliary_cooldown) {
+            cooldown.reject_rate_limited(model, retry_after(resp.headers()), Instant::now());
+        }
+    }
+    let fallback_available = auxiliary_cooldown.as_ref().is_none_or(|cooldown| cooldown.available(MODEL_MID, Instant::now()));
     // Haiku has restrictions that can change without notice. Rather than lose a
     // background request, retry it once as sent by the client, on the main model.
-    if let (Some(retry), true) = (fallback, haiku_declined(resp.status().as_u16())) {
+    if let (Some(retry), true) = (fallback, fallback_available && haiku_declined(resp.status().as_u16())) {
         let status = resp.status().as_u16();
         let body = resp.bytes().await.unwrap_or_default();
         let msg = serde_json::from_slice::<Value>(&body).ok().and_then(|v| v["error"]["message"].as_str().map(str::to_string)).unwrap_or_default();
@@ -162,7 +186,13 @@ pub(super) async fn forward(app: &Arc<App>, req: Request) -> Result<Response<Bod
                 return Err(anyhow::Error::new(e).context("upstream request failed"));
             }
         };
+        if resp.status() == StatusCode::TOO_MANY_REQUESTS {
+            if let Some(cooldown) = &mut auxiliary_cooldown {
+                cooldown.reject_rate_limited(MODEL_MID, retry_after(resp.headers()), Instant::now());
+            }
+        }
     }
+    drop(auxiliary_cooldown);
 
     let mut out = Response::builder().status(resp.status().as_u16());
     for (k, v) in resp.headers().iter() {
