@@ -4,6 +4,8 @@ See [docs/changelog-guide.md](docs/changelog-guide.md) for changelog formatting,
 
 ## Unreleased
 
+- **Antigravity and Grok token counts are used when the agent reports them.** If the finished prompt carries input and output token counts (and the cached share), the turn's consumption is recorded instead of staying unknown. An agent that reports nothing, or only half of it, still shows as unknown, never as zero.
+
 - **The paid-use cap counts the workers too.** The planner and the delegate tool's workers (a separate process) now write each finished attempt to a shared `spend-ledger.jsonl`, and both sides check the cap against the total of the session: a worker can no longer spend after the planner would refuse the same paid model, and `/budget` shows the combined spend. A worker counts from its project's newest session start; spend with no reported usage still makes a capped session fail closed. This is still an admission check between attempts, not a hold on spending already under way.
 
 - **Codex models use the context window your backend reports.** jev-code reads Codex's own model list (`$CODEX_HOME/models_cache.json`, the usable share of each window) instead of assuming 500k for every Codex model, so a model with a larger window is no longer skipped for a big session, and a smaller one is no longer overfilled. `/context` shows the same window. Models Codex does not list keep the built-in size.

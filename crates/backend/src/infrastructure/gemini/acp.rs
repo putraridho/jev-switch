@@ -8,6 +8,7 @@ use std::collections::HashMap;
 use serde_json::{json, Value};
 
 mod permission;
+mod prompt_usage;
 mod tool_row;
 #[cfg(test)]
 mod tests;
@@ -177,6 +178,9 @@ impl Acp {
                 // background (Antigravity moves slow commands there): nothing will report on it.
                 let running = self.calls.values().filter(|c| c["kind"] == "execute" && c["status"] == "in_progress").count();
                 let mut out: Vec<Event> = jev_shared::domain::background::notice(running, false).filter(|_| running > 0).map(Event::Hint).into_iter().collect();
+                if let Some(usage) = prompt_usage::reported(&result["usage"], self.usage.context_tokens) {
+                    self.usage = usage;
+                }
                 out.push(finish_or_empty(&self.text, self.session.clone(), self.usage, ""));
                 return out;
             }

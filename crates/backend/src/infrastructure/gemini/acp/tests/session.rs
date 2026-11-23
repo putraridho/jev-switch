@@ -30,6 +30,28 @@ fn occupancy_updates_do_not_report_consumed_usage_and_each_turn_resets_it() {
 
 
 #[test]
+fn consumption_reported_with_the_finished_prompt_is_used_and_half_reports_are_not() {
+    let finish = |usage: Value| {
+        let mut acp = Acp::for_agent(Agent::Antigravity);
+        setup(&mut acp, Mode::Ask, None);
+        acp.parse(&update(json!({"sessionUpdate":"usage_update","used":7_000})));
+        acp.parse(&update(json!({"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"done"}})));
+        let events = acp.parse(&json!({"id":5,"result":{"stopReason":"end_turn","usage":usage}}));
+        let Some(Event::Finished(finish)) = events.last() else { panic!("{events:?}") };
+        finish.usage
+    };
+    assert_eq!(
+        finish(json!({"inputTokens":1_000,"outputTokens":50,"cachedReadTokens":800})),
+        Usage { measurement: Measurement::Reported, input_tokens: 1_000, cached_input_tokens: 800, output_tokens: 50, context_tokens: Some(7_000) }
+    );
+    assert_eq!(finish(json!({"inputTokens":10,"outputTokens":0,"cachedReadTokens":99})).cached_input_tokens, 10, "the cached share cannot exceed the input");
+    for half in [json!({"inputTokens":1_000}), json!({"outputTokens":5}), json!({"inputTokens":"1","outputTokens":2}), json!(null), json!("x")] {
+        let usage = finish(half);
+        assert_eq!((usage.measurement, usage.input_tokens, usage.output_tokens), (Measurement::Unavailable, 0, 0));
+    }
+}
+
+#[test]
 fn errors_cancellation_and_blank_answers_remain_failures() {
     let mut acp = Acp::default();
     setup(&mut acp, Mode::Edit, None);
