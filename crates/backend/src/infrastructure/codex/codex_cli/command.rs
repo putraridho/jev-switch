@@ -28,10 +28,24 @@ impl CodexBackend {
     /// New turn: `-C` and `-s` are only accepted by plain `exec`.
     pub(super) fn fresh_args(&self, cmd: &mut Command, req: &TurnRequest) {
         cmd.args(["exec", "--json", "-C"]).arg(&req.dir).args(["-s", self.sandbox_for(req), "-m", &req.model]);
-        cmd.args(self.mcp_overrides(req.mode)).args(self.effort_overrides());
+        cmd.args(self.mcp_overrides(req.mode)).args(self.effort_overrides()).args(self.network_overrides(req));
         // `--image=<path>` in one argument, so the flag can never take the next one as a value.
         for image in req.images.iter().filter(|p| takes_image_flag(p)) {
             cmd.arg(format!("--image={}", image.display()));
+        }
+    }
+
+    /// `-c sandbox_workspace_write.network_access=true` when `CODEX_NETWORK` is on and the turn
+    /// runs in `workspace-write`. The sandbox stays: writes are still confined to the
+    /// workspace, only network and local ports open. Without it `vitest`, a dev server or
+    /// `gh` fail with "listen EPERM" or "access is blocked". VERIFIED with `codex sandbox`
+    /// (codex 0.167.0, 2026-11-23): a listen on 127.0.0.1 and a connect to api.github.com
+    /// fail by default and work with this override. Never on in `read-only`.
+    pub(super) fn network_overrides(&self, req: &TurnRequest) -> Vec<String> {
+        if self.network && self.sandbox_for(req) == "workspace-write" {
+            vec!["-c".into(), "sandbox_workspace_write.network_access=true".into()]
+        } else {
+            vec![]
         }
     }
 
@@ -81,7 +95,7 @@ impl CodexBackend {
     pub(super) fn resume_args(&self, cmd: &mut Command, req: &TurnRequest, thread_id: &str) {
         let sandbox = format!("sandbox_mode=\"{}\"", self.sandbox_for(req));
         cmd.args(["exec", "resume", "--json", "-m", &req.model, "-c", &sandbox]);
-        cmd.args(self.mcp_overrides(req.mode)).args(self.effort_overrides());
+        cmd.args(self.mcp_overrides(req.mode)).args(self.effort_overrides()).args(self.network_overrides(req));
         // No `--image` here: a resumed turn names its images in the prompt (see
         // `stdin_payload`), so the thread id is never taken for an image path.
         cmd.args([thread_id, "-"]);

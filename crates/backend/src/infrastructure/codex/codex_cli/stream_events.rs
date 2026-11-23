@@ -28,7 +28,8 @@ impl CodexBackend {
             Some("command_execution") => {
                 let ok = item["exit_code"].as_i64().is_none_or(|c| c == 0) && item["status"] != "failed";
                 let text = item["aggregated_output"].as_str().unwrap_or("").to_string();
-                vec![Event::ToolResult { ok, text }]
+                let hint = (!ok && !self.network && blocked_by_sandbox(&text) && !std::mem::replace(&mut self.state().sandbox_hinted, true)).then(|| Event::Hint(SANDBOX_HINT.into()));
+                std::iter::once(Event::ToolResult { ok, text }).chain(hint).collect()
             }
             Some("mcp_tool_call" | "tool_call" | "custom_tool_call") => {
                 let ok = item["status"] != "failed" && item["error"].is_null();
@@ -48,6 +49,19 @@ impl CodexBackend {
             _ => vec![],
         }
     }
+}
+
+/// Said once per turn when a command seems to have hit the Codex sandbox's network wall.
+const SANDBOX_HINT: &str = "codex's sandbox blocks the network and local ports, so this command may have failed because of it; set CODEX_NETWORK=on in ~/.jev-router.env to allow them, or use another model for this";
+
+/// Whether a failed command's output looks like the sandbox refusing the network or a local
+/// port (seen as `listen EPERM: operation not permitted 127.0.0.1` from vitest on
+/// 2026-11-23). A guess from the wording, so the hint says "may".
+fn blocked_by_sandbox(output: &str) -> bool {
+    let lower = output.to_lowercase();
+    let denied = lower.contains("eperm") || lower.contains("operation not permitted");
+    let network = ["listen", "bind", "connect", "127.0.0.1", "localhost", "socket"].iter().any(|w| lower.contains(w));
+    (denied && network) || lower.contains("could not resolve host") || lower.contains("network is unreachable")
 }
 
 /// `/usr/bin/bash -lc 'cat a.txt'` is noise; the user wants `cat a.txt`.

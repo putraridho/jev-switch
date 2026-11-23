@@ -142,3 +142,18 @@ use super::*;
     fn provider_is_codex() {
         assert_eq!(backend().provider(), ProviderId::Codex);
     }
+
+    #[test]
+    fn network_is_opened_only_when_asked_and_only_in_workspace_write() {
+        let args = |b: &CodexBackend, request: &TurnRequest| -> Vec<String> { b.command(request).as_std().get_args().map(|a| a.to_string_lossy().into_owned()).collect() };
+        let has = |a: &[String]| a.windows(2).any(|w| w == ["-c", "sandbox_workspace_write.network_access=true"]);
+        let on = backend().with_network(true);
+        for session in [None, Some("thread")] {
+            assert!(!has(&args(&backend(), &req(session))), "off by default");
+            assert!(has(&args(&on, &req(session))), "new and resumed turns");
+            let mut plan = req(session);
+            plan.mode = jev_approval::domain::mode::Mode::Plan;
+            assert!(!has(&args(&on, &plan)), "plan mode is read-only and stays closed");
+        }
+        assert!(!has(&args(&CodexBackend::new("codex", "read-only").with_network(true), &req(None))), "a read-only sandbox stays closed");
+    }

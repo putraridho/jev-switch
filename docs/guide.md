@@ -619,6 +619,10 @@ In an interactive session the model is told (a fixed `--append-system-prompt`) t
 inside jev-code, that approvals are asked automatically, and not to suggest Claude Code UI keys.
 Codex, Gemini and Grok have no host approval protocol here: Codex runs in a workspace-write
 sandbox (`CODEX_SANDBOX`, never full access) and decides for itself. Use it inside a git repo.
+That sandbox has no network and opens no local ports, so `vitest`, a dev server, `gh` or
+`git push` fail inside it ("listen EPERM"). Set `CODEX_NETWORK=on` to allow both; file writes
+stay confined to the workspace. Without it, the first failed command that looks like this gets a
+hint saying so. Plan mode stays read-only and closed either way.
 
 #### Logs
 

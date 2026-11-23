@@ -32,12 +32,22 @@ struct TurnState {
     thread_id: Option<String>,
     /// The last `agent_message` text: codex's final answer.
     answer: String,
+    /// The sandbox hint (see `stream_events::blocked_by_sandbox`) went out already this turn.
+    sandbox_hinted: bool,
+}
+
+/// `on`, `true`, `yes` or `1`, in any case.
+fn is_on(value: &str) -> bool {
+    matches!(value.trim().to_ascii_lowercase().as_str(), "on" | "true" | "yes" | "1")
 }
 
 pub struct CodexBackend {
     pub bin: String,
     /// `read-only` or `workspace-write`; see [`CodexBackend::sandbox_arg`].
     pub sandbox: String,
+    /// Let commands in the `workspace-write` sandbox use the network and open local ports
+    /// (`CODEX_NETWORK`). Off by default; see [`CodexBackend::network_overrides`].
+    network: bool,
     /// Interior mutability because [`Backend::parse_line`] takes `&self`. It is reset by
     /// every `thread.started`, so use one backend per turn: two turns streaming through
     /// the same instance at once would mix their answers.
@@ -59,12 +69,19 @@ impl CodexBackend {
             jev_shared::infrastructure::env_file::lookup("CODEX_BIN").unwrap_or_else(|| "codex".into()),
             jev_shared::infrastructure::env_file::lookup("CODEX_SANDBOX").unwrap_or_else(|| DEFAULT_SANDBOX.into()),
         )
+        .with_network(jev_shared::infrastructure::env_file::lookup("CODEX_NETWORK").is_some_and(|v| is_on(&v)))
         .with_sessions_dir(super::codex_plan::codex_home().map(|h| h.join("sessions")))
     }
 
     /// Explicit binary and sandbox, for tests and callers that do not read the env.
     pub fn new(bin: impl Into<String>, sandbox: impl Into<String>) -> Self {
-        Self { bin: bin.into(), sandbox: sandbox.into(), state: Mutex::new(TurnState::default()), mcp: None, effort: None, sessions_dir: None }
+        Self { bin: bin.into(), sandbox: sandbox.into(), network: false, state: Mutex::new(TurnState::default()), mcp: None, effort: None, sessions_dir: None }
+    }
+
+    /// Allow network access inside the `workspace-write` sandbox.
+    pub fn with_network(mut self, on: bool) -> Self {
+        self.network = on;
+        self
     }
 
     /// Where to find thread rollouts, for the real context size of a turn.
@@ -125,7 +142,7 @@ impl Backend for CodexBackend {
         let Ok(ev) = serde_json::from_str::<Value>(line) else { return vec![] };
         match ev["type"].as_str() {
             Some("thread.started") => {
-                *self.state() = TurnState { thread_id: ev["thread_id"].as_str().map(String::from), answer: String::new() };
+                *self.state() = TurnState { thread_id: ev["thread_id"].as_str().map(String::from), answer: String::new(), sandbox_hinted: false };
                 vec![]
             }
             Some("item.started") => started_events(&ev["item"]),

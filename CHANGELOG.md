@@ -4,6 +4,13 @@ See [docs/changelog-guide.md](docs/changelog-guide.md) for changelog formatting,
 
 ## Unreleased
 
+## 1.11.9
+
+Codex commands can use the network and local ports when you allow it, and say so when the sandbox blocks one.
+
+- **`CODEX_NETWORK=on` lets Codex commands use the network and local ports.** Codex runs in a `workspace-write` sandbox with no network, so `vitest`, a dev server, `gh` or `git push` failed inside it with `listen EPERM: operation not permitted 127.0.0.1` or "GitHub access is blocked", and its summary then covered only what it could reach. The setting passes `sandbox_workspace_write.network_access=true`; file writes stay confined to the workspace, and plan mode stays read-only and closed. It is off by default.
+- **A Codex command the sandbox blocked now says so.** The first failed command per turn that looks like a blocked port or network call shows a hint naming `CODEX_NETWORK=on` (or another model) as the way out.
+
 ## 1.11.8
 
 A Grok run that dies with `cancelled` fails over instead of ending the turn, and failed CLI lines are kept for diagnosis.

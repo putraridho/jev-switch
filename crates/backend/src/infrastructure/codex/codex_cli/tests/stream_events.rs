@@ -130,3 +130,19 @@ use super::super::stream_events::{shell_script, started_events};
         let agent_done = r#"{"type":"item.completed","item":{"type":"spawn_agent","status":"completed","result":"done"}}"#;
         assert_eq!(b.parse_line(agent_done), vec![Event::ToolResult { ok: true, text: "done".into() }]);
     }
+
+    #[test]
+    fn a_command_the_sandbox_blocked_gets_one_hint_and_only_while_the_network_is_closed() {
+        let line = |out: &str| format!(r#"{{"type":"item.completed","item":{{"type":"command_execution","status":"failed","exit_code":1,"aggregated_output":{out:?}}}}}"#);
+        let blocked = line("Error: listen EPERM: operation not permitted 127.0.0.1");
+        let hints = |events: &[Event]| events.iter().filter(|e| matches!(e, Event::Hint(_))).count();
+
+        let closed = backend();
+        let first = closed.parse_line(&blocked);
+        assert!(matches!(first[0], Event::ToolResult { ok: false, .. }), "{first:?}");
+        assert_eq!(hints(&first), 1, "{first:?}");
+        assert_eq!(hints(&closed.parse_line(&blocked)), 0, "said once per turn");
+        assert_eq!(hints(&backend().parse_line(&line("chmod: x: Operation not permitted"))), 0, "no network word");
+        assert_eq!(hints(&backend().parse_line(&line("assertion failed"))), 0);
+        assert_eq!(hints(&backend().with_network(true).parse_line(&blocked)), 0, "network is open, so not the sandbox");
+    }
