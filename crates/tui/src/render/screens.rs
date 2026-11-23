@@ -210,7 +210,7 @@ mod tests {
         let s = help_text(OFF, 100);
         no_esc(&s);
         for c in [
-            "/help", "/status", "/providers [refresh]", "/doctor", "/model [target]", "/provider auto|off", "/orchestrate [on|off]",
+            "/help", "/status", "/providers [refresh|probe]", "/doctor", "/model [target]", "/provider auto|off", "/orchestrate [on|off]",
             "/diff [--all|--turn N|--review|--split|--export F] [file]", "/undo", "/rewind [turn]", "/resume", "/new", "/quit",
         ] {
             assert!(s.contains(c), "{c}\n{s}");

@@ -2,7 +2,7 @@
 //! `delegate_mcp` process, written atomically and merged with what is already there.
 
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
@@ -16,18 +16,20 @@ struct BreakerWire {
     open_until_ms: u64,
     #[serde(default)]
     last: String,
+    #[serde(default)]
+    trial_until_ms: u64,
     updated_ms: u64,
 }
 
 impl From<&Breaker> for BreakerWire {
     fn from(b: &Breaker) -> Self {
-        Self { failures: b.failures, trips: b.trips, open_until_ms: b.open_until_ms, last: b.last.clone(), updated_ms: b.updated_ms }
+        Self { failures: b.failures, trips: b.trips, open_until_ms: b.open_until_ms, last: b.last.clone(), trial_until_ms: b.trial_until_ms, updated_ms: b.updated_ms }
     }
 }
 
 impl From<BreakerWire> for Breaker {
     fn from(w: BreakerWire) -> Self {
-        Self { failures: w.failures, trips: w.trips, open_until_ms: w.open_until_ms, last: w.last, updated_ms: w.updated_ms }
+        Self { failures: w.failures, trips: w.trips, open_until_ms: w.open_until_ms, last: w.last, trial_until_ms: w.trial_until_ms, updated_ms: w.updated_ms }
     }
 }
 
@@ -47,19 +49,14 @@ pub fn load(path: &Path) -> Breakers {
 pub fn save(path: &Path, breakers: &Breakers) -> std::io::Result<Breakers> {
     let merged = breakers.merged(&load(path));
     let wire: HashMap<&str, BreakerWire> = merged.entries().iter().map(|(p, b)| (p.as_str(), BreakerWire::from(b))).collect();
-    let mut tmp = path.as_os_str().to_owned();
-    tmp.push(format!(".{}.tmp", std::process::id()));
-    let tmp = PathBuf::from(tmp);
-    std::fs::write(&tmp, serde_json::to_string(&wire)?)?;
-    std::fs::rename(&tmp, path).inspect_err(|_| {
-        let _ = std::fs::remove_file(&tmp);
-    })?;
+    super::atomic_file::write_atomic(path, &serde_json::to_string(&wire)?)?;
     Ok(merged)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
 
     fn dir(name: &str) -> PathBuf {
         jev_testkit::scratch_dir::scratch_dir("health", name)

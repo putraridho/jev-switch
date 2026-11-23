@@ -16,8 +16,12 @@ use super::term::Term;
 
 /// `jev-code doctor`: the report on stdout; exit 1 when something is a Problem.
 pub(super) async fn doctor(dir: &Path, console: &Console) -> i32 {
-    let (runtime, _) = start_runtime(console, ProbeMode::Live).await;
-    let inputs = jev_doctor::infrastructure::gather_inputs::gather(&runtime, dir).await;
+    let (mut runtime, _) = start_runtime(console, ProbeMode::Live).await;
+    runtime.attach_project(dir);
+    // The capability handshake sends no prompt and spends no quota; a recent answer is reused.
+    let handshake = runtime.handshake(false).await;
+    let mut inputs = jev_doctor::infrastructure::gather_inputs::gather(&runtime, dir).await;
+    inputs.handshake = handshake;
     let report = jev_doctor::domain::diagnose::diagnose(&inputs);
     console.out(&views::doctor::doctor_text(&report, console.out_style(), console.width()));
     i32::from(views::doctor::has_problem(&report))

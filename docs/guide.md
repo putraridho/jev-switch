@@ -395,7 +395,7 @@ to change an accent, glyph or badge; truecolor, 256 and 16-colour terminals are 
 | `/status`                   | project, routing, pin, ready providers with plan use, cooldowns, last turn                                                                                                                                         |
 | `/cost`                     | tokens and time of this session by model, and how full each plan window is (also `/usage`)                                                                                                                         |
 | `/config`                   | the effective settings and the files they live in (keys show only as set / not set)                                                                                                                                |
-| `/providers [refresh]`      | what was detected and why each provider can or cannot run; `refresh` probes again                                                                                                                                  |
+| `/providers [refresh\|probe]` | what was detected and why each provider can or cannot run, with the readiness rung each has reached; `refresh` probes again, `probe` runs the capability check (no prompt, no quota)                              |
 | `/mcp [list\|login <srv>]`  | show configured MCP servers across ready providers, or log in (`/mcp login <server>`)                                                                                                                              |
 | `/doctor`                   | the setup check, inside the session                                                                                                                                                                                |
 | `/update`                   | update jev-code: fetches its checkout's upstream (`origin/main`), shows the new commits and version, and after a yes fast-forwards and runs `scripts/install.sh`; `jev-code update [--yes]` from the shell         |
@@ -585,6 +585,34 @@ models are skipped for the turn too. This does not set a cooldown, and a new tur
 Any other error stops the turn, since it would likely recur everywhere, and
 is shown as a titled block with the CLI's message and the steps to try. At most 6 models are
 tried per turn, and a failed attempt's output is never shown as an answer.
+
+#### Readiness and circuit breaker
+
+Each provider climbs a ladder: installed, logged in, entitled, protocol-compatible, validated for this project. A rung is
+verified only by evidence (a probe, a capability check, an answered turn) and shows when it was last seen; a rung nothing
+has shown stays "unverified", never assumed fine. Routing needs "logged in" and leaves out a provider whose rung has
+*failed*, with the reason; a provider you pinned is not swapped but told which rung failed and what to do. `/providers`
+shows the rung reached, the last evidence time and the next retry per provider, and `jev-code doctor` adds the fix for a
+failed rung (log in, update the CLI, trust this folder).
+
+How a failure is treated depends on what it says:
+
+| Failure | Rung | Policy |
+|---|---|---|
+| login failed or expired | logged in | held until the login file changes (or `/providers refresh` sees a login), at most 24 h |
+| retired or unsupported client | protocol-compatible | held until the CLI file changes, at most 24 h |
+| the CLI refuses this folder (untrusted, not a git repo) | validated for this project | held until the folder's trust changes or `/new`, at most 24 h |
+| a model not on the plan | entitled | that model is remembered as refused for this project |
+| empty answer, stall | protocol-compatible | circuit breaker: 4 in a row pause the provider 10 min, doubling to 2 h; after the pause one trial attempt goes through, an answer closes it, a failure reopens it for twice as long |
+| usage limit | none | the cooldown above |
+
+Verdicts are saved to `provider-readiness.json` and `provider-health.json` in the state folder, keyed by the CLI file, the
+funding backend, the login file's time and size, and the folder with its trust, so a new CLI version, account, backend or
+trust decision starts clean. Only labels and stamps are saved, never a credential or a prompt. `jev-code doctor` and
+`/providers probe` run the capability handshake: `--version` and a check that `--help` still lists the flags jev-code
+passes, an ACP `initialize` for `agy` and `grok` (never a prompt), and the folder's trust. It sends no prompt and spends no
+quota; a recent answer under the same key is reused for 6 h. A CLI that is a lazy mise wrapper (a first run installs it) is
+not run.
 
 #### Switching providers
 

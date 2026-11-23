@@ -179,6 +179,28 @@ impl ProviderHost for SystemProbes {
     }
 }
 
+impl crate::application::ports::ReadinessHost for SystemProbes {
+    fn readiness_key(&self, provider: ProviderId) -> crate::domain::readiness::ReadinessKey {
+        super::readiness_facts::key_of(provider)
+    }
+
+    fn project_key(&self, provider: ProviderId, dir: &Path) -> String {
+        super::readiness_facts::project_key(provider, dir)
+    }
+
+    fn handshake(&self, provider: ProviderId, dir: PathBuf) -> BoxFuture<crate::domain::handshake::Handshake> {
+        Box::pin(super::readiness_facts::handshake(provider, dir))
+    }
+
+    fn load_readiness(&self, path: &Path) -> crate::domain::readiness::Readiness {
+        super::readiness_file::load(path)
+    }
+
+    fn save_readiness(&self, path: &Path, readiness: &crate::domain::readiness::Readiness) -> std::io::Result<crate::domain::readiness::Readiness> {
+        super::readiness_file::save(path, readiness)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::gemini_login_facts;

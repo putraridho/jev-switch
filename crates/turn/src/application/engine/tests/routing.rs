@@ -253,3 +253,25 @@ fn signals_copy_every_field_of_the_want() {
     assert_eq!((s.task, s.correction_p, s.security_keywords), (TaskType::Docs, Some(0.4), Security::Weak));
     assert_eq!((s.task_confidence, s.continues_p, s.edit_p), (0.9, 0.9, 0.3));
 }
+
+#[tokio::test]
+async fn a_held_provider_is_left_out_and_a_pin_to_it_is_told_which_rung_failed() {
+    use jev_backend::{ErrorKind, TurnError};
+    let hold = |r: &mut Rig| {
+        r.engine.runtime.react(Gemini, "gemini-3-pro", &TurnError::new(ErrorKind::Unsupported, "retired"), &mut std::collections::HashSet::new(), NOW);
+        r.engine.runtime.blocked.clear(); // only the saved hold is under test, not the session block
+    };
+    let mut r = rig(&[Claude, Gemini]);
+    hold(&mut r);
+    let report = r.turn("add a retry to the client", want(TaskType::Feature)).await;
+    assert_eq!(report.status, TurnStatus::Answered, "{}", report.message);
+    assert_eq!(report.provider, Some(Claude), "automatic routing leaves the held provider out");
+
+    let mut r = rig(&[Claude, Gemini]);
+    hold(&mut r);
+    r.engine.set_pin(Pin::Provider(Gemini));
+    let report = r.turn("add a retry to the client", want(TaskType::Feature)).await;
+    assert_eq!(report.status, TurnStatus::NoRoute, "{}", report.message);
+    assert!(report.message.contains("held at the protocol-compatible rung") && report.message.contains("Update the CLI"), "{}", report.message);
+    assert!(r.started().is_empty());
+}

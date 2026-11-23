@@ -41,6 +41,12 @@ pub fn installed_for_real(bin: &str) -> bool {
     really_installed(&candidates, data.is_some_and(|d| mise_installs_binary(&d, bin)))
 }
 
+/// The first real executable called `bin` on PATH (a lazy mise wrapper does not count), for a stamp of its file.
+pub fn find_binary(bin: &str) -> Option<PathBuf> {
+    let dirs: Vec<PathBuf> = std::env::var_os("PATH").map(|p| std::env::split_paths(&p).collect()).unwrap_or_default();
+    find_on_path(bin, &dirs, &is_executable_file).into_iter().find(|p| !is_mise_wrapper(p))
+}
+
 pub fn mise_installs_binary(data_dir: &Path, bin: &str) -> bool {
     let subdirs = |dir: &Path| -> Vec<PathBuf> {
         std::fs::read_dir(dir).map(|entries| entries.flatten().map(|e| e.path()).filter(|p| p.is_dir()).collect()).unwrap_or_default()

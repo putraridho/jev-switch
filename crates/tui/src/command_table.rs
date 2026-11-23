@@ -76,7 +76,7 @@ pub const COMMANDS: [Cmd; 60] = [
     Cmd { name: "/failover", args: "[max-attempts <n> | paid-fallback on|off]", group: Group::Info, about: "Show or change how a turn fails over to another model", example: "/failover paid-fallback off", hint: "[max-attempts <n>|paid-fallback on|off]" },
     Cmd { name: "/scoreboard", args: "", group: Group::Info, about: "Show how each provider did this session: answers, failures, speed", example: "", hint: "" },
     Cmd { name: "/config", args: "", group: Group::Info, about: "Show the effective settings and where to change them", example: "/config", hint: "" },
-    Cmd { name: "/providers", args: "[refresh]", group: Group::Info, about: "Show what was detected; `refresh` probes again", example: "/providers refresh", hint: "[refresh]" },
+    Cmd { name: "/providers", args: "[refresh|probe]", group: Group::Info, about: "Show what was detected and how far each provider is proven; `refresh` probes again, `probe` runs the capability check (no quota)", example: "/providers probe", hint: "[refresh|probe]" },
     Cmd { name: "/mcp", args: "[list|login <server>]", group: Group::Info, about: "Browse MCP servers: status, details, log in", example: "/mcp login lunagraph-remote", hint: "[list|login <server>]" },
     Cmd { name: "/tips", args: "", group: Group::Info, about: "Show short tips for getting more out of jev-code", example: "", hint: "" },
     Cmd { name: "/keys", args: "", group: Group::Info, about: "Show the key cheat sheet (also ? on an empty box)", example: "", hint: "" },

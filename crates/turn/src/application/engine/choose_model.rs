@@ -52,6 +52,17 @@ impl Engine {
             return Ok(self.legacy_choice(want, base));
         }
         let usable = self.runtime.usable(now).without(excluded);
+        // A pin the person set is never rerouted silently: when the provider is held below the
+        // rung it needs, or paused, the turn says which rung and what to do.
+        if self.pin_origin == PinOrigin::User {
+            let pinned = match &self.pin {
+                Pin::Provider(p) | Pin::Model(p, _) => Some(*p),
+                Pin::Auto => None,
+            };
+            if let Some((p, why)) = pinned.and_then(|p| Some((p, self.runtime.exclusion(p, now)?))) {
+                return Err(NoRoute::PinUnusable { what: format!("pinned provider {p} cannot be used: {why}") });
+            }
+        }
         // A team pin that can take turns at all (provider logged in, not cooling down, not
         // failed over; a pinned model known and still usable); one that cannot is reported
         // like any pin, before the turn starts. Once an attempt on it has failed, though, the

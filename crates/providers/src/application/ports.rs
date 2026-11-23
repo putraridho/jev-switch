@@ -15,13 +15,29 @@ use jev_backend::{PlanUsage, ProviderId};
 use crate::domain::availability::Availability;
 use crate::domain::breaker::Breakers;
 use crate::domain::funding::Fundings;
+use crate::domain::handshake::Handshake;
+use crate::domain::readiness::{Readiness, ReadinessKey};
 use crate::domain::reset_time::cooldowns::Cooldowns;
 
 /// A boxed future the port hands back, so the trait stays object safe.
 pub type BoxFuture<T> = Pin<Box<dyn Future<Output = T> + Send>>;
 
+/// What the machine can tell the readiness ladder: the stamps a saved verdict depends on, the
+/// saved verdicts, and the capability handshake. None of it sends a prompt.
+pub trait ReadinessHost: Debug + Send + Sync {
+    /// The CLI and the account of `provider` (the backend part is left for the caller).
+    fn readiness_key(&self, provider: ProviderId) -> ReadinessKey;
+    /// The folder part of a verdict's key: the path and what the CLI's folder rule says now.
+    fn project_key(&self, provider: ProviderId, dir: &Path) -> String;
+    /// The cheap capability check; it spends no quota.
+    fn handshake(&self, provider: ProviderId, dir: PathBuf) -> BoxFuture<Handshake>;
+    fn load_readiness(&self, path: &Path) -> Readiness;
+    /// Merge `readiness` into the saved records, write them, and return the merged set.
+    fn save_readiness(&self, path: &Path, readiness: &Readiness) -> std::io::Result<Readiness>;
+}
+
 /// What the machine can tell the provider registry.
-pub trait ProviderHost: Debug + Send + Sync {
+pub trait ProviderHost: ReadinessHost {
     /// One provider's probe, with no time cap of its own: gathers the facts (PATH, status
     /// command, files, environment) and lets the pure decision answer.
     fn probe(&self, provider: ProviderId) -> BoxFuture<Availability>;

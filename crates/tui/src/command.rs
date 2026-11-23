@@ -53,8 +53,10 @@ pub enum Command {
     ShowMode,
     /// `/mode <name>`.
     SetMode(Mode),
-    /// `/providers [refresh]`.
+    /// `/providers [refresh|probe]`.
     Providers { refresh: bool },
+    /// `/providers probe`: the capability handshake again (no prompt, no quota).
+    ProbeProviders,
     /// `/mcp [list | login <server>]`.
     Mcp(McpCmd),
     /// `/commit`, `/pr`, `/profile`, `/team`, `/audit`, `/history`, `/bench`, `/replay`.
@@ -261,7 +263,8 @@ pub fn parse(line: &str) -> Command {
         "/providers" => match (arg, extra) {
             (None, _) => Command::Providers { refresh: false },
             (Some("refresh"), false) => Command::Providers { refresh: true },
-            _ => invalid("usage: /providers [refresh]"),
+            (Some("probe"), false) => Command::ProbeProviders,
+            _ => invalid("usage: /providers [refresh|probe]"),
         },
         "/mcp" => match (arg, extra) {
             (None, _) | (Some("login" | "auth"), false) => Command::Mcp(McpCmd::Browse),

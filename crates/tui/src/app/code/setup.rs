@@ -80,6 +80,8 @@ pub(super) async fn start_runtime(console: &Console, mode: ProbeMode) -> (Runtim
 /// flags and the environment alone.
 pub(super) fn engine_for(args: &Args, runtime: Runtime, router: Router, dir: PathBuf, can_ask: bool, session: Option<Saved>) -> Engine {
     let saved = session.unwrap_or_default();
+    let mut runtime = runtime;
+    runtime.attach_project(&dir);
     let mode = mode::start(args.mode, saved.mode, envfile::lookup("CODE_PERMISSION_MODE").as_deref());
     let routing = saved.routing.unwrap_or_else(|| commands::typo::routing_enabled(envfile::lookup("JEV_PROVIDERS").as_deref()));
     let orchestrate = orchestrate::start(saved.orchestrate, envfile::lookup("JEV_ORCHESTRATE").as_deref(), session.is_some());

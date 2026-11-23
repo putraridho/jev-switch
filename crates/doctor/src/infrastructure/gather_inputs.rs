@@ -24,6 +24,8 @@ pub async fn gather(runtime: &Runtime, dir: &Path) -> Inputs {
         blocked: blocked(runtime),
         allow_credits: runtime.allow.credits,
         fundings: runtime.fundings.clone(),
+        readiness: runtime.readiness_views(now_ms()),
+        handshake: Vec::new(),
     }
 }
 

@@ -20,10 +20,25 @@ impl Repl {
         }
         let rows = views::providers::avail_rows(&self.engine.runtime, self.now());
         let mut text = uifmt::providers_table(&rows, style, self.console.width());
+        for view in self.engine.runtime.readiness_views(self.now()) {
+            text.push_str(&format!("\n  {}", style.dim(&view.line)));
+        }
         for note in &self.engine.runtime.overrides.notes {
             text.push_str(&format!("\n  {}", style.dim(&format!("override: {note}"))));
         }
         self.page_out(&text);
+    }
+
+    /// `/providers probe`: run the capability handshake again, then show the ladders. It sends
+    /// no prompt, so it spends no quota.
+    pub(super) async fn probe_providers(&mut self) {
+        let style = self.out_style();
+        self.console.out(&style.dim("  checking the CLIs (a version and help check, no prompt sent, no quota spent)..."));
+        let lines = self.engine.runtime.handshake(true).await;
+        for line in lines {
+            self.console.out(&format!("  {line}"));
+        }
+        self.providers(false).await;
     }
 
     /// The doctor's screen for this session.

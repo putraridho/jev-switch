@@ -13,6 +13,7 @@ impl Runtime {
     pub fn render(&self, now_ms: u64) -> String {
         let mut out = vec![availability::render::render(&self.avail)];
         out.extend(self.billing_lines());
+        out.extend(self.readiness_lines(now_ms));
         out.extend(self.cooldown_lines(now_ms));
         out.extend(self.unusable_lines());
         out.extend(self.blocked_lines());

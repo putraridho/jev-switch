@@ -13,11 +13,13 @@ use std::path::PathBuf;
 use jev_providers::domain::availability::{Availability, State};
 use jev_providers::domain::funding::Fundings;
 use jev_providers::domain::login_hints::DEFAULT_ENV_PATH;
+use jev_providers::domain::readiness_view::ReadinessView;
 use jev_shared::ProviderId;
 
 mod jev_checks;
 mod machine_checks;
 pub mod provider_checks;
+mod readiness_checks;
 pub mod startup_hint;
 mod state_checks;
 #[cfg(test)]
@@ -26,6 +28,7 @@ mod tests;
 use jev_checks::{jev_key_check, jev_reachable_check};
 use machine_checks::{env_perms_check, git_check, state_dir_check};
 use provider_checks::{no_provider_check, provider_check};
+use readiness_checks::{handshake_check, readiness_checks};
 use state_checks::{blocked_check, cooldown_check, credits_check};
 
 // ------------------------------------------------------------------ report types
@@ -84,6 +87,10 @@ pub struct Inputs {
     pub allow_credits: bool,
     /// How each provider's CLI is funded; one not inspected is left out of the report.
     pub fundings: Fundings,
+    /// Each ready provider's readiness ladder: rung reached, evidence, next retry, the fix.
+    pub readiness: Vec<ReadinessView>,
+    /// What the capability handshake found, one line per provider; empty when it did not run.
+    pub handshake: Vec<String>,
 }
 
 // ---------------------------------------------------------------------- diagnose
@@ -104,6 +111,8 @@ pub fn diagnose(inputs: &Inputs) -> Report {
     checks.extend(credits_check(inputs));
     checks.extend(cooldown_check(&inputs.cooldown_lines));
     checks.extend(blocked_check(&inputs.blocked));
+    checks.extend(readiness_checks(&inputs.readiness));
+    checks.extend(handshake_check(&inputs.handshake));
 
     // Stable, so the construction order above breaks ties within a severity.
     checks.sort_by_key(|c| Reverse(c.severity));
@@ -120,6 +129,7 @@ fn ready_providers(inputs: &Inputs) -> Vec<ProviderId> {
         .filter(|a| a.state == State::Ready)
         .map(|a| a.provider)
         .filter(|p| !inputs.blocked.iter().any(|(b, _)| b == p))
+        .filter(|p| !inputs.readiness.iter().any(|v| v.provider == *p && v.failed.is_some()))
         .collect()
 }
 

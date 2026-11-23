@@ -22,6 +22,7 @@ impl Repl {
                 self.page_out(&uifmt::status_text(&facts, style));
             }
             Command::Providers { refresh } => self.providers(refresh).await,
+            Command::ProbeProviders => self.probe_providers().await,
             Command::Mcp(cmd) => self.mcp(cmd),
             Command::Doctor => {
                 self.console.out(&style.dim("  checking the setup..."));

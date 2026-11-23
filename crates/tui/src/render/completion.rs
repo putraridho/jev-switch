@@ -253,7 +253,7 @@ mod tests {
             ("/model", Some(" auto|codex|claude:...")),
             ("/provider ", Some("auto|off")),
             ("/orchestrate ", Some("on|off")),
-            ("/providers ", Some("[refresh]")),
+            ("/providers ", Some("[refresh|probe]")),
             ("/diff ", Some("[--all|--turn N|--review] [file]")),
             ("/mode ", Some("ask|edit|plan|auto")),
             ("/mod", Some("e")),

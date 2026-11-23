@@ -60,6 +60,17 @@ fn rpc(id: u64, method: &str, params: Value) -> String {
     format!("{}\n", json!({"jsonrpc":"2.0", "id":id, "method":method, "params":params}))
 }
 
+/// The `initialize` request that opens an ACP conversation; also what a handshake sends to
+/// learn that the agent still speaks the protocol, without starting a session or a prompt.
+pub fn initialize_request() -> String {
+    rpc(
+        1,
+        "initialize",
+        json!({"protocolVersion":1, "clientCapabilities":{},
+        "clientInfo":{"name":"jev-code", "version":env!("CARGO_PKG_VERSION")}}),
+    )
+}
+
 impl Acp {
     pub fn for_agent(agent: Agent) -> Self {
         Self { agent, ..Self::default() }
@@ -72,12 +83,7 @@ impl Acp {
             usage: Usage { measurement: Measurement::Unavailable, ..Usage::default() },
             ..Self::default()
         };
-        rpc(
-            1,
-            "initialize",
-            json!({"protocolVersion":1, "clientCapabilities":{},
-            "clientInfo":{"name":"jev-code", "version":env!("CARGO_PKG_VERSION")}}),
-        )
+        initialize_request()
     }
 
     pub fn drain(&mut self) -> Vec<String> {

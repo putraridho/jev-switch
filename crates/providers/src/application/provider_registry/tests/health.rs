@@ -33,7 +33,7 @@ fn a_provider_that_keeps_giving_empty_answers_is_paused_then_comes_back() {
 #[test]
 fn only_failures_that_blame_the_provider_count() {
     let mut rt = Runtime::for_tests(vec![ready(Gemini)]);
-    for kind in [ErrorKind::Quota { resets_at: None }, ErrorKind::NotEntitled, ErrorKind::Auth, ErrorKind::UnusableHere, ErrorKind::Other] {
+    for kind in [ErrorKind::Quota { resets_at: None }, ErrorKind::NotEntitled, ErrorKind::Auth, ErrorKind::UnusableHere, ErrorKind::Unsupported, ErrorKind::Other] {
         fail(&mut rt, Gemini, kind, TRIP_AFTER * 2, NOW);
     }
     assert!(rt.paused_left(Gemini, NOW).is_none());
@@ -50,7 +50,7 @@ fn an_answer_forgives_and_a_refresh_forgets() {
     fail(&mut rt, Gemini, ErrorKind::Empty, TRIP_AFTER - 1, NOW + 2);
     assert!(rt.paused_left(Gemini, NOW + 2).is_none(), "the count started over");
 
-    fail(&mut rt, Codex, ErrorKind::Unsupported, TRIP_AFTER, NOW);
+    fail(&mut rt, Codex, ErrorKind::Stalled, TRIP_AFTER, NOW);
     assert!(rt.paused_left(Codex, NOW).is_some());
     rt.forget_pauses(NOW + 3);
     assert!(rt.paused_left(Codex, NOW + 3).is_none());
@@ -74,4 +74,24 @@ fn a_pause_is_remembered_by_the_next_run() {
     let mut third = Runtime::for_tests(vec![ready(Gemini)]);
     third.breakers = third.host.load_breakers(&path);
     assert!(third.usable(NOW + 3).has_provider(Gemini), "the forgiveness was saved too");
+}
+
+#[test]
+fn after_the_pause_one_trial_attempt_decides() {
+    let mut rt = Runtime::for_tests(vec![ready(Gemini), ready(Claude)]);
+    fail(&mut rt, Gemini, ErrorKind::Empty, TRIP_AFTER, NOW);
+    assert!(!rt.usable(NOW).has_provider(Gemini));
+    let later = NOW + FIRST_PAUSE_MS;
+    assert!(rt.usable(later).has_provider(Gemini), "half-open: one attempt may go");
+    rt.begin_attempt(Gemini, later);
+    assert!(!rt.usable(later + 1).has_provider(Gemini), "others wait for the trial");
+    assert!(rt.render(later + 1).contains("being tried after a pause"));
+    // The trial fails: the breaker opens again, for longer.
+    fail(&mut rt, Gemini, ErrorKind::Empty, 1, later + 2);
+    assert_eq!(rt.paused_left(Gemini, later + 2), Some(2 * FIRST_PAUSE_MS));
+    // The next trial answers: closed.
+    let again = later + 2 + 2 * FIRST_PAUSE_MS;
+    rt.begin_attempt(Gemini, again);
+    rt.note_success(Gemini, again + 1);
+    assert!(rt.usable(again + 2).has_provider(Gemini) && rt.paused_left(Gemini, again + 2).is_none());
 }

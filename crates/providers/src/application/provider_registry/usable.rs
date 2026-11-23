@@ -24,7 +24,7 @@ impl Runtime {
     /// The (provider, model) pairs routing may pick right now.
     pub fn usable(&self, now_ms: u64) -> Usable {
         let cooldowns = self.current_cooldowns();
-        let skipped = |p: ProviderId| self.blocked.contains_key(&p) || self.breakers.open(p, now_ms).is_some();
+        let skipped = |p: ProviderId| self.blocked.contains_key(&p) || self.breaker_blocks(p, now_ms) || self.held(p, now_ms).is_some();
         if !self.avail.iter().any(|a| skipped(a.provider)) {
             return usable_from(&self.avail, &cooldowns, &self.unusable_models, now_ms).with_windows(self.windows.clone());
         }
@@ -63,5 +63,6 @@ impl Runtime {
     /// `/new`: the directory-dependent blocks end with the session they were learned in.
     pub fn forget_unusable_here(&mut self) {
         self.blocked.retain(|_, reason| *reason != BlockReason::UnusableHere);
+        self.forgive_folders(self.host.now_ms());
     }
 }

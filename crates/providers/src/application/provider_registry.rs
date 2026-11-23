@@ -9,6 +9,7 @@
 //! ([`usability`](crate::domain::usability), [`login_hints`](crate::domain::login_hints)).
 
 mod health;
+mod readiness;
 mod plan;
 pub mod disk_watch;
 mod probing;
@@ -29,6 +30,7 @@ use crate::application::ports::ProviderHost;
 use crate::domain::availability::Availability;
 use crate::domain::breaker::Breakers;
 use crate::domain::funding::Fundings;
+use crate::domain::readiness::{Readiness, ReadinessKey};
 use crate::domain::reset_time::cooldowns::Cooldowns;
 use disk_watch::DiskWatch;
 
@@ -69,6 +71,18 @@ pub struct Runtime {
     breakers: Breakers,
     /// Where `breakers` are saved; `None` when there is no state directory.
     breaker_path: Option<PathBuf>,
+    /// What each rung of the readiness ladder showed, saved across runs (see [`crate::domain::readiness`]).
+    readiness: Readiness,
+    /// Where `readiness` is saved; `None` until a project is attached, and without a state directory.
+    readiness_path: Option<PathBuf>,
+    /// The project folder the session works in, once attached ([`Runtime::attach_project`]).
+    project_dir: Option<PathBuf>,
+    /// What each provider's saved verdicts depend on right now (its CLI, backend and account).
+    keys: HashMap<ProviderId, ReadinessKey>,
+    /// Each provider's project part of that key (the folder and its trust).
+    project_keys: HashMap<ProviderId, String>,
+    /// When the availability was last probed (epoch ms): the time of the install and login evidence.
+    probed_ms: u64,
     /// Context windows the machine's own backends reported, read at start; they replace the
     /// catalog's fixed sizes in [`Runtime::usable`].
     windows: HashMap<(ProviderId, String), u64>,
@@ -151,6 +165,12 @@ impl Runtime {
             blocked: HashMap::new(),
             breakers: Breakers::default(),
             breaker_path: None,
+            readiness: Readiness::default(),
+            readiness_path: None,
+            project_dir: None,
+            keys: HashMap::new(),
+            project_keys: HashMap::new(),
+            probed_ms: host.now_ms(),
             windows: HashMap::new(),
             late: None,
             host,

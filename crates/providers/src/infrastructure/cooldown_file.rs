@@ -1,6 +1,6 @@
 //! Shared cooldown file format and atomic persistence.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::time::SystemTime;
 
 use serde::{Deserialize, Serialize};
@@ -33,13 +33,7 @@ pub fn load(path: &Path) -> Cooldowns {
 
 pub fn save(path: &Path, cooldowns: &Cooldowns, now_ms: u64) -> std::io::Result<Cooldowns> {
     let merged = cooldowns.merged(&load(path), now_ms);
-    let mut tmp = path.as_os_str().to_owned();
-    tmp.push(format!(".{}.tmp", std::process::id()));
-    let tmp = PathBuf::from(tmp);
-    std::fs::write(&tmp, serde_json::to_string(&CooldownFile::from(&merged))?)?;
-    std::fs::rename(&tmp, path).inspect_err(|_| {
-        let _ = std::fs::remove_file(&tmp);
-    })?;
+    super::atomic_file::write_atomic(path, &serde_json::to_string(&CooldownFile::from(&merged))?)?;
     Ok(merged)
 }
 

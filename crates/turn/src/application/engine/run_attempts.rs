@@ -83,6 +83,7 @@ impl Engine {
                 ui.note(warning);
             }
             attempts += 1;
+            self.runtime.begin_attempt(chosen.spec.provider, (self.now)());
             if attempts == 1 {
                 // The state the first model starts from, so a failover's changes count too.
                 *before = self.snapshot_tree(cancel, true).await;

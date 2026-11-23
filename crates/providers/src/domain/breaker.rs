@@ -17,6 +17,29 @@ pub const TRIP_AFTER: u32 = 4;
 pub const FIRST_PAUSE_MS: u64 = 10 * 60 * 1000;
 /// The longest pause, in ms.
 pub const LONGEST_PAUSE_MS: u64 = 2 * 60 * 60 * 1000;
+/// How long the one trial attempt of a half-open breaker may take before another may be let
+/// through (a trial that died with its process must not hold the provider shut).
+pub const TRIAL_LEASE_MS: u64 = 2 * 60 * 1000;
+
+/// Where a provider stands with its breaker.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Admission {
+    /// Failures are below the limit, or an answer closed it: attempts go through.
+    Closed,
+    /// Paused until this time (epoch ms).
+    Open { until_ms: u64 },
+    /// The pause ended: exactly one trial attempt may go through, and it decides.
+    HalfOpen,
+    /// A trial attempt is running (until this time at the latest): others wait for it.
+    Trial { until_ms: u64 },
+}
+
+impl Admission {
+    /// Whether routing must leave the provider out.
+    pub fn blocks(self) -> bool {
+        matches!(self, Self::Open { .. } | Self::Trial { .. })
+    }
+}
 
 /// One provider's record.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -29,6 +52,8 @@ pub struct Breaker {
     pub open_until_ms: u64,
     /// What the last counted failure was, in the scoreboard's words.
     pub last: String,
+    /// A half-open trial attempt holds the provider until this time (epoch ms); 0 when none runs.
+    pub trial_until_ms: u64,
     /// When this record last changed (epoch ms): the newer copy wins a merge.
     pub updated_ms: u64,
 }
@@ -52,6 +77,7 @@ impl Breakers {
         let b = self.by_provider.entry(p).or_default();
         b.failures = b.failures.saturating_add(1);
         b.last = what.to_string();
+        b.trial_until_ms = 0;
         b.updated_ms = now_ms;
         if b.failures >= TRIP_AFTER {
             b.trips = b.trips.saturating_add(1);
@@ -78,6 +104,31 @@ impl Breakers {
             self.record_success(*p, now_ms);
         }
         !dirty.is_empty()
+    }
+
+    /// Where `p` stands: closed, paused, ready for its one trial attempt, or waiting on a trial.
+    pub fn admission(&self, p: ProviderId, now_ms: u64) -> Admission {
+        let Some(b) = self.by_provider.get(&p).filter(|b| b.failures >= TRIP_AFTER && b.open_until_ms > 0) else { return Admission::Closed };
+        if b.open_until_ms > now_ms {
+            Admission::Open { until_ms: b.open_until_ms }
+        } else if b.trial_until_ms > now_ms {
+            Admission::Trial { until_ms: b.trial_until_ms }
+        } else {
+            Admission::HalfOpen
+        }
+    }
+
+    /// An attempt on `p` is about to start. A half-open breaker lets this one through and
+    /// holds the others until it ends; returns whether this attempt is the trial.
+    pub fn begin_trial(&mut self, p: ProviderId, now_ms: u64) -> bool {
+        if self.admission(p, now_ms) != Admission::HalfOpen {
+            return false;
+        }
+        if let Some(b) = self.by_provider.get_mut(&p) {
+            b.trial_until_ms = now_ms.saturating_add(TRIAL_LEASE_MS);
+            b.updated_ms = now_ms;
+        }
+        true
     }
 
     /// The open pause of `p`, if any.
@@ -130,6 +181,31 @@ mod tests {
         failed(&mut b, 1, 1_000);
         assert!(b.open(P, 1_000).is_some());
         assert!(b.open(ProviderId::Claude, 1_000).is_none());
+    }
+
+    #[test]
+    fn after_the_pause_one_trial_goes_through_and_a_failure_reopens_for_longer() {
+        let mut b = Breakers::default();
+        failed(&mut b, TRIP_AFTER, 0);
+        assert_eq!(b.admission(P, 1), Admission::Open { until_ms: FIRST_PAUSE_MS });
+        let t = FIRST_PAUSE_MS;
+        assert_eq!(b.admission(P, t), Admission::HalfOpen);
+        assert!(!b.admission(P, t).blocks());
+        assert!(b.begin_trial(P, t));
+        assert!(b.admission(P, t + 1).blocks(), "others wait for the trial");
+        assert!(!b.begin_trial(P, t + 1), "only one trial at a time");
+        assert_eq!(b.admission(P, t + TRIAL_LEASE_MS), Admission::HalfOpen, "a lost trial does not hold it shut");
+        failed(&mut b, 1, t + 5);
+        assert_eq!(b.admission(P, t + 6), Admission::Open { until_ms: t + 5 + 2 * FIRST_PAUSE_MS });
+    }
+
+    #[test]
+    fn a_successful_trial_closes_the_breaker() {
+        let mut b = Breakers::default();
+        failed(&mut b, TRIP_AFTER, 0);
+        assert!(b.begin_trial(P, FIRST_PAUSE_MS));
+        b.record_success(P, FIRST_PAUSE_MS + 9);
+        assert_eq!(b.admission(P, FIRST_PAUSE_MS + 10), Admission::Closed);
     }
 
     #[test]

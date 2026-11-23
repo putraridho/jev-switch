@@ -46,7 +46,7 @@ use crate::application::provider_registry::BlockReason;
     }
 
     #[test]
-    fn a_failed_login_is_session_only_and_clears_when_the_probe_sees_a_login() {
+    fn a_failed_login_holds_until_a_refresh_sees_a_login() {
         let ready = |p| Availability { provider: p, state: State::Ready, plan: None, models: None, detail: String::new(), verified: true };
         let mut rt = Runtime::for_tests(vec![ready(ProviderId::Claude), ready(ProviderId::Codex)]);
         let mut excluded = HashSet::new();
@@ -62,9 +62,12 @@ use crate::application::provider_registry::BlockReason;
         not_logged.state = State::NotLoggedIn;
         rt.apply_probe(vec![ready(ProviderId::Claude), not_logged]);
         assert_eq!(rt.blocked.get(&ProviderId::Codex), Some(&BlockReason::Auth));
-        // ... and one that sees the login again offers it right away
+        // ... and one that sees the login again ends the session block; the saved hold ends
+        // with an explicit refresh (a background probe at the next start must not undo it)
         rt.apply_probe(vec![ready(ProviderId::Claude), ready(ProviderId::Codex)]);
         assert!(rt.blocked.is_empty());
+        assert!(!rt.usable(1_000).contains(catalog::find(ProviderId::Codex, "gpt-6-luna").unwrap()), "still held");
+        rt.forgive_logins(1_001);
         assert!(rt.usable(1_000).contains(catalog::find(ProviderId::Codex, "gpt-6-luna").unwrap()));
     }
 

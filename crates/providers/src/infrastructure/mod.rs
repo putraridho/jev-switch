@@ -1,3 +1,4 @@
+pub mod atomic_file;
 pub mod backend_factory;
 pub mod clock_facts;
 pub mod codex_models;
@@ -9,4 +10,6 @@ pub mod plan_store;
 pub mod probe_cache;
 pub mod probe_facts;
 pub mod probe_host;
+pub mod readiness_facts;
+pub mod readiness_file;
 mod probe_wire;

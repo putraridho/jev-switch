@@ -291,7 +291,7 @@ impl Delegator {
     /// Pick a worker for a brief AND claim its slot under one lock, so parallel delegations
     /// see each other and fan out. Lock order is runtime, then the registry.
     fn reserve(&self, signals: &BriefSignals, excluded: &HashSet<(ProviderId, String)>, brief_len: usize, id: &str, attempts: u32) -> Result<&'static ModelSpec, NoWorker> {
-        let runtime = lock(&self.runtime);
+        let mut runtime = lock(&self.runtime);
         let mut live = lock(&self.live);
         let spec = {
             let usable = runtime.usable((self.now)()).without(excluded).filter(|provider, model| self.policy.admits(provider, model, attempts));
@@ -309,6 +309,7 @@ impl Delegator {
                 },
             )?
         };
+        runtime.begin_attempt(spec.provider, (self.now)());
         live.insert(id.to_string(), Worker::reserved(spec, self.worktrees.repo(), (self.now)()));
         Ok(spec)
     }

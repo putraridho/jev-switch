@@ -94,12 +94,15 @@ impl Runtime {
         let host = self.host.clone();
         self.apply_probe(availability::probe_all(|p| host.probe(p)).await);
         self.forget_pauses(self.host.now_ms());
+        self.forgive_logins(self.host.now_ms());
     }
 
     /// The pure half of [`Runtime::refresh`].
     pub(super) fn apply_probe(&mut self, avail: Vec<Availability>) {
         self.avail = avail;
         self.fundings = self.host.fundings();
+        self.probed_ms = self.host.now_ms();
+        self.rekey();
         self.allow = allowances_for(self.host.env("JEV_ALLOW_CREDITS").as_deref(), &self.avail);
         let avail = &self.avail;
         self.blocked.retain(|p, reason| {
