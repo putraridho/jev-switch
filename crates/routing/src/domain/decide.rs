@@ -27,6 +27,7 @@ use jev_judgment::domain::security::Security;
 use jev_judgment::domain::thresholds::TOP_THRESHOLD;
 use jev_judgment::domain::want::ProviderWant;
 use jev_shared::ProviderId;
+use crate::domain::track_record::TrackRecords;
 use crate::domain::warm_cache::WarmCache;
 
 /// What `/model` pinned. A pin is never silently overridden.
@@ -156,6 +157,8 @@ pub struct RouteInput<'a> {
     pub plan_utilization: &'a dyn Fn(ProviderId) -> Option<f64>,
     /// Now, in ms since 1970: how much of the warm cache's window is left.
     pub now_ms: u64,
+    /// What accepted work says about each model; `None` keeps the static chains as they are.
+    pub records: Option<&'a TrackRecords>,
 }
 
 /// The model for this turn and why, for the `[route]` line.

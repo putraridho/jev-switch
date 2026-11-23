@@ -19,7 +19,8 @@ use crate::application::ports::AttemptRow;
 
 impl Engine {
     pub(super) fn finish(&mut self, prompt: &str, attempt: Attempt, out: TurnOutcome, attempts: u32) -> TurnReport {
-        let Attempt { chosen, tools, .. } = attempt;
+        let Attempt { chosen, tools, tool_errors, .. } = attempt;
+        self.quality.tool_errors = tool_errors;
         let tool_calls = tools.len() as u32;
         let spec = chosen.spec;
         if let Some(id) = out.session_id.clone() {
@@ -51,7 +52,8 @@ impl Engine {
             attempts,
             tool_calls,
             changes: None,
-            acceptance: None,
+            verification: None,
+            quality: Default::default(),
         }
     }
 

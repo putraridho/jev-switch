@@ -7,6 +7,7 @@ use jev_judgment::domain::thresholds::MAX_HOLD;
 use super::switch_gate::SHORT_FOLLOW_UP_WORDS;
 use jev_shared::ProviderId::{Claude, Codex, DeepSeek, Gemini, Grok};
 
+mod evidence;
 mod holding;
 mod pins;
 mod properties;
@@ -37,6 +38,7 @@ pub(super) struct Fixture {
     pub(super) context_tokens: u64,
     pub(super) plan: Option<f64>,
     pub(super) now_ms: u64,
+    pub(super) records: Option<crate::domain::track_record::TrackRecords>,
 }
 
 impl Fixture {
@@ -49,6 +51,7 @@ impl Fixture {
             context_tokens: 0,
             plan: None,
             now_ms: 0,
+            records: None,
         }
     }
 
@@ -67,6 +70,7 @@ impl Fixture {
                 context_tokens: self.context_tokens,
                 plan_utilization: &util,
                 now_ms: self.now_ms,
+                records: self.records.as_ref(),
             },
         )
     }

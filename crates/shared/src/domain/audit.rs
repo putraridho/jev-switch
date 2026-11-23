@@ -8,6 +8,7 @@
 
 use std::collections::BTreeMap;
 
+use crate::domain::acceptance::Quality;
 use crate::domain::redact::redact;
 use crate::domain::utc::utc_stamp;
 use crate::domain::token_usage::Measurement;
@@ -50,6 +51,8 @@ pub enum Event {
         tool_calls: u32,
         /// The tests' verdict on the turn's changes; `None` when they were not run or did not decide. Older lines: `None`.
         verdict: Option<Verdict>,
+        /// Acceptance, rework, retries and spend of the turn. Older lines: the empty default.
+        quality: Quality,
     },
     Export { path: String },
     Profile { name: String },

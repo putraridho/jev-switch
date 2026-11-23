@@ -72,6 +72,7 @@ impl Engine {
             trust_project_settings: hooks::trust::project_settings_trusted(&self.dir),
         };
         let mut tools: Vec<String> = Vec::new();
+        let mut tool_errors = 0u32;
         let mut steered: Vec<String> = Vec::new();
         let (mut background_results, mut background_noticed) = (0usize, false);
         let steer_rx = if backend.steerable() { ui.steering() } else { None };
@@ -125,6 +126,7 @@ impl Engine {
                         }
                         Event::Plan(plan) => runtime.note_plan(provider, plan.clone()),
                         Event::Steered(text) => steered.push(text.clone()),
+                        Event::ToolResult { ok: false, .. } => tool_errors += 1,
                         Event::ToolResult { text, .. } if jev_shared::domain::background::result_reports_background(text) => background_results += 1,
                         Event::Hint(t) if t.starts_with(jev_shared::domain::background::NOTICE_PREFIX) => background_noticed = true,
                         _ => {}
@@ -167,6 +169,6 @@ impl Engine {
                 ui.event(&Event::Text(answer.to_string()));
             }
         }
-        Attempt { chosen, tools, steered, wall_ms: started.elapsed().as_millis() as u64, result, discarded, cancelled, background_results, background_noticed }
+        Attempt { chosen, tools, tool_errors, steered, wall_ms: started.elapsed().as_millis() as u64, result, discarded, cancelled, background_results, background_noticed }
     }
 }

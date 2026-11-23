@@ -7,6 +7,7 @@ answers blind, and compares quality per task type. Subcommands, in order:
   run     ask every provider every prompt (spends quota; needs --yes)
   grade   blind-grade the answers (spends quota; needs --yes)
   report  tables + report.md (no model calls)
+  audit   compare arms (router vs a pinned baseline) from audit logs (no model calls)
 
 Run with `python3 -I scripts/provider_eval.py ...`. Pure logic is importable and tested
 in scripts/test_provider_eval.py.
@@ -17,6 +18,7 @@ import json
 import sys
 from pathlib import Path
 
+from provider_eval.audit_report import build_report as build_audit_report
 from provider_eval.answers import pending_answers, run_answers, snapshot_problem
 from provider_eval.config import ASK_BIN, DATA_DIR, DEFAULT_GRADER, OUT_ROOT
 from provider_eval.data import load_graded_items
@@ -95,6 +97,20 @@ def cmd_report(a):
     print(text, f"wrote {out / 'report.md'}", sep="")
 
 
+def parse_arm(text):
+    label, sep, path = text.partition("=")
+    if not sep or not label or not path:
+        raise argparse.ArgumentTypeError("an arm is LABEL=PATH, for example router=router-audit.jsonl")
+    return label, path
+
+
+def cmd_audit(a):
+    for _, path in a.arm:
+        if not Path(path).is_file():
+            sys.exit(f"no audit log at {path}")
+    print(build_audit_report(a.arm), end="")
+
+
 def make_parser():
     p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -133,6 +149,8 @@ def make_parser():
     s = add("report", cmd_report, "tables and report.md (no model calls)")
     common(s)
     s.add_argument("--grader", help="grader whose grades fill the tables (default: the most used)")
+    s = add("audit", cmd_audit, "accepted tasks, tokens per accepted task and failures per arm, from audit logs (no model calls)")
+    s.add_argument("--arm", action="append", type=parse_arm, required=True, metavar="LABEL=PATH", help="one audit.jsonl per arm; the first is the baseline")
     return p
 
 

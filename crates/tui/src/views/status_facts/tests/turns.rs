@@ -26,7 +26,8 @@ fn the_summary_comes_from_the_report() {
             added_stamps: Default::default(),
             ..ChangeSummary::default()
         }),
-        acceptance: None,
+        verification: None,
+        quality: Default::default(),
     };
     let f = summary_facts(&report, 14_000, &rt);
     assert!(f.ok && !f.cancelled);

@@ -10,7 +10,9 @@ use crate::application::guards::Guards;
 use jev_approval::application::extension_hooks::Hooks;
 use jev_session::domain::session::Sessions;
 use jev_approval::domain::mode::Mode;
-use jev_orchestration::application::ports::Checks;
+use jev_orchestration::application::ports::{Checks, QuickChecks};
+use crate::domain::outcomes::Outcomes;
+use crate::domain::verify_mode::VerifyMode;
 use jev_orchestration::domain::orchestration_gate::Setup;
 use jev_approval::domain::permission_rule;
 use jev_providers::application::provider_registry::Runtime;
@@ -77,8 +79,7 @@ impl Engine {
             mode: Mode::default(),
             effort: EffortSetting::default(),
             allowed_tools,
-            verify: false,
-            checks: None,
+            quality: super::quality::QualityState::default(),
         }
     }
 
@@ -133,11 +134,22 @@ impl Engine {
         self
     }
 
-    /// Check each turn's changes with the project's own tests, run by `checks` (the binary
-    /// reads `JEV_VERIFY`). Without `checks` nothing is verified.
-    pub fn with_verify(mut self, on: bool, checks: Option<Arc<dyn Checks>>) -> Self {
-        self.verify = on;
-        self.checks = checks;
+    /// Check each turn's changes by `mode` (the binary reads `JEV_VERIFY`), running the
+    /// check with `checks` and finding the cheap one with `quick`. Without `checks` nothing
+    /// is verified.
+    pub fn with_verify(mut self, mode: VerifyMode, checks: Option<Arc<dyn Checks>>, quick: Option<Arc<dyn QuickChecks>>) -> Self {
+        self.quality.verify = mode;
+        self.quality.checks = checks;
+        self.quality.quick = quick;
+        self
+    }
+
+    /// What past turns came to (from the audit log), and whether accepted outcomes may
+    /// reorder equal-tier models (the binary reads `JEV_LEARNED_ROUTING`).
+    pub fn with_outcomes(mut self, outcomes: Outcomes, learn: bool) -> Self {
+        self.quality.records = outcomes.records();
+        self.quality.outcomes = outcomes;
+        self.quality.learn = learn;
         self
     }
 

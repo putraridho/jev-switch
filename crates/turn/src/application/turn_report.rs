@@ -3,7 +3,8 @@
 use jev_backend::{ProviderId, Usage};
 use jev_session::domain::turn_status::TurnStatus;
 use jev_changes::domain::change_set::ChangeSummary;
-use crate::domain::acceptance::Acceptance;
+use jev_shared::domain::acceptance::Quality;
+use crate::domain::verification::Verification;
 #[derive(Debug, Clone)]
 pub struct TurnReport {
     pub status: TurnStatus,
@@ -25,11 +26,13 @@ pub struct TurnReport {
     pub changes: Option<ChangeSummary>,
     /// What the project's tests said about this turn's changes. `None` unless verification
     /// is on and the turn answered and changed files.
-    pub acceptance: Option<Acceptance>,
+    pub verification: Option<Verification>,
+    /// Whether the work was accepted, and what it took (see [`Quality`]).
+    pub quality: Quality,
 }
 
 impl TurnReport {
     pub(super) fn ended(status: TurnStatus, message: String, attempts: u32) -> Self {
-        Self { status, text: String::new(), message, provider: None, model: None, usage: None, attempts, tool_calls: 0, changes: None, acceptance: None }
+        Self { status, text: String::new(), message, provider: None, model: None, usage: None, attempts, tool_calls: 0, changes: None, verification: None, quality: Quality::default() }
     }
 }

@@ -23,10 +23,11 @@ pub struct Cmd {
     pub hint: &'static str,
 }
 
-pub const COMMANDS: [Cmd; 59] = [
+pub const COMMANDS: [Cmd; 60] = [
     Cmd { name: "/model", args: "[target]", group: Group::Model, about: "Pin a model or provider, or `auto` to let the router choose", example: "/model codex:gpt-6.1-sol", hint: "auto|codex|claude:..." },
     Cmd { name: "/provider", args: "auto|off", group: Group::Model, about: "Route across providers (auto), or use Claude only (off)", example: "/provider off", hint: "auto|off" },
     Cmd { name: "/orchestrate", args: "[on|off]", group: Group::Model, about: "Let a planner split a big task across cheaper workers", example: "/orchestrate on", hint: "on|off" },
+    Cmd { name: "/verify", args: "[off|auto|<command>]", group: Group::Model, about: "Check a turn's changes with a cheap project check (auto) or your command; accepted work then steers routing", example: "/verify auto", hint: "off|auto|<command>" },
     Cmd { name: "/workflows", args: "", group: Group::Model, about: "Show orchestration: running workers, ones waiting for review, recent delegations (also /workers)", example: "", hint: "" },
     Cmd { name: "/effort", args: "[default|auto|low|medium|high]", group: Group::Model, about: "Set how hard the model thinks (a thinking budget or reasoning effort)", example: "/effort high", hint: "default|auto|low|medium|high" },
     Cmd { name: "/thinking", args: "[on|off]", group: Group::Model, about: "Print the model's whole reasoning; kept for the next session", example: "/thinking on", hint: "on|off" },

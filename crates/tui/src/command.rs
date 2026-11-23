@@ -43,6 +43,8 @@ pub enum Command {
     SetOrchestrate(bool),
     /// `/orchestrate` with no argument: show whether it is on.
     ShowOrchestrate,
+    /// `/verify [off|auto|<command>]`: check each turn's changes; `None` shows the setting.
+    Verify(Option<jev_turn::domain::verify_mode::VerifyMode>),
     /// `/thinking on|off`: print the model's whole reasoning, for this and later sessions.
     SetThinking(bool),
     /// `/thinking` with no argument: show whether it is on.
@@ -240,6 +242,10 @@ pub fn parse(line: &str) -> Command {
             (Some("on"), false) => Command::SetOrchestrate(true),
             (Some("off"), false) => Command::SetOrchestrate(false),
             _ => invalid("usage: /orchestrate on|off"),
+        },
+        "/verify" => match rest() {
+            None => Command::Verify(None),
+            Some(r) => jev_turn::domain::verify_mode::VerifyMode::parse(&r).map_or_else(Command::Invalid, |m| Command::Verify(Some(m))),
         },
         "/thinking" => match (arg, extra) {
             (None, _) => Command::ShowThinking,

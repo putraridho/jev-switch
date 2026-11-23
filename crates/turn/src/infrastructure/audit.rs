@@ -4,6 +4,7 @@
 
 use std::path::{Path, PathBuf};
 
+use jev_shared::domain::acceptance::Quality;
 use jev_shared::domain::audit::{preview, Entry, Event, Outcome};
 use jev_shared::infrastructure::audit_wire::EntryWire;
 use jev_shared::Measurement;
@@ -23,8 +24,13 @@ fn outcome_of(s: TurnStatus) -> Outcome {
     }
 }
 
-/// The log entry for a finished turn.
+/// The log entry for a finished turn, with nothing recorded about its quality.
 pub fn turn_entry(ts_ms: u64, project: &str, t: &TurnRecord) -> Entry {
+    turn_entry_with(ts_ms, project, t, Quality::default())
+}
+
+/// The log entry for a finished turn and how its work fared.
+pub fn turn_entry_with(ts_ms: u64, project: &str, t: &TurnRecord, quality: Quality) -> Entry {
     let usage = t.usage.unwrap_or_default();
     let measurement = t.usage.map(|usage| usage.measurement).unwrap_or(Measurement::Unavailable);
     Entry {
@@ -42,6 +48,7 @@ pub fn turn_entry(ts_ms: u64, project: &str, t: &TurnRecord) -> Entry {
             context_tokens: usage.context_tokens.unwrap_or(0),
             tool_calls: t.tool_calls,
             verdict: t.verdict,
+            quality,
         },
     }
 }

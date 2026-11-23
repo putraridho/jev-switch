@@ -15,7 +15,7 @@ use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
-use crate::application::ports::{CheckRun, Checks};
+use crate::application::ports::{CheckRun, Checks, QuickChecks};
 
 /// How long a worker's tests may run before the work goes to review instead.
 pub const TEST_TIMEOUT: Duration = Duration::from_secs(15 * 60);
@@ -39,6 +39,17 @@ impl Default for ProjectChecks {
 pub fn detected_test_command(dir: &Path) -> Option<String> {
     let commands: Vec<String> = crate::infrastructure::project_kind::detect(dir).into_iter().filter_map(|p| p.test).collect();
     (!commands.is_empty()).then(|| commands.join(" && "))
+}
+
+/// The cheap check of the first detected project that has one, or `None`.
+pub fn detected_quick_command(dir: &Path) -> Option<String> {
+    crate::infrastructure::project_kind::detect(dir).into_iter().find_map(|p| p.quick)
+}
+
+impl QuickChecks for ProjectChecks {
+    fn quick_command(&self, dir: &Path) -> Option<String> {
+        detected_quick_command(dir)
+    }
 }
 
 impl Checks for ProjectChecks {

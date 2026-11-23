@@ -42,6 +42,11 @@ impl Repl {
                 self.console.out(&format!("  orchestrate: {}", on_off(on)));
             }
             Command::ShowOrchestrate => self.console.out(&format!("  orchestrate: {}", on_off(self.engine.orchestrate()))),
+            Command::Verify(None) => self.console.out(&format!("  verify: {}", self.engine.verify_mode().label())),
+            Command::Verify(Some(mode)) => {
+                self.engine.set_verify_mode(mode);
+                self.console.out(&format!("  verify: {}", self.engine.verify_mode().label()));
+            }
             Command::SetThinking(on) => {
                 self.console.set_show_thinking(on);
                 self.remember_flag(crate::app::preferences::Flag::Thinking, on, "thinking");

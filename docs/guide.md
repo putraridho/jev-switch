@@ -785,6 +785,46 @@ mode: one attempt, no availability check, no failover, two tiers and no Haiku:
 whether the **cheap** model actually handled each request well. 20–30 real examples
 beat any guess. Re-run `tune` when prompts, models, or request mix change.
 
+#### Accepted work, `/verify` and learned routing
+
+"Answered" is not a quality score: a model can answer with failing code. jev-code judges each
+turn as **accepted**, **rejected** or **unverified** from what it can observe, never from the
+text.
+
+- **Accepted** only when a check ran after the turn's changes and passed. **Rejected** when the
+  check failed, or when you undid the turn (`/undo`, `/rewind`) and the next turn redid its
+  files. **Unverified** for everything else: an answer that changed nothing, a turn that was
+  not checked, a check that timed out or could not start, a turn that did not answer. Failed
+  tool calls are recorded but never decide on their own.
+- `/verify off|auto|<command>` (or `JEV_VERIFY`) chooses the check. `off` is the default. `auto`
+  runs the project's cheapest check only after a turn that changed files: `cargo check`, an
+  `npm`/`pnpm`/`yarn` `test` script, `python3 -m pytest -x -q`, or `go build ./...`, found from the
+  manifests. A command is run as written in the project folder. It never runs in plan mode or
+  after a turn that changed nothing, stops after 5 minutes, and only the end of its output is kept.
+- A failed check is shown, counted in `/health`, and put in front of your next prompt as
+  "[verification failed] ...", once, so the next model starts from what broke.
+- The audit log records, per turn, the task type, the acceptance, how long the check took,
+  retries (failovers), rework (the same files edited again right after a failed check or an
+  undo) and the tokens spent over all attempts (cache hits left out). Older lines read as
+  unverified, and a line that only has a check verdict still counts.
+- `/bench` shows, per model and per task type, accepted of checked turns with `n=`, the Wilson
+  interval, rework and tokens per accepted turn. Tokens per accepted turn include the spend on
+  failed and redone turns. A rate over fewer than 5 checked turns is marked "too few to rely on".
+- **Learned routing** (`JEV_LEARNED_ROUTING`, on by default): when two or more models of the
+  same tier sit next to each other in a task's chain and each has at least 5 checked turns for
+  that task type, they swap places by accepted-rate (the lower end of the interval, in bands of
+  10 points) and then by tokens per accepted turn. The static chains stay the cold start: with
+  no data nothing changes. It never overrides a `/model` pin, your own `JEV_CHAINS`, the
+  security rule, privacy, budget or availability, never moves a model past one of another tier,
+  and leaves security work alone. The `[route]` line says "preferred on accepted work so far"
+  when it changed the pick.
+- Compare the router with a pinned baseline from logs alone (no provider calls): run the same
+  tasks on the same snapshots once per arm with `/verify` on, then
+  `python3 -I scripts/provider_eval.py audit --arm pinned=pinned-audit.jsonl --arm router=router-audit.jsonl`.
+  It prints accepted tasks, accepted rate with its interval, tokens per accepted task, failure
+  rate, rework and retries per arm, and says "too few" instead of picking a winner on a handful
+  of turns.
+
 #### Trust, git, team and insight
 
 - `/profile locked|careful|standard|trusted` sets how much the agent may do unasked.

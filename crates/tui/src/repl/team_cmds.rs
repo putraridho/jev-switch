@@ -60,8 +60,7 @@ impl Repl {
             ExtCmd::Audit(n) => self.page_out(&audit_log::audit_text(&self.audit_entries(), n)),
             ExtCmd::History => self.page_out(&audit_log::history_text(&audit_log::history(&self.audit_entries()))),
             ExtCmd::Bench => {
-                let ranks = bench::rank(&self.audit_entries());
-                self.page_out(&bench::bench_text(&ranks, self.engine.dir()));
+                self.page_out(&bench::bench_report(&self.audit_entries(), self.engine.dir()));
             }
             ExtCmd::Replay(n) => self.replay(n),
             ExtCmd::Invalid(message) => self.console.out(&format!("{} {message}", style.yellow("⚠"))),
@@ -198,7 +197,7 @@ impl Repl {
             tool_calls: 0,
             verdict: None,
         };
-        self.audit_turn(&record);
+        self.audit_turn(&record, &Default::default());
     }
 
     pub(super) fn audit_event(&self, event: audit_log::Event) {
@@ -208,9 +207,9 @@ impl Repl {
         }
     }
 
-    pub(super) fn audit_turn(&self, record: &TurnRecord) {
+    pub(super) fn audit_turn(&self, record: &TurnRecord, quality: &jev_shared::domain::acceptance::Quality) {
         if let Some(path) = self.audit_path() {
-            audit::append(&path, &audit::turn_entry(self.now(), &self.engine.dir().display().to_string(), record));
+            audit::append(&path, &audit::turn_entry_with(self.now(), &self.engine.dir().display().to_string(), record, quality.clone()));
         }
     }
 
@@ -287,7 +286,7 @@ mod tests {
         let entry = |project: &str, prompt: &str| jev_shared::domain::audit::Entry {
             ts_ms: 1000,
             project: project.into(),
-            event: jev_shared::domain::audit::Event::Turn { model: "m".into(), outcome: jev_shared::domain::audit::Outcome::Answered, measurement: jev_shared::Measurement::Reported, elapsed_ms: 1, in_tokens: 1, out_tokens: 1, prompt: prompt.into(), cached_tokens: 0, context_tokens: 0, tool_calls: 0, verdict: None },
+            event: jev_shared::domain::audit::Event::Turn { model: "m".into(), outcome: jev_shared::domain::audit::Outcome::Answered, measurement: jev_shared::Measurement::Reported, elapsed_ms: 1, in_tokens: 1, out_tokens: 1, prompt: prompt.into(), cached_tokens: 0, context_tokens: 0, tool_calls: 0, verdict: None, quality: Default::default() },
         };
         let path = jev_turn::infrastructure::audit::path_in(&state);
         jev_turn::infrastructure::audit::append(&path, &entry("/somewhere/else", "other project prompt"));

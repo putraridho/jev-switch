@@ -5,6 +5,7 @@ use super::stickiness::{stay, sticky};
 use super::task::TaskSource;
 use super::{Choice, NoRoute, RouteInput, RoutingState};
 use jev_catalog::domain::model_table::{ModelSpec, TaskType, pick};
+use crate::domain::track_record::order_by_evidence;
 use jev_shared::ProviderId;
 
 /// Claude plan utilisation from which work is steered to other providers, leaving
@@ -26,8 +27,13 @@ pub(super) fn auto_choice(
         return Ok(stay(cur, "Jev unavailable, keeping the current model".into(), false));
     }
     let chain = steer.chain.as_deref().unwrap_or(chain);
-    let best = pick(chain, task, input.usable, input.allow, input.context_tokens)
-        .ok_or(NoRoute::NothingUsable { task })?;
+    let static_best = pick(chain, task, input.usable, input.allow, input.context_tokens).ok_or(NoRoute::NothingUsable { task })?;
+    // Observed accepted work may reorder equal-tier neighbours of the chain, never a chain
+    // the person wrote, and only when it still lands on a model the pick rules allow.
+    let learned = input.records.filter(|_| input.overrides.get(task).is_none()).map(|r| order_by_evidence(chain, task, r));
+    let chain = learned.as_deref().unwrap_or(chain);
+    let best = pick(chain, task, input.usable, input.allow, input.context_tokens).ok_or(NoRoute::NothingUsable { task })?;
+    let evidence_note = (best.spec != static_best.spec).then(|| "preferred on accepted work so far".to_string());
     let mut choice = if steering_current {
         state.held = 0;
         stay(best.spec, "leaving claude for an eligible alternative".into(), best.dropped_tier)
@@ -35,6 +41,9 @@ pub(super) fn auto_choice(
         sticky(state, input, task, source, chain, best, current)
     };
     if let Some(note) = steer.note.filter(|_| choice.spec.provider != ProviderId::Claude) {
+        choice.why = format!("{}; {note}", choice.why);
+    }
+    if let Some(note) = evidence_note.filter(|_| choice.spec == best.spec) {
         choice.why = format!("{}; {note}", choice.why);
     }
     Ok(choice)

@@ -24,4 +24,10 @@ The table lives in `src/catalog.rs` (`default_chain`). To apply results without 
 `JEV_CHAINS` at a JSON file such as `{"security": ["codex:gpt-6.1-sol", "claude:claude-opus-5-5"]}`;
 the report prints a quality-only suggestion in that format. Add cost before choosing: pick the knee.
 
-Tests: `python3 -I scripts/test_provider_eval.py` (no network, no quota).
+Comparing the router with a pinned baseline from audit logs (no provider calls) is the `audit`
+mode: `python3 -I scripts/provider_eval.py audit --arm pinned=PATH --arm router=PATH`. Each arm is
+the `audit.jsonl` of a run of the same tasks on the same snapshots with `/verify` on; it prints
+accepted tasks, accepted rate with its interval, tokens per accepted task, failure rate and
+rework per arm, and refuses to call a winner on fewer than 5 checked turns per arm.
+
+Tests: `python3 -I scripts/test_provider_eval.py` and `python3 -I scripts/test_audit_report.py` (no network, no quota).

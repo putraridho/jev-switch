@@ -8,6 +8,8 @@ use crate::domain::effort::EffortSetting;
 use jev_approval::application::extension_hooks::Hooks;
 use jev_approval::domain::mode::Mode;
 use jev_routing::domain::decide::{Pin, PinOrigin};
+use crate::domain::outcomes::Outcomes;
+use crate::domain::verify_mode::VerifyMode;
 use super::Engine;
 
 impl Engine {
@@ -107,12 +109,26 @@ impl Engine {
         self.orchestrate = on;
     }
 
-    pub fn verify(&self) -> bool {
-        self.verify
+    pub fn verify_mode(&self) -> &VerifyMode {
+        &self.quality.verify
     }
 
-    pub fn set_verify(&mut self, on: bool) {
-        self.verify = on;
+    pub fn set_verify_mode(&mut self, mode: VerifyMode) {
+        self.quality.verify = mode;
+    }
+
+    /// What past turns came to, per model and task type.
+    pub fn outcomes(&self) -> &Outcomes {
+        &self.quality.outcomes
+    }
+
+    /// Whether accepted outcomes may reorder equal-tier models.
+    pub fn learned_routing(&self) -> bool {
+        self.quality.learn
+    }
+
+    pub fn set_learned_routing(&mut self, on: bool) {
+        self.quality.learn = on;
     }
 
     /// Images to send with the next turn (and only that one).

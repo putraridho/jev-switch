@@ -7,6 +7,7 @@ mod failover;
 mod handoff;
 mod orchestration;
 mod persistence;
+mod quality;
 mod reporting;
 mod routing;
 mod turn_log;

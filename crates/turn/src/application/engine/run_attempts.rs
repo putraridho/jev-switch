@@ -109,6 +109,8 @@ impl Engine {
                 Err(error) => error.usage.unwrap_or(Usage { measurement: Measurement::Unavailable, ..Usage::default() }),
             };
             self.guards.settle(&hold, attempt.chosen.spec.provider, attempt.chosen.spec.id, &usage);
+            self.quality.add_spend(&usage);
+            self.quality.task = attempt.chosen.facts.task.clone();
             if !attempt.cancelled {
                 match &attempt.result {
                     Ok(_) => {

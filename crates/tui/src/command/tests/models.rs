@@ -37,6 +37,15 @@ fn routing_toggle() {
 }
 
 #[test]
+fn verify_takes_off_auto_or_a_command() {
+    use jev_turn::domain::verify_mode::VerifyMode;
+    assert_eq!(parse("/verify"), Command::Verify(None));
+    assert_eq!(parse("/verify off"), Command::Verify(Some(VerifyMode::Off)));
+    assert_eq!(parse("/verify auto"), Command::Verify(Some(VerifyMode::Auto)));
+    assert_eq!(parse("/verify make lint"), Command::Verify(Some(VerifyMode::Command("make lint".into()))));
+}
+
+#[test]
 fn orchestrate_toggle() {
     assert_eq!(parse("/orchestrate on"), Command::SetOrchestrate(true));
     assert_eq!(parse("/orchestrate off"), Command::SetOrchestrate(false));

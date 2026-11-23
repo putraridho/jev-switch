@@ -81,6 +81,10 @@ impl Engine {
         let report = undo(tree.as_ref(), &self.dir, &summary)?;
         self.last_changes = None;
         self.change_history.pop();
+        // The person took the turn's work back: a redo of it is rework, and it was not accepted.
+        if let Some(prior) = &mut self.quality.prior {
+            prior.reverted = true;
+        }
         self.sessions.record_undo();
         self.save_quietly();
         Ok(report)

@@ -29,6 +29,8 @@ pub(super) fn with_steered(prompt: &str, steered: &[String]) -> String {
 pub(super) struct Attempt {
     pub(super) chosen: Chosen,
     pub(super) tools: Vec<String>,
+    /// How many of those tool calls failed.
+    pub(super) tool_errors: u32,
     /// Messages the person typed during the attempt that the model took into the turn.
     pub(super) steered: Vec<String>,
     pub(super) wall_ms: u64,

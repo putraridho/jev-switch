@@ -63,6 +63,9 @@ pub struct Project {
     pub test: Option<String>,
     pub lint: Option<String>,
     pub build: Option<String>,
+    /// The cheapest command that still catches a broken change: a compile check or a fast,
+    /// fail-early test run. `None` when the project has no such command.
+    pub quick: Option<String>,
 }
 
 impl Project {
@@ -87,7 +90,7 @@ fn read(dir: &Path, name: &str) -> Option<String> {
 }
 
 fn cargo() -> Project {
-    Project { kind: Kind::Cargo, test: Some("cargo test".into()), lint: Some("cargo clippy --all-targets".into()), build: Some("cargo build --all-targets".into()) }
+    Project { kind: Kind::Cargo, test: Some("cargo test".into()), lint: Some("cargo clippy --all-targets".into()), build: Some("cargo build --all-targets".into()), quick: Some("cargo check".into()) }
 }
 
 fn npm(dir: &Path) -> Project {
@@ -102,17 +105,17 @@ fn npm(dir: &Path) -> Project {
     let script = |name: &str| {
         scripts.contains_key(name).then(|| if name == "test" && runner == "npm" { "npm test".to_string() } else { format!("{runner} run {name}") })
     };
-    Project { kind: Kind::Npm, test: script("test"), lint: script("lint"), build: script("build") }
+    Project { kind: Kind::Npm, test: script("test"), lint: script("lint"), build: script("build"), quick: script("test") }
 }
 
 fn python(dir: &Path) -> Project {
     let pyproject = read(dir, "pyproject.toml").unwrap_or_default();
     let ruff = pyproject.contains("[tool.ruff") || dir.join("ruff.toml").is_file() || dir.join(".ruff.toml").is_file();
-    Project { kind: Kind::Python, test: Some("python3 -m pytest -q".into()), lint: ruff.then(|| "ruff check .".to_string()), build: None }
+    Project { kind: Kind::Python, test: Some("python3 -m pytest -q".into()), lint: ruff.then(|| "ruff check .".to_string()), build: None, quick: Some("python3 -m pytest -x -q".into()) }
 }
 
 fn go() -> Project {
-    Project { kind: Kind::Go, test: Some("go test ./...".into()), lint: Some("go vet ./...".into()), build: Some("go build ./...".into()) }
+    Project { kind: Kind::Go, test: Some("go test ./...".into()), lint: Some("go vet ./...".into()), build: Some("go build ./...".into()), quick: Some("go build ./...".into()) }
 }
 
 /// Every kind of project `dir` is, the first being the main one. A folder can be several
@@ -171,6 +174,15 @@ mod tests {
         assert_eq!(detect(plain.path())[0].test.as_deref(), Some("npm test"));
         let broken = dir_with(&[("package.json", "{not json")]);
         assert_eq!(detect(broken.path())[0].test, None);
+    }
+
+    #[test]
+    fn the_quick_check_is_the_cheap_one() {
+        let d = dir_with(&[("Cargo.toml", ""), ("pytest.ini", "")]);
+        let quick: Vec<_> = detect(d.path()).into_iter().map(|p| p.quick).collect();
+        assert_eq!(quick, [Some("cargo check".to_string()), Some("python3 -m pytest -x -q".to_string())]);
+        let npm = dir_with(&[("package.json", r#"{"scripts":{"build":"tsc"}}"#)]);
+        assert_eq!(detect(npm.path())[0].quick, None);
     }
 
     #[test]

@@ -114,6 +114,13 @@ pub trait Checks: Send + Sync {
     fn run(&self, dir: &Path, command: &str, stop: &dyn Fn() -> bool) -> CheckRun;
 }
 
+/// Finds the cheap check of a project (a compile check, a fail-early test run), the one run
+/// after a turn when verification is `auto`. Run it with [`Checks::run`].
+pub trait QuickChecks: Send + Sync {
+    /// The command, or `None` when the project at `dir` has no cheap check.
+    fn quick_command(&self, dir: &Path) -> Option<String>;
+}
+
 /// Everything one log row needs.
 pub struct AttemptLog<'a> {
     pub spec: &'static ModelSpec,

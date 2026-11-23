@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 use std::fmt::Write as _;
 
 use jev_backend::{ErrorKind, ProviderId};
-use super::acceptance::Acceptance;
+use super::verification::Verification;
 
 /// Latencies kept per provider; older ones fall off.
 const KEEP: usize = 50;
@@ -14,7 +14,7 @@ const KEEP: usize = 50;
 pub struct Health {
     pub answered: u32,
     pub failed: u32,
-    /// Turns whose changes passed the project's tests, and turns whose changes failed them.
+    /// Turns whose changes passed the check, and turns whose changes failed it.
     pub accepted: u32,
     pub rejected: u32,
     /// Wall time of recent attempts, answered or failed, oldest first.
@@ -78,12 +78,12 @@ impl Scoreboard {
     }
 
     /// Count a verdict on a turn's changes; one that is no verdict (`Inconclusive`) counts for nothing.
-    pub fn record_acceptance(&mut self, provider: ProviderId, acceptance: &Acceptance) {
+    pub fn record_verification(&mut self, provider: ProviderId, verification: &Verification) {
         let h = self.by_provider.entry(provider).or_default();
-        match acceptance {
-            Acceptance::Passed => h.accepted += 1,
-            Acceptance::Failed { .. } => h.rejected += 1,
-            Acceptance::Inconclusive { .. } => {}
+        match verification {
+            Verification::Passed => h.accepted += 1,
+            Verification::Failed { .. } => h.rejected += 1,
+            Verification::Inconclusive { .. } => {}
         }
     }
 
@@ -104,7 +104,7 @@ impl Scoreboard {
             let rate = h.success_rate().map_or("-".to_string(), |r| format!("{:.0}%", r * 100.0));
             let median = h.median_ms().map_or("-".to_string(), |ms| format!("{:.1}s", ms as f64 / 1000.0));
             let last = h.last_failure.map_or(String::new(), |l| format!("  last failure: {l}"));
-            let verified = if h.accepted + h.rejected > 0 { format!("  tests passed {}/{}", h.accepted, h.accepted + h.rejected) } else { String::new() };
+            let verified = if h.accepted + h.rejected > 0 { format!("  checks passed {}/{}", h.accepted, h.accepted + h.rejected) } else { String::new() };
             let _ = writeln!(out, "  {:<9} {:>2} answered  {:>2} failed  {rate:>4} ok  median {median:>6}{verified}{last}", p.as_str(), h.answered, h.failed);
         }
         out.trim_end().to_string()
@@ -146,12 +146,12 @@ mod tests {
     fn verdicts_count_only_when_the_tests_decided() {
         let mut s = Scoreboard::default();
         s.record_answer(ProviderId::Claude, 1_000);
-        s.record_acceptance(ProviderId::Claude, &Acceptance::Passed);
-        s.record_acceptance(ProviderId::Claude, &Acceptance::Failed { output: "x".into() });
-        s.record_acceptance(ProviderId::Claude, &Acceptance::Inconclusive { why: "none".into() });
+        s.record_verification(ProviderId::Claude, &Verification::Passed);
+        s.record_verification(ProviderId::Claude, &Verification::Failed { output: "x".into() });
+        s.record_verification(ProviderId::Claude, &Verification::Inconclusive { why: "none".into() });
         let h = s.health(ProviderId::Claude).unwrap();
         assert_eq!((h.accepted, h.rejected), (1, 1));
-        assert!(s.text().contains("tests passed 1/2"));
+        assert!(s.text().contains("checks passed 1/2"));
     }
 
     #[test]

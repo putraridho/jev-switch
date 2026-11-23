@@ -240,7 +240,8 @@ ENVIRONMENT (each may also be a KEY=VALUE line in ~/.jev-router.env):
   TYPESAFE_API_KEY | JEV_API_KEY   the Jev key (required for routing)
   JEV_TYPESAFE_URL           a different Jev endpoint (proxy, test server)
   JEV_ORCHESTRATE            on|off at start when nothing was set with /orchestrate; default on
-  JEV_VERIFY                 on runs the project's tests after a turn that changed files and reports pass/fail; default off
+  JEV_VERIFY                 off|auto|<command>: check a turn that changed files (auto = the project's cheap check); default off
+  JEV_LEARNED_ROUTING        off stops accepted outcomes from reordering equal-tier models; default on
   JEV_DELEGATE_BIN           the delegate tool (default: jev-delegate-mcp or delegate_mcp next to jev-code)
   JEV_DELEGATE_LOG           orchestration log (default <state dir>/orchestration.jsonl)
   JEV_PROVIDERS              off starts with routing off (Claude only); default on; /provider is kept

@@ -94,6 +94,7 @@ impl Engine {
             context_tokens,
             plan_utilization: &plan,
             now_ms: now,
+            records: (self.quality.learn && !self.quality.records.is_empty()).then_some(&self.quality.records),
         };
         // A team pin is the repository's default, not the person's choice: when their rules
         // took its provider away, or it cannot serve this task, the turn routes automatically

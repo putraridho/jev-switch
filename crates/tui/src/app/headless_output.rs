@@ -144,7 +144,8 @@ mod tests {
             attempts: 1,
             tool_calls: 0,
             changes: None,
-            acceptance: None,
+            verification: None,
+            quality: Default::default(),
         }
     }
 

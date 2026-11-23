@@ -84,12 +84,18 @@ impl Engine {
     pub async fn run_judged_cancellable(&mut self, prompt: &str, judged: Judged, ui: &mut dyn Ui, cancel: &Cancel) -> TurnReport {
         let mut before: Option<Snapshot> = None;
         self.turn_activity = TurnActivity::default();
-        let mut report = self.run_attempts(prompt, judged, ui, cancel, &mut before).await;
-        if report.attempts > 0 {
+        self.quality.begin_turn();
+        // A failed check of the turn before is told to this one, ahead of the request.
+        let sent = self.with_check_context(prompt);
+        let mut report = self.run_attempts(&sent, judged, ui, cancel, &mut before).await;
+        if report.attempts == 0 {
+            self.keep_check_context(&sent, prompt);
+        } else {
             // A turn the user cancelled has spent its signal, so its summary is not raced
             // against it; a Ctrl-C while summarising a finished turn still returns at once.
             report.changes = self.changes_since(before, self.turn_activity.clone(), cancel, report.status != TurnStatus::Cancelled).await;
-            self.verify_report(&mut report, ui, cancel).await;
+            let verify_ms = self.verify_report(&mut report, ui, cancel).await;
+            self.grade(&mut report, verify_ms);
             self.last_changes = report.changes.clone();
             self.change_history.extend(report.changes.clone());
             self.save_quietly();

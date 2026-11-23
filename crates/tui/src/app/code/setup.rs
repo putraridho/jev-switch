@@ -21,6 +21,9 @@ use jev_judgment::infrastructure::typesafe_http::TypeSafe;
 use crate::render as uifmt;
 use crate::render::Style;
 
+/// How long the check after a turn may run before it counts as not checked.
+const VERIFY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
+
 // ------------------------------------------------------------------------ setup
 
 /// The Jev client, or the message that says how to get a key.
@@ -81,6 +84,8 @@ pub(super) fn engine_for(args: &Args, runtime: Runtime, router: Router, dir: Pat
     let routing = saved.routing.unwrap_or_else(|| commands::typo::routing_enabled(envfile::lookup("JEV_PROVIDERS").as_deref()));
     let orchestrate = orchestrate::start(saved.orchestrate, envfile::lookup("JEV_ORCHESTRATE").as_deref(), session.is_some());
     let hooks = std::sync::Arc::new(jev_approval::application::extension_hooks::Hooks::load(&jev_approval::application::extensions::Places::from_env(&dir)));
+    // The check after a turn is a quick one, so it gets a short timeout.
+    let checks = std::sync::Arc::new(jev_orchestration::infrastructure::worker_check::ProjectChecks { timeout: VERIFY_TIMEOUT });
     let engine = Engine::new(runtime, router, dir, jev_turn::infrastructure::engine_adapters::real())
         .with_working_tree(std::sync::Arc::new(jev_changes::infrastructure::git_tree::GitWorkingTree))
         .with_backend_factory(Box::new(jev_providers::infrastructure::backend_factory::run_backends(can_ask)))
@@ -88,8 +93,13 @@ pub(super) fn engine_for(args: &Args, runtime: Runtime, router: Router, dir: Pat
         .with_mode(mode)
         .with_orchestrate(orchestrate)
         .with_verify(
-            jev_orchestration::domain::orchestration_gate::env_choice(envfile::lookup("JEV_VERIFY").as_deref()) == Some(true),
-            Some(std::sync::Arc::new(jev_orchestration::infrastructure::worker_check::ProjectChecks::default())),
+            jev_turn::domain::verify_mode::VerifyMode::from_env(envfile::lookup("JEV_VERIFY").as_deref()),
+            Some(checks.clone()),
+            Some(checks),
+        )
+        .with_outcomes(
+            jev_turn::domain::outcomes::Outcomes::from_entries(&log::state_dir().map(|d| jev_turn::infrastructure::audit::read(&jev_turn::infrastructure::audit::path_in(&d))).unwrap_or_default()),
+            jev_orchestration::domain::orchestration_gate::env_choice(envfile::lookup("JEV_LEARNED_ROUTING").as_deref()) != Some(false),
         )
         .with_orch_setup(Setup::detect(jev_shared::infrastructure::jsonl_log::state_dir(), envfile::lookup("JEV_DELEGATE_BIN"), std::env::current_exe().ok().as_deref(), &|p| p.is_file()))
         .with_hooks(hooks)
