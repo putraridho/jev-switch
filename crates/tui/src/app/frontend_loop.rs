@@ -7,7 +7,7 @@
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-use crossterm::event::{Event, EventStream, KeyCode, KeyEventKind, KeyModifiers, MouseEventKind};
+use crossterm::event::{Event, EventStream, KeyCode, KeyEventKind, KeyModifiers};
 use futures_util::StreamExt;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
@@ -156,14 +156,6 @@ pub async fn run(repl: Repl, mut rx: mpsc::UnboundedReceiver<FrontMsg>, opts: Op
                         screen.resized(w);
                     }
                     last_width = w;
-                    Vec::new()
-                }
-                Some(Ok(Event::Mouse(m))) => {
-                    match m.kind {
-                        MouseEventKind::ScrollUp => app.scroll_chat(3),
-                        MouseEventKind::ScrollDown => app.scroll_chat(-3),
-                        _ => {}
-                    }
                     Vec::new()
                 }
                 Some(Ok(_)) => Vec::new(),

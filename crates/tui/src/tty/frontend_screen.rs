@@ -15,8 +15,8 @@ const SYNC_ON: &str = "\x1b[?2026h";
 const SYNC_OFF: &str = "\x1b[?2026l";
 const HIDE: &str = "\x1b[?25l";
 const SHOW: &str = "\x1b[?25h";
-/// The alternate screen, with the mouse reported (wheel scrolling) in the SGR encoding.
-pub const FULL_ON: &str = "\x1b[?1049h\x1b[?1000h\x1b[?1006h";
+/// The alternate screen. The mouse is not captured, so the terminal keeps selection and link clicks.
+pub const FULL_ON: &str = "\x1b[?1049h";
 /// Clear from the cursor to the end of the screen.
 const CLEAR_DOWN: &str = "\x1b[J";
 
@@ -38,13 +38,13 @@ impl<W: Write> Screen<W> {
         Self { out, styled, rows: Vec::new(), cursor_row: 0, last: None }
     }
 
-    /// Take the alternate screen and the mouse (the full-screen layout).
+    /// Take the alternate screen (the full-screen layout).
     pub fn enter_full(&mut self) {
         self.last = None;
         self.write(&format!("{FULL_ON}\x1b[2J"));
     }
 
-    /// Give the alternate screen and the mouse back.
+    /// Give the alternate screen back.
     pub fn leave_full(&mut self) {
         self.last = None;
         self.write(&format!("{SHOW}{}", String::from_utf8_lossy(crate::tty::terminal_guard::LEAVE_ALT_SCREEN)));

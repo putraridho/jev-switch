@@ -21,8 +21,8 @@ def the_terminal_is_restored_when_the_program_ends(w):
 @scenario
 def full_screen_draws_header_chat_and_box_and_leaves_the_terminal_clean(w):
     """Without JEV_INLINE the app takes the alternate screen: the header row on top, the chat
-    under it, the box at the bottom; the wheel and PageUp are read; and the alternate screen
-    and the mouse are given back at exit. The tiny emulator does not know absolute cursor
+    under it, the box at the bottom; PageUp is read, the mouse is not captured; and the alternate screen
+    is given back at exit. The tiny emulator does not know absolute cursor
     moves, so this reads the bytes written."""
     p = Pty(w, [w.repo], "fullscreen", env=w.env(JEV_INLINE=None), cols=130, rows=34)
     try:
@@ -31,15 +31,16 @@ def full_screen_draws_header_chat_and_box_and_leaves_the_terminal_clean(w):
         p.expect(ANSWER, 20, "the answer in the chat pane")
         p.settle(0.5)
         raw = p.raw.decode("utf-8", "replace")
-        for needle, what in (("\x1b[?1049h", "the alternate screen"), ("\x1b[?1000h", "mouse reporting"), ("\x1b[1;1H", "rows drawn in place"), ("orchestrate on", "the header row")):
+        if "\x1b[?1000h" in raw:
+            raise Fail("full screen must leave the mouse to the terminal (selection and links)")
+        for needle, what in (("\x1b[?1049h", "the alternate screen"), ("\x1b[1;1H", "rows drawn in place"), ("orchestrate on", "the header row")):
             if needle not in raw:
                 raise Fail(f"full screen should use {what} ({needle!r}):\n{p.tail()}")
-        # PageUp and the wheel are keys the app reads, not text in the box.
+        # PageUp is a key the app reads, not text in the box.
         p.send("\x1b[5~")
-        p.send("\x1b[<64;10;10M")
         p.settle(0.4)
-        if "[5~" in p.printed().split(ANSWER)[-1] or "64;10;10" in p.printed().split(ANSWER)[-1]:
-            raise Fail("PageUp or the wheel was typed into the box")
+        if "[5~" in p.printed().split(ANSWER)[-1]:
+            raise Fail("PageUp was typed into the box")
         p.send("\x04")
         code = p.wait_exit(10)
         if code != 0:
