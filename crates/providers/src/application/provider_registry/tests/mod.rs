@@ -1,6 +1,7 @@
 //! Tests of [`Runtime`], by subject, with the helpers they share.
 
 mod cooldowns;
+mod health;
 mod late_probes;
 mod plan;
 mod react;

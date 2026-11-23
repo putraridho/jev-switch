@@ -47,7 +47,12 @@ impl Delegator {
         let mut retries: Vec<String> = Vec::new();
         for attempt in 1..=MAX_WORKER_ATTEMPTS {
             match self.attempt(&req, &signals, &jev, &excluded, attempt).await {
-                Ok(finished) => return finished.with_retries(retries),
+                Ok(finished) => {
+                    if let Some(p) = finished.answered_by() {
+                        lock(&self.runtime).note_success(p, (self.now)());
+                    }
+                    return finished.with_retries(retries);
+                }
                 Err(AttemptOutcome::Stop(message)) => return Finished::done(DelegateResult::failed(message, retries)),
                 Err(AttemptOutcome::Failed(f)) => {
                     let react = lock(&self.runtime).react(f.spec.provider, f.spec.id, &f.err, &mut excluded, (self.now)());

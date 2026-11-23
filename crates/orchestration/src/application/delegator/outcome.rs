@@ -42,6 +42,15 @@ impl Finished {
         Self::Done(Box::new(result))
     }
 
+    /// The provider whose worker answered, when one did.
+    pub(super) fn answered_by(&self) -> Option<jev_shared::ProviderId> {
+        let result = match self {
+            Self::Done(result) => result,
+            Self::Pending(pending) => &pending.result,
+        };
+        result.ok.then_some(result.provider).flatten()
+    }
+
     pub(super) fn with_retries(mut self, retries: Vec<String>) -> Self {
         match &mut self {
             Self::Done(result) => result.retries = retries,

@@ -13,6 +13,7 @@ use std::pin::Pin;
 
 use jev_backend::{PlanUsage, ProviderId};
 use crate::domain::availability::Availability;
+use crate::domain::breaker::Breakers;
 use crate::domain::reset_time::cooldowns::Cooldowns;
 
 /// A boxed future the port hands back, so the trait stays object safe.
@@ -28,6 +29,10 @@ pub trait ProviderHost: Debug + Send + Sync {
     fn save_probe_cache(&self, path: &Path, now_ms: u64, fingerprint: u64, avail: &[Availability]);
     fn load_cooldowns(&self, path: &Path) -> Cooldowns;
     fn save_cooldowns(&self, path: &Path, cooldowns: &Cooldowns, now_ms: u64) -> std::io::Result<Cooldowns>;
+    /// The saved circuit breakers (see [`crate::domain::breaker`]); nothing when there is no file.
+    fn load_breakers(&self, path: &Path) -> Breakers;
+    /// Merge `breakers` into the saved ones, write them, and return the merged set.
+    fn save_breakers(&self, path: &Path, breakers: &Breakers) -> std::io::Result<Breakers>;
     fn cooldown_stamp(&self, path: &Path) -> Option<(std::time::SystemTime, u64)>;
     fn resolve_reset_time(&self, text: &str, zone: Option<&str>) -> Option<u64>;
     fn reset_zone_exists(&self, zone: &str) -> bool;

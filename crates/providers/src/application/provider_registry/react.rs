@@ -24,6 +24,7 @@ impl Runtime {
         excluded: &mut HashSet<(ProviderId, String)>,
         now: u64,
     ) -> Option<String> {
+        self.note_failure(provider, &err.kind, now);
         match &err.kind {
             ErrorKind::Quota { resets_at } => {
                 self.cool_down(provider, resets_at.as_deref(), now);

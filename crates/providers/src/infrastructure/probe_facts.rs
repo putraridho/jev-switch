@@ -103,6 +103,14 @@ impl ProviderHost for SystemProbes {
         super::cooldown_file::save(path, cooldowns, now_ms)
     }
 
+    fn load_breakers(&self, path: &Path) -> crate::domain::breaker::Breakers {
+        super::health_file::load(path)
+    }
+
+    fn save_breakers(&self, path: &Path, breakers: &crate::domain::breaker::Breakers) -> std::io::Result<crate::domain::breaker::Breakers> {
+        super::health_file::save(path, breakers)
+    }
+
     fn cooldown_stamp(&self, path: &Path) -> Option<(std::time::SystemTime, u64)> {
         super::cooldown_file::stamp(path)
     }

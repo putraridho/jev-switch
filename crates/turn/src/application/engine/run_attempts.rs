@@ -94,7 +94,11 @@ impl Engine {
             }
             if !attempt.cancelled {
                 match &attempt.result {
-                    Ok(_) => self.guards.scoreboard.record_answer(attempt.chosen.spec.provider, attempt.wall_ms),
+                    Ok(_) => {
+                        self.guards.scoreboard.record_answer(attempt.chosen.spec.provider, attempt.wall_ms);
+                        let now = (self.now)();
+                        self.runtime.note_success(attempt.chosen.spec.provider, now);
+                    }
                     Err(e) => self.guards.scoreboard.record_failure(attempt.chosen.spec.provider, &e.kind, attempt.wall_ms),
                 }
             }

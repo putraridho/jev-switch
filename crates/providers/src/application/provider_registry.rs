@@ -8,6 +8,7 @@
 //! (the `/providers` text). The pure rules are in `providers/domain`
 //! ([`usability`](crate::domain::usability), [`login_hints`](crate::domain::login_hints)).
 
+mod health;
 mod plan;
 pub mod disk_watch;
 mod probing;
@@ -26,6 +27,7 @@ use jev_backend::{PlanUsage, ProviderId};
 use jev_catalog::domain::model_table::{Allowances, Overrides};
 use crate::application::ports::ProviderHost;
 use crate::domain::availability::Availability;
+use crate::domain::breaker::Breakers;
 use crate::domain::reset_time::cooldowns::Cooldowns;
 use disk_watch::DiskWatch;
 
@@ -58,6 +60,11 @@ pub struct Runtime {
     /// a login problem or an unusable directory is not a limit, and an hour-long cooldown
     /// would only outlast a re-login. See [`BlockReason`] for what clears each.
     pub blocked: HashMap<ProviderId, BlockReason>,
+    /// Providers paused after failing again and again, saved across runs (see [`crate::domain::breaker`]).
+    /// Read at start: another process's later pauses are seen at the next start, not mid-session.
+    breakers: Breakers,
+    /// Where `breakers` are saved; `None` when there is no state directory.
+    breaker_path: Option<PathBuf>,
     /// The background retry of probes that timed out at startup, until
     /// [`Runtime::absorb_late`] has folded its answers into `avail`.
     late: Option<LateProbes>,
@@ -134,6 +141,8 @@ impl Runtime {
             plan_path: None,
             balance: std::sync::Arc::default(),
             blocked: HashMap::new(),
+            breakers: Breakers::default(),
+            breaker_path: None,
             late: None,
             host,
         }

@@ -30,6 +30,7 @@ impl Runtime {
     /// anything saved), and DeepSeek's balance in the background. From now on every new
     /// reading is saved to `plan_path`.
     fn seed_usage(&mut self) {
+        self.load_health();
         let plan_path = self.host.plan_path();
         if let Some(path) = &plan_path {
             self.plan = self.host.load_plans(path);
@@ -91,6 +92,7 @@ impl Runtime {
     pub async fn refresh(&mut self) {
         let host = self.host.clone();
         self.apply_probe(availability::probe_all(|p| host.probe(p)).await);
+        self.forget_pauses(self.host.now_ms());
     }
 
     /// The pure half of [`Runtime::refresh`].

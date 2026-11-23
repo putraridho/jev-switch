@@ -14,6 +14,7 @@ impl Runtime {
         out.extend(self.cooldown_lines(now_ms));
         out.extend(self.unusable_lines());
         out.extend(self.blocked_lines());
+        out.extend(self.pause_lines(now_ms));
         out.push(format!(
             "allowed: credits {}, per-token {}",
             yes_no(self.allow.credits),

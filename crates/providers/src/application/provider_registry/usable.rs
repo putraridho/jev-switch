@@ -24,11 +24,11 @@ impl Runtime {
     /// The (provider, model) pairs routing may pick right now.
     pub fn usable(&self, now_ms: u64) -> Usable {
         let cooldowns = self.current_cooldowns();
-        if self.blocked.is_empty() {
+        let skipped = |p: ProviderId| self.blocked.contains_key(&p) || self.breakers.open(p, now_ms).is_some();
+        if !self.avail.iter().any(|a| skipped(a.provider)) {
             return usable_from(&self.avail, &cooldowns, &self.unusable_models, now_ms);
         }
-        let unblocked: Vec<Availability> =
-            self.avail.iter().filter(|a| !self.blocked.contains_key(&a.provider)).cloned().collect();
+        let unblocked: Vec<Availability> = self.avail.iter().filter(|a| !skipped(a.provider)).cloned().collect();
         usable_from(&unblocked, &cooldowns, &self.unusable_models, now_ms)
     }
 
