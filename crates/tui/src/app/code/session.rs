@@ -61,6 +61,9 @@ pub(super) async fn session(args: &Args, dir: &Path, term: &Term, console: Conso
         return 0;
     }
     recheck_slow_providers(&mut repl, &console);
+    if term.interactive() {
+        crate::app::update_notice::start(state_dir.as_deref(), &console, log::now_ms());
+    }
 
     let mut sigint = match SigInt::install() {
         Ok(s) => s,

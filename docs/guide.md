@@ -286,6 +286,11 @@ confirm, fast-forwards and reinstalls. It never merges or discards anything: cha
 files, a detached head or a branch that has diverged from its upstream stop it, with what to do.
 A running session keeps the old program until you restart it.
 
+You are also told when a version is waiting: an interactive session checks the same upstream in
+the background at most once a day (the answer is kept in `<state dir>/update-check`) and prints
+`jev-code X is available (you have Y): run /update` before a prompt. It only reads; nothing is
+installed. A failed check (offline, no upstream) is silent, and `JEV_UPDATE_CHECK=off` turns it off.
+
 #### First run
 
 ```bash

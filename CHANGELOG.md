@@ -4,6 +4,12 @@ See [docs/changelog-guide.md](docs/changelog-guide.md) for changelog formatting,
 
 ## Unreleased
 
+## 1.11.13
+
+Update notices.
+
+- **jev-code tells you when a newer version is available.** At the start of an interactive session it checks the source checkout's upstream in the background (at most once a day, never delaying the banner) and prints `jev-code X is available (you have Y): run /update` when the version on main is higher. A version found earlier is announced again at each start until you install it. `JEV_UPDATE_CHECK=off` turns the check off.
+
 ## 1.11.12
 
 Grok bills your API key, not your login's plan.

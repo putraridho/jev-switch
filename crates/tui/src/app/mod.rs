@@ -9,3 +9,4 @@ pub mod preferences;
 pub mod screen_state;
 pub mod self_update;
 pub mod startup_timeline;
+pub mod update_notice;

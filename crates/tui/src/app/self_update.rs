@@ -122,11 +122,17 @@ pub fn plan(facts: &Facts, running: &str) -> Plan {
 /// password (the session owns the terminal) and never runs a program the checkout's config
 /// names ([`jev_shared::infrastructure::git_guard::no_repo_programs`]).
 fn git(dir: &Path, args: &[&str]) -> Result<String, String> {
+    git_env(dir, args, &[])
+}
+
+/// [`git`] with extra environment variables for the one command.
+fn git_env(dir: &Path, args: &[&str], env: &[(&str, &str)]) -> Result<String, String> {
     let out = Command::new("git")
         .arg("-C")
         .arg(dir)
         .args(jev_shared::infrastructure::git_guard::no_repo_programs(dir))
         .args(args)
+        .envs(env.iter().copied())
         .env("GIT_TERMINAL_PROMPT", "0")
         .stdin(Stdio::null())
         .output()
@@ -155,6 +161,12 @@ fn git_failure(args: &[&str], out: &std::process::Output) -> String {
 /// Fetch the upstream and read the facts. The only network call; it changes no file of the
 /// working tree.
 pub fn check(dir: &Path) -> Result<Facts, String> {
+    check_with(dir, &[])
+}
+
+/// [`check`] with extra environment for the fetch (the background check keeps ssh from asking
+/// for a passphrase on the terminal the session owns).
+pub fn check_with(dir: &Path, fetch_env: &[(&str, &str)]) -> Result<Facts, String> {
     let upstream = git(dir, &["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"]).ok().map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
     let changed: Vec<String> =
         git(dir, &["status", "--porcelain", "--untracked-files=no"])?.lines().map(|l| l.trim().to_string()).filter(|l| !l.is_empty()).collect();
@@ -168,7 +180,7 @@ pub fn check(dir: &Path) -> Result<Facts, String> {
     let remote = up.split_once('/').map_or(up.as_str(), |(r, _)| r);
     // Output is captured, so successful fetches remain quiet in the UI. Do not ask git to
     // suppress diagnostics: a failed transport may otherwise leave only "failed" to show.
-    git(dir, &["fetch", remote])?;
+    git_env(dir, &["fetch", remote], fetch_env)?;
     let counts = git(dir, &["rev-list", "--left-right", "--count", "HEAD...@{upstream}"])?;
     let mut parts = counts.split_whitespace().map(|n| n.parse::<usize>().unwrap_or(0));
     let (ahead, behind) = (parts.next().unwrap_or(0), parts.next().unwrap_or(0));
