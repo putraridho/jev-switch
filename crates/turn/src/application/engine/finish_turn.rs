@@ -41,8 +41,6 @@ impl Engine {
         }
         self.previous = Some((prompt.to_string(), out.text.clone()));
         self.last_context_tokens = out.usage.context_tokens.unwrap_or(0);
-        let now = (self.now)();
-        self.guards.record_spend(spec.provider, spec.id, &out.usage, now);
         TurnReport {
             status: TurnStatus::Answered,
             text: out.text,

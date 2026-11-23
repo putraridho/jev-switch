@@ -12,13 +12,13 @@ use jev_approval::domain::mode::Mode;
 use jev_approval::domain::permission_rule;
 use jev_approval::domain::worker_command::worker_may_run;
 use jev_backend::{Approver, Decision, PermissionRequest, ProviderId, TurnRequest, Usage, NO_ONE_TO_ASK};
-use jev_orchestration::application::ports::{Screen, WorkerPolicy};
+use jev_orchestration::application::ports::{BudgetHold, Screen, WorkerPolicy};
 use crate::application::guards::Guards;
 use crate::domain::privacy::outgoing;
 
-/// Owns the worker guards and synchronizes admission with completed worker usage.
-/// This in-process meter is not shared with the main engine or other MCP processes,
-/// and does not reserve the future spending of workers already admitted.
+/// Owns the worker guards: admits each worker attempt against the same budget as the planner's
+/// turns (reserving its estimated maximum in the shared usage ledger) and settles it with what
+/// it used. The ledger is how this process sees the planner's spend and the planner sees its.
 pub struct GuardedWorkers {
     guards: Mutex<Guards>,
 }
@@ -48,9 +48,20 @@ impl WorkerPolicy for GuardedWorkers {
         !guards.is_paid(provider, model) || guards.may_pay(attempts)
     }
 
+    fn hold(&self, provider: ProviderId, model: &str, prompt_chars: usize) -> Result<BudgetHold, String> {
+        self.guards().hold(provider, model, (prompt_chars / 4) as u64)
+    }
+
+    fn settle(&self, hold: BudgetHold, provider: ProviderId, model: &str, usage: &Usage) {
+        self.guards().settle(&hold, provider, model, usage);
+    }
+
+    fn release(&self, hold: BudgetHold) {
+        self.guards().release(&hold);
+    }
+
     fn record_usage(&self, provider: ProviderId, model: &str, usage: &Usage) {
-        let now_ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64);
-        self.guards().record_spend(provider, model, usage, now_ms);
+        self.guards().record_spend(provider, model, usage);
     }
 
     fn outgoing(&self, prompt: &str, provider: ProviderId, model: &str, now_ms: u64) -> String {
@@ -120,68 +131,106 @@ mod tests {
     use super::*;
     use jev_approval::infrastructure::tool_input_wire::tool_input_from_json;
     use crate::domain::budget::{Budget, Cap, PriceTable};
+    use crate::application::usage_account::UsageAccount;
     use crate::domain::failover_policy::FailoverPolicy;
+    use crate::infrastructure::memory_usage_ledger::{KnownProcesses, MemoryUsageLedger};
 
     fn capped(cap: Cap) -> Guards {
-        Guards { budget: Budget { cap: Some(cap) }, ..Guards::default() }
+        Guards { budget: Budget { cap: Some(cap), ..Budget::default() }, ..Guards::default() }
     }
 
-    /// A ledger two guards share, as two processes share the file.
-    #[derive(Debug, Default)]
-    struct MemoryLedger(Mutex<Vec<crate::domain::spend_ledger::LedgerLine>>);
-
-    impl crate::application::ports::SpendLedger for MemoryLedger {
-        fn append(&self, _path: &Path, line: &crate::domain::spend_ledger::LedgerLine) {
-            self.0.lock().unwrap().push(line.clone());
-        }
-        fn read(&self, _path: &Path) -> Vec<crate::domain::spend_ledger::LedgerLine> {
-            self.0.lock().unwrap().clone()
-        }
+    /// A planner and a worker process sharing one ledger, as two processes share the file.
+    fn sharing(ledger: &Arc<MemoryUsageLedger>, cap: Cap, planner: bool, pid: u32) -> Guards {
+        let live = Arc::new(KnownProcesses::new(pid));
+        let path = PathBuf::from("ledger");
+        let account = if planner { UsageAccount::planner(ledger.clone(), live, path, Path::new("/repo"), 1_000) } else { UsageAccount::worker(ledger.clone(), live, path, Path::new("/repo"), 1_000) };
+        let account = account.with_clock(|| 1_000);
+        capped(cap).with_ledger(account)
     }
 
-    fn sharing(ledger: &Arc<MemoryLedger>, cap: Cap, planner_start: Option<u64>, pid: u32) -> Guards {
-        capped(cap).with_ledger(ledger.clone(), PathBuf::from("ledger"), Path::new("/repo"), planner_start, pid, 1_000)
-    }
+    const FLASH: (ProviderId, &str) = (ProviderId::DeepSeek, "deepseek-flash");
 
     #[test]
     fn a_workers_spend_counts_against_the_planners_cap_and_the_planners_against_the_workers() {
-        let ledger = Arc::new(MemoryLedger::default());
-        let mut planner = sharing(&ledger, Cap::Tokens(100), Some(500), 1);
-        let worker = GuardedWorkers::new(sharing(&ledger, Cap::Tokens(100), None, 2));
-        assert!(planner.may_pay(0) && worker.admits(ProviderId::DeepSeek, "deepseek-flash", 0));
+        let ledger = Arc::new(MemoryUsageLedger::default());
+        let mut planner = sharing(&ledger, Cap::Tokens(100), true, 1);
+        let worker = GuardedWorkers::new(sharing(&ledger, Cap::Tokens(100), false, 2));
+        assert!(planner.may_pay(0) && worker.admits(FLASH.0, FLASH.1, 0));
 
-        worker.record_usage(ProviderId::DeepSeek, "deepseek-flash", &Usage { input_tokens: 60, ..Usage::default() });
+        worker.record_usage(FLASH.0, FLASH.1, &Usage { input_tokens: 60, ..Usage::default() });
         assert_eq!(planner.meter.paid().1, 0, "the planner's own meter is only its own");
         assert_eq!(planner.total_meter().paid().1, 60);
         assert!(planner.may_pay(0), "60 of 100");
 
-        planner.record_spend(ProviderId::DeepSeek, "deepseek-flash", &Usage { input_tokens: 40, ..Usage::default() }, 2_000);
+        planner.record_spend(FLASH.0, FLASH.1, &Usage { input_tokens: 40, ..Usage::default() });
         assert!(!planner.may_pay(0), "the worker's 60 and the planner's 40 reach the cap");
-        assert!(!worker.admits(ProviderId::DeepSeek, "deepseek-flash", 0), "and the worker sees the planner's spend");
+        assert!(!worker.admits(FLASH.0, FLASH.1, 0), "and the worker sees the planner's spend");
         assert_eq!(planner.total_meter().paid().1, 100, "nothing is counted twice");
     }
 
     #[test]
-    fn spend_from_before_the_planners_session_or_another_project_does_not_count() {
-        let ledger = Arc::new(MemoryLedger::default());
-        let old = sharing(&ledger, Cap::Tokens(100), Some(100), 7);
-        let mut old = old;
-        old.record_spend(ProviderId::DeepSeek, "deepseek-flash", &Usage { input_tokens: 500, ..Usage::default() }, 200);
-        let mut elsewhere = capped(Cap::Tokens(100)).with_ledger(ledger.clone(), PathBuf::from("ledger"), Path::new("/other"), Some(100), 8, 1_000);
-        elsewhere.record_spend(ProviderId::DeepSeek, "deepseek-flash", &Usage { input_tokens: 500, ..Usage::default() }, 3_000);
+    fn a_worker_attempt_and_a_planner_attempt_reserve_against_the_same_cap() {
+        let ledger = Arc::new(MemoryUsageLedger::default());
+        // 20k per attempt (4k prompt + the 16k output allowance): two fit 50k, a third does not.
+        let planner = sharing(&ledger, Cap::Tokens(50_000), true, 1);
+        let worker = GuardedWorkers::new(sharing(&ledger, Cap::Tokens(50_000), false, 2));
+        let main = planner.hold(FLASH.0, FLASH.1, 4_000).unwrap();
+        let first = worker.hold(FLASH.0, FLASH.1, 16_000).unwrap();
+        assert!(first.id.is_some());
+        let refused = worker.hold(FLASH.0, FLASH.1, 16_000).unwrap_err();
+        assert!(refused.contains("reserved"), "{refused}");
+        assert!(planner.hold(FLASH.0, FLASH.1, 4_000).is_err(), "the planner sees the worker's reservation too");
 
-        let planner = sharing(&ledger, Cap::Tokens(100), Some(2_500), 1);
-        assert!(planner.may_pay(0), "the old session's 500 started before this one, the other project's is another project");
-        let worker = GuardedWorkers::new(sharing(&ledger, Cap::Tokens(100), None, 2));
-        assert!(worker.admits(ProviderId::DeepSeek, "deepseek-flash", 0), "the newest marker of /repo is 2500");
+        // The worker finishes with less than it reserved; the freed room is usable again.
+        worker.settle(first, FLASH.0, FLASH.1, &Usage { input_tokens: 100, ..Usage::default() });
+        assert!(planner.hold(FLASH.0, FLASH.1, 4_000).is_ok());
+        let mut planner = planner;
+        planner.settle(&main, FLASH.0, FLASH.1, &Usage { input_tokens: 50, ..Usage::default() });
+        assert_eq!(planner.total_meter().paid().1, 150);
+    }
+
+    #[test]
+    fn a_cancelled_or_failed_worker_without_a_report_settles_as_unknown_and_closes_the_cap() {
+        let ledger = Arc::new(MemoryUsageLedger::default());
+        let planner = sharing(&ledger, Cap::Tokens(1_000_000), true, 1);
+        let worker = GuardedWorkers::new(sharing(&ledger, Cap::Tokens(1_000_000), false, 2));
+        let hold = worker.hold(FLASH.0, FLASH.1, 100).unwrap();
+        worker.settle(hold, FLASH.0, FLASH.1, &Usage { measurement: jev_shared::Measurement::Unavailable, ..Usage::default() });
+        assert!(!planner.may_pay(0));
+        assert!(planner.hold(FLASH.0, FLASH.1, 1).is_err());
+    }
+
+    #[test]
+    fn a_released_hold_frees_its_reservation_without_spend() {
+        let ledger = Arc::new(MemoryUsageLedger::default());
+        let worker = GuardedWorkers::new(sharing(&ledger, Cap::Tokens(25_000), true, 1));
+        let hold = worker.hold(FLASH.0, FLASH.1, 100).unwrap();
+        assert!(worker.hold(FLASH.0, FLASH.1, 100).is_err());
+        worker.release(hold);
+        assert!(worker.hold(FLASH.0, FLASH.1, 100).is_ok());
+        assert_eq!(worker.guards().total_meter().paid().1, 0);
+    }
+
+    #[test]
+    fn a_new_planner_session_starts_fresh_for_the_workers_that_join_it() {
+        let ledger = Arc::new(MemoryUsageLedger::default());
+        let mut old = sharing(&ledger, Cap::Tokens(100), true, 1);
+        old.record_spend(FLASH.0, FLASH.1, &Usage { input_tokens: 500, ..Usage::default() });
+        let planner = {
+            let live = Arc::new(KnownProcesses::new(9));
+            capped(Cap::Tokens(100)).with_ledger(UsageAccount::planner(ledger.clone(), live, PathBuf::from("ledger"), Path::new("/repo"), 2_000).with_clock(|| 2_000))
+        };
+        assert!(planner.may_pay(0), "the earlier session's 500 is not this session's");
+        let worker = GuardedWorkers::new(sharing(&ledger, Cap::Tokens(100), false, 2));
+        assert!(worker.admits(FLASH.0, FLASH.1, 0), "a worker joins the newest session of its project");
     }
 
     #[test]
     fn unreported_worker_spend_makes_a_capped_planner_fail_closed() {
-        let ledger = Arc::new(MemoryLedger::default());
-        let planner = sharing(&ledger, Cap::Tokens(1_000_000), Some(500), 1);
-        let worker = GuardedWorkers::new(sharing(&ledger, Cap::Tokens(1_000_000), None, 2));
-        worker.record_usage(ProviderId::DeepSeek, "deepseek-flash", &Usage { measurement: jev_shared::Measurement::Unavailable, ..Usage::default() });
+        let ledger = Arc::new(MemoryUsageLedger::default());
+        let planner = sharing(&ledger, Cap::Tokens(1_000_000), true, 1);
+        let worker = GuardedWorkers::new(sharing(&ledger, Cap::Tokens(1_000_000), false, 2));
+        worker.record_usage(FLASH.0, FLASH.1, &Usage { measurement: jev_shared::Measurement::Unavailable, ..Usage::default() });
         assert!(!planner.may_pay(0));
     }
 

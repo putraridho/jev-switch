@@ -72,6 +72,8 @@ pub(super) struct Pending {
 pub(super) enum AttemptOutcome {
     /// Nothing more to try (no worker, no worktree, unreadable changes).
     Stop(String),
+    /// The budget refused this model (a hard paid cap would be passed): try another.
+    Refused { spec: &'static ModelSpec, why: String },
     /// The worker failed; [`Runtime::react`] says whether another model may try.
     Failed(AttemptFailure),
 }

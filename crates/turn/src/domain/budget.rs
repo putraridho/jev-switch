@@ -173,6 +173,13 @@ impl Meter {
         self.rows().filter(|(provider, model, _)| self.is_paid(*provider, model)).map(|(_, _, spend)| spend.unreported_turns).sum()
     }
 
+    /// Tokens the plan models of `provider` used, and the attempts whose use was not reported.
+    pub fn plan_use(&self, provider: ProviderId) -> (u64, u32) {
+        self.rows()
+            .filter(|(p, m, _)| *p == provider && !self.is_paid(*p, m))
+            .fold((0, 0), |(tokens, unknown), (_, _, s)| (tokens + s.input_tokens + s.output_tokens, unknown + s.unreported_turns))
+    }
+
     pub fn clear(&mut self) {
         self.by_model.clear();
     }
@@ -198,20 +205,21 @@ impl Cap {
         };
         match unit {
             "usd" | "$" => Self::usd(amount),
-            "tokens" => {
-                let (digits, scale) = match amount.chars().last() {
-                    Some('k') => (&amount[..amount.len() - 1], 1_000.0),
-                    Some('m') => (&amount[..amount.len() - 1], 1_000_000.0),
-                    _ => (amount, 1.0),
-                };
-                digits.parse::<f64>().ok().filter(|v| *v > 0.0).map(|v| Self::Tokens((v * scale) as u64)).ok_or_else(|| usage.into())
-            }
+            "tokens" => parse_tokens(amount).map(Self::Tokens).ok_or_else(|| usage.into()),
             _ => Err(usage.into()),
         }
     }
 
     fn usd(amount: &str) -> Result<Self, String> {
         amount.trim().trim_start_matches('$').parse::<f64>().ok().filter(|v| *v > 0.0).map(Self::Usd).ok_or_else(|| "the amount must be a positive number".into())
+    }
+
+    /// How the limits file spells the cap.
+    fn file_line(&self) -> String {
+        match self {
+            Self::Usd(v) => format!("usd {v}"),
+            Self::Tokens(v) => format!("tokens {v}"),
+        }
     }
 
     fn used_fraction(&self, meter: &Meter) -> f64 {
@@ -222,7 +230,7 @@ impl Cap {
         }
     }
 
-    fn describe(&self) -> String {
+    pub fn describe(&self) -> String {
         match self {
             Self::Usd(v) => format!("${v:.2}"),
             Self::Tokens(v) => format!("{} tokens", short_count(*v)),
@@ -240,23 +248,46 @@ pub enum Standing {
     Over,
 }
 
-/// The cap, if any, kept between sessions in `<state>/budget`.
+/// A soft limit on what a subscription plan is used for: tokens per provider, per session.
+/// It warns and never refuses: the plan's own limit belongs to the provider, and its
+/// consumption is only as known as the CLI reports it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Allowance {
+    pub tokens: u64,
+}
+
+/// The limits kept between sessions in `<state>/budget`, one line each:
+/// `usd 5` or `tokens 2m` (the paid cap of one session, hard), `daily usd 20` (the paid cap
+/// of one day over every session, hard) and `allowance tokens 5m` (the subscription
+/// allowance per provider and session, soft).
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct Budget {
     pub cap: Option<Cap>,
+    /// Paid use over all sessions of one UTC day.
+    pub daily: Option<Cap>,
+    pub allowance: Option<Allowance>,
 }
 
 impl Budget {
+    pub fn capped(cap: Cap) -> Self {
+        Self { cap: Some(cap), ..Self::default() }
+    }
+
     pub fn standing(&self, meter: &Meter) -> Standing {
-        if self.cap.is_some() && meter.unreported_paid_turns() > 0 {
+        Self::standing_of(self.cap, meter)
+    }
+
+    /// Where `meter` stands against `cap`; the same rule for the session and the day.
+    pub fn standing_of(cap: Option<Cap>, meter: &Meter) -> Standing {
+        if cap.is_some() && meter.unreported_paid_turns() > 0 {
             return Standing::Over;
         }
         // A dollar cap cannot be checked against spend nobody priced (there is no built-in
         // price table), so it fails closed instead of staying silently at zero.
-        if matches!(self.cap, Some(Cap::Usd(_))) && meter.unpriced_paid_turns() > 0 {
+        if matches!(cap, Some(Cap::Usd(_))) && meter.unpriced_paid_turns() > 0 {
             return Standing::Over;
         }
-        match self.cap.map(|c| c.used_fraction(meter)) {
+        match cap.map(|c| c.used_fraction(meter)) {
             None => Standing::NoCap,
             Some(f) if f >= 1.0 => Standing::Over,
             Some(f) if f >= WARN_AT => Standing::Close,
@@ -264,24 +295,56 @@ impl Budget {
         }
     }
 
-    /// Whether a paid model may still be picked.
+    /// Whether a paid model may still be picked (session cap only).
     pub fn allows_paid(&self, meter: &Meter) -> bool {
         self.standing(meter) != Standing::Over
     }
 
-    /// The file in the state folder that keeps the cap.
+    /// Whether the day's paid use, over every session, leaves room for a paid model.
+    pub fn allows_paid_today(&self, day: &Meter) -> bool {
+        Self::standing_of(self.daily, day) != Standing::Over
+    }
+
+    /// The file in the state folder that keeps the limits.
     pub fn file_path(state_dir: &Path) -> std::path::PathBuf {
         state_dir.join(BUDGET_FILE)
     }
 
-    /// What the cap file holds, or `None` when there is no cap (and so no file).
-    pub fn file_text(&self) -> Option<String> {
-        match self.cap {
-            Some(Cap::Usd(v)) => Some(format!("usd {v}")),
-            Some(Cap::Tokens(v)) => Some(format!("tokens {v}")),
-            None => None,
+    /// Read the limits file; a line that does not parse is skipped (a missing file is no limits).
+    pub fn parse(text: &str) -> Self {
+        let mut budget = Self::default();
+        for line in text.lines().map(str::trim) {
+            if let Some(rest) = line.strip_prefix("daily ") {
+                budget.daily = Cap::parse(rest).ok();
+            } else if let Some(rest) = line.strip_prefix("allowance ") {
+                budget.allowance = parse_tokens(rest).map(|tokens| Allowance { tokens });
+            } else if let Ok(cap) = Cap::parse(line) {
+                budget.cap = Some(cap);
+            }
         }
+        budget
     }
+
+    /// What the limits file holds, or `None` when there is no limit (and so no file).
+    pub fn file_text(&self) -> Option<String> {
+        let mut lines = Vec::new();
+        lines.extend(self.cap.map(|c| c.file_line()));
+        lines.extend(self.daily.map(|c| format!("daily {}", c.file_line())));
+        lines.extend(self.allowance.map(|a| format!("allowance tokens {}", a.tokens)));
+        (!lines.is_empty()).then(|| lines.join("\n"))
+    }
+}
+
+/// `2m`, `500k` or `1234` as a token count.
+pub fn parse_tokens(text: &str) -> Option<u64> {
+    let t = text.trim().to_ascii_lowercase();
+    let t = t.strip_prefix("tokens").map_or(t.as_str(), str::trim);
+    let (digits, scale) = match t.chars().last() {
+        Some('k') => (&t[..t.len() - 1], 1_000.0),
+        Some('m') => (&t[..t.len() - 1], 1_000_000.0),
+        _ => (t, 1.0),
+    };
+    digits.trim().parse::<f64>().ok().filter(|v| *v > 0.0).map(|v| (v * scale) as u64)
 }
 
 /// `12400` as `12.4k`, `3200000` as `3.2m`.
@@ -423,7 +486,7 @@ mod tests {
         assert_eq!(meter.unreported_paid_turns(), 1);
         assert_eq!(prices.cost("deepseek-flash", &unknown), None);
         for cap in [Cap::Usd(5.0), Cap::Tokens(100)] {
-            let budget = Budget { cap: Some(cap) };
+            let budget = Budget { cap: Some(cap), ..Budget::default() };
             assert_eq!(budget.standing(&meter), Standing::Over);
             assert!(!budget.allows_paid(&meter));
             let text = meter_text(&meter, &budget, &[]);
@@ -438,7 +501,7 @@ mod tests {
         let unknown = Usage { measurement: Measurement::Unavailable, ..Usage::default() };
         meter.record(ProviderId::Claude, catalog::MODEL_MID, &unknown, &PriceTable::default());
         assert_eq!(meter.unreported_paid_turns(), 0);
-        assert!(Budget { cap: Some(Cap::Tokens(100)) }.allows_paid(&meter));
+        assert!(Budget { cap: Some(Cap::Tokens(100)), ..Budget::default() }.allows_paid(&meter));
         assert!(meter_text(&meter, &Budget::default(), &[]).contains("consumption unknown for 1 attempt(s)"));
     }
 
@@ -448,11 +511,32 @@ mod tests {
         let mut meter = Meter::default();
         meter.record(ProviderId::DeepSeek, "deepseek-flash", &Usage::default(), &prices);
         assert_eq!(meter.unreported_paid_turns(), 0);
-        assert!(Budget { cap: Some(Cap::Tokens(100)) }.allows_paid(&meter));
+        assert!(Budget { cap: Some(Cap::Tokens(100)), ..Budget::default() }.allows_paid(&meter));
         meter.record(ProviderId::DeepSeek, "deepseek-flash", &usage(20, 10, 5), &prices);
         meter.record(ProviderId::DeepSeek, "deepseek-flash", &Usage { measurement: Measurement::Unavailable, ..Usage::default() }, &prices);
         let text = meter_text(&meter, &Budget::default(), &[]);
         assert!(text.contains(">=20") && text.contains(">=5"), "{text}");
+    }
+
+    #[test]
+    fn the_limits_file_keeps_each_limit_on_its_own_line_and_an_old_file_still_reads() {
+        let all = Budget { cap: Some(Cap::Usd(5.0)), daily: Some(Cap::Tokens(2_000_000)), allowance: Some(Allowance { tokens: 5_000_000 }) };
+        let text = all.file_text().unwrap();
+        assert_eq!(text, "usd 5\ndaily tokens 2000000\nallowance tokens 5000000");
+        assert_eq!(Budget::parse(&text), all);
+        assert_eq!(Budget::parse("tokens 2000000"), Budget::capped(Cap::Tokens(2_000_000)), "the file an older version wrote");
+        assert_eq!(Budget::parse("daily usd 3\ngarbage\n"), Budget { daily: Some(Cap::Usd(3.0)), ..Budget::default() });
+        assert_eq!(Budget::default().file_text(), None);
+    }
+
+    #[test]
+    fn the_daily_cap_is_checked_against_the_days_meter_not_the_sessions() {
+        let budget = Budget { daily: Some(Cap::Tokens(100)), ..Budget::default() };
+        let mut day = Meter::default();
+        assert!(budget.allows_paid_today(&day));
+        day.record(ProviderId::DeepSeek, "deepseek-flash", &usage(100, 0, 0), &PriceTable::default());
+        assert!(!budget.allows_paid_today(&day));
+        assert!(budget.allows_paid(&Meter::default()), "the session itself has no cap");
     }
 
     #[test]
@@ -474,7 +558,7 @@ mod tests {
     fn standing_follows_the_cap() {
         let t = prices();
         let mut m = Meter::default();
-        let b = Budget { cap: Some(Cap::Usd(10.0)) };
+        let b = Budget { cap: Some(Cap::Usd(10.0)), ..Budget::default() };
         assert_eq!(Budget::default().standing(&m), Standing::NoCap);
         assert_eq!(b.standing(&m), Standing::Under);
         m.record(ProviderId::DeepSeek, "deepseek-v4-pro", &usage(8_000_000, 0, 0), &t); // $8
@@ -491,13 +575,13 @@ mod tests {
     #[test]
     fn a_dollar_cap_is_not_silently_inert_without_prices() {
         let mut m = Meter::default();
-        let b = Budget { cap: Some(Cap::Usd(5.0)) };
+        let b = Budget { cap: Some(Cap::Usd(5.0)), ..Budget::default() };
         m.record(ProviderId::DeepSeek, "deepseek-flash", &usage(1_000_000, 0, 1_000_000), &PriceTable::default());
         assert_eq!(b.standing(&m), Standing::Over);
         assert!(!b.allows_paid(&m));
         assert!(meter_text(&m, &b, &[]).contains("cannot be checked"));
         // A tokens cap needs no price.
-        assert_eq!(Budget { cap: Some(Cap::Tokens(10_000_000)) }.standing(&m), Standing::Under);
+        assert_eq!(Budget { cap: Some(Cap::Tokens(10_000_000)), ..Budget::default() }.standing(&m), Standing::Under);
     }
 
     #[test]
@@ -507,7 +591,7 @@ mod tests {
         assert!(meter_text(&m, &Budget::default(), &[]).contains("No model has answered"));
         m.record(ProviderId::Claude, "claude-opus-5-5", &usage(12_400, 10_000, 800), &t);
         m.record(ProviderId::DeepSeek, "deepseek-v4-pro", &usage(1_000_000, 0, 0), &t);
-        let s = meter_text(&m, &Budget { cap: Some(Cap::Usd(1.0)) }, &[("claude".into(), 0.42)]);
+        let s = meter_text(&m, &Budget { cap: Some(Cap::Usd(1.0)), ..Budget::default() }, &[("claude".into(), 0.42)]);
         assert!(s.contains("claude    claude-opus-5-5") && s.contains("in   12.4k (10k cached)") && s.contains("plan"), "{s}");
         assert!(s.contains("$1.0000"), "{s}");
         assert!(s.contains("claude plan: 42% of its limit used"), "{s}");

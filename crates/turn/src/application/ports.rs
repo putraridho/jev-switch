@@ -12,6 +12,7 @@ use jev_shared::application::host::Host;
 use jev_approval::domain::always_plan::{Offer, Settled};
 use crate::domain::failover::{Failover, NoRouteInfo};
 use crate::domain::route_facts::RouteFacts;
+use crate::domain::usage_ledger::Book;
 
 /// Whether a steered message should still be sent when the turn comes to take it.
 pub type SteerFilter = Box<dyn Fn(&str) -> bool + Send + Sync>;
@@ -162,16 +163,18 @@ pub trait PrivacyAudit: std::fmt::Debug + Send + Sync {
     fn tail(&self, path: &Path, count: usize) -> Vec<crate::domain::privacy::audit::AuditRecord>;
 }
 
-/// The ledger's file in the state folder.
-pub const SPEND_LEDGER_FILE: &str = "spend-ledger.jsonl";
+/// The usage ledger file in the state folder.
+pub const USAGE_LEDGER_FILE: &str = "usage-ledger.json";
 
-/// Where the spend of every process of a session is kept (see [`crate::domain::spend_ledger`]).
-/// Real: `turn::infrastructure::spend_ledger_file::FileSpendLedger`. Neither call may fail the turn.
-pub trait SpendLedger: std::fmt::Debug + Send + Sync {
-    /// Append `line` to the ledger at `path`.
-    fn append(&self, path: &Path, line: &crate::domain::spend_ledger::LedgerLine);
-    /// Every line of the ledger at `path`, oldest first; lines it cannot read are skipped.
-    fn read(&self, path: &Path) -> Vec<crate::domain::spend_ledger::LedgerLine>;
+/// Where the usage of every process of a session is kept (see [`crate::domain::usage_ledger`]).
+/// Real: `turn::infrastructure::usage_ledger_file::FileUsageLedger`; tests may use the in-memory one.
+pub trait UsageLedger: std::fmt::Debug + Send + Sync {
+    /// Run `change` on the ledger at `path` as one step no other handle (thread or process) can
+    /// interleave with: it sees the latest state and what it leaves is what the next one sees.
+    /// `false` when the ledger could not be read or written, and then `change` may not have run.
+    fn transact(&self, path: &Path, change: &mut dyn FnMut(&mut Book)) -> bool;
+    /// The current state without changing it; `None` when it cannot be read.
+    fn read(&self, path: &Path) -> Option<Book>;
 }
 
 /// The adapters an [`Engine`](crate::application::engine::Engine) cannot build itself
@@ -193,6 +196,8 @@ pub struct Adapters {
     pub remembered_rules: Arc<dyn jev_approval::application::ports::RememberedRules>,
     /// Where the privacy audit log is written.
     pub privacy_audit: Arc<dyn PrivacyAudit>,
-    /// Where session spend is shared with the workers' processes.
-    pub spend_ledger: Arc<dyn SpendLedger>,
+    /// Where session usage is shared with the workers' processes.
+    pub usage_ledger: Arc<dyn UsageLedger>,
+    /// Whether another process is still running (reservations of dead ones are reaped).
+    pub liveness: Arc<dyn jev_orchestration::application::ports::Liveness>,
 }

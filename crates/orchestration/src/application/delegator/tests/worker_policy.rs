@@ -1,12 +1,16 @@
 use super::*;
 use jev_backend::Measurement;
+use crate::application::ports::BudgetHold;
 
 #[derive(Default)]
 struct MeteredPolicy {
     denied: Vec<(ProviderId, &'static str)>,
     paid_fallback_off: bool,
     cap: Option<u64>,
+    /// Models the budget refuses at the moment the attempt asks to start (a hold).
+    refused: Vec<(ProviderId, &'static str)>,
     recorded: Mutex<Vec<(ProviderId, String, Usage)>>,
+    held: Mutex<u32>,
 }
 
 impl WorkerPolicy for MeteredPolicy {
@@ -27,6 +31,23 @@ impl WorkerPolicy for MeteredPolicy {
             .filter(|(provider, _, _)| *provider == DeepSeek)
             .map(|(_, _, usage)| usage.input_tokens + usage.output_tokens).sum();
         (!self.paid_fallback_off || attempts == 0) && self.cap.is_none_or(|cap| !unknown_paid && spent < cap)
+    }
+
+    fn hold(&self, provider: ProviderId, model: &str, _prompt_chars: usize) -> Result<BudgetHold, String> {
+        if self.refused.iter().any(|(p, m)| *p == provider && *m == model) {
+            return Err("the paid cap would be passed".into());
+        }
+        *self.held.lock().unwrap() += 1;
+        Ok(BudgetHold { id: Some("h".into()), warning: None })
+    }
+
+    fn release(&self, _hold: BudgetHold) {
+        *self.held.lock().unwrap() -= 1;
+    }
+
+    fn settle(&self, _hold: BudgetHold, provider: ProviderId, model: &str, usage: &Usage) {
+        *self.held.lock().unwrap() -= 1;
+        self.record_usage(provider, model, usage);
     }
 
     fn record_usage(&self, provider: ProviderId, model: &str, usage: &Usage) {
@@ -152,4 +173,38 @@ async fn failed_worker_without_usage_records_unavailable_instead_of_zero() {
     assert_eq!(recorded[0].2, Usage { measurement: Measurement::Unavailable, ..Usage::default() });
     assert!(!rig.d.delegate(brief("y")).await.ok);
     assert_eq!(rig.started.lock().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn a_model_the_budget_refuses_at_start_is_set_aside_and_another_worker_runs() {
+    let policy = Arc::new(MeteredPolicy { refused: vec![(Claude, "claude-sonnet-5-5"), (Claude, "claude-haiku-5-5"), (Claude, "claude-opus-5-5")], ..MeteredPolicy::default() });
+    let rig = policy_rig(&[Claude, Codex], policy.clone());
+    let result = rig.d.delegate(brief("x")).await;
+    assert!(result.ok, "{:?}", result.error);
+    assert_eq!(result.provider, Some(Codex));
+    assert!(result.retries.iter().any(|r| r.contains("was not started") && r.contains("paid cap would be passed")), "{:?}", result.retries);
+    assert_eq!(*policy.held.lock().unwrap(), 0, "every hold ended: settled, none left reserved");
+}
+
+#[tokio::test]
+async fn when_the_budget_refuses_every_worker_nothing_starts_and_no_worktree_is_made() {
+    let policy = Arc::new(MeteredPolicy { refused: vec![(DeepSeek, "deepseek-flash"), (DeepSeek, "deepseek-v4-pro")], ..MeteredPolicy::default() });
+    let rig = policy_rig(&[DeepSeek], policy);
+    let result = rig.d.delegate(brief("x")).await;
+    assert!(!result.ok);
+    assert!(rig.started.lock().unwrap().is_empty());
+    assert!(rig.wt.created.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn an_attempt_dropped_half_way_settles_its_hold_as_unknown_consumption() {
+    let policy = Arc::new(MeteredPolicy::default());
+    let rig = policy_rig(&[DeepSeek], policy.clone());
+    rig.scripts.lock().unwrap().insert(DeepSeek, "sleep 30");
+    let attempt = rig.d.delegate(brief("x"));
+    assert!(tokio::time::timeout(std::time::Duration::from_millis(400), attempt).await.is_err(), "the attempt was still running");
+    let recorded = policy.recorded.lock().unwrap().clone();
+    assert_eq!(recorded.len(), 1, "{recorded:?}");
+    assert_eq!(recorded[0].2.measurement, Measurement::Unavailable, "a cancelled attempt is not free");
+    assert_eq!(*policy.held.lock().unwrap(), 0);
 }

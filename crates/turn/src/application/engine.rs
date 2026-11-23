@@ -79,7 +79,8 @@ pub struct Engine {
     /// Where the privacy audit log is written.
     privacy_audit: Arc<dyn crate::application::ports::PrivacyAudit>,
     /// Where this session's spend is shared with its workers' processes.
-    spend_ledger: Arc<dyn crate::application::ports::SpendLedger>,
+    usage_ledger: Arc<dyn crate::application::ports::UsageLedger>,
+    liveness: Arc<dyn jev_orchestration::application::ports::Liveness>,
     /// Where saved sessions are kept.
     session_store: Arc<dyn SessionStore>,
     idle_timeout: Duration,

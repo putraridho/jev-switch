@@ -68,6 +68,20 @@ impl Engine {
                     return TurnReport { tool_calls, ..TurnReport::ended(TurnStatus::NoRoute, message, attempts) };
                 }
             };
+            // Reserve the budget for this attempt: a paid model that would pass a cap with what is
+            // spent and reserved is set aside, and another model is chosen.
+            let prompt_tokens = (prompt.len() / 4) as u64 + self.last_context_tokens;
+            let hold = match self.guards.hold(chosen.spec.provider, chosen.spec.id, prompt_tokens) {
+                Ok(hold) => hold,
+                Err(why) => {
+                    ui.note(&format!("{} {} is not started: {why}", chosen.spec.provider, chosen.spec.id));
+                    excluded.insert((chosen.spec.provider, chosen.spec.id.to_string()));
+                    continue;
+                }
+            };
+            if let Some(warning) = &hold.warning {
+                ui.note(warning);
+            }
             attempts += 1;
             if attempts == 1 {
                 // The state the first model starts from, so a failover's changes count too.
@@ -88,11 +102,13 @@ impl Engine {
             tool_calls = tool_calls.saturating_add(attempt.tools.len() as u32);
             self.turn_activity.add_tools(&attempt.tools);
             self.log_attempt(&attempt, &jev, attempts, &notes);
-            if let Err(error) = &attempt.result {
-                let usage = error.usage.unwrap_or(Usage { measurement: Measurement::Unavailable, ..Usage::default() });
-                let now = (self.now)();
-                self.guards.record_spend(attempt.chosen.spec.provider, attempt.chosen.spec.id, &usage, now);
-            }
+            // Settle the reservation with what the attempt used, answered, failed or cancelled; a
+            // failure with no report is unknown consumption, never zero.
+            let usage = match &attempt.result {
+                Ok(out) => out.usage,
+                Err(error) => error.usage.unwrap_or(Usage { measurement: Measurement::Unavailable, ..Usage::default() }),
+            };
+            self.guards.settle(&hold, attempt.chosen.spec.provider, attempt.chosen.spec.id, &usage);
             if !attempt.cancelled {
                 match &attempt.result {
                     Ok(_) => {

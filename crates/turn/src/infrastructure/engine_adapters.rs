@@ -26,6 +26,7 @@ pub fn real() -> Adapters {
         path_facts: Arc::new(jev_approval::infrastructure::path_facts::SystemPathFacts),
         remembered_rules: Arc::new(jev_approval::infrastructure::claude_settings_file::ClaudeSettingsFiles { host: Arc::new(SystemHost) }),
         privacy_audit: Arc::new(super::privacy_audit::FilePrivacyAudit),
-        spend_ledger: Arc::new(super::spend_ledger_file::FileSpendLedger),
+        usage_ledger: Arc::new(super::usage_ledger_file::FileUsageLedger),
+        liveness: Arc::new(jev_orchestration::infrastructure::process_liveness::ProcLiveness),
     }
 }

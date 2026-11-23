@@ -417,8 +417,29 @@ and does not trigger automatic compaction.
 `/cost` distinguishes final conversation turns from model attempts, including failures.
 Unavailable consumed-token counters show as unknown (JSON uses null), and mixed totals
 are lower bounds. `/budget` stops further paid admission when paid consumption cannot be
-checked. Worker budgets observe attempts in their own synchronized policy instance;
-they are not a shared main/MCP ledger, a concurrent reservation, or an in-flight hard limit.
+checked.
+
+**Budget: paid money and subscription quota are different limits.** `/budget` shows both, apart.
+
+- *Paid money* is a hard limit: `/budget usd 5` or `/budget tokens 2m` caps one session, and
+  `/budget daily usd 20` caps one UTC day over every session. Every attempt that costs money
+  (a per-token API, credits, or a CLI not on its native login) must be admitted first: it
+  reserves its estimated maximum (its prompt plus an assumed 16k output tokens), and is refused
+  when what is spent, plus what attempts in flight have reserved, plus its own estimate would
+  pass a cap. This covers the planner's turns, retries and failovers, and workers, whichever
+  process runs them: the planner and `delegate_mcp` share one ledger file
+  (`<state dir>/usage-ledger.json`, changed under a lock), so two workers asking at once cannot
+  both take the last room. An attempt that ends settles its reservation with what it really used;
+  one that fails or is cancelled without a report counts as unknown, never zero, and an unknown
+  paid amount closes the cap. A reservation whose process died is reaped the same way. A dollar
+  cap also needs a price in `prices.txt` for the model. The cap is checked when an attempt starts:
+  one that overruns its estimate is counted afterwards but not cut off mid-way.
+- *Subscription quota* is a soft limit: `/budget allowance 5m` sets tokens per subscription
+  provider and session. Past it, jev-code warns and carries on; it never refuses. The plan's real
+  limit is the provider's, reported late and roughly, so jev-code cannot enforce it.
+- A new jev-code session starts with a fresh session ledger; the daily cap and `/budget` "today"
+  total keep counting across sessions. `/budget off` clears the session cap, `daily off` and
+  `allowance off` the others. Limits are kept in `<state dir>/budget`, one per line.
 
 | key                  | what it does                                                                                                                                                                                                                                    |
 | -------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |

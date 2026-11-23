@@ -8,9 +8,10 @@ use std::path::{Path, PathBuf};
 
 use jev_backend::ProviderId;
 use jev_shared::application::host::Host;
+use crate::domain::admission::Estimate;
 use crate::domain::budget::{Budget, Meter, PriceTable};
-use crate::application::ports::SpendLedger;
-use crate::domain::spend_ledger::{self, LedgerLine};
+use crate::application::usage_account::{Overview, UsageAccount};
+use jev_orchestration::application::ports::BudgetHold;
 use jev_backend::Usage;
 use jev_catalog::domain::model_table::{TaskType, Usable};
 use crate::domain::failover_policy::FailoverPolicy;
@@ -65,22 +66,9 @@ pub struct Guards {
     pub scoreboard: Scoreboard,
     /// Lines of the settings files that could not be read, shown once by `/privacy`.
     pub problems: Vec<String>,
-    /// The ledger this process shares its spend through, with the project and writer it is
-    /// recorded under; `None` keeps the spend in this process only.
-    pub(crate) shared: Option<SharedSpend>,
-}
-
-/// Where and as whom this process records its spend, and from when the main engine counts others'.
-#[derive(Debug)]
-pub(crate) struct SharedSpend {
-    ledger: std::sync::Arc<dyn SpendLedger>,
-    path: PathBuf,
-    project: String,
-    /// One per process, so a process does not count its own lines twice.
-    writer: String,
-    /// A planner counts the others' spend from its own start; a worker (`None`) from the
-    /// newest session marker of its project, read each time.
-    since_ms: Option<u64>,
+    /// The usage ledger this process shares its spend and reservations through; `None` keeps
+    /// the spend in this process only, with nothing reserved.
+    pub(crate) shared: Option<UsageAccount>,
 }
 
 impl Guards {
@@ -94,43 +82,79 @@ impl Guards {
         self.meter.is_paid(provider, model)
     }
 
+    /// Whether a paid model may still be picked: under the session cap and the daily cap, and
+    /// the attempt is the first or paid-fallback is on. A first screen only: [`Guards::hold`]
+    /// is the check that reserves.
     pub fn may_pay(&self, attempts: u32) -> bool {
-        self.budget.allows_paid(&self.total_meter()) && (self.failover.paid_fallback || attempts == 0)
+        self.budget.allows_paid(&self.total_meter()) && self.allows_paid_today() && (self.failover.paid_fallback || attempts == 0)
     }
 
-    /// Share this process's spend through `ledger` at `path`, as one writer of `project`.
-    /// A planner passes `Some(now_ms)`, writes its session marker, and counts others' spend
-    /// from then on; a worker passes `None` and counts from its project's newest marker.
-    pub fn with_ledger(mut self, ledger: std::sync::Arc<dyn SpendLedger>, path: PathBuf, project: &Path, planner_start_ms: Option<u64>, pid: u32, now_ms: u64) -> Self {
-        let project = project.to_string_lossy().into_owned();
-        if let Some(ts_ms) = planner_start_ms {
-            ledger.append(&path, &LedgerLine::Session { ts_ms, project: project.clone() });
-        }
-        self.shared = Some(SharedSpend { ledger, path, project, writer: format!("{pid}-{now_ms}"), since_ms: planner_start_ms });
+    fn allows_paid_today(&self) -> bool {
+        self.budget.daily.is_none() || self.shared.as_ref().is_none_or(|a| self.budget.allows_paid_today(&a.day(&self.prices, self.meter.fundings())))
+    }
+
+    /// Share this process's usage through `account`.
+    pub fn with_ledger(mut self, account: UsageAccount) -> Self {
+        self.shared = Some(account);
         self
     }
 
-    /// Record a finished attempt: in this process's meter, and in the shared ledger.
-    pub fn record_spend(&mut self, provider: ProviderId, model: &str, usage: &Usage, now_ms: u64) {
-        self.meter.record(provider, model, usage, &self.prices);
-        if let Some(shared) = &self.shared {
-            shared.ledger.append(
-                &shared.path,
-                &LedgerLine::Spend { ts_ms: now_ms, project: shared.project.clone(), writer: shared.writer.clone(), provider, model: model.to_string(), usage: *usage },
-            );
+    /// Reserve the budget for an attempt of `model` whose prompt is about `prompt_tokens`:
+    /// `Err` is why it may not start (see [`crate::domain::admission`]). Every `Ok` hold ends
+    /// in [`Guards::settle`] or [`Guards::release`].
+    pub fn hold(&self, provider: ProviderId, model: &str, prompt_tokens: u64) -> Result<BudgetHold, String> {
+        let estimate = Estimate::of(model, prompt_tokens, &self.prices);
+        match &self.shared {
+            Some(account) => account.hold(&self.budget, &self.prices, self.meter.fundings(), provider, model, estimate),
+            // No ledger: this process's own meter is the whole truth and nothing is reserved.
+            None => {
+                let (own, none) = (self.meter.clone(), crate::domain::usage_ledger::Reserved::default());
+                let standing = crate::domain::admission::Standing { session: &own, session_reserved: &none, day: &own, day_reserved: &none };
+                let attempt = crate::domain::admission::Attempt { provider, paid: self.is_paid(provider, model), estimate, budget: &self.budget };
+                match crate::domain::admission::admit(&attempt, &standing) {
+                    crate::domain::admission::Admission::Admitted { warning } => Ok(BudgetHold { id: None, warning }),
+                    crate::domain::admission::Admission::Refused(why) => Err(why),
+                }
+            }
         }
+    }
+
+    /// End a reservation with what the attempt used: in this process's meter and in the ledger.
+    pub fn settle(&mut self, hold: &BudgetHold, provider: ProviderId, model: &str, usage: &Usage) {
+        self.meter.record(provider, model, usage, &self.prices);
+        if let Some(account) = &self.shared {
+            account.settle(hold, provider, model, usage);
+        }
+    }
+
+    /// End the reservation of an attempt that never started.
+    pub fn release(&self, hold: &BudgetHold) {
+        if let Some(account) = &self.shared {
+            account.release(hold);
+        }
+    }
+
+    /// Record a finished attempt that held nothing.
+    pub fn record_spend(&mut self, provider: ProviderId, model: &str, usage: &Usage) {
+        self.settle(&BudgetHold::default(), provider, model, usage);
     }
 
     /// What the whole session has spent: this process's meter plus what the other processes
     /// of the session (the workers, or the planner) put in the shared ledger.
     pub fn total_meter(&self) -> Meter {
         let mut total = self.meter.clone();
-        if let Some(shared) = &self.shared {
-            let lines = shared.ledger.read(&shared.path);
-            let since = shared.since_ms.unwrap_or_else(|| spend_ledger::session_start(&lines, &shared.project));
-            total.absorb(&spend_ledger::others_spend(&lines, &shared.project, since, &shared.writer, &self.prices));
+        if let Some(account) = &self.shared {
+            total.absorb(&account.others(&self.prices, self.meter.fundings()));
         }
         total
+    }
+
+    /// The ledger's view for `/budget`: spend, reservations in flight, the day.
+    pub fn overview(&self) -> Overview {
+        match &self.shared {
+            Some(account) => account.overview(&self.prices, self.meter.fundings()),
+            None => Overview { session: self.meter.clone(), ..Overview::default() },
+        }
     }
 
     /// Every setting file of the user's state folder and the project. A missing file is
@@ -170,7 +194,13 @@ impl Guards {
         if !may_pay {
             let free = current.filter(|p, m| !self.meter.is_paid(p, m));
             if free.is_empty() && !current.is_empty() {
-                let why = if self.budget.allows_paid(&self.total_meter()) { "paid-fallback is off (/failover)" } else { "the budget cap is reached (/budget)" };
+                let why = if !self.budget.allows_paid(&self.total_meter()) {
+                    "the budget cap is reached (/budget)"
+                } else if !self.allows_paid_today() {
+                    "the daily budget cap is reached (/budget)"
+                } else {
+                    "paid-fallback is off (/failover)"
+                };
                 return Err(format!("only models that cost money are left, and {why}"));
             }
             current = free;
@@ -297,7 +327,7 @@ mod tests {
 
     #[test]
     fn the_budget_cap_removes_paid_models_only_once_reached() {
-        let mut g = Guards { budget: Budget { cap: Some(Cap::Tokens(100)) }, ..Guards::default() };
+        let mut g = Guards { budget: Budget { cap: Some(Cap::Tokens(100)), ..Budget::default() }, ..Guards::default() };
         let usage = jev_backend::Usage { input_tokens: 200, ..Default::default() };
         g.meter.record(ProviderId::DeepSeek, "deepseek-v4-pro", &usage, &g.prices);
         let r = g.restrict(&all(), &facts("x", 0)).unwrap();
@@ -312,7 +342,7 @@ mod tests {
     #[test]
     fn a_custom_codex_backend_is_held_by_the_cap_and_the_failover_switch() {
         use jev_providers::domain::funding::{Funding, Fundings};
-        let mut g = Guards { budget: Budget { cap: Some(Cap::Tokens(100)) }, ..Guards::default() };
+        let mut g = Guards { budget: Budget { cap: Some(Cap::Tokens(100)), ..Budget::default() }, ..Guards::default() };
         let codex_only = Usable::all_of([ProviderId::Codex]);
         assert!(g.restrict(&codex_only, &facts("x", 0)).is_ok());
         g.set_fundings(Fundings::default().with(ProviderId::Codex, Funding::Custom));

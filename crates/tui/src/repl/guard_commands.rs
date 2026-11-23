@@ -3,7 +3,7 @@
 
 use std::path::Path;
 
-use jev_turn::domain::budget;
+use jev_turn::domain::{budget, budget_report};
 use jev_turn::domain::budget::Cap;
 use jev_turn::application::guards::Guards;
 use jev_shared::infrastructure::system_host::SystemHost;
@@ -16,6 +16,10 @@ pub enum GuardCmd {
     BudgetSet(Cap),
     /// `/budget off`.
     BudgetClear,
+    /// `/budget daily usd 20 | tokens 5m | off`: the paid cap of one day over every session.
+    BudgetDaily(Option<Cap>),
+    /// `/budget allowance 5m | off`: the soft subscription allowance per provider and session.
+    BudgetAllowance(Option<u64>),
     /// `/privacy`: the policy, the rules and the problems found in them.
     PrivacyShow,
     /// `/privacy local-only on|off`, for this session.
@@ -40,6 +44,10 @@ impl GuardCmd {
         match (head, words.as_slice()) {
             ("/budget", []) => Ok(Self::BudgetShow),
             ("/budget", ["off" | "none"]) => Ok(Self::BudgetClear),
+            ("/budget", ["daily", "off" | "none"]) => Ok(Self::BudgetDaily(None)),
+            ("/budget", ["daily", rest @ ..]) => Cap::parse(&rest.join(" ")).map(|cap| Self::BudgetDaily(Some(cap))),
+            ("/budget", ["allowance", "off" | "none"]) => Ok(Self::BudgetAllowance(None)),
+            ("/budget", ["allowance", amount]) => budget::parse_tokens(amount).map(|t| Self::BudgetAllowance(Some(t))).ok_or_else(|| "usage: /budget allowance <tokens, like 5m> | off".to_string()),
             ("/budget", _) => Cap::parse(args).map(Self::BudgetSet),
             ("/privacy", []) => Ok(Self::PrivacyShow),
             ("/privacy", ["audit"]) => Ok(Self::Audit),
@@ -59,10 +67,25 @@ impl GuardCmd {
 /// session are saved under `state_dir` when there is one.
 pub fn run(cmd: GuardCmd, guards: &mut Guards, state_dir: Option<&Path>, plans: &[(String, f64)]) -> String {
     match cmd {
-        GuardCmd::BudgetShow => budget::meter_text(&guards.total_meter(), &guards.budget, plans),
+        GuardCmd::BudgetShow => {
+            let total = guards.total_meter();
+            let overview = guards.overview();
+            let limits = budget_report::limits_text(&guards.budget, &total, &overview.session_reserved, &overview.day);
+            format!("{}\n{limits}", budget::meter_text(&total, &guards.budget, plans))
+        }
         GuardCmd::BudgetSet(cap) => {
             guards.budget.cap = Some(cap);
             saved(state_dir, |d| jev_turn::application::guard_store::save_budget(&SystemHost, &guards.budget, d), "Paid models stop being picked once the cap is used up.")
+        }
+        GuardCmd::BudgetDaily(cap) => {
+            guards.budget.daily = cap;
+            let done = if cap.is_some() { "Paid models stop being admitted once the day's paid use over every session reaches the cap." } else { "No daily cap on paid use." };
+            saved(state_dir, |d| jev_turn::application::guard_store::save_budget(&SystemHost, &guards.budget, d), done)
+        }
+        GuardCmd::BudgetAllowance(tokens) => {
+            guards.budget.allowance = tokens.map(|tokens| budget::Allowance { tokens });
+            let done = if tokens.is_some() { "A subscription provider past the allowance is warned about; it is never refused." } else { "No subscription allowance." };
+            saved(state_dir, |d| jev_turn::application::guard_store::save_budget(&SystemHost, &guards.budget, d), done)
         }
         GuardCmd::BudgetClear => {
             guards.budget.cap = None;
@@ -140,6 +163,12 @@ mod tests {
         assert_eq!(GuardCmd::parse("/budget", "off"), Ok(GuardCmd::BudgetClear));
         assert_eq!(GuardCmd::parse("/budget", "usd 5"), Ok(GuardCmd::BudgetSet(Cap::Usd(5.0))));
         assert!(GuardCmd::parse("/budget", "lots").is_err());
+        assert_eq!(GuardCmd::parse("/budget", "daily usd 20"), Ok(GuardCmd::BudgetDaily(Some(Cap::Usd(20.0)))));
+        assert_eq!(GuardCmd::parse("/budget", "daily off"), Ok(GuardCmd::BudgetDaily(None)));
+        assert_eq!(GuardCmd::parse("/budget", "allowance 5m"), Ok(GuardCmd::BudgetAllowance(Some(5_000_000))));
+        assert_eq!(GuardCmd::parse("/budget", "allowance off"), Ok(GuardCmd::BudgetAllowance(None)));
+        assert!(GuardCmd::parse("/budget", "allowance lots").is_err());
+        assert!(GuardCmd::parse("/budget", "daily lots").is_err());
         assert_eq!(GuardCmd::parse("/privacy", "local-only on"), Ok(GuardCmd::LocalOnly(true)));
         assert_eq!(GuardCmd::parse("/privacy", "audit"), Ok(GuardCmd::Audit));
         assert!(GuardCmd::parse("/privacy", "x y z").is_err());

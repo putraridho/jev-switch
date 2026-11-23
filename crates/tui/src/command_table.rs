@@ -70,7 +70,7 @@ pub const COMMANDS: [Cmd; 59] = [
     Cmd { name: "/cache", args: "", group: Group::Info, about: "Show cache hit rate per provider, when it expires, and why a turn missed", example: "", hint: "" },
     Cmd { name: "/agents", args: "", group: Group::Info, about: "Show the workers a planner handed pieces to, and their state", example: "", hint: "" },
     Cmd { name: "/orchestration", args: "", group: Group::Info, about: "Show whether orchestration is on and draw the turn as a flow", example: "", hint: "" },
-    Cmd { name: "/budget", args: "[usd <n> | tokens <n> | off]", group: Group::Info, about: "Show spend by model and the plan use; set a cap on paid models", example: "/budget usd 5", hint: "[usd <n>|tokens <n>|off]" },
+    Cmd { name: "/budget", args: "[usd <n> | tokens <n> | daily <cap> | allowance <n> | off]", group: Group::Info, about: "Show spend by model, paid money and subscription quota; set a hard cap on paid models or a soft subscription allowance", example: "/budget usd 5", hint: "[usd <n>|tokens <n>|daily <cap>|allowance <n>|off]" },
     Cmd { name: "/privacy", args: "[audit | local-only on|off]", group: Group::Info, about: "Show the privacy rules, the audit trail, local-only mode", example: "/privacy audit", hint: "[audit|local-only on|off]" },
     Cmd { name: "/failover", args: "[max-attempts <n> | paid-fallback on|off]", group: Group::Info, about: "Show or change how a turn fails over to another model", example: "/failover paid-fallback off", hint: "[max-attempts <n>|paid-fallback on|off]" },
     Cmd { name: "/scoreboard", args: "", group: Group::Info, about: "Show how each provider did this session: answers, failures, speed", example: "", hint: "" },

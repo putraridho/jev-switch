@@ -1,5 +1,7 @@
 pub mod acceptance;
+pub mod admission;
 pub mod budget;
+pub mod budget_report;
 pub mod cache;
 pub mod effort;
 pub mod failover;
@@ -8,4 +10,4 @@ pub mod privacy;
 pub mod route_facts;
 pub mod schedule;
 pub mod scoreboard;
-pub mod spend_ledger;
+pub mod usage_ledger;

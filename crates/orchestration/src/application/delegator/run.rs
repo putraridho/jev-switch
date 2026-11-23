@@ -54,6 +54,13 @@ impl Delegator {
                     return finished.with_retries(retries);
                 }
                 Err(AttemptOutcome::Stop(message)) => return Finished::done(DelegateResult::failed(message, retries)),
+                Err(AttemptOutcome::Refused { spec, why }) => {
+                    excluded.insert((spec.provider, spec.id.to_string()));
+                    retries.push(format!("{} {} was not started: {why}", spec.provider, spec.id));
+                    if attempt == MAX_WORKER_ATTEMPTS {
+                        return Finished::done(DelegateResult::failed(format!("not delegated: {why}"), retries));
+                    }
+                }
                 Err(AttemptOutcome::Failed(f)) => {
                     let react = lock(&self.runtime).react(f.spec.provider, f.spec.id, &f.err, &mut excluded, (self.now)());
                     match react {

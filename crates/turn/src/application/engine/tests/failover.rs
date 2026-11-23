@@ -321,3 +321,23 @@ async fn a_duration_reset_counts_from_when_the_error_arrived_not_from_when_the_a
     assert!(r.engine.runtime.cooldowns.active(a, reset - 1).is_some(), "not over 10 minutes early");
     assert!(r.engine.runtime.cooldowns.active(a, reset).is_none());
 }
+
+#[tokio::test]
+async fn every_main_attempt_reserves_in_the_shared_ledger_and_settles_it_whether_it_answers_or_fails() {
+    use crate::application::usage_account::UsageAccount;
+    use crate::application::ports::UsageLedger as _;
+    use crate::infrastructure::memory_usage_ledger::{KnownProcesses, MemoryUsageLedger};
+    let ledger = Arc::new(MemoryUsageLedger::default());
+    let mut r = rig(&[Claude, Codex]);
+    let account = UsageAccount::planner(ledger.clone(), Arc::new(KnownProcesses::new(1)), std::path::PathBuf::from("ledger"), std::path::Path::new("/repo"), 1_000);
+    r.engine.guards = std::mem::take(&mut r.engine.guards).with_ledger(account);
+    let a = first_choice(TaskType::Feature, &[Claude, Codex]);
+    r.script(a, QUOTA);
+    let report = r.turn("add a retry to the client", want(TaskType::Feature)).await;
+    assert_eq!(report.attempts, 2);
+    let book = ledger.read(std::path::Path::new("ledger")).unwrap();
+    let session = book.sessions.values().next().unwrap();
+    assert!(session.held.is_empty(), "nothing is left reserved");
+    assert_eq!(session.spent.len(), 2, "the failed attempt and the answer");
+    assert_eq!(session.spent.iter().filter(|s| s.usage.measurement == jev_shared::Measurement::Unavailable).count(), 1, "the failure reported nothing: unknown, not zero");
+}

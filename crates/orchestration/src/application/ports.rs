@@ -153,6 +153,15 @@ pub struct Screen {
     pub judge_prompt: Option<String>,
 }
 
+/// A budget reservation for one worker attempt, handed back to the policy when it settles.
+/// The default holds nothing (a policy without a ledger).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct BudgetHold {
+    pub id: Option<String>,
+    /// A soft limit the attempt is past (a subscription allowance); the attempt still runs.
+    pub warning: Option<String>,
+}
+
 /// The rules a worker's prompt and request answer to, as the planner's own turns do: the
 /// privacy policy with its audit log, and the permission mode and trust of a worker's turn.
 /// Real: built by the composition root.
@@ -172,6 +181,19 @@ pub trait WorkerPolicy: Send + Sync {
     /// same policy instance, including unavailable measurements rather than assuming zero.
     /// The default does not meter usage; this port promises no cross-process ledger.
     fn record_usage(&self, _provider: ProviderId, _model: &str, _usage: &Usage) {}
+    /// Reserve the budget for an attempt of about `prompt_chars` characters on this model, just
+    /// before it starts. `Err` is why it may not start (a hard paid cap would be passed). Every
+    /// admitted attempt must end in [`WorkerPolicy::settle`]. The default reserves nothing.
+    fn hold(&self, _provider: ProviderId, _model: &str, _prompt_chars: usize) -> Result<BudgetHold, String> {
+        Ok(BudgetHold::default())
+    }
+    /// End a reservation with what the attempt used (`Measurement::Unavailable` when unknown:
+    /// an attempt cancelled or failed without a report). The default is [`WorkerPolicy::record_usage`].
+    fn settle(&self, _hold: BudgetHold, provider: ProviderId, model: &str, usage: &Usage) {
+        self.record_usage(provider, model, usage);
+    }
+    /// End the reservation of an attempt that never started. The default does nothing.
+    fn release(&self, _hold: BudgetHold) {}
     /// The prompt as it may leave for `provider`, secrets blanked; the audit log is told.
     fn outgoing(&self, prompt: &str, provider: ProviderId, model: &str, now_ms: u64) -> String;
     /// The request that runs a worker in `dir`: plan mode when `read_only`.

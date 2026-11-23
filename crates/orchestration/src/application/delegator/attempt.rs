@@ -17,12 +17,13 @@ use crate::domain::worker_prompt::{plan_mode_enforced, worker_prompt};
 
 use crate::application::ports::{AttemptLog, CheckRun};
 use super::outcome::{AttemptFailure, AttemptOutcome, Finished, Pending, Verdict};
+use super::held::Held;
 use super::reservation::{create_unless_cancelled, CreateSlot, Reservation};
 use super::{lock, Delegator};
 
 impl Delegator {
     /// Run the worker CLI in its worktree. Plan usage it reports feeds the spreading.
-    pub(super) async fn run_worker(&self, id: &str, spec: &'static ModelSpec, dir: &Path, prompt: String, read_only: bool) -> (Result<TurnOutcome, TurnError>, Vec<String>) {
+    pub(super) async fn run_worker(&self, id: &str, spec: &'static ModelSpec, dir: &Path, prompt: String, read_only: bool, hold: Held<'_>) -> (Result<TurnOutcome, TurnError>, Vec<String>) {
         let backend = (self.backend_factory)(spec.provider);
         let req = self.policy.request(dir, spec.id, prompt, read_only);
         let mut tools: Vec<String> = Vec::new();
@@ -42,7 +43,7 @@ impl Delegator {
             Ok(outcome) => outcome.usage,
             Err(error) => error.usage.unwrap_or(Usage { measurement: Measurement::Unavailable, ..Usage::default() }),
         };
-        self.policy.record_usage(spec.provider, spec.id, &usage);
+        hold.settle(&usage);
         (result, tools)
     }
 
@@ -65,7 +66,13 @@ impl Delegator {
         let id = self.next_id();
         let spec = self.reserve(signals, excluded, req.brief.len(), &id, attempt - 1).map_err(|e| AttemptOutcome::Stop(e.to_string()))?;
         let reservation = Reservation::new(self, &id);
-        let out = self.run_attempt(req, signals, jev, spec, id, &reservation, attempt).await;
+        // The budget is reserved for the attempt before any worktree is made; it is settled
+        // when the attempt ends, and a cancelled attempt settles as unknown consumption.
+        let hold = match self.policy.hold(spec.provider, spec.id, req.brief.len()) {
+            Ok(hold) => Held::new(&*self.policy, hold, spec),
+            Err(why) => return Err(AttemptOutcome::Refused { spec, why }),
+        };
+        let out = self.run_attempt(req, signals, jev, spec, id, &reservation, attempt, hold).await;
         reservation.disarm();
         out
     }
@@ -80,6 +87,7 @@ impl Delegator {
         id: String,
         reservation: &Reservation<'_>,
         attempt: u32,
+        hold: Held<'_>,
     ) -> Result<Finished, AttemptOutcome> {
         // A read-only worker on a CLI that enforces plan mode reads the user's own folder (and
         // so sees uncommitted edits); every other worker gets a worktree.
@@ -95,6 +103,7 @@ impl Delegator {
                 Ok(path) => path,
                 Err(e) => {
                     self.take(&id).await;
+                    hold.release();
                     return Err(AttemptOutcome::Stop(format!("could not create a worktree: {e:#}")));
                 }
             }
@@ -106,7 +115,7 @@ impl Delegator {
         let started_ms = (self.now)();
         // Secrets are blanked as for any provider, and the audit log notes what was sent.
         let prompt = self.policy.outgoing(&worker_prompt(&req.brief, &req.files, req.read_only), spec.provider, spec.id, (self.now)());
-        let (result, tools) = self.run_worker(&id, spec, &path, prompt, req.read_only).await;
+        let (result, tools) = self.run_worker(&id, spec, &path, prompt, req.read_only, hold).await;
         self.update(&id, |w| w.running = false).await;
         let wall_ms = started.elapsed().as_millis() as u64;
         let task = worker_task(signals);
