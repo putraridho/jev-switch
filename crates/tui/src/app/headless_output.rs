@@ -56,9 +56,23 @@ impl From<TurnStatus> for Status {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 struct UsageOut {
-    input_tokens: u64,
-    cached_input_tokens: u64,
-    output_tokens: u64,
+    input_tokens: Option<u64>,
+    cached_input_tokens: Option<u64>,
+    output_tokens: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    measurement: Option<&'static str>,
+}
+
+impl From<jev_shared::Usage> for UsageOut {
+    fn from(usage: jev_shared::Usage) -> Self {
+        let reported = usage.measurement == jev_shared::Measurement::Reported;
+        Self {
+            input_tokens: reported.then_some(usage.input_tokens),
+            cached_input_tokens: reported.then_some(usage.cached_input_tokens),
+            output_tokens: reported.then_some(usage.output_tokens),
+            measurement: (!reported).then_some("unavailable"),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -102,7 +116,7 @@ impl JsonResult {
             model: report.model.clone(),
             attempts: report.attempts,
             elapsed_ms,
-            usage: report.usage.map(|u| UsageOut { input_tokens: u.input_tokens, cached_input_tokens: u.cached_input_tokens, output_tokens: u.output_tokens }),
+            usage: report.usage.map(UsageOut::from),
             files: report.changes.as_ref().map(|c| c.files.iter().map(FileOut::from).collect()).unwrap_or_default(),
         }
     }
@@ -126,7 +140,7 @@ mod tests {
             message: String::new(),
             provider: Some(ProviderId::Claude),
             model: Some("claude-sonnet-5-5".into()),
-            usage: Some(Usage { input_tokens: 10, cached_input_tokens: 4, output_tokens: 2, context_tokens: None }),
+            usage: Some(Usage { input_tokens: 10, cached_input_tokens: 4, output_tokens: 2, context_tokens: None, ..Usage::default() }),
             attempts: 1,
             tool_calls: 0,
             changes: None,
@@ -155,5 +169,14 @@ mod tests {
         r.message = "usage limit \"hit\"".into();
         let line = JsonResult::of(&r, 5).line();
         assert!(line.contains("\"status\":\"failed\",\"exit_code\":1") && line.contains("usage limit \\\"hit\\\""), "{line}");
+    }
+
+    #[test]
+    fn unreported_consumption_is_null_instead_of_zero() {
+        let mut report = report(TurnStatus::Answered, "done");
+        report.usage = Some(jev_shared::Usage { measurement: jev_shared::Measurement::Unavailable, context_tokens: Some(50000), ..jev_shared::Usage::default() });
+        let line = JsonResult::of(&report, 5).line();
+        assert!(line.contains("\"input_tokens\":null") && line.contains("\"output_tokens\":null"), "{line}");
+        assert!(line.contains("\"measurement\":\"unavailable\""), "{line}");
     }
 }

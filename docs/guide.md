@@ -405,6 +405,16 @@ conversation (including tool summaries); oversized histories retain the beginnin
 the most recent content, with omitted content marked. If no summary comes back, the
 original conversation and its saved session remain intact.
 
+`/context` shows occupancy only when the provider reports a trustworthy single-request
+measurement. Unknown occupancy is not replaced with the sum of a turn's model calls,
+and does not trigger automatic compaction.
+
+`/cost` distinguishes final conversation turns from model attempts, including failures.
+Unavailable consumed-token counters show as unknown (JSON uses null), and mixed totals
+are lower bounds. `/budget` stops further paid admission when paid consumption cannot be
+checked. Worker budgets observe attempts in their own synchronized policy instance;
+they are not a shared main/MCP ledger, a concurrent reservation, or an in-flight hard limit.
+
 | key                  | what it does                                                                                                                                                                                                                                    |
 | -------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `/`, `@`             | open the command menu or the file menu (above); Tab completes the selected item, Enter runs it                                                                                                                                                  |

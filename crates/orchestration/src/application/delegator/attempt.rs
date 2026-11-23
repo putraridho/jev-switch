@@ -8,7 +8,7 @@ use std::time::Instant;
 
 use serde_json::Value;
 
-use jev_backend::{self as backend, Event, ProviderId, TurnError, TurnOutcome};
+use jev_backend::{self as backend, Event, Measurement, ProviderId, TurnError, TurnOutcome, Usage};
 use jev_catalog::domain::model_table::ModelSpec;
 use crate::domain::brief_signals::{worker_task, BriefSignals};
 use crate::domain::delegation::{DelegateRequest, DelegateResult, Landing, ReviewReason};
@@ -38,6 +38,11 @@ impl Delegator {
         };
         let approver = self.policy.approver(dir, read_only);
         let result = backend::run_turn_with(&*backend, &req, self.idle_timeout, &mut on_event, &*approver).await;
+        let usage = match &result {
+            Ok(outcome) => outcome.usage,
+            Err(error) => error.usage.unwrap_or(Usage { measurement: Measurement::Unavailable, ..Usage::default() }),
+        };
+        self.policy.record_usage(spec.provider, spec.id, &usage);
         (result, tools)
     }
 
@@ -58,7 +63,7 @@ impl Delegator {
         attempt: u32,
     ) -> Result<Finished, AttemptOutcome> {
         let id = self.next_id();
-        let spec = self.reserve(signals, excluded, req.brief.len(), &id).map_err(|e| AttemptOutcome::Stop(e.to_string()))?;
+        let spec = self.reserve(signals, excluded, req.brief.len(), &id, attempt - 1).map_err(|e| AttemptOutcome::Stop(e.to_string()))?;
         let reservation = Reservation::new(self, &id);
         let out = self.run_attempt(req, signals, jev, spec, id, &reservation, attempt).await;
         reservation.disarm();

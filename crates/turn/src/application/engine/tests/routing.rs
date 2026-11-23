@@ -199,6 +199,43 @@ async fn a_missing_jev_judgment_still_routes_to_a_usable_model() {
     assert_eq!(report.provider, Some(Claude));
 }
 
+#[tokio::test]
+async fn security_constraints_survive_a_missing_judgment_and_a_barred_current_provider() {
+    for current in [DeepSeek, Grok] {
+        let mut fixture = rig(&[Claude, current]);
+        let spec = catalog::models().iter().find(|model| model.provider == current).unwrap();
+        jev_routing::domain::decide::record_turn(&mut fixture.engine.routing, spec);
+        let report = fixture.engine.run_judged("fix password storage", Judged::Providers(None), &mut fixture.ui).await;
+        assert_eq!(report.status, TurnStatus::Answered);
+        assert_eq!(report.provider, Some(Claude));
+        assert!(fixture.ui.routes.last().unwrap().contains("security rule"));
+    }
+}
+
+#[tokio::test]
+async fn security_with_no_judgment_and_only_barred_providers_sends_nothing() {
+    let mut fixture = rig(&[DeepSeek, Grok]);
+    let report = fixture.engine.run_judged("audit password storage", Judged::Providers(None), &mut fixture.ui).await;
+    assert_eq!(report.status, TurnStatus::NoRoute);
+    assert!(fixture.started().is_empty());
+}
+
+#[tokio::test]
+async fn security_with_no_judgment_does_not_override_an_unusable_user_pin() {
+    let mut fixture = rig(&[Claude, DeepSeek]);
+    fixture.engine.set_pin(Pin::Provider(DeepSeek));
+    let report = fixture.engine.run_judged("fix password storage", Judged::Providers(None), &mut fixture.ui).await;
+    assert_eq!(report.status, TurnStatus::NoRoute);
+    assert!(fixture.started().is_empty());
+}
+
+#[tokio::test]
+async fn a_supplied_judgment_cannot_remove_the_prompts_local_security_constraint() {
+    let mut fixture = rig(&[Claude, DeepSeek]);
+    let report = fixture.turn("fix password storage", want(TaskType::SimpleEdit)).await;
+    assert_eq!(report.provider, Some(Claude));
+}
+
 #[test]
 fn legacy_tiers_are_catalog_models() {
     for (tier, id) in LEGACY_TIERS.iter().enumerate() {

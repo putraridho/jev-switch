@@ -4,6 +4,19 @@ See [docs/changelog-guide.md](docs/changelog-guide.md) for changelog formatting,
 
 ## Unreleased
 
+## 1.11.11
+
+Routing safeguards, honest usage accounting, bounded handoffs, and budget-aware workers.
+
+- **The example environment file lists the missing credentials and settings.** It includes the Grok API key, the Jev key alias, compaction, worker auto-merge, privacy, log paths, and tuning controls. Shell-only UI, gateway, and evaluation settings are separated from file-backed settings, and the orchestration defaults are corrected.
+- **Hard security constraints survive routing-service failures.** A missing judgment no longer lets security-sensitive requests remain on DeepSeek or Grok; explicit pins are still refused rather than silently replaced when barred for the task.
+- **Continuing difficult work can upgrade without losing its provider unnecessarily.** Automatic routing meets the task's quality floor before retaining a light model, and a nearly exhausted Claude plan can move continuing work to an eligible alternative. User pins remain unchanged.
+- **Context occupancy is no longer guessed from cumulative turn consumption.** Missing per-request measurements show as unknown and do not trigger false context-overflow errors or automatic compaction.
+- **Failover carries partial work forward.** Every failed attempt's file and command activity is recorded before retrying and stays in the saved conversation after another provider succeeds; discarded draft answers are not passed on. Tool counts include all attempts.
+- **Provider handoffs respect their estimated token budget.** Long histories keep a bounded recent excerpt, identify omitted earlier turns, and leave the canonical history intact.
+- **Unknown consumption is not reported as free usage.** Antigravity and ACP workers report unavailable consumed-token counters explicitly; JSON uses null rather than zero. Known consumption from empty or quota-ended results is retained, and failed or cancelled attempts without counters are marked unknown in the meter. Paid caps stop further paid admission when consumption cannot be checked.
+- **Delegated workers enforce paid-use policy at model admission.** They honor reached caps and paid-fallback restrictions, and completed attempts feed the same synchronized worker-policy meter. This is still policy-instance accounting, not a shared ledger across the main agent and MCP processes or a reservation for concurrent work.
+
 ## 1.11.10
 
 Failover moves past providers that stop answering, background gateway requests back off after rate limits, and fake CLI tests keep your failure logs clean.

@@ -4,3 +4,4 @@ pub mod jsonl_log;
 pub mod private_file;
 pub mod system_host;
 pub mod audit_wire;
+pub mod token_usage_wire;

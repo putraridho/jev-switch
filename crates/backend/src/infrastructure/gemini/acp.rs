@@ -14,7 +14,7 @@ mod tests;
 mod update;
 
 use super::gemini_cli::stream_events::finish_or_empty;
-use crate::{Event, TurnRequest, Usage};
+use crate::{Event, Measurement, TurnRequest, Usage};
 use jev_approval::domain::mode::Mode;
 
 /// Which CLI is on the other end. Only what genuinely differs branches on it.
@@ -65,7 +65,12 @@ impl Acp {
     }
 
     pub fn start(&mut self, req: &TurnRequest) -> String {
-        *self = Self { agent: self.agent, request: Some(req.clone()), ..Self::default() };
+        *self = Self {
+            agent: self.agent,
+            request: Some(req.clone()),
+            usage: Usage { measurement: Measurement::Unavailable, ..Usage::default() },
+            ..Self::default()
+        };
         rpc(
             1,
             "initialize",

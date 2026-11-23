@@ -4,6 +4,7 @@ use serde_json::Value;
 
 use super::{GeminiBackend, Pending, EMPTY_ANSWER};
 use crate::infrastructure::claude::claude_cli::tool_summary::tool_summary;
+use crate::infrastructure::usage_measurement::measurement_of;
 use crate::{Event, Finish, Usage};
 
 pub(super) fn uint(v: &Value, key: &str) -> u64 {
@@ -18,6 +19,7 @@ fn gemini_usage(stats: &Value) -> Usage {
         cached_input_tokens: uint(stats, "cached"),
         output_tokens: uint(stats, "output_tokens"),
         context_tokens: None,
+        measurement: measurement_of(stats),
     }
 }
 

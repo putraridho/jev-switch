@@ -2,7 +2,8 @@
 
 use std::collections::HashSet;
 
-use jev_backend::{Event, ProviderId, TurnError};
+use jev_backend::{Event, ProviderId};
+use jev_shared::{Measurement, Usage};
 use crate::domain::failover_policy::MAX_ATTEMPTS;
 use jev_session::domain::turn_status::TurnStatus;
 use jev_changes::domain::snapshot::Snapshot;
@@ -25,7 +26,7 @@ impl Engine {
         cancel: &Cancel,
         before: &mut Option<Snapshot>,
     ) -> TurnReport {
-        let signals = judged.signals();
+        let signals = judged.signals(prompt);
         let jev = judged.log_signals();
         // Legacy mode is the old single-provider path: one attempt, no failover.
         let max_attempts = if matches!(judged, Judged::Providers(_)) { self.guards.failover.max_attempts.min(MAX_ATTEMPTS) } else { 1 };
@@ -34,18 +35,15 @@ impl Engine {
         let base = self.routing.clone();
         let mut excluded: HashSet<(ProviderId, String)> = HashSet::new();
         let mut notes: Vec<String> = Vec::new();
-        let mut last_failure: Option<(Attempt, TurnError)> = None;
+        let mut last_failure: Option<Attempt> = None;
         let mut attempts = 0;
+        let mut tool_calls = 0u32;
         // What the person added while the turn ran, kept for a retry on another model.
         let mut steered: Vec<String> = Vec::new();
         loop {
             if cancel.is_cancelled() {
-                // The earlier attempt really failed (and may have touched files): keep its
-                // own error, then add the interruption, so neither is lost.
-                if let Some((failed, err)) = &last_failure {
-                    self.record_failed(prompt, failed, err);
-                }
-                return self.cancelled_report(prompt, last_failure.as_ref().map(|(a, _)| a), attempts, ui);
+                let report = self.cancelled_report(prompt, last_failure.as_ref(), attempts, ui);
+                return TurnReport { tool_calls, ..report };
             }
             let now = (self.now)();
             let chosen = match self.choose(ChooseInput {
@@ -67,10 +65,7 @@ impl Engine {
                         }
                         NoRoute::Refused { why } => ui.no_route(&NoRouteInfo::Refused { why }, &message),
                     }
-                    if let Some((failed, err)) = last_failure {
-                        self.record_failed(prompt, &failed, &err);
-                    }
-                    return TurnReport::ended(TurnStatus::NoRoute, message, attempts);
+                    return TurnReport { tool_calls, ..TurnReport::ended(TurnStatus::NoRoute, message, attempts) };
                 }
             };
             attempts += 1;
@@ -90,8 +85,13 @@ impl Engine {
             }
             let attempt = self.run_attempt(chosen, &with_steered(prompt, &allowed), ui, cancel).await;
             steered.extend(attempt.steered.iter().cloned());
+            tool_calls = tool_calls.saturating_add(attempt.tools.len() as u32);
             self.turn_activity.add_tools(&attempt.tools);
             self.log_attempt(&attempt, &jev, attempts, &notes);
+            if let Err(error) = &attempt.result {
+                let usage = error.usage.unwrap_or(Usage { measurement: Measurement::Unavailable, ..Usage::default() });
+                self.guards.meter.record(attempt.chosen.spec.provider, attempt.chosen.spec.id, &usage, &self.guards.prices);
+            }
             if !attempt.cancelled {
                 match &attempt.result {
                     Ok(_) => self.guards.scoreboard.record_answer(attempt.chosen.spec.provider, attempt.wall_ms),
@@ -99,7 +99,8 @@ impl Engine {
                 }
             }
             if attempt.cancelled {
-                return self.cancelled_report(&with_steered(prompt, &steered), Some(&attempt), attempts, ui);
+                let report = self.cancelled_report(&with_steered(prompt, &steered), Some(&attempt), attempts, ui);
+                return TurnReport { tool_calls, ..report };
             }
             let err = match attempt.result.clone() {
                 Ok(out) => {
@@ -111,10 +112,12 @@ impl Engine {
                             ui.event(&Event::Hint(notice));
                         }
                     }
-                    return self.finish(&with_steered(prompt, &steered), attempt, out, attempts);
+                    let report = self.finish(&with_steered(prompt, &steered), attempt, out, attempts);
+                    return TurnReport { tool_calls, ..report };
                 }
                 Err(err) => err,
             };
+            self.record_failed(&with_steered(prompt, &steered), &attempt, &err);
             let spec = attempt.chosen.spec;
             // A fresh reading: the attempt may have run for minutes, and "resets in 3h20m"
             // counts from when the error arrived, not from when the attempt began.
@@ -137,7 +140,7 @@ impl Engine {
                         text: &note,
                     });
                     notes.push(note);
-                    last_failure = Some((attempt, err));
+                    last_failure = Some(attempt);
                 }
                 retryable => {
                     let tail = match (retryable, attempts) {
@@ -154,11 +157,11 @@ impl Engine {
                         will_retry: false,
                         text: &message,
                     });
-                    self.record_failed(&with_steered(prompt, &steered), &attempt, &err);
                     return TurnReport {
                         provider: Some(spec.provider),
                         model: Some(spec.id.to_string()),
-                        tool_calls: attempt.tools.len() as u32,
+                        usage: err.usage,
+                        tool_calls,
                         ..TurnReport::ended(TurnStatus::Failed, message, attempts)
                     };
                 }

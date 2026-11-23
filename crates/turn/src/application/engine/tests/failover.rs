@@ -32,7 +32,8 @@ async fn quota_cools_the_provider_reruns_the_same_prompt_and_skips_it_next_turn(
     assert_eq!(report.attempts, 2);
     let s = r.started();
     assert_eq!(s.iter().map(|x| x.provider).collect::<Vec<_>>(), vec![a, b]);
-    assert_eq!(asked(&s[1].prompt), "add a retry to the client", "the same prompt, nothing to catch up on yet");
+    assert!(asked(&s[1].prompt).ends_with("Now the user says:\nadd a retry to the client"));
+    assert!(s[1].prompt.contains("FAILED") && s[1].prompt.contains("usage limit reached"));
     assert!(r.engine.runtime.cooldowns.active(a, NOW).is_some());
     assert!(r.ui.notes.iter().any(|n| n.contains("hit its limit") && n.contains("trying the next model")));
     // The failed attempt's output is never the answer.
@@ -159,6 +160,73 @@ async fn a_failed_attempts_text_never_reaches_the_ui_and_the_note_says_so() {
     let tool = r.ui.seen.iter().position(|s| s == "tool:Read a.rs").expect("tool shown");
     let note = r.ui.seen.iter().position(|s| s == "note:").expect("failover note");
     assert!(tool < note);
+}
+
+#[tokio::test]
+async fn failover_hands_off_partial_activity_and_keeps_it_after_success() {
+    let mut fixture = rig(&[Claude, Codex]);
+    fixture.script(Claude, "printf 'TOOL:Edit partial.rs\nTOOL:Bash cargo test\nTEXT:discard this draft\nFAIL:usage limit reached|1794853451\n'");
+    let report = fixture.turn("finish the client", want(TaskType::Feature)).await;
+    assert_eq!((report.status, report.attempts), (TurnStatus::Answered, 2));
+    assert_eq!(report.tool_calls, 3);
+    let started = fixture.started();
+    let prompt = &started[1].prompt;
+    assert!(prompt.contains("FAILED") && prompt.contains("partial.rs") && prompt.contains("cargo test"), "{prompt}");
+    assert!(prompt.contains("re-read a file before editing it"));
+    assert!(!prompt.contains("discard this draft"));
+    let records = fixture.engine.sessions.records();
+    assert_eq!(records.len(), 2);
+    assert!(!records[0].ok && records[1].ok);
+    assert_eq!(records[0].tools, ["Edit partial.rs", "Bash cargo test"]);
+    assert_eq!(records[1].reply, "the answer");
+}
+
+#[tokio::test]
+async fn every_failed_attempt_is_kept_and_handed_off_before_the_next_provider() {
+    let mut fixture = rig(&[Claude, Codex, Gemini]);
+    fixture.script(Claude, "printf 'TOOL:Edit claude.rs\nFAIL:usage limit reached|1794853451\n'");
+    fixture.script(Codex, "printf 'TOOL:Edit codex.rs\nFAIL:usage limit reached|1794853451\n'");
+    let report = fixture.turn("finish the client", want(TaskType::Feature)).await;
+    assert_eq!((report.status, report.attempts), (TurnStatus::Answered, 3));
+    let started = fixture.started();
+    let prompt = &started[2].prompt;
+    assert!(prompt.contains("claude.rs") && prompt.contains("codex.rs"), "{prompt}");
+    let records = fixture.engine.sessions.records();
+    assert_eq!(records.len(), 3);
+    assert!(records[..2].iter().all(|record| !record.ok));
+    assert!(records[2].ok);
+}
+
+#[tokio::test]
+async fn exhausted_routes_keep_the_failed_attempt_once() {
+    let mut fixture = rig(&[Claude]);
+    fixture.script(Claude, QUOTA);
+    let report = fixture.turn("finish the client", want(TaskType::Feature)).await;
+    assert_eq!(report.status, TurnStatus::NoRoute);
+    assert_eq!(fixture.engine.sessions.records().len(), 1);
+    assert!(!fixture.engine.sessions.records()[0].ok);
+}
+
+#[tokio::test]
+async fn an_empty_finished_attempt_preserves_known_consumption_in_the_meter() {
+    let mut fixture = rig(&[Claude, Codex]);
+    fixture.script(Claude, EMPTY);
+    let report = fixture.turn("finish the client", want(TaskType::Feature)).await;
+    assert_eq!(report.status, TurnStatus::Answered);
+    let (_, _, spend) = fixture.engine.guards.meter.rows().find(|(provider, _, _)| *provider == Claude).unwrap();
+    assert_eq!(spend.output_tokens, 7);
+    assert_eq!(spend.unreported_turns, 0);
+}
+
+#[tokio::test]
+async fn a_failed_attempt_without_counters_is_metered_as_unknown_not_zero() {
+    let mut fixture = rig(&[Claude, Codex]);
+    fixture.script(Claude, QUOTA);
+    let report = fixture.turn("finish the client", want(TaskType::Feature)).await;
+    assert_eq!(report.status, TurnStatus::Answered);
+    let (_, _, spend) = fixture.engine.guards.meter.rows().find(|(provider, _, _)| *provider == Claude).unwrap();
+    assert_eq!(spend.turns, 1);
+    assert_eq!(spend.unreported_turns, 1);
 }
 
 #[tokio::test]

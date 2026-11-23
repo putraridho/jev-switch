@@ -16,7 +16,7 @@ fn the_summary_comes_from_the_report() {
         message: String::new(),
         provider: Some(Claude),
         model: Some("claude-sonnet-5-5".into()),
-        usage: Some(Usage { input_tokens: 45_000, cached_input_tokens: 40_000, output_tokens: 189, context_tokens: None }),
+        usage: Some(Usage { input_tokens: 45_000, cached_input_tokens: 40_000, output_tokens: 189, context_tokens: None, ..Usage::default() }),
         attempts: 1,
         tool_calls: 0,
         changes: Some(ChangeSummary {

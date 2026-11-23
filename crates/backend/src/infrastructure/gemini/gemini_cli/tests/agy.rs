@@ -14,6 +14,7 @@ fn agy_usage(usage: &Value) -> Usage {
         cached_input_tokens: cached,
         output_tokens: uint(usage, "output_tokens"),
         context_tokens: None,
+        ..Usage::default()
     }
 }
 
@@ -78,7 +79,7 @@ fn denied_note(result: &Value) -> String {
         let Event::Finished(f) = &events[1] else { panic!("{:?}", events[1]) };
         assert_eq!(f.text, "It says hello.");
         assert_eq!(f.session_id.as_deref(), Some("c0ffee00-1111-2222-3333-444455556666"));
-        assert_eq!(f.usage, Usage { input_tokens: 1200, cached_input_tokens: 800, output_tokens: 300, context_tokens: None });
+        assert_eq!(f.usage, Usage { input_tokens: 1200, cached_input_tokens: 800, output_tokens: 300, context_tokens: None, ..Usage::default() });
     }
 
     #[test]

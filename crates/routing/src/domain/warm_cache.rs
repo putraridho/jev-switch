@@ -113,7 +113,7 @@ mod tests {
     use super::*;
 
     fn usage(input: u64, cached: u64) -> Usage {
-        Usage { input_tokens: input, cached_input_tokens: cached, output_tokens: 1, context_tokens: None }
+        Usage { input_tokens: input, cached_input_tokens: cached, output_tokens: 1, context_tokens: None, ..Usage::default() }
     }
 
     #[test]

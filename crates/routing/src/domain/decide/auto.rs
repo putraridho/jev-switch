@@ -19,15 +19,21 @@ pub(super) fn auto_choice(
     chain: &[&'static ModelSpec],
 ) -> Result<Choice, NoRoute> {
     let current = state.current_spec().filter(|c| can_serve(c, task, input));
+    let steer = plan_steered(chain, task, input);
+    let steering_current = steer.chain.is_some() && current.is_some_and(|cur| cur.provider == ProviderId::Claude);
     // No judgment means no evidence the work changed: stay on a model that works.
-    if let (TaskSource::NoSignals, Some(cur)) = (source, current) {
+    if let (TaskSource::NoSignals, Some(cur), false) = (source, current, steering_current) {
         return Ok(stay(cur, "Jev unavailable, keeping the current model".into(), false));
     }
-    let steer = plan_steered(chain, task, input);
     let chain = steer.chain.as_deref().unwrap_or(chain);
     let best = pick(chain, task, input.usable, input.allow, input.context_tokens)
         .ok_or(NoRoute::NothingUsable { task })?;
-    let mut choice = sticky(state, input, task, source, chain, best, current);
+    let mut choice = if steering_current {
+        state.held = 0;
+        stay(best.spec, "leaving claude for an eligible alternative".into(), best.dropped_tier)
+    } else {
+        sticky(state, input, task, source, chain, best, current)
+    };
     if let Some(note) = steer.note.filter(|_| choice.spec.provider != ProviderId::Claude) {
         choice.why = format!("{}; {note}", choice.why);
     }

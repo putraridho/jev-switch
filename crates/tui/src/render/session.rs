@@ -23,6 +23,7 @@ pub struct CostRow {
     pub cached_tokens: u64,
     pub out_tokens: u64,
     pub elapsed_ms: u64,
+    pub unreported_turns: usize,
 }
 
 /// `/cost`: a table by model, the total, and how full each plan window is. The CLIs run on
@@ -34,12 +35,21 @@ pub fn cost_text(rows: &[CostRow], total: &CostRow, plans: &[(String, f64)], sty
     let model_col = rows.iter().map(|r| display_width(&r.model)).max().unwrap_or(0).max(5) + 2;
     let cells = |r: &CostRow| {
         let turns = if r.turns == 1 { "1 turn".to_string() } else { format!("{} turns", r.turns) };
+        let count = |tokens| {
+            if r.unreported_turns == r.turns {
+                "unknown".to_string()
+            } else if r.unreported_turns > 0 {
+                format!(">={}", human_count(tokens))
+            } else {
+                human_count(tokens)
+            }
+        };
         format!(
             "{:<8}  in {:>6} (cached {:>6})  out {:>6}  {:>7}",
             turns,
-            human_count(r.in_tokens),
-            human_count(r.cached_tokens),
-            human_count(r.out_tokens),
+            count(r.in_tokens),
+            count(r.cached_tokens),
+            count(r.out_tokens),
             human_duration(r.elapsed_ms)
         )
     };
@@ -69,8 +79,8 @@ pub fn cost_text(rows: &[CostRow], total: &CostRow, plans: &[(String, f64)], sty
 pub struct ContextFacts {
     /// `provider · model` of the last turn.
     pub model: String,
-    /// Tokens the last turn sent.
-    pub used: u64,
+    /// Input tokens of the last request, when the provider reports them.
+    pub used: Option<u64>,
     /// The model's context window, when the catalog knows it.
     pub window: Option<u64>,
     /// Turns in this session.
@@ -94,12 +104,12 @@ pub fn context_text(f: Option<&ContextFacts>, style: Style) -> String {
         return format!("  {}", style.dim("No turn has run yet, so nothing is in context."));
     };
     let mut lines = vec![style.bold("Context")];
-    match f.window {
-        Some(window) if window > 0 => {
-            let share = f.used as f64 / window as f64;
+    match (f.used, f.window) {
+        (Some(used), Some(window)) if window > 0 => {
+            let share = used as f64 / window as f64;
             let pct = format!("{:.0}%", share * 100.0);
             let painted = if share >= COMPACT_SUGGEST_AT { style.yellow(&pct) } else { pct };
-            let value = format!("{} of {} tokens ({painted})  {}", human_count(f.used), human_count(window), style.dim(&bar(share, 20)));
+            let value = format!("{} of {} tokens ({painted})  {}", human_count(used), human_count(window), style.dim(&bar(share, 20)));
             lines.push(row("used", &value, style));
             lines.push(row("model", &f.model, style));
             lines.push(row("turns", &f.turns.to_string(), style));
@@ -111,9 +121,17 @@ pub fn context_text(f: Option<&ContextFacts>, style: Style) -> String {
                 lines.push(format!("  {}", style.dim("Getting full: /compact summarises the conversation and starts fresh from the summary.")));
             }
         }
-        _ => {
-            lines.push(row("used", &format!("{} tokens", human_count(f.used)), style));
+        (Some(used), _) => {
+            lines.push(row("used", &format!("{} tokens", human_count(used)), style));
             lines.push(row("model", &format!("{} {}", f.model, style.dim("(window size unknown)")), style));
+            lines.push(row("turns", &f.turns.to_string(), style));
+        }
+        (None, _) => {
+            lines.push(row("used", "unknown (provider did not report context occupancy)", style));
+            if let Some(window) = f.window.filter(|window| *window > 0) {
+                lines.push(row("window", &format!("{} tokens", human_count(window)), style));
+            }
+            lines.push(row("model", &f.model, style));
             lines.push(row("turns", &f.turns.to_string(), style));
         }
     }
@@ -272,7 +290,7 @@ mod tests {
     use crate::render::test_facts::*;
 
     fn cost_row(model: &str, turns: usize) -> CostRow {
-        CostRow { model: model.into(), turns, in_tokens: 45_000, cached_tokens: 40_000, out_tokens: 189, elapsed_ms: 14_000 }
+        CostRow { model: model.into(), turns, in_tokens: 45_000, cached_tokens: 40_000, out_tokens: 189, elapsed_ms: 14_000, unreported_turns: 0 }
     }
 
     #[test]
@@ -289,16 +307,40 @@ mod tests {
     }
 
     #[test]
+    fn cost_marks_unreported_consumption_and_mixed_totals() {
+        let unknown = CostRow { unreported_turns: 1, ..cost_row("gemini", 1) };
+        let text = cost_text(std::slice::from_ref(&unknown), &unknown, &[], OFF);
+        assert!(text.contains("unknown") && !text.contains("45K"), "{text}");
+        let mixed = CostRow { turns: 2, ..unknown };
+        let text = cost_text(std::slice::from_ref(&mixed), &mixed, &[], OFF);
+        assert!(text.contains(">=45K") && text.contains(">=189"), "{text}");
+        no_esc(&text);
+    }
+
+    #[test]
     fn context_shows_the_share_and_suggests_compact_when_full() {
-        let f = ContextFacts { model: "claude · s".into(), used: 150_000, window: Some(200_000), turns: 9, carried: 1 };
+        let f = ContextFacts { model: "claude · s".into(), used: Some(150_000), window: Some(200_000), turns: 9, carried: 1 };
         let text = context_text(Some(&f), OFF);
         assert!(text.contains("150K of 200K tokens (75%)") && text.contains("███████████████░░░░░"), "{text}");
         assert!(text.contains("/compact") && text.contains("1 note(s)"), "{text}");
-        let small = ContextFacts { used: 20_000, carried: 0, ..f.clone() };
+        let small = ContextFacts { used: Some(20_000), carried: 0, ..f.clone() };
         assert!(!context_text(Some(&small), OFF).contains("/compact"));
         let unknown = ContextFacts { window: None, ..f };
         assert!(context_text(Some(&unknown), OFF).contains("window size unknown"));
         assert!(context_text(None, OFF).contains("No turn"));
+    }
+
+    #[test]
+    fn context_with_unknown_occupancy_has_no_share_or_compact_suggestion() {
+        for window in [Some(200_000), None, Some(0)] {
+            let facts = ContextFacts { model: "claude · s".into(), used: None, window, turns: 9, carried: 0 };
+            let text = context_text(Some(&facts), OFF);
+            assert!(text.contains("unknown (provider did not report context occupancy)"), "{text}");
+            assert!(text.contains("claude · s") && text.contains("9"), "{text}");
+            assert!(!text.contains('%') && !text.contains('█') && !text.contains("/compact"), "{text}");
+            assert_eq!(text.contains("200K tokens"), window == Some(200_000), "{text}");
+            no_esc(&text);
+        }
     }
 
     #[test]

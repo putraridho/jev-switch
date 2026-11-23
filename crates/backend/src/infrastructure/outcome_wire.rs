@@ -5,6 +5,7 @@ use serde_json::{json, Value};
 
 use crate::{ErrorKind, PlanUsage, ProviderId, TurnError, TurnOutcome, Usage};
 use jev_shared::infrastructure::jsonl_log::now_ms;
+use jev_shared::infrastructure::token_usage_wire::UsageWire;
 
 pub fn error_kind_name(kind: &ErrorKind) -> &'static str {
     match kind {
@@ -20,12 +21,7 @@ pub fn error_kind_name(kind: &ErrorKind) -> &'static str {
 }
 
 pub fn usage_json(u: &Usage) -> Value {
-    json!({
-        "input_tokens": u.input_tokens,
-        "cached_input_tokens": u.cached_input_tokens,
-        "output_tokens": u.output_tokens,
-        "context_tokens": u.context_tokens,
-    })
+    serde_json::to_value(UsageWire::from(u)).expect("token usage is JSON serializable")
 }
 
 fn plan_json(p: &PlanUsage) -> Value {
@@ -47,7 +43,7 @@ pub fn turn_row(
 ) -> Value {
     let (ok, usage, plan, error_kind, error) = match result {
         Ok(o) => (true, Some(usage_json(&o.usage)), o.plan.as_ref().map(plan_json), None, None),
-        Err(e) => (false, None, None, Some(error_kind_name(&e.kind)), Some(e.message.as_str())),
+        Err(e) => (false, e.usage.as_ref().map(usage_json), None, Some(error_kind_name(&e.kind)), Some(e.message.as_str())),
     };
     json!({
         "ts_ms": now_ms(),
@@ -70,7 +66,7 @@ pub fn turn_row(
 pub fn ask_json(provider: &str, model: &str, result: &Result<TurnOutcome, TurnError>, wall_ms: u64) -> Value {
     let (ok, text, session, usage, error_kind, error) = match result {
         Ok(o) => (true, o.text.as_str(), o.session_id.as_deref(), Some(usage_json(&o.usage)), None, None),
-        Err(e) => (false, "", None, None, Some(error_kind_name(&e.kind)), Some(e.message.as_str())),
+        Err(e) => (false, "", None, e.usage.as_ref().map(usage_json), Some(error_kind_name(&e.kind)), Some(e.message.as_str())),
     };
     json!({
         "provider": provider,
@@ -88,13 +84,47 @@ pub fn ask_json(provider: &str, model: &str, result: &Result<TurnOutcome, TurnEr
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::Measurement;
+
+    #[test]
+    fn known_zero_keeps_the_existing_usage_json_shape() {
+        assert_eq!(usage_json(&Usage::default()), json!({
+            "input_tokens":0,"cached_input_tokens":0,"output_tokens":0,"context_tokens":null
+        }));
+    }
+
+    #[test]
+    fn unavailable_consumption_has_null_counters_but_preserves_occupancy() {
+        let usage = Usage { measurement: Measurement::Unavailable, input_tokens: 99, cached_input_tokens: 44, output_tokens: 7, context_tokens: Some(50_000) };
+        assert_eq!(usage_json(&usage), json!({
+            "input_tokens":null,"cached_input_tokens":null,"output_tokens":null,
+            "context_tokens":50000,"measurement":"unavailable"
+        }));
+    }
+
+    #[test]
+    fn failure_rows_preserve_available_usage_and_its_measurement() {
+        for kind in [ErrorKind::Empty, ErrorKind::Quota { resets_at: None }] {
+            for usage in [Usage::default(), Usage { input_tokens: 10, output_tokens: 2, ..Usage::default() }, Usage { measurement: Measurement::Unavailable, context_tokens: Some(50_000), ..Usage::default() }] {
+                let result = Err(TurnError::new(kind.clone(), "failed").with_usage(usage));
+                let expected = usage_json(&usage);
+                let row = turn_row(ProviderId::Claude, "m", None, "r", &Value::Null, &result, 7);
+                let ask = ask_json("claude", "m", &result, 7);
+                for value in [row, ask] {
+                    assert_eq!(value["usage"], expected);
+                    assert_eq!(value["ok"], false);
+                    assert_eq!(value["error"], "failed");
+                }
+            }
+        }
+    }
 
     #[test]
     fn ask_json_success_and_failure_share_one_schema() {
         let out = TurnOutcome {
             text: "hi".into(),
             session_id: Some("s1".into()),
-            usage: Usage { input_tokens: 3, cached_input_tokens: 1, output_tokens: 2, context_tokens: None },
+            usage: Usage { input_tokens: 3, cached_input_tokens: 1, output_tokens: 2, context_tokens: None, ..Usage::default() },
             plan: None,
         };
         let ok = ask_json("codex", "m", &Ok(out), 42);
@@ -105,7 +135,7 @@ mod tests {
         assert_eq!(ok["session_id"], "s1");
         assert_eq!(ok["usage"]["output_tokens"], 2);
         assert!(ok["error_kind"].is_null() && ok["error"].is_null());
-        let err = TurnError { kind: ErrorKind::Quota { resets_at: None }, message: "limit".into() };
+        let err = TurnError::new(ErrorKind::Quota { resets_at: None }, "limit");
         let bad = ask_json("codex", "m", &Err(err), 7);
         assert_eq!(bad["ok"], false);
         assert_eq!(bad["text"], "");
@@ -122,7 +152,7 @@ mod tests {
         let out = TurnOutcome {
             text: "done".into(),
             session_id: Some("s".into()),
-            usage: Usage { input_tokens: 10, cached_input_tokens: 4, output_tokens: 2, context_tokens: Some(9) },
+            usage: Usage { input_tokens: 10, cached_input_tokens: 4, output_tokens: 2, context_tokens: Some(9), ..Usage::default() },
             plan: Some(PlanUsage { window: "five_hour".into(), utilization: 0.5, resets_at: Some(7) }),
         };
         let row = turn_row(ProviderId::Claude, "m", Some("s"), "why", &json!({"a":1}), &Ok(out), 1234);
@@ -142,7 +172,7 @@ mod tests {
 
     #[test]
     fn failure_row_has_error_and_null_usage() {
-        let err = TurnError { kind: ErrorKind::Quota { resets_at: Some("5pm".into()) }, message: "limit".into() };
+        let err = TurnError::new(ErrorKind::Quota { resets_at: Some("5pm".into()) }, "limit");
         let row = turn_row(ProviderId::DeepSeek, "m", None, "r", &Value::Null, &Err(err), 5);
         assert_eq!(row["provider"], "deepseek");
         assert_eq!(row["ok"], false);
@@ -158,10 +188,10 @@ mod tests {
         let typical = TurnOutcome {
             text: "done".into(),
             session_id: Some("sess-1".into()),
-            usage: Usage { input_tokens: 10, cached_input_tokens: 4, output_tokens: 2, context_tokens: Some(9) },
+            usage: Usage { input_tokens: 10, cached_input_tokens: 4, output_tokens: 2, context_tokens: Some(9), ..Usage::default() },
             plan: None,
         };
-        let odd = TurnError { kind: ErrorKind::Quota { resets_at: Some("5pm".into()) }, message: "limit \"hit\"\n\tnext é ✓ \\ \u{1}".into() };
+        let odd = TurnError::new(ErrorKind::Quota { resets_at: Some("5pm".into()) }, "limit \"hit\"\n\tnext é ✓ \\ \u{1}");
         let unusual_ok = TurnOutcome { text: String::new(), session_id: None, usage: Usage::default(), plan: None };
         let actual = format!(
             "## typical: answer with session and usage\n{}## unusual: empty answer, no session\n{}## unusual: failure with escaped characters\n{}",

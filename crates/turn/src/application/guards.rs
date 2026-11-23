@@ -65,6 +65,10 @@ pub struct Guards {
 }
 
 impl Guards {
+    pub fn may_pay(&self, attempts: u32) -> bool {
+        self.budget.allows_paid(&self.meter) && (self.failover.paid_fallback || attempts == 0)
+    }
+
     /// Every setting file of the user's state folder and the project. A missing file is
     /// the default; a broken line is kept in `problems` and skipped. `JEV_LOCAL_ONLY=1`
     /// turns local-only mode on whatever the files say.
@@ -98,7 +102,7 @@ impl Guards {
         if current.is_empty() && !usable.is_empty() {
             return Err(verdict.refusal_line());
         }
-        let may_pay = self.budget.allows_paid(&self.meter) && (self.failover.paid_fallback || turn.attempts == 0);
+        let may_pay = self.may_pay(turn.attempts);
         if !may_pay {
             let free = current.filter(|p, m| !crate::domain::budget::is_paid(p, m));
             if free.is_empty() && !current.is_empty() {

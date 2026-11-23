@@ -3,6 +3,7 @@
 use serde_json::Value;
 
 use super::tool_summary::tool_summary;
+use crate::infrastructure::usage_measurement::measurement_of;
 use crate::{Event, Finish, PlanUsage, Usage};
 use jev_shared::domain::limit_notice::is_limit_message;
 
@@ -19,12 +20,13 @@ fn total_input(v: &Value) -> u64 {
 /// input, so it comes from the final `iterations` entry.
 fn usage_of(result: &Value) -> Usage {
     let u = &result["usage"];
-    let last = u["iterations"].as_array().and_then(|a| a.last()).unwrap_or(u);
+    let last = u["iterations"].as_array().and_then(|iterations| iterations.last());
     Usage {
         input_tokens: total_input(u),
         cached_input_tokens: count(u, "cache_read_input_tokens"),
         output_tokens: count(u, "output_tokens"),
-        context_tokens: Some(total_input(last)),
+        context_tokens: last.filter(|usage| usage["input_tokens"].as_u64().is_some()).map(total_input),
+        measurement: measurement_of(u),
     }
 }
 

@@ -5,31 +5,61 @@
 use std::future::Future;
 use std::path::{Component, Path, PathBuf};
 use std::pin::Pin;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, MutexGuard};
 
 use jev_approval::application::extension_hooks::trust::project_settings_trusted;
 use jev_approval::domain::mode::Mode;
 use jev_approval::domain::permission_rule;
 use jev_approval::domain::worker_command::worker_may_run;
-use jev_backend::{Approver, Decision, PermissionRequest, ProviderId, TurnRequest, NO_ONE_TO_ASK};
+use jev_backend::{Approver, Decision, PermissionRequest, ProviderId, TurnRequest, Usage, NO_ONE_TO_ASK};
 use jev_orchestration::application::ports::{Screen, WorkerPolicy};
 use crate::application::guards::Guards;
+use crate::domain::budget::is_paid;
 use crate::domain::privacy::outgoing;
 
-/// Wraps the user's [`Guards`] (from `Guards::load`; `Guards::default()` for the default
-/// secret scan only).
-pub struct GuardedWorkers(pub Guards);
+/// Owns the worker guards and synchronizes admission with completed worker usage.
+/// This in-process meter is not shared with the main engine or other MCP processes,
+/// and does not reserve the future spending of workers already admitted.
+pub struct GuardedWorkers {
+    guards: Mutex<Guards>,
+}
+
+impl GuardedWorkers {
+    /// Wraps the user's [`Guards`] with synchronized worker admission and usage recording.
+    pub fn new(guards: Guards) -> Self {
+        Self { guards: Mutex::new(guards) }
+    }
+
+    fn guards(&self) -> MutexGuard<'_, Guards> {
+        self.guards.lock().unwrap_or_else(|error| error.into_inner())
+    }
+}
 
 impl WorkerPolicy for GuardedWorkers {
     fn screen(&self, repo: &Path, outgoing_text: &str, brief: &str) -> Screen {
-        let verdict = self.0.privacy.check(repo, outgoing_text, &[], self.0.home.as_deref());
+        let guards = self.guards();
+        let verdict = guards.privacy.check(repo, outgoing_text, &[], guards.home.as_deref());
         let permitted = jev_shared::ALL_PROVIDERS.into_iter().filter(|p| verdict.permits(*p)).collect();
-        let judge_prompt = self.0.may_leave(repo, outgoing_text, &[]).then(|| outgoing::prepare(&self.0.privacy, brief).prompt);
+        let judge_prompt = guards.may_leave(repo, outgoing_text, &[]).then(|| outgoing::prepare(&guards.privacy, brief).prompt);
         Screen { permitted, refusal: verdict.refusal_line(), judge_prompt }
     }
 
+    fn admits(&self, provider: ProviderId, model: &str, attempts: u32) -> bool {
+        if !is_paid(provider, model) {
+            return true;
+        }
+        let guards = self.guards();
+        guards.may_pay(attempts)
+    }
+
+    fn record_usage(&self, provider: ProviderId, model: &str, usage: &Usage) {
+        let mut guards = self.guards();
+        let Guards { meter, prices, .. } = &mut *guards;
+        meter.record(provider, model, usage, prices);
+    }
+
     fn outgoing(&self, prompt: &str, provider: ProviderId, model: &str, now_ms: u64) -> String {
-        self.0.outgoing(prompt, provider, model, now_ms).prompt
+        self.guards().outgoing(prompt, provider, model, now_ms).prompt
     }
 
     fn request(&self, dir: &Path, model: &str, prompt: String, read_only: bool) -> TurnRequest {
@@ -94,6 +124,87 @@ impl Approver for WorkerApprover {
 mod tests {
     use super::*;
     use jev_approval::infrastructure::tool_input_wire::tool_input_from_json;
+    use crate::domain::budget::{Budget, Cap, PriceTable};
+    use crate::domain::failover_policy::FailoverPolicy;
+
+    fn capped(cap: Cap) -> Guards {
+        Guards { budget: Budget { cap: Some(cap) }, ..Guards::default() }
+    }
+
+    #[test]
+    fn reached_paid_cap_rejects_deepseek_without_blocking_claude_subscription() {
+        let mut guards = capped(Cap::Tokens(100));
+        guards.meter.record(ProviderId::DeepSeek, "deepseek-v4-pro", &Usage { input_tokens: 100, ..Usage::default() }, &guards.prices);
+        let policy = GuardedWorkers::new(guards);
+        assert!(policy.screen(Path::new("/repo"), "fix a bug", "fix a bug").permitted.contains(&ProviderId::DeepSeek));
+        assert!(!policy.admits(ProviderId::DeepSeek, "deepseek-flash", 0));
+        assert!(!policy.admits(ProviderId::Claude, "claude-fable-5-2", 0));
+        assert!(policy.admits(ProviderId::Claude, "claude-sonnet-5-5", 0));
+    }
+
+    #[test]
+    fn paid_fallback_off_allows_first_attempt_but_not_retries() {
+        let policy = GuardedWorkers::new(Guards {
+            failover: FailoverPolicy { paid_fallback: false, ..FailoverPolicy::default() },
+            ..Guards::default()
+        });
+        for (provider, model) in [(ProviderId::DeepSeek, "deepseek-flash"), (ProviderId::Claude, "claude-fable-5-2")] {
+            assert!(policy.admits(provider, model, 0));
+            assert!(!policy.admits(provider, model, 1));
+            assert!(!policy.admits(provider, model, 2));
+        }
+        assert!(policy.admits(ProviderId::Claude, "claude-sonnet-5-5", 1));
+    }
+
+    #[test]
+    fn paid_fallback_on_does_not_bypass_the_budget() {
+        let policy = GuardedWorkers::new(capped(Cap::Tokens(100)));
+        policy.record_usage(ProviderId::DeepSeek, "deepseek-flash", &Usage { output_tokens: 100, ..Usage::default() });
+        assert!(!policy.admits(ProviderId::DeepSeek, "deepseek-flash", 0));
+        assert!(!policy.admits(ProviderId::DeepSeek, "deepseek-flash", 1));
+        assert!(GuardedWorkers::new(Guards::default()).admits(ProviderId::DeepSeek, "deepseek-flash", 1));
+    }
+
+    #[test]
+    fn completed_worker_usage_is_seen_by_subsequent_admission() {
+        let policy = GuardedWorkers::new(capped(Cap::Tokens(100)));
+        assert!(policy.admits(ProviderId::DeepSeek, "deepseek-flash", 0));
+        policy.record_usage(ProviderId::DeepSeek, "deepseek-flash", &Usage { input_tokens: 60, output_tokens: 40, ..Usage::default() });
+        assert!(!policy.admits(ProviderId::DeepSeek, "deepseek-flash", 0));
+        assert!(policy.admits(ProviderId::Claude, "claude-sonnet-5-5", 0));
+    }
+
+    #[test]
+    fn concurrent_completions_accumulate_in_the_same_meter() {
+        let policy = GuardedWorkers::new(capped(Cap::Tokens(100)));
+        std::thread::scope(|scope| {
+            for _ in 0..10 {
+                scope.spawn(|| policy.record_usage(ProviderId::DeepSeek, "deepseek-flash", &Usage { output_tokens: 10, ..Usage::default() }));
+            }
+        });
+        assert_eq!(policy.guards().meter.paid().1, 100);
+        assert!(!policy.admits(ProviderId::DeepSeek, "deepseek-flash", 0));
+    }
+
+    #[test]
+    fn unknown_paid_usd_spend_fails_closed_like_main_guards() {
+        let policy = GuardedWorkers::new(capped(Cap::Usd(1.0)));
+        policy.record_usage(ProviderId::DeepSeek, "unknown-model", &Usage { output_tokens: 10, ..Usage::default() });
+        assert!(!policy.admits(ProviderId::DeepSeek, "deepseek-flash", 0));
+        assert!(!policy.admits(ProviderId::Claude, "claude-fable-5-2", 0));
+        assert!(policy.admits(ProviderId::Claude, "claude-sonnet-5-5", 0));
+    }
+
+    #[test]
+    fn priced_paid_usage_reaches_usd_cap_but_subscription_usage_does_not() {
+        let mut guards = capped(Cap::Usd(1.0));
+        guards.prices = PriceTable::parse("deepseek-flash 1 0 1").0;
+        let policy = GuardedWorkers::new(guards);
+        policy.record_usage(ProviderId::Claude, "claude-sonnet-5-5", &Usage { input_tokens: 1_000_000, ..Usage::default() });
+        assert!(policy.admits(ProviderId::DeepSeek, "deepseek-flash", 0));
+        policy.record_usage(ProviderId::DeepSeek, "deepseek-flash", &Usage { input_tokens: 1_000_000, ..Usage::default() });
+        assert!(!policy.admits(ProviderId::DeepSeek, "deepseek-flash", 0));
+    }
 
     fn bash(command: &str) -> PermissionRequest {
         let input = tool_input_from_json(&serde_json::json!({ "command": command }));

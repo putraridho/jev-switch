@@ -3,6 +3,7 @@
 use serde_json::Value;
 
 use crate::infrastructure::claude::claude_cli::tool_summary::tool_summary;
+use crate::infrastructure::usage_measurement::measurement_of;
 use crate::{Event, Finish, Usage};
 
 fn count(v: &Value, key: &str) -> u64 {
@@ -19,6 +20,7 @@ fn usage_of(result: &Value) -> Usage {
         cached_input_tokens: cached,
         output_tokens: count(u, "output_tokens"),
         context_tokens: None,
+        measurement: measurement_of(u),
     }
 }
 

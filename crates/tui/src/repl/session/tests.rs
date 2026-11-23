@@ -27,7 +27,7 @@ mod turn_tests;
 
 fn fake_cli(provider: ProviderId, script: &str) -> ScriptedCli {
     ScriptedCli::new(provider, script)
-        .usage(Usage { input_tokens: 2000, cached_input_tokens: 1000, output_tokens: 50, context_tokens: Some(2000) })
+        .usage(Usage { input_tokens: 2000, cached_input_tokens: 1000, output_tokens: 50, context_tokens: Some(2000), ..Usage::default() })
         .with_prompt_env()
 }
 

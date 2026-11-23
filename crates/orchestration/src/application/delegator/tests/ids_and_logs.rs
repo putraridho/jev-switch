@@ -102,10 +102,10 @@ fn golden_delegate_log_row() {
     let ok = Ok(TurnOutcome {
         text: "did the piece".into(),
         session_id: None,
-        usage: Usage { input_tokens: 10, cached_input_tokens: 4, output_tokens: 7, context_tokens: Some(9) },
+        usage: Usage { input_tokens: 10, cached_input_tokens: 4, output_tokens: 7, context_tokens: Some(9), ..Usage::default() },
         plan: None,
     });
-    let quota = Err(TurnError { kind: ErrorKind::Quota { resets_at: Some("5pm".into()) }, message: "limit \"hit\"\n\té ✓ \\".into() });
+    let quota = Err(TurnError { kind: ErrorKind::Quota { resets_at: Some("5pm".into()) }, message: "limit \"hit\"\n\té ✓ \\".into(), usage: None });
     let jev = json!({ "task": "feature", "edit_p": 0.5 });
     let files = ["src/net.rs".to_string()];
     let tools = ["Edit src/net.rs".to_string()];

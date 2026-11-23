@@ -2,6 +2,21 @@
 
 use super::*;
 
+#[test]
+fn consumption_requires_numeric_input_and_output_but_zero_is_reported() {
+    for (metadata, measurement) in crate::infrastructure::usage_measurement::test_cases() {
+        let cli = gemini();
+        cli.parse_line(r#"{"type":"message","role":"assistant","content":"done"}"#);
+        let mut line = serde_json::json!({"type":"result","status":"success"});
+        if let Some(metadata) = metadata {
+            line["stats"] = metadata;
+        }
+        let events = cli.parse_line(&line.to_string());
+        let Event::Finished(finish) = &events[0] else { panic!("{events:?}") };
+        assert_eq!(finish.usage, Usage { measurement, ..Usage::default() }, "{line}");
+    }
+}
+
     #[test]
     fn gemini_turn_parses_to_narration_tool_and_rebuilt_answer() {
         let events = parse_all(&gemini(), GEMINI_TURN);
@@ -17,7 +32,7 @@ use super::*;
         // Only the text after the last tool call is the answer.
         assert_eq!(f.text, "It says hello.");
         assert_eq!(f.session_id.as_deref(), Some("6f1c2d3e-4a5b-4c6d-8e7f-0123456789ab"));
-        assert_eq!(f.usage, Usage { input_tokens: 1200, cached_input_tokens: 800, output_tokens: 300, context_tokens: None });
+        assert_eq!(f.usage, Usage { input_tokens: 1200, cached_input_tokens: 800, output_tokens: 300, context_tokens: None, ..Usage::default() });
     }
 
     #[test]

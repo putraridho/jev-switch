@@ -3,6 +3,8 @@
 use serde::{Deserialize, Serialize};
 
 use crate::domain::audit::{Entry, Event, Outcome};
+use crate::Measurement;
+use super::token_usage_wire::MeasurementWire;
 
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -42,15 +44,17 @@ enum EventWire {
         model: String,
         outcome: OutcomeWire,
         elapsed_ms: u64,
-        in_tokens: u64,
-        out_tokens: u64,
+        in_tokens: Option<u64>,
+        out_tokens: Option<u64>,
         prompt: String,
         #[serde(default)]
-        cached_tokens: u64,
+        cached_tokens: Option<u64>,
         #[serde(default)]
         context_tokens: u64,
         #[serde(default)]
         tool_calls: u32,
+        #[serde(default, skip_serializing_if = "MeasurementWire::is_reported")]
+        measurement: MeasurementWire,
     },
     Export { path: String },
     Profile { name: String },
@@ -59,8 +63,21 @@ enum EventWire {
 impl From<Event> for EventWire {
     fn from(value: Event) -> Self {
         match value {
-            Event::Turn { model, outcome, elapsed_ms, in_tokens, out_tokens, prompt, cached_tokens, context_tokens, tool_calls } =>
-                Self::Turn { model, outcome: outcome.into(), elapsed_ms, in_tokens, out_tokens, prompt, cached_tokens, context_tokens, tool_calls },
+            Event::Turn { model, outcome, measurement, elapsed_ms, in_tokens, out_tokens, prompt, cached_tokens, context_tokens, tool_calls } => {
+                let reported = measurement == Measurement::Reported;
+                Self::Turn {
+                    model,
+                    outcome: outcome.into(),
+                    elapsed_ms,
+                    in_tokens: reported.then_some(in_tokens),
+                    out_tokens: reported.then_some(out_tokens),
+                    prompt,
+                    cached_tokens: reported.then_some(cached_tokens),
+                    context_tokens,
+                    tool_calls,
+                    measurement: measurement.into(),
+                }
+            }
             Event::Export { path } => Self::Export { path },
             Event::Profile { name } => Self::Profile { name },
         }
@@ -70,8 +87,8 @@ impl From<Event> for EventWire {
 impl From<EventWire> for Event {
     fn from(value: EventWire) -> Self {
         match value {
-            EventWire::Turn { model, outcome, elapsed_ms, in_tokens, out_tokens, prompt, cached_tokens, context_tokens, tool_calls } =>
-                Self::Turn { model, outcome: outcome.into(), elapsed_ms, in_tokens, out_tokens, prompt, cached_tokens, context_tokens, tool_calls },
+            EventWire::Turn { model, outcome, measurement, elapsed_ms, in_tokens, out_tokens, prompt, cached_tokens, context_tokens, tool_calls } =>
+                Self::Turn { model, outcome: outcome.into(), measurement: measurement.into(), elapsed_ms, in_tokens: in_tokens.unwrap_or_default(), out_tokens: out_tokens.unwrap_or_default(), prompt, cached_tokens: cached_tokens.unwrap_or_default(), context_tokens, tool_calls },
             EventWire::Export { path } => Self::Export { path },
             EventWire::Profile { name } => Self::Profile { name },
         }

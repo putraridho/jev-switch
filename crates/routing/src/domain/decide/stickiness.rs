@@ -30,10 +30,20 @@ pub(super) fn sticky(
     };
     // The chain's entries on the current provider that can serve, best first.
     let own: Vec<_> = chain.iter().copied().filter(|s| s.provider == cur.provider && can_serve(s, task, input)).collect();
+    let gate = switch_gate(input, task, source);
+    if cur.tier < task.needed_tier() && !best.dropped_tier
+        && gate.as_ref().is_none_or(|gate| !gate.confident && !gate.forced)
+    {
+        if let Some(target) = own.iter().copied().find(|spec| spec.tier >= task.needed_tier()) {
+            return hold_within(state, task, cur, &[target], "task quality floor".into());
+        }
+        state.held = 0;
+        return stay(best.spec, format!("switched from {} to meet the task quality floor", cur.provider), best.dropped_tier);
+    }
     if best.spec.provider == cur.provider {
         return hold_within(state, task, cur, &own, "same provider".into());
     }
-    let Some(gate) = switch_gate(input, task, source) else {
+    let Some(gate) = gate else {
         return stay(cur, "same task, warm session".into(), cur.tier < task.needed_tier());
     };
     let as_strong_here = own.first().is_some_and(|k| k.tier >= best.spec.tier);

@@ -91,7 +91,7 @@ impl Repl {
         let last = self.log.turns().iter().rev().find(|t| t.usage.is_some())?;
         let usage = last.usage.unwrap_or_default();
         let window = last.route.as_ref().and_then(|(p, m)| catalog::find(*p, m)).map(|s| s.context_tokens)?;
-        let used = usage.context_tokens.unwrap_or(usage.input_tokens);
+        let used = usage.context_tokens?;
         (window > 0).then(|| ((used.saturating_mul(100)) / window).min(100) as u8)
     }
 
@@ -103,7 +103,7 @@ impl Repl {
             let window = t.route.as_ref().and_then(|(p, m)| catalog::find(*p, m)).map(|s| s.context_tokens);
             ContextFacts {
                 model: t.model.clone(),
-                used: usage.context_tokens.unwrap_or(usage.input_tokens),
+                used: usage.context_tokens,
                 window,
                 turns: self.log.turns().len(),
                 carried: self.carry.len(),
@@ -122,11 +122,16 @@ impl Repl {
             cached_tokens: t.cached_tokens,
             out_tokens: t.out_tokens,
             elapsed_ms: t.elapsed_ms,
+            unreported_turns: t.unreported_turns,
         };
         let rows: Vec<CostRow> = rows.iter().map(to_row).collect();
         let facts = crate::views::status_facts::providers::status_facts(&self.engine, self.last_summary.as_ref(), self.home.as_deref(), self.now());
         let plans: Vec<(String, f64)> = facts.ready.iter().filter_map(|r| r.plan_used.map(|u| (r.provider.clone(), u))).collect();
         let mut text = uifmt::cost_text(&rows, &to_row(&total), &plans, self.out_style());
+        if !self.engine.guards.meter.is_empty() {
+            text.push_str(&format!("\n\n{}\n{}", self.out_style().bold("Model attempts (includes failures)"),
+                jev_turn::domain::budget::meter_text(&self.engine.guards.meter, &self.engine.guards.budget, &[])));
+        }
         let cache = jev_turn::domain::cache::cost_lines(&self.log);
         if !cache.is_empty() {
             text.push_str(&format!("\n\n{}\n  {}", self.out_style().bold("Cache by provider"), cache.join("\n  ")));

@@ -78,14 +78,15 @@ pub(super) fn count(v: &Value, key: &str) -> u64 {
 }
 
 /// Codex's `input_tokens` already includes the cached share, which is the scale
-/// [`Usage`] wants. It sums every request of the turn, so it is the context size only
-/// when `last_request` (the final request alone, from the rollout) is unknown.
+/// [`Usage`] wants. It sums every request of the turn; only `last_request`
+/// (the final request alone, from the rollout) measures context occupancy.
 pub(super) fn usage_of(u: &Value, last_request: Option<u64>) -> Usage {
     Usage {
         input_tokens: count(u, "input_tokens"),
         cached_input_tokens: count(u, "cached_input_tokens"),
         output_tokens: count(u, "output_tokens"),
-        context_tokens: Some(last_request.unwrap_or_else(|| count(u, "input_tokens"))),
+        context_tokens: last_request,
+        measurement: crate::infrastructure::usage_measurement::measurement_of(u),
     }
 }
 

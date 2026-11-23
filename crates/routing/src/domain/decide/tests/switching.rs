@@ -3,6 +3,114 @@
 use super::*;
 
 #[test]
+fn hard_debug_continuation_upgrades_gemini_before_provider_stickiness() {
+    let mut fixture = Fixture::new(&[Gemini, Codex]);
+    let signals = Signals { task_confidence: 0.99, continues_p: 0.99, ..sig(TaskType::HardDebug) };
+    fixture.now_ms = 60_000;
+    for words in [3, NEW_TASK_WORDS] {
+        let mut state = on("gemini-3.8-flash");
+        state.held = MAX_HOLD - 1;
+        state.warm = Some(WarmCache { provider: Gemini, tokens: 80_000, seen_ms: 0 });
+        let decision = fixture.run(&mut state, Some(&signals), words).unwrap();
+        assert_eq!(decision.spec.id, "gemini-4-neon", "{}", decision.reason);
+        assert!(!decision.switched_provider);
+        assert!(!decision.dropped_tier);
+        assert_eq!(state.held, 0);
+    }
+    let boundary = Signals { continues_p: 0.0, task_confidence: 0.6, ..signals.clone() };
+    assert_eq!(fixture.run(&mut on("gemini-3.8-flash"), Some(&boundary), NEW_TASK_WORDS).unwrap().spec.id, "gemini-4-neon");
+    let confident = Signals { continues_p: 0.0, ..signals.clone() };
+    fixture.now_ms = 400_000;
+    assert_eq!(fixture.run(&mut on("gemini-3.8-flash"), Some(&confident), NEW_TASK_WORDS).unwrap().spec.id, "gpt-6.1-sol");
+    let correction = Signals { correction_p: Some(0.99), ..signals };
+    assert_eq!(fixture.run(&mut on("gemini-3.8-flash"), Some(&correction), 3).unwrap().spec.id, "gpt-6.1-sol");
+    let security = Signals { security_keywords: Security::Strong, task_confidence: 0.4, continues_p: 0.99, ..sig(TaskType::Feature) };
+    assert_eq!(fixture.run(&mut on("gemini-3.8-flash"), Some(&security), 3).unwrap().spec.id, "gpt-6.1-sol");
+    fixture.pin = Pin::Model(Gemini, "gemini-3.8-flash".into());
+    assert_eq!(fixture.run(&mut on("gemini-3.8-flash"), Some(&correction), 3).unwrap().spec.id, "gemini-3.8-flash");
+}
+
+#[test]
+fn quality_floor_uses_an_adequate_same_provider_model_not_the_chain_head_tier() {
+    let mut fixture = Fixture::new(&[Gemini, Codex]);
+    fixture.overrides = Overrides::from_raw(vec![(
+        "feature".into(),
+        catalog::RawChain::of(&["codex:gpt-6.1-sol", "gemini:gemini-3.8-flash", "gemini:gemini-4-hydrogen"]),
+    )]);
+    for confidence in [0.4, 0.6, 0.99] {
+        let signals = Signals { continues_p: 0.99, task_confidence: confidence, ..sig(TaskType::Feature) };
+        let decision = fixture.run(&mut on("gemini-3.8-flash"), Some(&signals), 3).unwrap();
+        assert_eq!(decision.spec.id, "gemini-4-hydrogen", "{}", decision.reason);
+        assert!(!decision.switched_provider);
+        assert!(!decision.dropped_tier);
+    }
+}
+
+#[test]
+fn quality_floor_switches_when_no_adequate_same_provider_model_can_serve() {
+    let mut fixture = Fixture::new(&[Gemini, Codex]);
+    let signals = Signals { task_confidence: 0.99, continues_p: 0.99, ..sig(TaskType::HardDebug) };
+    fixture.usable = Usable::new([(Gemini, "gemini-3.8-flash"), (Codex, "gpt-6.1-sol")]);
+    let mut state = on("gemini-3.8-flash");
+    state.held = MAX_HOLD - 1;
+    state.warm = Some(WarmCache { provider: Gemini, tokens: 80_000, seen_ms: 0 });
+    let decision = fixture.run(&mut state, Some(&signals), 3).unwrap();
+    assert_eq!(decision.spec.id, "gpt-6.1-sol", "{}", decision.reason);
+    assert!(decision.switched_provider);
+    assert!(!decision.dropped_tier);
+    assert_eq!(state.held, 0);
+}
+
+#[test]
+fn quality_floor_preserves_unavailable_tier_degradation() {
+    let mut fixture = Fixture::new(&[Gemini]);
+    fixture.overrides = Overrides::from_raw(vec![(
+        "hard_debug".into(),
+        catalog::RawChain::of(&["gemini:gemini-4-hydrogen", "gemini:gemini-4-neon"]),
+    )]);
+    fixture.usable = Usable::new([(Gemini, "gemini-3.8-flash"), (Gemini, "gemini-4-hydrogen")]);
+    let signals = Signals { continues_p: 0.99, ..sig(TaskType::HardDebug) };
+    let decision = fixture.run(&mut on("gemini-3.8-flash"), Some(&signals), 3).unwrap();
+    assert_eq!(decision.spec.id, "gemini-4-hydrogen");
+    assert!(decision.dropped_tier);
+}
+
+#[test]
+fn plan_steering_overrides_continuation_and_cache_but_not_pins() {
+    let mut fixture = Fixture::new(&[Claude, Codex]);
+    let signals = Signals { continues_p: 0.99, ..sig(TaskType::Feature) };
+    fixture.now_ms = 60_000;
+    for utilization in [0.89, 0.90, 0.99] {
+        fixture.plan = Some(utilization);
+        for judgment in [Some(&signals), None] {
+            for words in [3, NEW_TASK_WORDS] {
+                let mut state = on("claude-sonnet-5-5");
+                state.held = MAX_HOLD - 1;
+                state.warm = Some(WarmCache { provider: Claude, tokens: 80_000, seen_ms: 0 });
+                let decision = fixture.run(&mut state, judgment, words).unwrap();
+                let steered = utilization >= 0.90;
+                assert_eq!(decision.spec.provider, if steered { Codex } else { Claude }, "{}", decision.reason);
+                assert_eq!(decision.switched_provider, steered);
+                assert_eq!(decision.reason.contains("steered off claude"), steered);
+                if steered {
+                    assert_eq!(state.held, 0);
+                }
+            }
+        }
+    }
+    for pin in [Pin::Provider(Claude), Pin::Model(Claude, "claude-sonnet-5-5".into())] {
+        fixture.pin = pin;
+        assert_eq!(fixture.run(&mut on("claude-sonnet-5-5"), Some(&signals), 3).unwrap().spec.provider, Claude);
+    }
+    fixture.pin = Pin::Auto;
+    fixture.context_tokens = 600_000;
+    assert_eq!(fixture.run(&mut on("claude-sonnet-5-5"), Some(&signals), 3).unwrap().spec.provider, Claude);
+    fixture.context_tokens = 0;
+    fixture.usable = Usable::all_of([Claude]);
+    assert_eq!(fixture.run(&mut on("claude-sonnet-5-5"), Some(&signals), 3).unwrap().spec.provider, Claude);
+}
+
+#[test]
 fn short_follow_up_and_continuation_stay_put() {
     let f = Fixture::new(&PROVIDERS);
     // SimpleEdit's best is DeepSeek, but the session is on Claude.

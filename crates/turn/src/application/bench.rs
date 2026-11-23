@@ -117,7 +117,7 @@ mod tests {
     use super::*;
 
     fn turn(model: &str, outcome: Outcome, ms: u64, out: u64) -> Entry {
-        Entry { ts_ms: 0, project: "/p".into(), event: Event::Turn { model: model.into(), outcome, elapsed_ms: ms, in_tokens: 1, out_tokens: out, prompt: String::new(), cached_tokens: 0, context_tokens: 0, tool_calls: 0 } }
+        Entry { ts_ms: 0, project: "/p".into(), event: Event::Turn { model: model.into(), outcome, measurement: jev_shared::Measurement::Reported, elapsed_ms: ms, in_tokens: 1, out_tokens: out, prompt: String::new(), cached_tokens: 0, context_tokens: 0, tool_calls: 0 } }
     }
 
     #[test]

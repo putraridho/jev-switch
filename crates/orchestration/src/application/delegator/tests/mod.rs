@@ -43,6 +43,7 @@ use super::*;
 
 mod background;
 mod cancellation;
+mod worker_policy;
 mod delegate;
 mod persistence;
 mod review;

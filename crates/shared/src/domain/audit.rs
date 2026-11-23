@@ -10,6 +10,7 @@ use std::collections::BTreeMap;
 
 use crate::domain::redact::redact;
 use crate::domain::utc::utc_stamp;
+use crate::domain::token_usage::Measurement;
 
 /// How much of a prompt the log keeps, in characters.
 pub const PREVIEW_CHARS: usize = 120;
@@ -29,6 +30,7 @@ pub enum Event {
     Turn {
         model: String,
         outcome: Outcome,
+        measurement: Measurement,
         elapsed_ms: u64,
         in_tokens: u64,
         out_tokens: u64,

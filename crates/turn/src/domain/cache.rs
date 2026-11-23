@@ -153,7 +153,7 @@ mod tests {
     use jev_session::domain::turn_status::TurnStatus;
 
     fn usage(input: u64, cached: u64) -> Usage {
-        Usage { input_tokens: input, cached_input_tokens: cached, output_tokens: 1, context_tokens: None }
+        Usage { input_tokens: input, cached_input_tokens: cached, output_tokens: 1, context_tokens: None, ..Usage::default() }
     }
 
     fn rec(provider: ProviderId, model: &str, input: u64, cached: u64, ended_ms: u64) -> TurnRecord {

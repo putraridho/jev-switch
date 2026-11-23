@@ -3,6 +3,21 @@
 use super::*;
 use super::super::stream_events::{shell_script, started_events};
 
+#[test]
+fn consumption_requires_numeric_input_and_output_but_zero_is_reported() {
+    for (metadata, measurement) in crate::infrastructure::usage_measurement::test_cases() {
+        let mut line = json!({"type":"turn.completed"});
+        if let Some(metadata) = metadata {
+            line["usage"] = metadata;
+        }
+        let events = backend().parse_line(&line.to_string());
+        let Event::Finished(finish) = &events[0] else { panic!("{events:?}") };
+        assert_eq!(finish.usage, Usage { measurement, ..Usage::default() }, "{line}");
+        let usage = super::super::stream_events::usage_of(&line["usage"], Some(50_000));
+        assert_eq!(usage, Usage { measurement, context_tokens: Some(50_000), ..Usage::default() });
+    }
+}
+
     #[test]
     fn first_turn_parses_to_tools_text_and_finish() {
         let all = parse_all(&backend(), TURN1);
@@ -19,8 +34,22 @@ use super::super::stream_events::{shell_script, started_events};
         assert_eq!(f.session_id.as_deref(), Some("01a1e5a6-9f98-7c21-99f5-6468805d7543"));
         assert_eq!(
             f.usage,
-            Usage { input_tokens: 44970, cached_input_tokens: 36864, output_tokens: 159, context_tokens: Some(44970) }
+            Usage { input_tokens: 44970, cached_input_tokens: 36864, output_tokens: 159, context_tokens: None, ..Usage::default() }
         );
+    }
+
+    #[test]
+    fn missing_rollout_leaves_context_unknown_without_changing_consumption() {
+        let root = jev_testkit::scratch_dir::unique_scratch_dir("codex-cli-missing-context", "t");
+        for sessions_dir in [None, Some(root.clone())] {
+            let codex = backend().with_sessions_dir(sessions_dir);
+            codex.parse_line(r#"{"type":"thread.started","thread_id":"missing"}"#);
+            let line = r#"{"type":"turn.completed","usage":{"input_tokens":2400000,"cached_input_tokens":2000000,"output_tokens":159}}"#;
+            let events = codex.parse_line(line);
+            let Event::Finished(finish) = &events[0] else { panic!("{events:?}") };
+            assert_eq!(finish.usage, Usage { input_tokens: 2_400_000, cached_input_tokens: 2_000_000, output_tokens: 159, context_tokens: None, ..Usage::default() });
+        }
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
@@ -32,7 +61,7 @@ use super::super::stream_events::{shell_script, started_events};
         std::fs::write(day.join("rollout-2026-11-21T00-00-00-01a1e5a6-9f98-7c21-99f5-6468805d7543.jsonl"), line).unwrap();
         let b = backend().with_sessions_dir(Some(root.clone()));
         let Some(Event::Finished(f)) = parse_all(&b, TURN1).pop() else { panic!() };
-        assert_eq!((f.usage.input_tokens, f.usage.context_tokens), (44970, Some(23500)));
+        assert_eq!(f.usage, Usage { input_tokens: 44970, cached_input_tokens: 36864, output_tokens: 159, context_tokens: Some(23500), ..Usage::default() });
         std::fs::remove_dir_all(root).unwrap();
     }
 

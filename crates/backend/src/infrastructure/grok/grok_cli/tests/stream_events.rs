@@ -1,6 +1,19 @@
 use super::*;
 
 #[test]
+fn consumption_requires_numeric_input_and_output_but_zero_is_reported() {
+    for (metadata, measurement) in crate::infrastructure::usage_measurement::test_cases() {
+        let mut line = serde_json::json!({"type":"result","result":"done"});
+        if let Some(metadata) = metadata {
+            line["usage"] = metadata;
+        }
+        let events = backend().parse_line(&line.to_string());
+        let Event::Finished(finish) = &events[0] else { panic!("{events:?}") };
+        assert_eq!(finish.usage, Usage { measurement, ..Usage::default() }, "{line}");
+    }
+}
+
+#[test]
 fn normal_turn_parses_to_tool_text_finish() {
     let events = parse_all(TURN1);
     assert_eq!(events.len(), 3, "{events:?}");
@@ -12,7 +25,7 @@ fn normal_turn_parses_to_tool_text_finish() {
     // 932 uncached + 1500 cache reads + 200 cache writes.
     assert_eq!(
         f.usage,
-        Usage { input_tokens: 2632, cached_input_tokens: 1500, output_tokens: 54, context_tokens: None }
+        Usage { input_tokens: 2632, cached_input_tokens: 1500, output_tokens: 54, context_tokens: None, ..Usage::default() }
     );
 }
 

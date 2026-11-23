@@ -33,6 +33,7 @@ pub struct ModelTotal {
     pub cached_tokens: u64,
     pub out_tokens: u64,
     pub elapsed_ms: u64,
+    pub unreported_turns: usize,
 }
 
 /// The turns of this session, oldest first.
@@ -79,10 +80,12 @@ impl SessionLog {
             for row in [&mut rows[at], &mut all] {
                 row.turns += 1;
                 row.elapsed_ms += t.elapsed_ms;
-                if let Some(u) = &t.usage {
+                if let Some(u) = &t.usage.filter(|usage| usage.measurement == jev_shared::Measurement::Reported) {
                     row.in_tokens += u.input_tokens;
                     row.cached_tokens += u.cached_input_tokens;
                     row.out_tokens += u.output_tokens;
+                } else {
+                    row.unreported_turns += 1;
                 }
             }
         }
@@ -124,7 +127,7 @@ mod tests {
             status: if answer.is_empty() { TurnStatus::Cancelled } else { TurnStatus::Answered },
             model: model.into(),
             route: None,
-            usage: Some(Usage { input_tokens: tokens.0, cached_input_tokens: tokens.1, output_tokens: tokens.2, context_tokens: None }),
+            usage: Some(Usage { input_tokens: tokens.0, cached_input_tokens: tokens.1, output_tokens: tokens.2, context_tokens: None, ..Usage::default() }),
             elapsed_ms: 1000,
             ended_ms: 0,
             tool_calls: 0,
@@ -142,6 +145,18 @@ mod tests {
         assert_eq!(rows.iter().map(|r| r.model.as_str()).collect::<Vec<_>>(), ["codex · g", "claude · s"]);
         assert_eq!((rows[0].turns, rows[0].in_tokens, rows[0].out_tokens), (2, 30, 3));
         assert_eq!((all.turns, all.in_tokens, all.cached_tokens, all.out_tokens, all.elapsed_ms), (3, 130, 55, 13, 3000));
+    }
+
+    #[test]
+    fn totals_distinguish_unreported_consumption_from_a_reported_zero() {
+        let mut log = SessionLog::default();
+        log.push(record("gemini", "known zero", (0, 0, 0)));
+        log.push(TurnRecord { usage: Some(Usage { measurement: jev_shared::Measurement::Unavailable, ..Usage::default() }), ..record("gemini", "unknown", (0, 0, 0)) });
+        log.push(TurnRecord { usage: None, ..record("gemini", "", (0, 0, 0)) });
+        let (rows, total) = log.totals();
+        assert_eq!(rows[0].turns, 3);
+        assert_eq!(rows[0].unreported_turns, 2);
+        assert_eq!(total.unreported_turns, 2);
     }
 
     #[test]

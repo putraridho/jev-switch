@@ -5,6 +5,22 @@ use crate::infrastructure::claude::claude_cli::tool_summary::tool_summary;
 use crate::Usage;
 
 #[test]
+fn consumption_requires_numeric_input_and_output_but_zero_is_reported() {
+    for provider in [ProviderId::Claude, ProviderId::DeepSeek] {
+        for (metadata, measurement) in crate::infrastructure::usage_measurement::test_cases() {
+            let cli = ClaudeBackend { provider, ..backend() };
+            let mut line = json!({"type":"result","result":"ok"});
+            if let Some(metadata) = metadata {
+                line["usage"] = metadata;
+            }
+            let events = cli.parse_line(&line.to_string());
+            let Event::Finished(finish) = &events[0] else { panic!("{events:?}") };
+            assert_eq!(finish.usage, Usage { measurement, ..Usage::default() }, "{provider:?}: {line}");
+        }
+    }
+}
+
+#[test]
 fn recorded_turn_parses_to_tool_plan_text_finish() {
     let all = parse_all(&backend());
     assert!(all.contains(&Event::ToolResult { ok: true, text: "1\thello\n2\t\n3\tworld\n4\t".into() }), "{all:?}");
@@ -20,7 +36,7 @@ fn recorded_turn_parses_to_tool_plan_text_finish() {
     // Turn total is 4 + 35536 + 14188; the context is the last iteration only: 2 + 24812 + 100.
     assert_eq!(
         f.usage,
-        Usage { input_tokens: 49728, cached_input_tokens: 35536, output_tokens: 85, context_tokens: Some(24914) }
+        Usage { input_tokens: 49728, cached_input_tokens: 35536, output_tokens: 85, context_tokens: Some(24914), ..Usage::default() }
     );
 }
 
@@ -54,10 +70,35 @@ fn partial_text_is_the_live_preview_and_never_a_subagent_or_thinking() {
 }
 
 #[test]
-fn context_falls_back_to_usage_without_iterations() {
-    let line = json!({"type":"result","result":"ok","usage":{"input_tokens":1,"cache_read_input_tokens":2,"cache_creation_input_tokens":3,"output_tokens":4}});
-    let Event::Finished(f) = &backend().parse_line(&line.to_string())[0] else { panic!() };
-    assert_eq!(f.usage.context_tokens, Some(6));
+fn context_without_valid_iterations_is_unknown_without_changing_consumption() {
+    for provider in [ProviderId::Claude, ProviderId::DeepSeek] {
+        let cli = ClaudeBackend { provider, ..backend() };
+        for iterations in [None, Some(json!([])), Some(Value::Null), Some(json!([{}])), Some(json!([null])), Some(json!([{"input_tokens":"unknown"}])), Some(json!([{"input_tokens":100000},{}]))] {
+            let mut line = json!({"type":"result","result":"ok","usage":{"input_tokens":400000,"cache_read_input_tokens":2000000,"cache_creation_input_tokens":3,"output_tokens":4}});
+            if let Some(iterations) = iterations {
+                line["usage"]["iterations"] = iterations;
+            }
+            let events = cli.parse_line(&line.to_string());
+            let Event::Finished(finish) = &events[0] else { panic!("{events:?}") };
+            assert_eq!(finish.usage, Usage { input_tokens: 2_400_003, cached_input_tokens: 2_000_000, output_tokens: 4, context_tokens: None, ..Usage::default() }, "{provider:?}: {line}");
+        }
+    }
+}
+
+#[test]
+fn context_uses_only_the_final_valid_request_for_claude_and_deepseek() {
+    for provider in [ProviderId::Claude, ProviderId::DeepSeek] {
+        let cli = ClaudeBackend { provider, ..backend() };
+        for input in [0, 2] {
+            let line = json!({"type":"result","result":"ok","usage":{
+                "input_tokens":400000,"cache_read_input_tokens":2000000,"cache_creation_input_tokens":3,"output_tokens":4,
+                "iterations":[{"input_tokens":100000},{"input_tokens":input,"cache_read_input_tokens":24812,"cache_creation_input_tokens":100}]
+            }});
+            let events = cli.parse_line(&line.to_string());
+            let Event::Finished(finish) = &events[0] else { panic!("{events:?}") };
+            assert_eq!(finish.usage, Usage { input_tokens: 2_400_003, cached_input_tokens: 2_000_000, output_tokens: 4, context_tokens: Some(input + 24_912), ..Usage::default() });
+        }
+    }
 }
 
 #[test]

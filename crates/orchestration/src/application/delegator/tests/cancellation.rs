@@ -48,7 +48,7 @@ async fn a_slow_record_write_does_not_delay_the_registry() {
     };
     tokio::time::sleep(Duration::from_millis(40)).await; // the save is under way
     let started = Instant::now();
-    d.reserve(&BriefSignals::editing(TaskType::Feature), &HashSet::new(), 10, "w2").unwrap();
+    d.reserve(&BriefSignals::editing(TaskType::Feature), &HashSet::new(), 10, "w2", 0).unwrap();
     d.lookup("w1").unwrap();
     let took = started.elapsed();
     assert!(took < Duration::from_millis(100), "the registry waited {took:?} for a record write");

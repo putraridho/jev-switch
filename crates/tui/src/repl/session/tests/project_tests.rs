@@ -178,7 +178,7 @@ async fn a_full_window_compacts_before_the_next_message_unless_switched_off() {
     let spec = jev_catalog::domain::model_table::models().iter().find(|m| m.provider == ProviderId::Claude).unwrap();
     let mut full = r.repl.log().turns()[1].clone();
     full.route = Some((ProviderId::Claude, spec.id.to_string()));
-    full.usage = Some(Usage { input_tokens: spec.context_tokens * 95 / 100, cached_input_tokens: 0, output_tokens: 10, context_tokens: Some(spec.context_tokens * 95 / 100) });
+    full.usage = Some(Usage { input_tokens: 2_400_000, cached_input_tokens: 2_000_000, output_tokens: 10, context_tokens: Some(spec.context_tokens * 95 / 100), ..Usage::default() });
     r.repl.log.push(full);
     assert_eq!(r.repl.context_percent(), Some(95));
     r.out.clear();
@@ -187,4 +187,38 @@ async fn a_full_window_compacts_before_the_next_message_unless_switched_off() {
     assert!(o.contains("context is 95% full: compacting before this message") && o.contains("compacted 3 turns"), "{o}");
     assert_eq!(r.repl.log().turns().len(), 1, "a fresh session holds only the message that followed the summary");
     assert_eq!(r.repl.log().turns()[0].prompt, "three");
+}
+
+#[tokio::test]
+async fn unknown_context_does_not_display_cumulative_usage_or_auto_compact() {
+    let mut fixture = rig("proj-unknown-context", "printf 'FIN:the answer\\n'");
+    send(&mut fixture, "one").await;
+    send(&mut fixture, "two").await;
+    let spec = jev_catalog::domain::model_table::models().iter().find(|model| model.provider == ProviderId::Claude).unwrap();
+    let mut turn = fixture.repl.log().turns()[1].clone();
+    turn.route = Some((ProviderId::Claude, spec.id.to_string()));
+    turn.usage = Some(Usage { input_tokens: 2_400_000, cached_input_tokens: 2_000_000, output_tokens: 10, context_tokens: Some(spec.context_tokens * 95 / 100), ..Usage::default() });
+    fixture.repl.log.push(turn.clone());
+    assert_eq!(fixture.repl.context_percent(), Some(95));
+    for context_tokens in [Some(2000), None] {
+        turn.usage.as_mut().unwrap().context_tokens = context_tokens;
+        fixture.repl.log.push(turn.clone());
+        let percent = fixture.repl.context_percent();
+        assert_eq!(percent, context_tokens.map(|used| (used * 100 / spec.context_tokens).min(100) as u8));
+        assert!(!AutoCompact::At(90).due(percent, fixture.repl.log().turns().len()));
+        let text = fixture.repl.context_text();
+        assert!(!text.contains("2.4M") && !text.contains("Getting full"), "{text}");
+        if context_tokens.is_none() {
+            assert!(text.contains("unknown (provider did not report context occupancy)"), "{text}");
+            assert!(!text.contains('█'), "{text}");
+        } else {
+            assert!(text.contains("2K of"), "{text}");
+        }
+    }
+    let turns = fixture.repl.log().turns().len();
+    fixture.out.clear();
+    send(&mut fixture, "three").await;
+    let text = fixture.out.text();
+    assert!(!text.contains("compacting before this message") && !text.contains("compacted"), "{text}");
+    assert_eq!(fixture.repl.log().turns().len(), turns + 1);
 }

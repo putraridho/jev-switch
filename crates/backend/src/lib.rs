@@ -11,7 +11,7 @@ pub mod testing;
 // The front door: what the rest of the crate says as `crate::Name`.
 pub use jev_approval::domain::mode::Mode;
 pub use jev_approval::domain::permission_request::{Decision, PermissionRequest};
-pub use jev_shared::{ProviderId, Usage};
+pub use jev_shared::{Measurement, ProviderId, Usage};
 pub use application::ports::*;
 pub use domain::effort::Effort;
 pub use domain::error_kind::ErrorKind;

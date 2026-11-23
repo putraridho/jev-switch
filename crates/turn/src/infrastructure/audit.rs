@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 
 use jev_shared::domain::audit::{preview, Entry, Event, Outcome};
 use jev_shared::infrastructure::audit_wire::EntryWire;
+use jev_shared::Measurement;
 use jev_session::domain::session_log::TurnRecord;
 use jev_session::domain::turn_status::TurnStatus;
 
@@ -25,12 +26,14 @@ fn outcome_of(s: TurnStatus) -> Outcome {
 /// The log entry for a finished turn.
 pub fn turn_entry(ts_ms: u64, project: &str, t: &TurnRecord) -> Entry {
     let usage = t.usage.unwrap_or_default();
+    let measurement = t.usage.map(|usage| usage.measurement).unwrap_or(Measurement::Unavailable);
     Entry {
         ts_ms,
         project: project.to_string(),
         event: Event::Turn {
             model: t.model.clone(),
             outcome: outcome_of(t.status),
+            measurement,
             elapsed_ms: t.elapsed_ms,
             in_tokens: usage.input_tokens,
             out_tokens: usage.output_tokens,
@@ -73,7 +76,7 @@ mod tests {
             status,
             model: model.into(),
             route: None,
-            usage: Some(Usage { input_tokens: 10, cached_input_tokens: 0, output_tokens: 4, context_tokens: None }),
+            usage: Some(Usage { input_tokens: 10, cached_input_tokens: 0, output_tokens: 4, context_tokens: None, ..Usage::default() }),
             elapsed_ms: 2500,
             ended_ms: 0,
             tool_calls: 0,
@@ -97,7 +100,7 @@ mod tests {
     #[test]
     fn a_turn_entry_records_cache_context_and_tool_calls_and_old_lines_still_read() {
         let mut r = record("x", "claude · s", TurnStatus::Answered);
-        r.usage = Some(Usage { input_tokens: 900, cached_input_tokens: 800, output_tokens: 5, context_tokens: Some(70_000) });
+        r.usage = Some(Usage { input_tokens: 900, cached_input_tokens: 800, output_tokens: 5, context_tokens: Some(70_000), ..Usage::default() });
         r.tool_calls = 12;
         let line = serde_json::to_string(&EntryWire::from(&turn_entry(1, "/p", &r))).unwrap();
         assert_eq!(line, r#"{"ts_ms":1,"project":"/p","event":"turn","model":"claude · s","outcome":"answered","elapsed_ms":2500,"in_tokens":900,"out_tokens":5,"prompt":"x","cached_tokens":800,"context_tokens":70000,"tool_calls":12}"#);
@@ -105,8 +108,71 @@ mod tests {
         assert_eq!((cached_tokens, context_tokens, tool_calls), (800, 70_000, 12));
 
         let old = r#"{"ts_ms":1,"project":"/p","event":"turn","model":"m","outcome":"answered","elapsed_ms":5,"in_tokens":1,"out_tokens":2,"prompt":"p"}"#;
-        let Event::Turn { cached_tokens, context_tokens, tool_calls, .. } = Entry::from(serde_json::from_str::<EntryWire>(old).unwrap()).event else { panic!() };
+        let Event::Turn { cached_tokens, context_tokens, tool_calls, measurement, .. } = Entry::from(serde_json::from_str::<EntryWire>(old).unwrap()).event else { panic!() };
         assert_eq!((cached_tokens, context_tokens, tool_calls), (0, 0, 0));
+        assert_eq!(measurement, Measurement::Reported);
+    }
+
+    #[test]
+    fn unavailable_consumption_preserves_occupancy_and_round_trips_with_null_counts() {
+        let mut turn = record("x", "grok · m", TurnStatus::Answered);
+        turn.usage = Some(Usage { measurement: Measurement::Unavailable, context_tokens: Some(50_000), ..Usage::default() });
+        let entry = turn_entry(1, "/p", &turn);
+        let value = serde_json::to_value(EntryWire::from(&entry)).unwrap();
+        assert_eq!(value["measurement"], "unavailable");
+        assert_eq!(value["context_tokens"], 50_000);
+        for field in ["in_tokens", "out_tokens", "cached_tokens"] {
+            assert_eq!(value.get(field), Some(&serde_json::Value::Null), "{value}");
+        }
+        let back = Entry::from(serde_json::from_value::<EntryWire>(value).unwrap());
+        assert_eq!(back, entry);
+    }
+
+    #[test]
+    fn missing_usage_is_unknown_for_every_status_but_explicit_zero_is_reported() {
+        for status in [TurnStatus::Answered, TurnStatus::NoRoute, TurnStatus::Failed, TurnStatus::Cancelled] {
+            let mut turn = record("x", "", status);
+            turn.usage = None;
+            let entry = turn_entry(1, "/p", &turn);
+            let value = serde_json::to_value(EntryWire::from(&entry)).unwrap();
+            assert_eq!(value["measurement"], "unavailable");
+            for field in ["in_tokens", "out_tokens", "cached_tokens"] {
+                assert_eq!(value.get(field), Some(&serde_json::Value::Null), "{status:?}: {value}");
+            }
+            let back = Entry::from(serde_json::from_value::<EntryWire>(value).unwrap());
+            assert_eq!(back, entry);
+            turn.usage = Some(Usage::default());
+            let value = serde_json::to_value(EntryWire::from(&turn_entry(1, "/p", &turn))).unwrap();
+            assert!(value.get("measurement").is_none());
+            assert_eq!(value["in_tokens"], 0);
+            assert_eq!(value["out_tokens"], 0);
+            assert_eq!(value["cached_tokens"], 0);
+        }
+    }
+
+    #[test]
+    fn legacy_numeric_zero_is_reported_unless_explicitly_marked_unavailable() {
+        for measurement in [Measurement::Reported, Measurement::Unavailable] {
+            let mut value = serde_json::json!({
+                "ts_ms":1,"project":"/p","event":"turn","model":"m","outcome":"no_route",
+                "elapsed_ms":5,"in_tokens":0,"out_tokens":0,"prompt":"p"
+            });
+            if measurement == Measurement::Unavailable {
+                value["measurement"] = serde_json::json!("unavailable");
+            }
+            let entry = Entry::from(serde_json::from_value::<EntryWire>(value).unwrap());
+            let Event::Turn { measurement: actual, in_tokens, out_tokens, cached_tokens, .. } = &entry.event else { panic!() };
+            assert_eq!(*actual, measurement);
+            assert_eq!((*in_tokens, *out_tokens, *cached_tokens), (0, 0, 0));
+            let serialized = serde_json::to_value(EntryWire::from(&entry)).unwrap();
+            if measurement == Measurement::Reported {
+                assert!(serialized.get("measurement").is_none());
+                assert_eq!(serialized["in_tokens"], 0);
+            } else {
+                assert_eq!(serialized["measurement"], "unavailable");
+                assert!(serialized["in_tokens"].is_null());
+            }
+        }
     }
 
     #[test]

@@ -12,6 +12,7 @@ use std::fmt::Write as _;
 use std::path::Path;
 
 use jev_backend::{ProviderId, Usage};
+use jev_shared::Measurement;
 use jev_catalog::domain::model_table as catalog;
 use jev_catalog::domain::model_table::Billing;
 
@@ -79,7 +80,7 @@ impl PriceTable {
     }
 
     pub fn cost(&self, model: &str, usage: &Usage) -> Option<f64> {
-        self.price(model).map(|p| p.cost(usage))
+        (usage.measurement == Measurement::Reported).then(|| self.price(model).map(|p| p.cost(usage))).flatten()
     }
 }
 
@@ -94,6 +95,7 @@ pub struct Spend {
     pub usd: f64,
     /// Turns with no price in the table, so `usd` leaves them out.
     pub unpriced_turns: u32,
+    pub unreported_turns: u32,
 }
 
 /// What the session has used, by model.
@@ -106,6 +108,10 @@ impl Meter {
     pub fn record(&mut self, provider: ProviderId, model: &str, usage: &Usage, prices: &PriceTable) {
         let s = self.by_model.entry((provider, model.to_string())).or_default();
         s.turns += 1;
+        if usage.measurement == Measurement::Unavailable {
+            s.unreported_turns += 1;
+            return;
+        }
         s.input_tokens += usage.input_tokens;
         s.cached_input_tokens += usage.cached_input_tokens;
         s.output_tokens += usage.output_tokens;
@@ -131,6 +137,10 @@ impl Meter {
     /// Turns of paid models that have no price, so their dollars are unknown.
     pub fn unpriced_paid_turns(&self) -> u32 {
         self.rows().filter(|(p, m, _)| is_paid(*p, m)).map(|(_, _, s)| s.unpriced_turns).sum()
+    }
+
+    pub fn unreported_paid_turns(&self) -> u32 {
+        self.rows().filter(|(provider, model, _)| is_paid(*provider, model)).map(|(_, _, spend)| spend.unreported_turns).sum()
     }
 
     pub fn clear(&mut self) {
@@ -214,6 +224,9 @@ pub struct Budget {
 
 impl Budget {
     pub fn standing(&self, meter: &Meter) -> Standing {
+        if self.cap.is_some() && meter.unreported_paid_turns() > 0 {
+            return Standing::Over;
+        }
         // A dollar cap cannot be checked against spend nobody priced (there is no built-in
         // price table), so it fails closed instead of staying silently at zero.
         if matches!(self.cap, Some(Cap::Usd(_))) && meter.unpriced_paid_turns() > 0 {
@@ -273,26 +286,46 @@ pub fn meter_text(meter: &Meter, budget: &Budget, plans: &[(String, f64)]) -> St
             (true, n) if n == s.turns => "no price set".to_string(),
             (true, _) => format!("${:.4}+ (some turns unpriced)", s.usd),
         };
+        let count = |tokens| {
+            if s.unreported_turns == s.turns {
+                "unknown".to_string()
+            } else if s.unreported_turns > 0 {
+                format!(">={}", short_count(tokens))
+            } else {
+                short_count(tokens)
+            }
+        };
+        let incomplete = if s.unreported_turns > 0 {
+            format!("; consumption unknown for {} attempt(s)", s.unreported_turns)
+        } else {
+            String::new()
+        };
         let _ = writeln!(
             out,
-            "  {:<9} {model:<20} {:>3} turn(s)  in {:>7} ({} cached)  out {:>7}  {cost}",
+            "  {:<9} {model:<20} {:>3} attempt(s)  in {:>7} ({} cached)  out {:>7}  {cost}{incomplete}",
             provider.as_str(),
             s.turns,
-            short_count(s.input_tokens),
-            short_count(s.cached_input_tokens),
-            short_count(s.output_tokens)
+            count(s.input_tokens),
+            count(s.cached_input_tokens),
+            count(s.output_tokens)
         );
     }
     for (provider, used) in plans {
         let _ = writeln!(out, "  {provider} plan: {:.0}% of its limit used", used * 100.0);
     }
     let (usd, tokens) = meter.paid();
+    if meter.unreported_paid_turns() > 0 {
+        out.push_str("  Paid totals are incomplete: some attempts did not report consumption.\n");
+    }
     match budget.cap {
         None => {
             let _ = writeln!(out, "  Paid use so far: ${usd:.4}, {} tokens. No cap set: /budget usd 5 or /budget tokens 2m", short_count(tokens));
         }
         Some(cap) => {
             let state = match budget.standing(meter) {
+                Standing::Over if meter.unreported_paid_turns() > 0 => {
+                    "cannot be checked: paid consumption is unknown, so paid models are no longer picked"
+                }
                 Standing::Over if matches!(cap, Cap::Usd(_)) && meter.unpriced_paid_turns() > 0 => {
                     "cannot be checked: a paid model has no price in prices.txt, so paid models are no longer picked (add its price, or use /budget tokens)"
                 }
@@ -311,7 +344,7 @@ mod tests {
     use super::*;
 
     fn usage(input: u64, cached: u64, output: u64) -> Usage {
-        Usage { input_tokens: input, cached_input_tokens: cached, output_tokens: output, context_tokens: None }
+        Usage { input_tokens: input, cached_input_tokens: cached, output_tokens: output, context_tokens: None, ..Usage::default() }
     }
 
     fn prices() -> PriceTable {
@@ -352,6 +385,47 @@ mod tests {
         assert_eq!(m.rows().find(|(_, id, _)| *id == "deepseek-flash").map(|(_, _, s)| s.unpriced_turns), Some(1));
         assert!(is_paid(ProviderId::Claude, "claude-fable-5-2"));
         assert!(is_paid(ProviderId::Claude, "not-a-model"));
+    }
+
+    #[test]
+    fn unknown_paid_consumption_is_not_free_and_makes_either_cap_fail_closed() {
+        let prices = PriceTable::parse("deepseek-flash 1 0.1 2").0;
+        let unknown = Usage { measurement: Measurement::Unavailable, ..Usage::default() };
+        let mut meter = Meter::default();
+        meter.record(ProviderId::DeepSeek, "deepseek-flash", &unknown, &prices);
+        assert_eq!(meter.unreported_paid_turns(), 1);
+        assert_eq!(prices.cost("deepseek-flash", &unknown), None);
+        for cap in [Cap::Usd(5.0), Cap::Tokens(100)] {
+            let budget = Budget { cap: Some(cap) };
+            assert_eq!(budget.standing(&meter), Standing::Over);
+            assert!(!budget.allows_paid(&meter));
+            let text = meter_text(&meter, &budget, &[]);
+            assert!(text.contains("consumption unknown for 1 attempt(s)"), "{text}");
+            assert!(text.contains("Paid totals are incomplete") && text.contains("cannot be checked"), "{text}");
+        }
+    }
+
+    #[test]
+    fn unknown_subscription_consumption_does_not_close_paid_caps() {
+        let mut meter = Meter::default();
+        let unknown = Usage { measurement: Measurement::Unavailable, ..Usage::default() };
+        meter.record(ProviderId::Claude, catalog::MODEL_MID, &unknown, &PriceTable::default());
+        assert_eq!(meter.unreported_paid_turns(), 0);
+        assert!(Budget { cap: Some(Cap::Tokens(100)) }.allows_paid(&meter));
+        assert!(meter_text(&meter, &Budget::default(), &[]).contains("consumption unknown for 1 attempt(s)"));
+    }
+
+    #[test]
+    fn a_reported_zero_remains_known_and_mixed_totals_are_marked_as_lower_bounds() {
+        let prices = PriceTable::parse("deepseek-flash 1 0.1 2").0;
+        let mut meter = Meter::default();
+        meter.record(ProviderId::DeepSeek, "deepseek-flash", &Usage::default(), &prices);
+        assert_eq!(meter.unreported_paid_turns(), 0);
+        assert!(Budget { cap: Some(Cap::Tokens(100)) }.allows_paid(&meter));
+        meter.record(ProviderId::DeepSeek, "deepseek-flash", &usage(20, 10, 5), &prices);
+        meter.record(ProviderId::DeepSeek, "deepseek-flash", &Usage { measurement: Measurement::Unavailable, ..Usage::default() }, &prices);
+        let text = meter_text(&meter, &Budget::default(), &[]);
+        assert!(text.contains(">=20") && text.contains(">=5"), "{text}");
     }
 
     #[test]

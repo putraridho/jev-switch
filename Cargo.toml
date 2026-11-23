@@ -4,7 +4,7 @@ default-members = [".", "crates/*"]
 resolver = "2"
 
 [workspace.package]
-version = "1.11.10"
+version = "1.11.11"
 edition = "2021"
 
 [workspace.dependencies]
@@ -22,7 +22,7 @@ libc = "0.2"
 
 [package]
 name = "jev-router"
-version = "1.11.10"
+version = "1.11.11"
 edition = "2021"
 description = "A Jev-gated router for Claude Code: a gateway for jev-claude that routes between Claude models, and jev-code, a terminal agent that routes across Claude, Codex, Gemini, Grok and DeepSeek with failover and orchestration."
 

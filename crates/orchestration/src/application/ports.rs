@@ -10,7 +10,7 @@ use std::time::Duration;
 use anyhow::Result;
 use serde_json::Value;
 
-use jev_backend::{Approver, BackendFactory, ProviderId, TurnError, TurnOutcome, TurnRequest};
+use jev_backend::{Approver, BackendFactory, ProviderId, TurnError, TurnOutcome, TurnRequest, Usage};
 use jev_catalog::domain::model_table::{ModelSpec, TaskType};
 use jev_judgment::application::judge::Router;
 use jev_judgment::domain::want::ProviderWant;
@@ -159,6 +159,19 @@ pub struct Screen {
 pub trait WorkerPolicy: Send + Sync {
     /// Which providers may have `outgoing` (the worker prompt for `brief`).
     fn screen(&self, repo: &Path, outgoing: &str, brief: &str) -> Screen;
+    /// Whether this model may be picked, in addition to privacy screening. `attempts`
+    /// counts prior attempts in this delegation (zero for the first). Checked afresh
+    /// at each pick; this does not reserve spending for workers already in flight.
+    /// The default adds no model restrictions.
+    fn admits(&self, _provider: ProviderId, _model: &str, _attempts: u32) -> bool {
+        true
+    }
+    /// Record usage after every worker result, successful or failed, before further
+    /// awaits or retries. A failure without reported usage has `Measurement::Unavailable`.
+    /// A metering policy must make this visible to subsequent admission checks on the
+    /// same policy instance, including unavailable measurements rather than assuming zero.
+    /// The default does not meter usage; this port promises no cross-process ledger.
+    fn record_usage(&self, _provider: ProviderId, _model: &str, _usage: &Usage) {}
     /// The prompt as it may leave for `provider`, secrets blanked; the audit log is told.
     fn outgoing(&self, prompt: &str, provider: ProviderId, model: &str, now_ms: u64) -> String;
     /// The request that runs a worker in `dir`: plan mode when `read_only`.

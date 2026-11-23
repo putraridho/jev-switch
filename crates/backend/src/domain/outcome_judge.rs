@@ -7,14 +7,14 @@ use jev_shared::domain::limit_notice::is_limit_message;
 /// plan is used up (normal answer text, no error flag).
 pub fn judge(finish: Finish, plan: Option<PlanUsage>) -> Result<TurnOutcome, TurnError> {
     if finish.text.trim().is_empty() {
-        return Err(TurnError::new(ErrorKind::Empty, "the CLI returned an empty answer"));
+        return Err(TurnError::new(ErrorKind::Empty, "the CLI returned an empty answer").with_usage(finish.usage));
     }
     if is_limit_message(&finish.text) {
         let resets_at = resets_tail(&finish.text);
         return Err(TurnError::new(
             ErrorKind::Quota { resets_at },
             format!("usage limit reached: {}", finish.text.trim()),
-        ));
+        ).with_usage(finish.usage));
     }
     Ok(TurnOutcome { text: finish.text, session_id: finish.session_id, usage: finish.usage, plan })
 }
@@ -25,7 +25,7 @@ pub fn judge(finish: Finish, plan: Option<PlanUsage>) -> Result<TurnOutcome, Tur
 /// the turn and says how to allow the tool.
 pub fn empty_after_denial(err: TurnError, denied_unasked: &[String]) -> TurnError {
     if err.kind == ErrorKind::Empty && !denied_unasked.is_empty() {
-        return TurnError::new(ErrorKind::Other, denied_unasked_message(denied_unasked));
+        return TurnError { kind: ErrorKind::Other, message: denied_unasked_message(denied_unasked), ..err };
     }
     err
 }

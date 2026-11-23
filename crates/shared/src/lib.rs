@@ -6,4 +6,4 @@ pub mod domain;
 pub mod infrastructure;
 
 pub use domain::provider_id::{ProviderId, ALL_PROVIDERS};
-pub use domain::token_usage::Usage;
+pub use domain::token_usage::{Measurement, Usage};
