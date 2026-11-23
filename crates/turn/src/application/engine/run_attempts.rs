@@ -90,7 +90,8 @@ impl Engine {
             self.log_attempt(&attempt, &jev, attempts, &notes);
             if let Err(error) = &attempt.result {
                 let usage = error.usage.unwrap_or(Usage { measurement: Measurement::Unavailable, ..Usage::default() });
-                self.guards.meter.record(attempt.chosen.spec.provider, attempt.chosen.spec.id, &usage, &self.guards.prices);
+                let now = (self.now)();
+                self.guards.record_spend(attempt.chosen.spec.provider, attempt.chosen.spec.id, &usage, now);
             }
             if !attempt.cancelled {
                 match &attempt.result {

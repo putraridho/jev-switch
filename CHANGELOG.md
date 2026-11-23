@@ -4,6 +4,8 @@ See [docs/changelog-guide.md](docs/changelog-guide.md) for changelog formatting,
 
 ## Unreleased
 
+- **The paid-use cap counts the workers too.** The planner and the delegate tool's workers (a separate process) now write each finished attempt to a shared `spend-ledger.jsonl`, and both sides check the cap against the total of the session: a worker can no longer spend after the planner would refuse the same paid model, and `/budget` shows the combined spend. A worker counts from its project's newest session start; spend with no reported usage still makes a capped session fail closed. This is still an admission check between attempts, not a hold on spending already under way.
+
 - **Codex models use the context window your backend reports.** jev-code reads Codex's own model list (`$CODEX_HOME/models_cache.json`, the usable share of each window) instead of assuming 500k for every Codex model, so a model with a larger window is no longer skipped for a big session, and a smaller one is no longer overfilled. `/context` shows the same window. Models Codex does not list keep the built-in size.
 
 - **A provider that keeps failing is paused instead of rediscovered every session.** After four empty answers, stalls or retired-CLI errors in a row, a provider is skipped for 10 minutes (doubling each time it fails again right after, up to 2 hours), and the pause is remembered across sessions and by workers. Any answer ends it, `/providers refresh` ends it at once, and `/providers` says why a provider is paused. Limits, logins, folder refusals and unknown errors never count.

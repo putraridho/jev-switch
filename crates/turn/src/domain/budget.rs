@@ -121,6 +121,20 @@ impl Meter {
         }
     }
 
+    /// Add everything `other` recorded to this meter's own record.
+    pub fn absorb(&mut self, other: &Meter) {
+        for (key, s) in &other.by_model {
+            let mine = self.by_model.entry(key.clone()).or_default();
+            mine.turns += s.turns;
+            mine.input_tokens += s.input_tokens;
+            mine.cached_input_tokens += s.cached_input_tokens;
+            mine.output_tokens += s.output_tokens;
+            mine.usd += s.usd;
+            mine.unpriced_turns += s.unpriced_turns;
+            mine.unreported_turns += s.unreported_turns;
+        }
+    }
+
     pub fn is_empty(&self) -> bool {
         self.by_model.is_empty()
     }

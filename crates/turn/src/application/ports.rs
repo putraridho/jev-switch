@@ -162,6 +162,18 @@ pub trait PrivacyAudit: std::fmt::Debug + Send + Sync {
     fn tail(&self, path: &Path, count: usize) -> Vec<crate::domain::privacy::audit::AuditRecord>;
 }
 
+/// The ledger's file in the state folder.
+pub const SPEND_LEDGER_FILE: &str = "spend-ledger.jsonl";
+
+/// Where the spend of every process of a session is kept (see [`crate::domain::spend_ledger`]).
+/// Real: `turn::infrastructure::spend_ledger_file::FileSpendLedger`. Neither call may fail the turn.
+pub trait SpendLedger: std::fmt::Debug + Send + Sync {
+    /// Append `line` to the ledger at `path`.
+    fn append(&self, path: &Path, line: &crate::domain::spend_ledger::LedgerLine);
+    /// Every line of the ledger at `path`, oldest first; lines it cannot read are skipped.
+    fn read(&self, path: &Path) -> Vec<crate::domain::spend_ledger::LedgerLine>;
+}
+
 /// The adapters an [`Engine`](crate::application::engine::Engine) cannot build itself
 /// (they live in outer layers or other contexts); the composition root passes them to
 /// `Engine::new`.
@@ -181,4 +193,6 @@ pub struct Adapters {
     pub remembered_rules: Arc<dyn jev_approval::application::ports::RememberedRules>,
     /// Where the privacy audit log is written.
     pub privacy_audit: Arc<dyn PrivacyAudit>,
+    /// Where session spend is shared with the workers' processes.
+    pub spend_ledger: Arc<dyn SpendLedger>,
 }

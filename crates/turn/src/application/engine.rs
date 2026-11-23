@@ -78,6 +78,8 @@ pub struct Engine {
     remembered_rules: Arc<dyn jev_approval::application::ports::RememberedRules>,
     /// Where the privacy audit log is written.
     privacy_audit: Arc<dyn crate::application::ports::PrivacyAudit>,
+    /// Where this session's spend is shared with its workers' processes.
+    spend_ledger: Arc<dyn crate::application::ports::SpendLedger>,
     /// Where saved sessions are kept.
     session_store: Arc<dyn SessionStore>,
     idle_timeout: Duration,

@@ -53,9 +53,8 @@ impl WorkerPolicy for GuardedWorkers {
     }
 
     fn record_usage(&self, provider: ProviderId, model: &str, usage: &Usage) {
-        let mut guards = self.guards();
-        let Guards { meter, prices, .. } = &mut *guards;
-        meter.record(provider, model, usage, prices);
+        let now_ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64);
+        self.guards().record_spend(provider, model, usage, now_ms);
     }
 
     fn outgoing(&self, prompt: &str, provider: ProviderId, model: &str, now_ms: u64) -> String {
@@ -129,6 +128,65 @@ mod tests {
 
     fn capped(cap: Cap) -> Guards {
         Guards { budget: Budget { cap: Some(cap) }, ..Guards::default() }
+    }
+
+    /// A ledger two guards share, as two processes share the file.
+    #[derive(Debug, Default)]
+    struct MemoryLedger(Mutex<Vec<crate::domain::spend_ledger::LedgerLine>>);
+
+    impl crate::application::ports::SpendLedger for MemoryLedger {
+        fn append(&self, _path: &Path, line: &crate::domain::spend_ledger::LedgerLine) {
+            self.0.lock().unwrap().push(line.clone());
+        }
+        fn read(&self, _path: &Path) -> Vec<crate::domain::spend_ledger::LedgerLine> {
+            self.0.lock().unwrap().clone()
+        }
+    }
+
+    fn sharing(ledger: &Arc<MemoryLedger>, cap: Cap, planner_start: Option<u64>, pid: u32) -> Guards {
+        capped(cap).with_ledger(ledger.clone(), PathBuf::from("ledger"), Path::new("/repo"), planner_start, pid, 1_000)
+    }
+
+    #[test]
+    fn a_workers_spend_counts_against_the_planners_cap_and_the_planners_against_the_workers() {
+        let ledger = Arc::new(MemoryLedger::default());
+        let mut planner = sharing(&ledger, Cap::Tokens(100), Some(500), 1);
+        let worker = GuardedWorkers::new(sharing(&ledger, Cap::Tokens(100), None, 2));
+        assert!(planner.may_pay(0) && worker.admits(ProviderId::DeepSeek, "deepseek-flash", 0));
+
+        worker.record_usage(ProviderId::DeepSeek, "deepseek-flash", &Usage { input_tokens: 60, ..Usage::default() });
+        assert_eq!(planner.meter.paid().1, 0, "the planner's own meter is only its own");
+        assert_eq!(planner.total_meter().paid().1, 60);
+        assert!(planner.may_pay(0), "60 of 100");
+
+        planner.record_spend(ProviderId::DeepSeek, "deepseek-flash", &Usage { input_tokens: 40, ..Usage::default() }, 2_000);
+        assert!(!planner.may_pay(0), "the worker's 60 and the planner's 40 reach the cap");
+        assert!(!worker.admits(ProviderId::DeepSeek, "deepseek-flash", 0), "and the worker sees the planner's spend");
+        assert_eq!(planner.total_meter().paid().1, 100, "nothing is counted twice");
+    }
+
+    #[test]
+    fn spend_from_before_the_planners_session_or_another_project_does_not_count() {
+        let ledger = Arc::new(MemoryLedger::default());
+        let old = sharing(&ledger, Cap::Tokens(100), Some(100), 7);
+        let mut old = old;
+        old.record_spend(ProviderId::DeepSeek, "deepseek-flash", &Usage { input_tokens: 500, ..Usage::default() }, 200);
+        let mut elsewhere = capped(Cap::Tokens(100)).with_ledger(ledger.clone(), PathBuf::from("ledger"), Path::new("/other"), Some(100), 8, 1_000);
+        elsewhere.record_spend(ProviderId::DeepSeek, "deepseek-flash", &Usage { input_tokens: 500, ..Usage::default() }, 3_000);
+
+        let planner = sharing(&ledger, Cap::Tokens(100), Some(2_500), 1);
+        assert!(planner.may_pay(0), "the old session's 500 started before this one, the other project's is another project");
+        let worker = GuardedWorkers::new(sharing(&ledger, Cap::Tokens(100), None, 2));
+        assert!(worker.admits(ProviderId::DeepSeek, "deepseek-flash", 0), "the newest marker of /repo is 2500");
+    }
+
+    #[test]
+    fn unreported_worker_spend_makes_a_capped_planner_fail_closed() {
+        let ledger = Arc::new(MemoryLedger::default());
+        let planner = sharing(&ledger, Cap::Tokens(1_000_000), Some(500), 1);
+        let worker = GuardedWorkers::new(sharing(&ledger, Cap::Tokens(1_000_000), None, 2));
+        worker.record_usage(ProviderId::DeepSeek, "deepseek-flash", &Usage { measurement: jev_shared::Measurement::Unavailable, ..Usage::default() });
+        assert!(!planner.may_pay(0));
     }
 
     #[test]

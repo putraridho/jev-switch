@@ -9,6 +9,9 @@ use std::path::{Path, PathBuf};
 use jev_backend::ProviderId;
 use jev_shared::application::host::Host;
 use crate::domain::budget::{Budget, Meter, PriceTable};
+use crate::application::ports::SpendLedger;
+use crate::domain::spend_ledger::{self, LedgerLine};
+use jev_backend::Usage;
 use jev_catalog::domain::model_table::{TaskType, Usable};
 use crate::domain::failover_policy::FailoverPolicy;
 use crate::domain::privacy::outgoing::{self, Outgoing};
@@ -62,11 +65,62 @@ pub struct Guards {
     pub scoreboard: Scoreboard,
     /// Lines of the settings files that could not be read, shown once by `/privacy`.
     pub problems: Vec<String>,
+    /// The ledger this process shares its spend through, with the project and writer it is
+    /// recorded under; `None` keeps the spend in this process only.
+    pub(crate) shared: Option<SharedSpend>,
+}
+
+/// Where and as whom this process records its spend, and from when the main engine counts others'.
+#[derive(Debug)]
+pub(crate) struct SharedSpend {
+    ledger: std::sync::Arc<dyn SpendLedger>,
+    path: PathBuf,
+    project: String,
+    /// One per process, so a process does not count its own lines twice.
+    writer: String,
+    /// A planner counts the others' spend from its own start; a worker (`None`) from the
+    /// newest session marker of its project, read each time.
+    since_ms: Option<u64>,
 }
 
 impl Guards {
     pub fn may_pay(&self, attempts: u32) -> bool {
-        self.budget.allows_paid(&self.meter) && (self.failover.paid_fallback || attempts == 0)
+        self.budget.allows_paid(&self.total_meter()) && (self.failover.paid_fallback || attempts == 0)
+    }
+
+    /// Share this process's spend through `ledger` at `path`, as one writer of `project`.
+    /// A planner passes `Some(now_ms)`, writes its session marker, and counts others' spend
+    /// from then on; a worker passes `None` and counts from its project's newest marker.
+    pub fn with_ledger(mut self, ledger: std::sync::Arc<dyn SpendLedger>, path: PathBuf, project: &Path, planner_start_ms: Option<u64>, pid: u32, now_ms: u64) -> Self {
+        let project = project.to_string_lossy().into_owned();
+        if let Some(ts_ms) = planner_start_ms {
+            ledger.append(&path, &LedgerLine::Session { ts_ms, project: project.clone() });
+        }
+        self.shared = Some(SharedSpend { ledger, path, project, writer: format!("{pid}-{now_ms}"), since_ms: planner_start_ms });
+        self
+    }
+
+    /// Record a finished attempt: in this process's meter, and in the shared ledger.
+    pub fn record_spend(&mut self, provider: ProviderId, model: &str, usage: &Usage, now_ms: u64) {
+        self.meter.record(provider, model, usage, &self.prices);
+        if let Some(shared) = &self.shared {
+            shared.ledger.append(
+                &shared.path,
+                &LedgerLine::Spend { ts_ms: now_ms, project: shared.project.clone(), writer: shared.writer.clone(), provider, model: model.to_string(), usage: *usage },
+            );
+        }
+    }
+
+    /// What the whole session has spent: this process's meter plus what the other processes
+    /// of the session (the workers, or the planner) put in the shared ledger.
+    pub fn total_meter(&self) -> Meter {
+        let mut total = self.meter.clone();
+        if let Some(shared) = &self.shared {
+            let lines = shared.ledger.read(&shared.path);
+            let since = shared.since_ms.unwrap_or_else(|| spend_ledger::session_start(&lines, &shared.project));
+            total.absorb(&spend_ledger::others_spend(&lines, &shared.project, since, &shared.writer, &self.prices));
+        }
+        total
     }
 
     /// Every setting file of the user's state folder and the project. A missing file is
@@ -106,7 +160,7 @@ impl Guards {
         if !may_pay {
             let free = current.filter(|p, m| !crate::domain::budget::is_paid(p, m));
             if free.is_empty() && !current.is_empty() {
-                let why = if self.budget.allows_paid(&self.meter) { "paid-fallback is off (/failover)" } else { "the budget cap is reached (/budget)" };
+                let why = if self.budget.allows_paid(&self.total_meter()) { "paid-fallback is off (/failover)" } else { "the budget cap is reached (/budget)" };
                 return Err(format!("only models that cost money are left, and {why}"));
             }
             current = free;

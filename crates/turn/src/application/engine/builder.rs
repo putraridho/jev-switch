@@ -47,6 +47,7 @@ impl Engine {
             path_facts: adapters.path_facts,
             remembered_rules: adapters.remembered_rules,
             privacy_audit: adapters.privacy_audit,
+            spend_ledger: adapters.spend_ledger,
             session_store: adapters.sessions,
             idle_timeout: adapters.idle_timeout,
             stream_text: false,
@@ -98,6 +99,12 @@ impl Engine {
     /// obeys them.
     pub fn with_persistence_and_settings(mut self, persist: Option<PathBuf>, settings: Option<&std::path::Path>) -> Self {
         self.guards = Guards::load(&*self.host, self.privacy_audit.clone(), settings, &self.dir);
+        if let Some(state) = settings {
+            // The workers' processes see this session's spend, and this one theirs.
+            let now = self.host.now_ms();
+            let path = state.join(crate::application::ports::SPEND_LEDGER_FILE);
+            self.guards = std::mem::take(&mut self.guards).with_ledger(self.spend_ledger.clone(), path, &self.dir, Some(now), std::process::id(), now);
+        }
         self.persist = persist;
         self.settings = settings.map(Path::to_path_buf);
         self

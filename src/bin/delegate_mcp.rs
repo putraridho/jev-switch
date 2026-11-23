@@ -14,7 +14,17 @@
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     jev_router::orchestration::interface::mcp::compose::run(Box::new(|state, dir| {
-        std::sync::Arc::new(jev_router::turn::infrastructure::worker_policy::GuardedWorkers::new(jev_router::turn::application::guards::Guards::load(&jev_router::shared::infrastructure::system_host::SystemHost, std::sync::Arc::new(jev_router::turn::infrastructure::privacy_audit::FilePrivacyAudit), Some(state), dir)))
+        let guards = jev_router::turn::application::guards::Guards::load(&jev_router::shared::infrastructure::system_host::SystemHost, std::sync::Arc::new(jev_router::turn::infrastructure::privacy_audit::FilePrivacyAudit), Some(state), dir);
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64);
+        let guards = guards.with_ledger(
+            std::sync::Arc::new(jev_router::turn::infrastructure::spend_ledger_file::FileSpendLedger),
+            state.join(jev_router::turn::application::ports::SPEND_LEDGER_FILE),
+            dir,
+            None,
+            std::process::id(),
+            now,
+        );
+        std::sync::Arc::new(jev_router::turn::infrastructure::worker_policy::GuardedWorkers::new(guards))
     }))
     .await
 }

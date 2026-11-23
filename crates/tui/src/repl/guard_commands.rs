@@ -59,7 +59,7 @@ impl GuardCmd {
 /// session are saved under `state_dir` when there is one.
 pub fn run(cmd: GuardCmd, guards: &mut Guards, state_dir: Option<&Path>, plans: &[(String, f64)]) -> String {
     match cmd {
-        GuardCmd::BudgetShow => budget::meter_text(&guards.meter, &guards.budget, plans),
+        GuardCmd::BudgetShow => budget::meter_text(&guards.total_meter(), &guards.budget, plans),
         GuardCmd::BudgetSet(cap) => {
             guards.budget.cap = Some(cap);
             saved(state_dir, |d| jev_turn::application::guard_store::save_budget(&SystemHost, &guards.budget, d), "Paid models stop being picked once the cap is used up.")
