@@ -134,8 +134,7 @@ impl From<BookWire> for Book {
                                 input_tokens: p.input_tokens,
                                 cached_input_tokens: p.cached_input_tokens,
                                 output_tokens: p.output_tokens,
-                                context_tokens: None,
-                            },
+                                ..Usage::default() },
                         })
                     })
                     .collect();

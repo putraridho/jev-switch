@@ -94,6 +94,13 @@ pub struct Engine {
     previous: Option<(String, String)>,
     /// Context size the last answering CLI reported.
     last_context_tokens: u64,
+    /// What counted turns showed about each prompt cache (per provider, model and backend),
+    /// kept between sessions in the state folder; advisory only.
+    cache_book: jev_routing::domain::cache_facts::CacheBook,
+    /// Each provider's measured characters per token (the prior until a turn measures it).
+    ratios: crate::domain::delivered_context::Ratios,
+    /// When the attempt in progress started, in ms since 1970 (the gap a cache survived).
+    attempt_started_ms: u64,
     /// Legacy (routing off) stickiness.
     sticky: Sticky,
     downgrade_after: u32,

@@ -17,4 +17,15 @@ pub struct Usage {
     pub cached_input_tokens: u64,
     pub output_tokens: u64,
     pub context_tokens: Option<u64>,
+    pub cache_written_tokens: Option<u32>,
+    pub window_tokens: Option<u32> }
+
+impl Usage {
+    pub fn narrow(tokens: Option<u64>) -> Option<u32> {
+        tokens.and_then(|t| u32::try_from(t).ok())
+    }
+
+    pub fn counters_known(&self) -> bool {
+        self.measurement == Measurement::Reported && self.input_tokens > 0
+    }
 }

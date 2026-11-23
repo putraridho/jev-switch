@@ -66,7 +66,9 @@ impl From<UsageWire> for Usage {
             output_tokens: wire.output_tokens.unwrap_or_default(),
             context_tokens: wire.context_tokens,
             measurement: wire.measurement.into(),
-        }
+            // Observations of one turn, not part of what a saved session keeps.
+            cache_written_tokens: None,
+            window_tokens: None }
     }
 }
 

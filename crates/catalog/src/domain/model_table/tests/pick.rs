@@ -113,3 +113,35 @@ fn dropped_tier_means_below_what_the_task_needs_not_below_the_chain_head() {
     assert_eq!(p.spec.id, "gemini-3.8-flash");
     assert!(p.dropped_tier);
 }
+
+#[test]
+fn what_a_providers_request_adds_counts_against_its_window_only() {
+    let chain = default_chain(TaskType::Review, false);
+    let usable = Usable::all_of([Codex, Claude]).with_reserves(
+        std::collections::HashMap::from([(Codex, 40_000)])
+    );
+    // Codex's 500k window holds 450k of session, but not 470k plus its 40k request.
+    assert_eq!(
+        pick(
+            &chain,
+            TaskType::Review,
+            &Usable::all_of([Codex, Claude]),
+            &open(),
+            450_000
+        ).unwrap().spec.id,
+        "gpt-6.1-sol"
+    );
+    assert_ne!(
+        pick(&chain, TaskType::Review, &usable, &open(), 470_000).unwrap().spec.id,
+        "gpt-6.1-sol"
+    );
+    assert_eq!(
+        pick(&chain, TaskType::Review, &usable, &open(), 400_000).unwrap().spec.id,
+        "gpt-6.1-sol"
+    );
+    let kept = usable
+        .filter(|_, _| true)
+        .only_providers(&[Codex, Claude])
+        .without(&Default::default());
+    assert!(!kept.fits(by_id("gpt-6.1-sol"), 470_000), "filtering keeps the reserves");
+}

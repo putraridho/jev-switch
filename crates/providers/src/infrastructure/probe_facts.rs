@@ -103,8 +103,16 @@ impl ProviderHost for SystemProbes {
         super::cooldown_file::save(path, cooldowns, now_ms)
     }
 
-    fn reported_windows(&self) -> HashMap<(ProviderId, String), u64> {
-        jev_backend::infrastructure::codex::codex_plan::codex_home().map(|home| super::codex_models::windows_in(&home.join("models_cache.json"))).unwrap_or_default()
+    fn reported_windows(&self) -> crate::domain::window_book::WindowBook {
+        // Codex's model cache describes the backend Codex is configured for, so it is filed under that.
+        let backend = self.fundings().identity(ProviderId::Codex);
+        let windows =
+        jev_backend::infrastructure::codex::codex_plan::codex_home().map(|home| super::codex_models::windows_in(&home.join("models_cache.json"))).unwrap_or_default();
+        let mut book = crate::domain::window_book::WindowBook::default();
+        for ((provider, model), tokens) in windows {
+            book.record(provider, &model, &backend, tokens);
+        }
+        book
     }
 
     fn load_breakers(&self, path: &Path) -> crate::domain::breaker::Breakers {

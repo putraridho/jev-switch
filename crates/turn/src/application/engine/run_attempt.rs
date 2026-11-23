@@ -41,8 +41,9 @@ impl Engine {
         let sent = self.prompt_for(provider, chosen.spec.id, prompt);
         let mut sent = self.guards.outgoing(&sent, provider, chosen.spec.id, (self.now)()).prompt;
         let mut backend = (self.backend_factory)(provider);
-        if let (Some(warm), Some(est)) = (self.routing.warm, cache::switch_estimate(self.routing.warm.as_ref(), provider, (self.now)())) {
-            ui.note(&cache::switch_note(&est, warm.provider, provider));
+        if let (Some(warm), Some(est)) = (self.routing.warm.as_ref(), cache::switch_estimate(self.routing.warm.as_ref(), provider,
+                    chosen.spec.id, (self.now)())) {
+            ui.note(&cache::switch_note(&est, warm, &format!("{provider} {}", chosen.spec.id)));
         }
         if let Some(effort) = self.effort.resolve(chosen.spec.tier) {
             backend.set_effort(effort);

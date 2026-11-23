@@ -70,7 +70,8 @@ impl Engine {
             };
             // Reserve the budget for this attempt: a paid model that would pass a cap with what is
             // spent and reserved is set aside, and another model is chosen.
-            let prompt_tokens = (prompt.len() / 4) as u64 + self.last_context_tokens;
+            let prompt_tokens =
+                self.ratios.get(chosen.spec.provider).tokens (prompt.len()) + self.last_context_tokens;
             let hold = match self.guards.hold(chosen.spec.provider, chosen.spec.id, prompt_tokens) {
                 Ok(hold) => hold,
                 Err(why) => {
@@ -83,7 +84,8 @@ impl Engine {
                 ui.note(warning);
             }
             attempts += 1;
-            self.runtime.begin_attempt(chosen.spec.provider, (self.now)());
+            self.attempt_started_ms = (self.now)();
+            self.runtime.begin_attempt(chosen.spec.provider,self.attempt_started_ms);
             if attempts == 1 {
                 // The state the first model starts from, so a failover's changes count too.
                 *before = self.snapshot_tree(cancel, true).await;

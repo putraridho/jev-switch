@@ -26,15 +26,26 @@ impl Runtime {
         let cooldowns = self.current_cooldowns();
         let skipped = |p: ProviderId| self.blocked.contains_key(&p) || self.breaker_blocks(p, now_ms) || self.held(p, now_ms).is_some();
         if !self.avail.iter().any(|a| skipped(a.provider)) {
-            return usable_from(&self.avail, &cooldowns, &self.unusable_models, now_ms).with_windows(self.windows.clone());
+            return usable_from(&self.avail, &cooldowns, &self.unusable_models, now_ms).with_windows(self.windows_in_force());
         }
         let unblocked: Vec<Availability> = self.avail.iter().filter(|a| !skipped(a.provider)).cloned().collect();
-        usable_from(&unblocked, &cooldowns, &self.unusable_models, now_ms).with_windows(self.windows.clone())
+        usable_from(&unblocked, &cooldowns, &self.unusable_models, now_ms).with_windows(self.windows_in_force())
     }
 
     /// The tokens a session may fill for `spec`: the window its backend reported, else the catalog's.
     pub fn window_of(&self, spec: &jev_catalog::domain::model_table::ModelSpec) -> u64 {
-        self.windows.get(&(spec.provider, spec.id.to_string())).copied().unwrap_or(spec.context_tokens)
+        self.windows.get(spec.provider, spec.id, &self.fundings.identity(spec.provider)).unwrap_or(spec.context_tokens)
+    }
+
+    /// What a CLI reported about the window of the model that just ran, filed under the backend
+    /// in force; ignored when the number is not believable.
+    pub fn observe_window(&mut self, provider: ProviderId, model: &str, tokens: u64) {
+        let backend = self.fundings.identity(provider);
+        self.windows.record(provider, model, &backend, tokens);
+    }
+
+    fn windows_in_force(&self) -> std::collections::HashMap<(ProviderId, String), u64> {
+        self.windows.in_force(|p| self.fundings.identity(p))
     }
 
     /// How long `p` is still cooling down after a usage limit, in ms; `None` when it is not.

@@ -28,6 +28,8 @@ struct Payload {
 #[derive(Deserialize)]
 struct Info {
     last_token_usage: Option<RequestUsage>,
+    /// The window of the model that served this request, as Codex itself reports it.
+    model_context_window: Option<u64>,
 }
 
 #[derive(Deserialize)]
@@ -36,10 +38,21 @@ struct RequestUsage {
     input_tokens: u64,
 }
 
-/// The input of the last request on a rollout line, when the line is a `token_count`.
-fn last_request_input(line: &str) -> Option<u64> {
-    let usage = serde_json::from_str::<RolloutLine>(line).ok()?.payload?.info?.last_token_usage?;
-    (usage.input_tokens > 0).then_some(usage.input_tokens)
+/// What one `token_count` line says about the request it follows.
+struct RequestFacts {
+    input_tokens: u64,
+    /// The model's window, when Codex printed one.
+    window_tokens: Option<u64>,
+}
+
+/// The last request on a rollout line, when the line is a `token_count`.
+fn request_facts(line: &str) -> Option<RequestFacts> {
+    let info = serde_json::from_str::<RolloutLine>(line).ok()?.payload?.info?;
+    let usage = info.last_token_usage?;
+    (usage.input_tokens > 0).then_some(RequestFacts {
+        input_tokens: usage.input_tokens,
+        window_tokens: info.model_context_window.filter(|w| *w > 0),
+    })
 }
 
 /// The rollout of `thread_id` under `sessions_dir` (year/month/day folders).
@@ -65,13 +78,23 @@ fn rollout_of(sessions_dir: &Path, thread_id: &str) -> Option<PathBuf> {
     find(sessions_dir, 3, &suffix)
 }
 
-/// The context size after the thread's latest request, from its rollout under `sessions_dir`.
-pub fn context_tokens_in(sessions_dir: &Path, thread_id: &str) -> Option<u64> {
+/// The latest request's facts from the thread's rollout under `sessions_dir`.
+fn latest_request(sessions_dir: &Path, thread_id: &str) -> Option<RequestFacts> {
     if thread_id.is_empty() {
         return None;
     }
     let file = File::open(rollout_of(sessions_dir, thread_id)?).ok()?;
-    BufReader::new(file).lines().map_while(Result::ok).filter_map(|line| last_request_input(&line)).last()
+    BufReader::new(file).lines().map_while(Result::ok).filter_map(|line| request_facts(&line)).last()
+}
+
+/// The context size after the thread's latest request, from its rollout under `sessions_dir`.
+pub fn context_tokens_in(sessions_dir: &Path, thread_id: &str) -> Option<u64> {
+    latest_request(sessions_dir, thread_id).map(|facts| facts.input_tokens)
+}
+
+/// The window Codex reported for the model that served the thread's latest request.
+pub fn window_tokens_in(sessions_dir: &Path, thread_id: &str) -> Option<u64> {
+    latest_request(sessions_dir, thread_id).and_then(|facts| facts.window_tokens)
 }
 
 #[cfg(test)]
@@ -99,7 +122,9 @@ mod tests {
         fs::write(day.join(format!("rollout-2026-11-21T00-12-09-{ID}.jsonl")), rollout).unwrap();
         fs::write(day.join("rollout-2026-11-21T00-00-00-other.jsonl"), token_line(9, 9)).unwrap();
         assert_eq!(context_tokens_in(&root, ID), Some(50_759));
+        assert_eq!(window_tokens_in(&root, ID), Some(475_000), "the window of the last request");
         assert_eq!(context_tokens_in(&root, "missing"), None);
+        assert_eq!(window_tokens_in(&root, "missing"), None);
         assert_eq!(context_tokens_in(&root, ""), None);
         fs::remove_dir_all(root).unwrap();
     }

@@ -12,11 +12,14 @@ pub struct Usable {
     /// Context windows learned from the machine's own backend, which replace the catalog's
     /// for those models (see [`Usable::window_of`]).
     windows: HashMap<(ProviderId, String), u64>,
-}
+    /// Tokens a provider's outgoing request holds beyond the shared session size (see
+    /// [`Usable::with_reserves`]).
+    reserves: HashMap<ProviderId, u64> }
 
 impl Usable {
     pub fn new<S: AsRef<str>>(iter: impl IntoIterator<Item = (ProviderId, S)>) -> Self {
-        Self { set: iter.into_iter().map(|(p, id)| (p, id.as_ref().to_string())).collect(), windows: HashMap::new() }
+        Self { set: iter.into_iter().map(|(p, id)| (p, id.as_ref().to_string())).collect(), windows: HashMap::new(),
+            reserves: HashMap::new() }
     }
 
     /// The same set with these context windows (tokens a session may fill) for the models they
@@ -24,6 +27,21 @@ impl Usable {
     pub fn with_windows(mut self, windows: HashMap<(ProviderId, String), u64>) -> Self {
         self.windows = windows;
         self
+    }
+
+    /// The same set with, per provider, the tokens its outgoing request adds to the session's
+    /// size: the handoff it must be caught up with, the tool definitions, the room for the
+    /// answer. A provider with none adds nothing.
+    pub fn with_reserves(mut self, reserves: HashMap<ProviderId, u64>) -> Self {
+        self.reserves = reserves;
+        self
+    }
+
+    /// Whether a session of `context_tokens` plus what `spec`'s provider adds to its request
+    /// fits `spec`'s window.
+    pub fn fits(&self, spec: &ModelSpec, context_tokens: u64) -> bool {
+        let reserve = self.reserves.get(&spec.provider).copied().unwrap_or(0);
+        self.window_of(spec) >= context_tokens.saturating_add(reserve)
     }
 
     /// The tokens a session may fill for `spec`: what the backend reported when it did, else
@@ -45,7 +63,8 @@ impl Usable {
 
     /// The models for which `keep(provider, model id)` is true (policy, budget and user rules).
     pub fn filter(&self, keep: impl Fn(ProviderId, &str) -> bool) -> Self {
-        Self { set: self.set.iter().filter(|(p, id)| keep(*p, id)).cloned().collect(), windows: self.windows.clone() }
+        Self { set: self.set.iter().filter(|(p, id)| keep(*p, id)).cloned().collect(), windows: self.windows.clone(),
+            reserves: self.reserves.clone() }
     }
 
     pub fn is_empty(&self) -> bool {
@@ -60,12 +79,14 @@ impl Usable {
     /// Only the models of `keep` (for orchestration: a planner must come from providers
     /// that can have the delegate tool attached).
     pub fn only_providers(&self, keep: &[ProviderId]) -> Self {
-        Self { set: self.set.iter().filter(|(p, _)| keep.contains(p)).cloned().collect(), windows: self.windows.clone() }
+        Self { set: self.set.iter().filter(|(p, _)| keep.contains(p)).cloned().collect(), windows: self.windows.clone(),
+            reserves: self.reserves.clone() }
     }
 
     /// The same set minus `excluded` (for one turn's failover: models that just failed).
     pub fn without(&self, excluded: &HashSet<(ProviderId, String)>) -> Self {
-        Self { set: self.set.difference(excluded).cloned().collect(), windows: self.windows.clone() }
+        Self { set: self.set.difference(excluded).cloned().collect(), windows: self.windows.clone(),
+            reserves: self.reserves.clone() }
     }
 }
 

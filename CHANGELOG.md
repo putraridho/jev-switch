@@ -4,6 +4,7 @@ See [docs/changelog-guide.md](docs/changelog-guide.md) for changelog formatting,
 
 ## Unreleased
 
+- **Context windows and prompt caches are now facts about one model on one backend, with their evidence shown.** A context window a backend reports (Codex's model cache and the window in a thread's rollout, the window Claude Code and DeepSeek print for a one-model turn, an ACP agent's usage size) replaces the catalog's fixed size for that backend only, and absurd values are ignored. Models are filtered on the session plus what the request really adds in the receiving provider's tokens: the new prompt, catch-up text, tool definitions and room for the answer, with a characters-per-token rate measured per provider only from turns that reported a request size. After an answer only the cache the provider reported (read plus written) counts as warm, not the whole context; the cache window is a prior flagged "assumed" until observed gaps (a hit after a gap, a miss after a gap) move it, a provider with no documented window is no longer warm for ever, and the cache is identified by provider, model and backend. Counted hit ratios are kept between sessions (counts only, no prompt text, 30 days) and `/bench` shows them with the number of turns and `assumed`/`observed` labels. A warm cache stays advisory: it never overrides the quality floor, a hard rule, plan steering or a pin, and a cache that counted turns show rarely hits no longer holds a model.
 - **Providers are proven rung by rung, and a known incompatibility is no longer rediscovered every session.** Each provider now has a readiness ladder (installed, logged in, entitled, protocol-compatible, validated for this project) with evidence and time per rung; rungs nothing has shown stay "unverified". A lasting failure (a login that failed, a retired client, a folder the CLI refuses) holds the provider until the underlying fact changes (the CLI file, the login file, the funding backend, the folder's trust) or 24 hours pass, and is remembered across sessions in `provider-readiness.json`; a model your plan lacks is remembered per project. Empty answers and stalls keep the circuit breaker, which now lets exactly one trial attempt through after its pause (an answer closes it, a failure reopens it for twice as long). `jev-code doctor` and the new `/providers probe` run a capability handshake that sends no prompt and spends no quota (`--version`, the flags jev-code relies on in `--help`, an ACP `initialize` for `agy` and `grok`, folder trust). `/providers` shows the rung reached, the last evidence time and the next retry; `doctor` explains how to fix each failed rung; a pinned provider that is held gets an error naming the rung instead of being swapped.
 - **Accepted work is measured, shown and can steer routing.** A turn is now judged accepted, rejected or unverified from what is observable: only a passing check after changes accepts it, a failed check or an undone-then-redone turn rejects it, and an answer alone is never "accepted". `/verify off|auto|<command>` (also `JEV_VERIFY`, default off) runs a check after a turn that changed files: `auto` picks the project's cheapest (`cargo check`, an npm `test` script, `pytest -x`, `go build`), never in plan mode or after a turn that changed nothing, with a 5-minute timeout and truncated output. A failed check is put in front of your next prompt once. `JEV_VERIFY=on` now means `auto` (it used to run the full test command). The audit log records the task type, acceptance, check time, retries, rework and tokens per turn (older lines still read). `/bench` shows accepted-rate with `n=`, rework and tokens per accepted turn per model and task type. With at least 5 checked turns each, models of the same tier reorder by accepted-rate then cost per accepted turn (`JEV_LEARNED_ROUTING=off` disables it); pins, your chains, security, budget and quota steering are never overridden and no data changes nothing. `scripts/provider_eval.py audit --arm LABEL=PATH ...` compares a router run with a pinned baseline from audit logs alone.
 - **One usage ledger and budget admission for the planner and its workers.** Before an attempt starts, jev-code now reserves its estimated maximum in a ledger file shared by the main process and the `delegate_mcp` processes (`usage-ledger.json` in the state folder, changed under a lock), and settles the reservation with what the attempt really used. Planner turns, retries and failovers, and every worker attempt are admitted the same way, so concurrent attempts can no longer pass a paid cap together, and the planner's spend is seen by its workers across processes. Failed or cancelled attempts without a report count as unknown consumption, and the reservation of a process that died is reaped as unknown too. New: a daily paid cap over all sessions (`/budget daily usd 20`) and a soft subscription allowance per provider (`/budget allowance 5m`, a warning, never a refusal). `/budget` now shows paid money (hard) and subscription quota (soft) apart, with what is reserved in flight.
@@ -239,10 +240,12 @@ A `/skill` command, and a clearer terminal UI.
 A fix for `/compact` on a full session, bounded test concurrency, and an audit log that shows what a long turn did.
 
 ### Fixes
+
 - **`/compact` works when the old session is full.** The summary is now requested in a fresh, read-only CLI session from a size-limited copy of the recorded conversation (tool summaries included), so it no longer depends on the old session having room left. A history over the limit keeps its beginning and its most recent part, with the omitted middle marked. If no summary comes back, the original conversation and its saved session are left intact.
 - **Bounded test concurrency.** Tests default to eight harness threads instead of 24, and the 30-round Git regression uses four workers instead of spawning all 30 at once, reducing open-file pressure that could fail Git-backed tests.
 
 ### Development
+
 - **Audit log shows what a long turn did.** Each `turn` line in `audit.jsonl` now also records `cached_tokens` (the cached share of `in_tokens`), `context_tokens` (the size of the last request, when the CLI reports it) and `tool_calls`, so a slow turn can be told apart: many tool calls over a growing context, or a cold cache. Older lines still read, with these as 0.
 
 ## 1.5.0
@@ -250,6 +253,7 @@ A fix for `/compact` on a full session, bounded test concurrency, and an audit l
 A terminal UI revamp (shaded prompts, light/dark themes, a btop-style side panel, live workers, quieter tool output), models that no longer promise updates they cannot give, and faster tests and reinstalls.
 
 ### Features
+
 - **Start on a clean screen.** `jev-code` and `jev-claude` clear the terminal (screen and scrollback) when an interactive session opens, so the session owns the display. Pipes, `--no-color` and `-p` runs never get escape bytes.
 - **↑ brings a queued message back.** While a turn runs, a message you sent is queued; with an empty box, ↑ takes the newest one out of the queue and puts it back in the box for editing instead of walking history first.
 - **Your messages stand out.** A message you send is a full-width shaded band with a `❯` marker, and a blank line separates turns. With `NO_COLOR` or `JEV_THEME=mono` it is a plain `❯ text` under a rule.
@@ -259,10 +263,12 @@ A terminal UI revamp (shaded prompts, light/dark themes, a btop-style side panel
 - **Live workers.** With orchestration on, the planner's open workers are listed in a titled box above the input box (`▶ running 0:42 · 7 tool calls`, `✓ ready to review`), refreshed about once a second. Under each running worker is its latest tool call (`⎿ Bash cargo test`), so you can see what a subagent is doing.
 
 ### Development
+
 - **Cached test runs.** `scripts/cached-test.sh` skips a run whose inputs are unchanged since it passed (a repeat takes under a second), `changed` runs only the library test modules of the files changed since `HEAD`, and `pty [names]` caches PTY scenario runs by the built binary. Failures, and PTY filters that match no scenario, are never cached.
 - **Faster tests and reinstalls.** The library suite runs in about 9s instead of 22s: its slowest test (21s alone) runs its 30 rounds in parallel, and tests use 24 threads (`.cargo/config.toml`), since most wait on git or child processes. `cargo test` no longer builds empty harnesses for binaries without tests or a doc-test pass. `scripts/install.sh` builds the new incremental `local` profile, so a reinstall after a small change takes seconds instead of a full optimised rebuild.
 
 ### Fixes
+
 - **Long prompts no longer break mid-word.** The input box wraps at spaces; only a word wider than the box is cut.
 - **What the model says between tool calls is readable.** It was dim italic; it is now full brightness, indented with the tool rows. Answers share that margin.
 - **Reasoning no longer fills the scrollback.** The model's thinking is not printed between tool calls; its latest line shows on the working row (`Thinking · …`) and goes with the turn, leaving the tool rows and a short answer. `JEV_SHOW_THINKING=1` prints it as before.
@@ -277,11 +283,13 @@ A terminal UI revamp (shaded prompts, light/dark themes, a btop-style side panel
 Inline turn steering, delegate MCP server for Claude Code, trimmed tool hints, and security/reliability hardening.
 
 ### Features
+
 - **Messages typed during a turn reach the running turn (Claude).** As in Claude Code, a message you queue while Claude works is taken into that turn at its next step instead of waiting for the turn to finish: `↳ message (taken into the running turn)`. A turn that ends first, and the other providers (Codex, Antigravity), keep the old behaviour: it runs as the next turn. The privacy policy and secret scanning apply to it.
 - **`jev-claude` attaches the delegate tool.** Claude Code gets the MCP server `jev` (`delegate`, `show_diff`, `merge`, `discard`), allowing it to hand subtasks to background workers on your Codex and Antigravity subscriptions. Set `JEV_DELEGATE=off` to disable it.
 - **Trimmed tool hints.** In auto mode, the yellow hints (`✓ auto-allowed …`, `✓ allowed (remembered) …`, denied calls) are formatted as a single line truncated to the terminal width with `…`, preventing long commands and heredocs from filling the screen.
 
 ### Hardening & Bug Fixes
+
 - **Project Claude settings hash validation.** `/hooks trust` now records a cryptographic hash of `.claude/settings.json`. The file (hooks, `env`, helper commands) is only loaded while it matches the trusted hash. If a `git pull` or edit changes it, settings are held until re-approved with `/hooks trust`.
 - **Local settings git resilience.** The local settings check no longer switches your `settings.local.json` off for harmless git failures (not under git, a locked index, or missing folders); committed files and "dubious ownership" still refuse untrusted settings automatically.
 - **Extension packaging & installation safety.** `ext install` and `ext pack` refuse packages or manifests that are or traverse symbolic links. Updating an extension preserves the existing installed copy if writing the new one fails.
@@ -329,6 +337,7 @@ Prompt suggestions.
 Security fixes from an audit of 1.0.0. Some defaults change; see "Behaviour changes".
 
 Behaviour changes
+
 - A repo's committed `.claude/settings.json` is loaded by Claude Code only after `/hooks trust`;
   until then only your own settings and an untracked `.claude/settings.local.json` are read
   (`--setting-sources`). jev-code's own "don't ask again" check ignores a committed
@@ -341,6 +350,7 @@ Behaviour changes
   given, so `bypassPermissions` is ignored, and `-p` runs follow the session's mode.
 
 Permissions and modes
+
 - Orchestration never runs in plan mode; its `merge` tool is approved without asking only in
   edit and auto (Claude and Codex).
 - Gemini CLI and Grok auto-accept edits only in edit and auto; in ask and plan they make none.
@@ -348,6 +358,7 @@ Permissions and modes
 - Saved rules never cover `--kubeconfig` or Go's `-toolexec`, `-vettool` and `-exec`.
 
 Privacy
+
 - The privacy policy holds with routing off and for orchestration workers; briefs are masked.
 - Jev's classifier gets prompts with secrets masked, and is not asked when the policy keeps a
   prompt on this machine.
@@ -358,6 +369,7 @@ Privacy
   unreadable `privacy.rules` turns local-only on.
 
 Terminal and files
+
 - Command output, edit previews and model reasoning have escape sequences and control
   characters removed (no clipboard, link or title injection).
 - The state folder is 0700, the probe cache 0600, atomic writes refuse symlinks, and the `/tmp`
@@ -365,6 +377,7 @@ Terminal and files
 - jev-code's own git calls turn off `core.fsmonitor`.
 
 Gateway
+
 - 403 for requests with an `Origin` header or a non-local `Host`; requests without credentials
   are not routed; at most `JEV_GATEWAY_MAX_INFLIGHT` (32) at once; the session map is capped; a
   non-loopback `JEV_GATEWAY_ADDR` needs `JEV_GATEWAY_ALLOW_REMOTE=1`.
@@ -389,6 +402,7 @@ Everything in 1.0.0-rc.1, plus fixes from five review rounds:
 Trust, git, team and insight features for `jev-code`.
 
 Trust
+
 - Permission profiles: `/profile locked|careful|standard|trusted`, four named levels that map
   to the plan, ask, edit and auto modes. A repo can cap them (see Team).
 - Secret redaction: `/export`, `/replay`, the audit log and the crash notice mask API keys,
@@ -397,21 +411,25 @@ Trust
   the process died, the next `jev-code` in that folder says which prompt was interrupted.
 
 Git
+
 - `/commit [hint]` and `/pr [base]` hand the agent a careful brief: stage by name, no secrets,
   no push or amend, repository message style; `/pr` branches off a trunk branch first and uses
   `gh` only when it is signed in.
 
 Team
+
 - `.jev/team.json`: shared routing rules (`contains` to `pin`) and `max_profile`. Rules apply
   only while no model is pinned by hand. `/team` shows them.
 
 Insight
+
 - Audit log (`audit.jsonl` in the state folder): one redacted line per turn, export and
   profile change. `/audit [n]`, `/history` (turns and tokens per day), `/bench` (models ranked
   by your own turns), `/replay [n]` (read a saved session back).
 - `/export file.html` writes a self-contained HTML page; `.md` (the default) is Markdown.
 
 Editors and platforms
+
 - The editor bridge message contract (`src/bridge.rs`, `docs/bridge.md`).
 - GitHub Actions CI on Linux and macOS (build, tests, PTY suite), a Windows build check.
 - `docs/platforms.md`, `docs/shortcuts.md` and `docs/migrating-0.2.md`.

@@ -44,6 +44,10 @@ impl Acp {
                 if let Some(used) = update["used"].as_u64() {
                     self.usage.context_tokens = Some(used);
                 }
+                // The protocol's `size` is the agent's own context window.
+                if let Some(size) = update["size"].as_u64() {
+                    self.usage.window_tokens = crate::Usage::narrow(Some(size));
+                }
             }
             _ => {}
         }

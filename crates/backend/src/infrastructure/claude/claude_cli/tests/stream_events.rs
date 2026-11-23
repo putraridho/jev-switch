@@ -36,7 +36,10 @@ fn recorded_turn_parses_to_tool_plan_text_finish() {
     // Turn total is 4 + 35536 + 14188; the context is the last iteration only: 2 + 24812 + 100.
     assert_eq!(
         f.usage,
-        Usage { input_tokens: 49728, cached_input_tokens: 35536, output_tokens: 85, context_tokens: Some(24914), ..Usage::default() }
+        Usage { input_tokens: 49728, cached_input_tokens: 35536, output_tokens: 85, context_tokens: Some(24914),
+        cache_written_tokens: Some(14188),
+        window_tokens: Some(1_000_000),
+        measurement: Default::default() }
     );
 }
 
@@ -80,7 +83,8 @@ fn context_without_valid_iterations_is_unknown_without_changing_consumption() {
             }
             let events = cli.parse_line(&line.to_string());
             let Event::Finished(finish) = &events[0] else { panic!("{events:?}") };
-            assert_eq!(finish.usage, Usage { input_tokens: 2_400_003, cached_input_tokens: 2_000_000, output_tokens: 4, context_tokens: None, ..Usage::default() }, "{provider:?}: {line}");
+            assert_eq!(finish.usage, Usage { input_tokens: 2_400_003, cached_input_tokens: 2_000_000, output_tokens: 4, context_tokens: None,
+                    cache_written_tokens: Some(3), ..Usage::default() }, "{provider:?}: {line}");
         }
     }
 }
@@ -96,7 +100,8 @@ fn context_uses_only_the_final_valid_request_for_claude_and_deepseek() {
             }});
             let events = cli.parse_line(&line.to_string());
             let Event::Finished(finish) = &events[0] else { panic!("{events:?}") };
-            assert_eq!(finish.usage, Usage { input_tokens: 2_400_003, cached_input_tokens: 2_000_000, output_tokens: 4, context_tokens: Some(input + 24_912), ..Usage::default() });
+            assert_eq!(finish.usage, Usage { input_tokens: 2_400_003, cached_input_tokens: 2_000_000, output_tokens: 4, context_tokens: Some(input + 24_912),
+                cache_written_tokens: Some(3), ..Usage::default() });
         }
     }
 }
@@ -166,4 +171,24 @@ fn tool_summary_picks_the_telling_field() {
 fn classifies_common_errors() {
     assert!(matches!(backend().classify_error("You've hit your limit"), ErrorKind::Quota { .. }));
     assert_eq!(backend().classify_error("weird"), ErrorKind::Other);
+}
+
+#[test]
+fn the_window_is_taken_from_a_turn_that_ran_one_model_and_from_no_other() {
+    let usage = |model_usage: Value| {
+        let line =
+            json!({"type":"result","result":"ok","usage":{"input_tokens":10,"output_tokens":1},"modelUsage":model_usage});
+        let events = backend().parse_line(&line.to_string());
+        let Event::Finished(finish) = &events[0] else { panic!("{events:?}") };
+        finish.usage.window_tokens
+    };
+    assert_eq!(usage(json!({"claude-opus":{"contextWindow":1_000_000}})), Some(1_000_000));
+    assert_eq!(
+        usage(json!({"a":{"contextWindow":200_000},"b":{"contextWindow":1_000_000}})),
+        None,
+        "a subagent on another model: one number cannot say which"
+    );
+    assert_eq!(usage(json!({"a":{}})), None);
+    assert_eq!(usage(json!({})), None);
+    assert_eq!(usage(Value::Null), None);
 }

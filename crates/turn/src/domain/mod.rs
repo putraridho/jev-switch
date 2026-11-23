@@ -5,6 +5,7 @@ pub mod admission;
 pub mod budget;
 pub mod budget_report;
 pub mod cache;
+pub mod delivered_context;
 pub mod effort;
 pub mod failover;
 pub mod failover_policy;

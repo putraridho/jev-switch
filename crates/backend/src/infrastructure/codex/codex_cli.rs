@@ -13,7 +13,7 @@ use std::sync::{Mutex, MutexGuard};
 use serde_json::Value;
 use tokio::process::Command;
 
-use crate::{Backend, ErrorKind, Event, Finish, McpAttachment, ProviderId, TurnRequest};
+use crate::{Backend, ErrorKind, Event, Finish, McpAttachment, ProviderId, TurnRequest, Usage};
 
 mod command;
 mod errors;
@@ -95,6 +95,11 @@ impl CodexBackend {
         super::codex_context::context_tokens_in(self.sessions_dir.as_deref()?, thread_id?)
     }
 
+    /// The window Codex reported for the model that served the thread's last request.
+    fn reported_window(&self, thread_id: Option<&str>) -> Option<u32> {
+        Usage::narrow(super::codex_context::window_tokens_in(self.sessions_dir.as_deref()?, thread_id?))
+    }
+
 
     /// A poisoned lock only means another thread panicked mid-update; the state is
     /// plain data and the next `thread.started` resets it, so keep going.
@@ -153,7 +158,8 @@ impl Backend for CodexBackend {
                     (state.answer.clone(), state.thread_id.clone())
                 };
                 let last_request = self.last_request_tokens(session_id.as_deref());
-                vec![Event::Finished(Finish { text, session_id, usage: usage_of(&ev["usage"], last_request) })]
+                let window = self.reported_window(session_id.as_deref());
+                vec![Event::Finished(Finish { text, session_id, usage: usage_of(&ev["usage"], last_request, window) })]
             }
             // Top-level `error` lines are retry chatter ("Reconnecting... 2/5"); only
             // `turn.failed` means codex gave up.

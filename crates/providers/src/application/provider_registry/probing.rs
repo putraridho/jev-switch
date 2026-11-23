@@ -31,7 +31,6 @@ impl Runtime {
     /// reading is saved to `plan_path`.
     fn seed_usage(&mut self) {
         self.load_health();
-        self.windows = self.host.reported_windows();
         let plan_path = self.host.plan_path();
         if let Some(path) = &plan_path {
             self.plan = self.host.load_plans(path);
@@ -101,6 +100,8 @@ impl Runtime {
     pub(super) fn apply_probe(&mut self, avail: Vec<Availability>) {
         self.avail = avail;
         self.fundings = self.host.fundings();
+        // Re-read under the backend now in force: a window is filed under who reported it.
+        self.windows.absorb(self.host.reported_windows());
         self.probed_ms = self.host.now_ms();
         self.rekey();
         self.allow = allowances_for(self.host.env("JEV_ALLOW_CREDITS").as_deref(), &self.avail);

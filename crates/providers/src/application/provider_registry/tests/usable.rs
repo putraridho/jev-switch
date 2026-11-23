@@ -47,8 +47,28 @@ use super::*;
         let mut rt = runtime();
         let codex = some_model(Codex);
         assert_eq!(rt.usable(NOW).window_of(codex), codex.context_tokens);
-        rt.windows.insert((Codex, codex.id.to_string()), 123_456);
+        rt.observe_window(Codex, codex.id, 123_456);
         assert_eq!(rt.usable(NOW).window_of(codex), 123_456);
         rt.blocked.insert(Claude, super::super::BlockReason::Auth);
         assert_eq!(rt.usable(NOW).window_of(codex), 123_456, "also when another provider is skipped");
     }
+
+#[test]
+fn a_window_learned_on_one_backend_is_not_applied_to_another() {
+    use crate::domain::funding::{ Fundings, Funding };
+    let mut rt = runtime();
+    let codex = some_model(Codex);
+    rt.fundings = Fundings::default().with(Codex, Funding::Custom);
+    rt.observe_window(Codex, codex.id, 64_000);
+    assert_eq!(rt.usable(NOW).window_of(codex), 64_000);
+    rt.fundings = Fundings::default().with(Codex, Funding::Login);
+    assert_eq!(
+        rt.usable(NOW).window_of(codex),
+        codex.context_tokens,
+        "the native login keeps the catalog's size"
+    );
+    assert_eq!(rt.window_of(codex), codex.context_tokens);
+    rt.observe_window(Codex, codex.id, 0);
+    rt.observe_window(Codex, codex.id, u64::MAX);
+    assert_eq!(rt.window_of(codex), codex.context_tokens, "absurd reports are ignored");
+}

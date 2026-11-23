@@ -21,7 +21,8 @@ fn usage_of(result: &Value) -> Usage {
         output_tokens: count(u, "output_tokens"),
         context_tokens: None,
         measurement: measurement_of(u),
-    }
+        cache_written_tokens: Usage::narrow(u["cache_creation_input_tokens"].as_u64()),
+        window_tokens: None }
 }
 
 fn assistant_events(ev: &Value) -> Vec<Event> {

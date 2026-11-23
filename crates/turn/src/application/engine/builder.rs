@@ -62,6 +62,9 @@ impl Engine {
             write_mcp: adapters.write_mcp,
             previous: None,
             last_context_tokens: 0,
+            cache_book: Default::default(),
+            ratios: Default::default(),
+            attempt_started_ms: 0,
             sticky: Sticky::default(),
             downgrade_after: 2,
             orchestrate: false,
@@ -113,6 +116,10 @@ impl Engine {
         }
         self.persist = persist;
         self.settings = settings.map(Path::to_path_buf);
+        self.cache_book = crate::application::cache_store::load(
+            &*self.host,
+            settings,
+            self.host.now_ms());
         self
     }
 

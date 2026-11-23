@@ -30,6 +30,22 @@ pub(super) fn sig(task: TaskType) -> Signals {
     }
 }
 
+/// A cache the provider reported reading `tokens` of for `model`, ended at time 0.
+pub(super) fn warm_of(provider: ProviderId, model: &str, tokens: u64) -> WarmCache {
+    let usage = jev_shared::Usage {
+        input_tokens: tokens,
+        cached_input_tokens: tokens,
+        output_tokens: 1,
+        ..Default::default()
+    };
+    WarmCache::after_turn(
+        &crate::domain::cache_facts::CacheKey::new(provider, model, "b"),
+        &usage,
+        0,
+        None
+    )
+}
+
 pub(super) struct Fixture {
     pub(super) usable: Usable,
     pub(super) allow: Allowances,

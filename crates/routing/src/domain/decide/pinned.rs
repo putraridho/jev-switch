@@ -17,7 +17,7 @@ pub(super) fn why_unusable(spec: &ModelSpec, task: TaskType, input: &RouteInput)
         "not logged in or not entitled"
     } else if !allowed_for(task, spec) {
         "barred for this kind of work"
-    } else if spec.context_tokens < input.context_tokens {
+    } else if !input.usable.fits( spec, input.context_tokens) {
         "the session is larger than its context window"
     } else {
         "its billing (credits or API key) is not enabled"

@@ -61,7 +61,7 @@ impl Runtime {
         let Some(dir) = self.project_dir.clone() else { return };
         for p in ALL_PROVIDERS {
             let mut key = self.host.readiness_key(p);
-            key.backend = self.fundings.get(p).map(|f| f.label(p).to_string()).unwrap_or_default();
+            key.backend = self.fundings.identity(p);
             self.keys.insert(p, key);
             self.project_keys.insert(p, self.host.project_key(p, &dir));
         }

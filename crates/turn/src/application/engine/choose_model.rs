@@ -1,6 +1,6 @@
 //! Asking routing for the one model of an attempt, or the legacy tier when routing is off.
 
-use std::collections::HashSet;
+use std::collections::{ HashMap,HashSet };
 
 use jev_catalog::domain::model_table::{MODEL_CHEAP, MODEL_MID, MODEL_STRONG};
 use jev_backend::{ProviderId};
@@ -11,6 +11,7 @@ use jev_judgment::domain::want::CodeWant;
 use jev_routing::domain::decide as routing;
 use jev_routing::domain::decide::{NoRoute, Pin, PinOrigin, RouteInput, RoutingState, Signals};
 use crate::application::judged::Judged;
+use crate::domain::delivered_context::Outgoing;
 use crate::domain::route_facts::RouteFacts;
 use super::attempt::Chosen;
 use super::{Engine, CATCH_UP_TOKENS};
@@ -94,6 +95,10 @@ impl Engine {
         }
         let (usable, rule_notes) = (restricted.usable, restricted.notes);
         let context_tokens = (self.sessions.context_tokens_estimate() as u64).max(self.last_context_tokens);
+        // What the request will really hold beyond that, per provider: the new prompt, the
+        // handoff, tool definitions and room for the answer, in the provider's own tokens.
+        let reserves = self.outgoing_reserves(&usable, prompt, context_tokens);
+        let usable = usable.with_reserves(reserves);
         let plan = |p: ProviderId| self.runtime.plan_utilization(p);
         let input = RouteInput {
             signals,
@@ -111,6 +116,15 @@ impl Engine {
         // took its provider away, or it cannot serve this task, the turn routes automatically
         // and the reason says why.
         let mut state = base.clone();
+        // A cache filed under another backend (the endpoint or login changed since) is not
+        // this backend's cache.
+        if
+            state.warm
+                .as_ref()
+                .is_some_and(|w| w.backend != self.runtime.fundings.identity(w.provider))
+        {
+            state.warm = None;
+        }
         let (decision, input, team_note) = match team_pin_reachable {
             Some(p) if !usable.has_provider(p) => {
                 let note = format!("{} pin to {} skipped: your routing rules exclude {p}", crate::application::team_rules::FILE, self.pin);
@@ -145,6 +159,31 @@ impl Engine {
             dropped_tier: decision.dropped_tier,
         };
         Ok(Chosen { spec, reason, facts, state, legacy_tier: None, mcp })
+    }
+
+    /// Per usable provider, the tokens its request adds to the session's size `shared_tokens`
+    /// (see [`Outgoing::reserve`]), counted at that provider's own characters per token.
+    pub(super) fn outgoing_reserves(
+        &self,
+        usable: &catalog::Usable,
+        prompt: &str,
+        shared_tokens: u64
+    ) -> HashMap<ProviderId, u64> {
+        let session_chars = self.sessions.context_chars();
+        let prompt_chars = prompt.chars().count();
+        jev_shared::ALL_PROVIDERS
+            .into_iter()
+            .filter(|p| usable.has_provider(*p))
+            .map(|p| {
+                let request = Outgoing {
+                    session_chars,
+                    shared_tokens,
+                    prompt_chars,
+                    catch_up: self.sessions.missed_turns(p) > 0,
+                };
+                (p, request.reserve(self.ratios.get(p)))
+            })
+            .collect()
     }
 
     /// What each usable provider that is behind would be caught up with (the same text

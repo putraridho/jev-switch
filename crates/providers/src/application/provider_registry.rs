@@ -27,6 +27,7 @@ use std::sync::{Arc, Mutex};
 use jev_backend::{PlanUsage, ProviderId};
 use jev_catalog::domain::model_table::{Allowances, Overrides};
 use crate::application::ports::ProviderHost;
+use crate::domain::window_book::WindowBook;
 use crate::domain::availability::Availability;
 use crate::domain::breaker::Breakers;
 use crate::domain::funding::Fundings;
@@ -85,7 +86,7 @@ pub struct Runtime {
     probed_ms: u64,
     /// Context windows the machine's own backends reported, read at start; they replace the
     /// catalog's fixed sizes in [`Runtime::usable`].
-    windows: HashMap<(ProviderId, String), u64>,
+    windows: WindowBook,
     /// The background retry of probes that timed out at startup, until
     /// [`Runtime::absorb_late`] has folded its answers into `avail`.
     late: Option<LateProbes>,
@@ -171,7 +172,7 @@ impl Runtime {
             keys: HashMap::new(),
             project_keys: HashMap::new(),
             probed_ms: host.now_ms(),
-            windows: HashMap::new(),
+            windows: WindowBook::default(),
             late: None,
             host,
         }

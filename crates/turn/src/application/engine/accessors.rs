@@ -98,7 +98,12 @@ impl Engine {
 
     /// The prefix the last answering provider has cached, for `/cache` and the footer.
     pub fn warm_cache(&self) -> Option<WarmCache> {
-        self.routing.warm
+        self.routing.warm.clone()
+    }
+
+    /// What counted turns showed about each prompt cache, for `/bench`.
+    pub fn cache_book(&self) -> &jev_routing::domain::cache_facts::CacheBook {
+        &self.cache_book
     }
 
     pub fn orchestrate(&self) -> bool {

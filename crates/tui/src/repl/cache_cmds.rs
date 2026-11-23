@@ -52,9 +52,10 @@ fn dashboard(log: &SessionLog, warm: Option<&WarmCache>, now_ms: u64, style: Sty
         ));
     }
     if let Some(w) = warm {
-        let state = warm_cache::countdown(w, now_ms).unwrap_or_else(|| format!("{} has no documented cache window", w.provider));
+        let state = warm_cache::countdown(w, now_ms);
         lines.push(String::new());
-        lines.push(format!("  {} {} tokens cached; {state}", style.bold("Warm now"), human_count(w.tokens)));
+        lines.push(format!("  {} {} tokens cached ({}); {state}", style.bold("Warm now"), human_count(w.tokens),
+                w.tokens_basis.label()));
         if let Some(warning) = warm_cache::expiry_warning(w, now_ms) {
             lines.push(format!("  {} {warning}", style.yellow("⚠")));
         }
@@ -74,6 +75,7 @@ fn dashboard(log: &SessionLog, warm: Option<&WarmCache>, now_ms: u64, style: Sty
 #[cfg(test)]
 mod tests {
     use super::*;
+    use jev_routing::domain::cache_facts::CacheKey;
     use jev_shared::Usage;
     use jev_session::domain::session_log::TurnRecord;
     use jev_session::domain::turn_status::TurnStatus;
@@ -106,7 +108,9 @@ Usage { input_tokens: input, cached_input_tokens: cached, output_tokens: 1, cont
     #[test]
     fn dashboard_shows_providers_warmth_and_misses() {
         let log = log_of(vec![rec(ProviderId::Claude, "sonnet", 40_000, 0, 1_000), rec(ProviderId::Claude, "sonnet", 45_000, 40_000, 5_000)]);
-        let w = WarmCache::after_turn(ProviderId::Claude, &usage(45_000, 40_000), 5_000);
+        let w = WarmCache::after_turn(
+            &CacheKey::new(ProviderId::Claude, "sonnet", "Claude login"), &usage(45_000, 40_000), 5_000,
+            None);
         let text = dashboard(&log, Some(&w), 5_000 + 250_000, Style::off());
         assert!(text.contains("Cache by provider") && text.contains("hit  47%"), "{text}");
         assert!(text.contains("Warm now") && text.contains("expires in 50s"), "{text}");

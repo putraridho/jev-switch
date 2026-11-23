@@ -98,6 +98,13 @@ impl Fundings {
         catalog::find(provider, model).is_none_or(|m| m.billing != Billing::Subscription || !self.of(provider).is_native())
     }
 
+    /// The effective backend of `provider` as a stable key (its [`Fundings::label`]; empty when it
+    /// was not inspected): what a fact learned about a model is filed under, so a custom
+    /// endpoint's facts are never applied to the native login.
+    pub fn identity(&self, provider: ProviderId) -> String {
+        self.label(provider).unwrap_or_default().to_string()
+    }
+
     /// The `/providers` and doctor wording for one provider; `None` when it was not inspected.
     pub fn label(&self, provider: ProviderId) -> Option<&'static str> {
         self.get(provider).map(|f| f.label(provider))

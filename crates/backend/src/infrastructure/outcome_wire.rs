@@ -95,7 +95,8 @@ mod tests {
 
     #[test]
     fn unavailable_consumption_has_null_counters_but_preserves_occupancy() {
-        let usage = Usage { measurement: Measurement::Unavailable, input_tokens: 99, cached_input_tokens: 44, output_tokens: 7, context_tokens: Some(50_000) };
+        let usage = Usage { measurement: Measurement::Unavailable, input_tokens: 99, cached_input_tokens: 44, output_tokens: 7, context_tokens: Some(50_000),
+            ..Usage::default() };
         assert_eq!(usage_json(&usage), json!({
             "input_tokens":null,"cached_input_tokens":null,"output_tokens":null,
             "context_tokens":50000,"measurement":"unavailable"

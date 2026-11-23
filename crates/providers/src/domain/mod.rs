@@ -8,3 +8,4 @@ pub mod readiness;
 pub mod readiness_view;
 pub mod reset_time;
 pub mod usability;
+pub mod window_book;

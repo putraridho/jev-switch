@@ -42,7 +42,7 @@ pub fn pick(
     context_tokens: u64,
 ) -> Option<Pick> {
     let (rank, spec) = chain.iter().copied().enumerate().find(|(_, s)| {
-        usable.contains(s) && allow.permits(s.billing) && allowed_for(task, s) && usable.window_of(s) >= context_tokens
+        usable.contains(s) && allow.permits(s.billing) && allowed_for(task, s) && usable.fits(s, context_tokens)
     })?;
     Some(Pick { spec, rank, dropped_tier: spec.tier < task.needed_tier() })
 }

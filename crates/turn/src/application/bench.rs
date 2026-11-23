@@ -17,7 +17,9 @@ use serde::Deserialize;
 
 use jev_shared::domain::audit::{Entry, Event, Outcome};
 use crate::domain::outcomes::{Outcomes, Tally};
+use jev_routing::domain::cache_facts::CacheBook;
 use jev_routing::domain::track_record::{Rate, MIN_VERIFIED};
+use jev_shared::domain::wording::human_duration;
 
 /// One model's record.
 #[derive(Debug, Clone, PartialEq)]
@@ -154,11 +156,51 @@ pub fn bench_text(ranks: &[Rank], project: &Path) -> String {
     lines.join("\n")
 }
 
-/// Everything `/bench` shows for the audit `entries` of the project in `project`.
-pub fn bench_report(entries: &[Entry], project: &Path) -> String {
+/// The prompt-cache facts per (provider, model, backend), for `/bench`: the share of input read
+/// from the cache with the number of turns behind it, and how long the cache is believed to
+/// live, each marked `observed` (counted from turns that reported usage) or `assumed` (a
+/// built-in prior). Empty until a turn has been counted.
+pub fn cache_text(book: &CacheBook) -> String {
+    let rows: Vec<String> = book
+        .iter()
+        .filter_map(|(key, facts)| {
+            let hit = facts.hit_percent()?;
+            let ttl = facts.ttl(key.provider);
+            let backend = if key.backend.is_empty() {
+                String::new()
+            } else {
+                format!(" [{}]", key.backend)
+            };
+            Some(
+                format!(
+                    "  {} {}{backend}: {hit}% of input read from cache (observed, n={}); lives ~{} ({})",
+                    key.provider,
+                    key.model,
+                    facts.samples,
+                    human_duration(ttl.ms),
+                    ttl.basis.label()
+                )
+            )
+        })
+        .collect();
+    if rows.is_empty() {
+        return String::new();
+    }
+    format!(
+        "  Prompt cache by model (advisory: counted from turns that reported usage; a window nobody observed is assumed)\n{}",
+        rows.join("\n")
+    )
+}
+
+/// Everything `/bench` shows for the audit `entries` of the project in `project`, with what
+/// the session's prompt caches showed.
+pub fn bench_report(entries: &[Entry], project: &Path, cache: &CacheBook) -> String {
     let text = bench_text(&rank(entries), project);
-    let work = work_text(&Outcomes::from_entries(entries));
-    if work.is_empty() { text } else { format!("{text}\n{work}") }
+    [text, work_text(&Outcomes::from_entries(entries)), cache_text(cache)]
+        .into_iter()
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 #[cfg(test)]
@@ -237,5 +279,41 @@ mod tests {
         let r = Rank { model: "claude · s".into(), turns: 4, answered: 3, median_ms: 1500, avg_out_tokens: 42, work: Tally::default() };
         let text = bench_text(&[r], Path::new("/nowhere"));
         assert!(text.contains("1. claude · s") && text.contains(" 75% answered of 4") && text.contains("median   1.5s"), "{text}");
+    }
+
+    #[test]
+    fn the_cache_section_shows_observed_ratio_with_n_and_assumed_or_observed_windows() {
+        use jev_routing::domain::cache_facts::CacheKey;
+        let mut book = CacheBook::default();
+        assert!(cache_text(&book).is_empty(), "nothing counted: nothing claimed");
+        let usage = |cached| jev_shared::Usage {
+            input_tokens: 1_000,
+            cached_input_tokens: cached,
+            output_tokens: 1,
+            ..Default::default()
+};
+        let claude = CacheKey::new(jev_shared::ProviderId::Claude, "sonnet", "Claude login");
+        book.observe(&claude, &usage(900), None, 1);
+        book.observe(&claude, &usage(700), Some(60_000), 2);
+        let gemini = CacheKey::new(jev_shared::ProviderId::Gemini, "flash", "");
+        book.observe(&gemini, &usage(800), Some(600_000), 3);
+        let text = cache_text(&book);
+        assert!(
+            text.contains(
+                "claude sonnet [Claude login]: 80% of input read from cache (observed, n=2); lives ~5m00s (assumed)"
+            ),
+            "{text}"
+        );
+        assert!(
+            text.contains(
+                "gemini flash: 80% of input read from cache (observed, n=1); lives ~10m00s (observed)"
+            ),
+            "{text}"
+        );
+        let report = bench_report(&[], Path::new("/nowhere"), &book);
+        assert!(
+            report.contains("No ranking yet") && report.contains("Prompt cache by model"),
+            "{report}"
+        );
     }
 }

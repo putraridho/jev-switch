@@ -13,12 +13,19 @@ use jev_shared::ProviderId;
 /// (by the caller's contract) caught up first, so it never has holes.
 #[derive(Debug, Clone, Default)]
 pub struct Sessions {
-    pub(in crate) ids: HashMap<ProviderId, String>,
-    pub(in crate) seen: HashMap<ProviderId, usize>,
-    pub(in crate) log: Vec<TurnRecord>,
+    pub( crate) ids: HashMap<ProviderId, String>,
+    pub( crate) seen: HashMap<ProviderId, usize>,
+    pub( crate) log: Vec<TurnRecord>,
     /// The name the person gave the session (`/rename`), shown in place of its first message.
-    pub(in crate) name: Option<String>,
-}
+    pub( crate) name: Option<String> }
+
+fn record_chars(r: &TurnRecord) -> usize {
+    char_count(&r.prompt) +
+        char_count(&r.reply) +
+        r.tools
+            .iter()
+            .map(|t| char_count(t))
+            .sum::<usize>() }
 
 impl Sessions {
     pub fn new() -> Self {
@@ -111,14 +118,24 @@ impl Sessions {
         Some(catch_up::build(missed, p, model, git_status, budget_tokens))
     }
 
-    /// Rough token size of the whole dialogue, for context-window checks.
+    /// Rough token size of the whole dialogue at the built-in four characters per token.
     pub fn context_tokens_estimate(&self) -> usize {
-        let chars: usize = self
+        self.context_chars() / CHARS_PER_TOKEN
+    }
+
+    /// Characters of the whole dialogue (prompts, replies and tool rows), for estimating its
+    /// size in a provider's own tokens.
+    pub fn context_chars(&self) -> usize { self
             .log
             .iter()
-            .map(|r| char_count(&r.prompt) + char_count(&r.reply) + r.tools.iter().map(|t| char_count(t)).sum::<usize>())
-            .sum();
-        chars / CHARS_PER_TOKEN
+            .map(record_chars).sum()
+    }
+
+    /// Characters of the turns `p`'s own session has not lived through: what a catch-up
+    /// for it would be made from (before it is shrunk to its budget).
+    pub fn missed_chars(&self, p: ProviderId) -> usize {
+        self.log[self.log.len() - self.missed_turns(p)..].iter().map(record_chars)
+            .sum()
     }
 
     /// The logged turns, oldest first (read-only: the session library searches them).

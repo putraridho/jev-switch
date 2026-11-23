@@ -2,6 +2,7 @@
 
 mod approval;
 mod cancel;
+mod cache_facts;
 mod changes;
 mod failover;
 mod handoff;
@@ -91,11 +92,11 @@ fn fake_cli(
     attached: &Attached,
     clock: &Arc<AtomicU64>,
     attempt_ms: &Arc<AtomicU64>,
-) -> ScriptedCli {
+    usage: Usage ) -> ScriptedCli {
     let (started, clock, attempt_ms) = (started.clone(), clock.clone(), attempt_ms.clone());
     ScriptedCli::new(provider, script)
         .session_id(SessionId::PerProvider)
-        .usage(Usage { output_tokens: 7, context_tokens: Some(1000), ..Usage::default() })
+        .usage(usage)
         .recording_mcp(attached.clone())
         .on_start(move |req| {
             started.lock().unwrap().push(Started {
@@ -170,6 +171,8 @@ struct Rig {
     clock: Arc<AtomicU64>,
     /// How long (ms on `clock`) a fake attempt runs before it reports a failure.
     attempt_ms: Arc<AtomicU64>,
+    /// What each fake attempt reports as its usage (read when the attempt starts).
+    usage: Arc<Mutex<Usage>>,
     ui: Recorder,
 }
 
@@ -193,7 +196,10 @@ fn rig_in(dir: PathBuf, states: &[(ProviderId, State)], script: &'static str) ->
     let factory_calls = Arc::new(Mutex::new(Vec::new()));
     let clock = Arc::new(AtomicU64::new(NOW));
     let attempt_ms = Arc::new(AtomicU64::new(0));
-    let (s, st, fc, ck, at, fk, am) = (
+    let usage = Arc::new(
+        Mutex::new(Usage { output_tokens: 7, context_tokens: Some(1000), ..Usage::default() })
+    );
+    let (s, st, fc, ck, at, fk, am, us) = (
         scripts.clone(),
         started.clone(),
         factory_calls.clone(),
@@ -201,6 +207,7 @@ fn rig_in(dir: PathBuf, states: &[(ProviderId, State)], script: &'static str) ->
         attached.clone(),
         clock.clone(),
         attempt_ms.clone(),
+        usage.clone(),
     );
     let engine = Engine::new(Runtime::for_tests(avail), router, dir, crate::infrastructure::engine_adapters::real())
         .with_track_changes(false)
@@ -209,13 +216,14 @@ fn rig_in(dir: PathBuf, states: &[(ProviderId, State)], script: &'static str) ->
         .with_backend_factory(Box::new(move |p| {
             fc.lock().unwrap().push(p);
             let script = s.lock().unwrap()[&p];
-            Box::new(fake_cli(p, script, &st, &at, &fk, &am))
+            Box::new(fake_cli(p, script, &st, &at, &fk, &am, *us.lock().unwrap()))
         }))
         .with_git_status(Box::new(|_| " M src/a.rs\n".to_string()))
         .with_clock(Box::new(move || ck.load(Ordering::SeqCst)))
         .with_idle_timeout(Duration::from_millis(300))
         .with_turn_log(None);
-    Rig { engine, scripts, started, attached, factory_calls, clock, attempt_ms, ui: Recorder::default() }
+    Rig { engine, scripts, started, attached, factory_calls, clock, attempt_ms,
+        usage, ui: Recorder::default() }
 }
 
 fn states_for(ready: &[ProviderId]) -> Vec<(ProviderId, State)> {

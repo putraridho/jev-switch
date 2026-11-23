@@ -6,8 +6,9 @@ use serde_json::Value;
 
 use jev_backend::{ProviderId, TurnError, TurnOutcome};
 use jev_session::domain::turn_status::TurnStatus;
-use jev_routing::domain::warm_cache::WarmCache;
 use jev_catalog::domain::model_table as catalog;
+use jev_routing::domain::cache_facts::CacheKey;
+use jev_routing::domain::warm_cache::WarmCache;
 use jev_session::domain::turn_record::TurnRecord;
 use jev_routing::domain::decide as routing;
 use jev_routing::domain::decide::NoRoute;
@@ -26,6 +27,10 @@ impl Engine {
         if let Some(id) = out.session_id.clone() {
             self.sessions.set_session_id(spec.provider, id);
         }
+        // What this request held, for the characters-per-token rate: only a provider that has
+        // lived through the whole dialogue was sent all of it.
+        let sent_chars = self.sessions.context_chars() + prompt.chars().count();
+        let had_it_all = self.sessions.missed_turns(spec.provider) == 0;
         self.sessions.record(TurnRecord {
             prompt: prompt.to_string(),
             provider: spec.provider,
@@ -36,7 +41,7 @@ impl Engine {
         });
         self.routing = chosen.state;
         routing::record_turn(&mut self.routing, spec);
-        self.routing.warm = Some(WarmCache::after_turn(spec.provider, &out.usage, (self.now)()));
+        self.learn_from(spec, sent_chars, had_it_all, &out.usage);
         if let Some(tier) = chosen.legacy_tier {
             self.sticky.tier = Some(tier);
         }
@@ -54,6 +59,45 @@ impl Engine {
             changes: None,
             verification: None,
             quality: Default::default(),
+        }
+    }
+
+    /// What an answered turn shows about the model that ran it: its cache, its window and its
+    /// tokens per character. Each is kept only when the turn reported what it is built from.
+    fn learn_from(
+        &mut self,
+        spec: &catalog::ModelSpec,
+        sent_chars: usize,
+        had_it_all: bool,
+        usage: &jev_backend::Usage
+    ) {
+        let now = (self.now)();
+        let key = CacheKey::new(
+            spec.provider,
+            spec.id,
+            &self.runtime.fundings.identity(spec.provider)
+        );
+        // How long the cache sat between turns counts only when the last turn left some behind.
+        let gap = self.routing.warm
+            .take()
+            .filter(|w| w.key() == key && w.tokens > 0)
+            .map(|w| self.attempt_started_ms.saturating_sub(w.seen_ms));
+        if self.cache_book.observe(&key, usage, gap, now) {
+            self.cache_book = crate::application::cache_store::save(
+                &*self.host,
+                &self.cache_book,
+                self.settings.as_deref(),
+                now
+            );
+        }
+        self.routing.warm = Some(
+            WarmCache::after_turn(&key, usage, now, self.cache_book.get(&key))
+        );
+        if let Some(tokens) = usage.window_tokens {
+            self.runtime.observe_window(spec.provider, spec.id, u64::from(tokens));
+        }
+        if had_it_all {
+            self.ratios.observe(spec.provider, sent_chars, usage);
         }
     }
 

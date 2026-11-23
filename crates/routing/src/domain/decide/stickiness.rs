@@ -53,8 +53,8 @@ pub(super) fn sticky(
     }
     // A big warm cache is only given up for a better model or a forced reason, not for an
     // equally strong one elsewhere.
-    if !gate.forced && as_strong_here && cache::worth_keeping(state.warm.as_ref(), cur.provider, input.now_ms) {
-        let tokens = state.warm.map_or(0, |w| w.tokens);
+    if !gate.forced && as_strong_here && cache::worth_keeping(state.warm.as_ref(), cur.provider, cur.id, input.now_ms) {
+        let tokens = state.warm.as_ref().map_or(0, |w| w.tokens);
         let why = format!("keeping {}: its {} token cache is warm and no stronger model is on offer", cur.provider, jev_shared::domain::wording::human_count(tokens));
         return hold_within(state, task, cur, &own, why);
     }

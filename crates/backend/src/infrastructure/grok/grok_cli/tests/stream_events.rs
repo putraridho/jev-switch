@@ -25,7 +25,8 @@ fn normal_turn_parses_to_tool_text_finish() {
     // 932 uncached + 1500 cache reads + 200 cache writes.
     assert_eq!(
         f.usage,
-        Usage { input_tokens: 2632, cached_input_tokens: 1500, output_tokens: 54, context_tokens: None, ..Usage::default() }
+        Usage { input_tokens: 2632, cached_input_tokens: 1500, output_tokens: 54, context_tokens: None,
+        cache_written_tokens: Some(200), ..Usage::default() }
     );
 }
 

@@ -368,39 +368,39 @@ Each answer carries a coloured gutter and a header naming the provider and model
 colour-blind safe accents, `JEV_CODE_THEME_OVERRIDES='claude.accent=#d97706;codex.glyph=*;gemini.badge=agy'`
 to change an accent, glyph or badge; truecolor, 256 and 16-colour terminals are detected.
 
-| command                     | what it does                                                                                                                                                                                                       |
-| --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `/model [target]`           | pin a model or provider, or `auto` to let the router choose. `target` is `auto`, `<provider>`, `<provider>:<model>` or `sonnet`/`opus`/`haiku`; with no argument, show the pin. Pins are never silently overridden |
-| `/provider auto\|off`       | route across providers (default), or Claude only                                                                                                                                                                   |
-| `/orchestrate [on\|off]`    | let a planner split a big task across cheaper workers (below)                                                                                                                                                      |
-| `/thinking [on\|off]`       | print the model's whole reasoning for the turn, or only its one-line trace; the choice is kept for the next session                                                                                                |
-| `/new`                      | start a fresh session on every provider; the saved ones stay and can be resumed                                                                                                                                    |
-| `/rename [name]`            | name this session; the footer shows the name and `/resume` lists the session by it                                                                                                                                 |
-| `/resume`                   | pick up the most recent saved session of this folder other than the running one; again, the one before                                                                                                             |
-| `/diff [file]`              | show what the last turn changed, coloured, through `$PAGER` (default `less -R`) when it is long and you are on a terminal                                                                                          |
-| `/undo`                     | revert the last turn's file changes; lists the files and asks `Revert N files? [y/N]` first; refuses without a terminal, and refuses if you edited those files since                                               |
-| `/why`                      | the full reason the router picked the last turn's model, and whether it is pinned                                                                                                                                  |
-| `/workflows`                | orchestration in this project: whether it is on, workers running or waiting for the planner to review, recent delegations (who did what, how it went), the last day's totals (also `/workers`)                     |
-| `/clear`                    | clear the screen and start a fresh session                                                                                                                                                                         |
-| `/edit`                     | write the message in `$VISUAL`/`$EDITOR` (default `vi`), then send it                                                                                                                                              |
-| `/compact [focus]`          | have the model summarise the conversation (read-only), then start a fresh session that gets the summary with your next message; frees the context window                                                           |
-| `/context`                  | how full the last model's context window is, as tokens, a share and a bar                                                                                                                                          |
-| `/copy`                     | copy the last answer to the clipboard (`wl-copy`, `xclip`, `xsel`, `pbcopy`, else the terminal's OSC 52)                                                                                                           |
-| `/export [file]`            | save the conversation as Markdown (default `jev-session-<time>.md` in the project; never overwrites)                                                                                                               |
-| `/init`                     | have the agent write `AGENTS.md` and point `CLAUDE.md`/`GEMINI.md` at it, so every CLI gets the same instructions                                                                                                  |
-| `/memory`                   | open the instructions file (`AGENTS.md`, `CLAUDE.md` or `GEMINI.md`) in the editor                                                                                                                                 |
-| `/review [focus]`           | review the uncommitted changes for bugs, in plan mode (nothing is edited)                                                                                                                                          |
-| `/quit`                     | exit (also `/exit`)                                                                                                                                                                                                |
-| `/help`                     | commands and keys                                                                                                                                                                                                  |
-| `/status`                   | project, routing, pin, ready providers with plan use, cooldowns, last turn                                                                                                                                         |
-| `/cost`                     | tokens and time of this session by model, and how full each plan window is (also `/usage`)                                                                                                                         |
-| `/config`                   | the effective settings and the files they live in (keys show only as set / not set)                                                                                                                                |
-| `/providers [refresh\|probe]` | what was detected and why each provider can or cannot run, with the readiness rung each has reached; `refresh` probes again, `probe` runs the capability check (no prompt, no quota)                              |
-| `/mcp [list\|login <srv>]`  | show configured MCP servers across ready providers, or log in (`/mcp login <server>`)                                                                                                                              |
-| `/doctor`                   | the setup check, inside the session                                                                                                                                                                                |
-| `/update`                   | update jev-code: fetches its checkout's upstream (`origin/main`), shows the new commits and version, and after a yes fast-forwards and runs `scripts/install.sh`; `jev-code update [--yes]` from the shell         |
-| `/terminal-setup [install]` | make Shift-Enter insert a new line: shows the line for your terminal (kitty, Ghostty, Alacritty, foot, WezTerm, VS Code); `install` adds it, with a backup                                                         |
-| `!command`                  | run a shell command in the project; its output is shown and goes with your next message                                                                                                                            |
+| command                       | what it does                                                                                                                                                                                                       |
+| ----------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `/model [target]`             | pin a model or provider, or `auto` to let the router choose. `target` is `auto`, `<provider>`, `<provider>:<model>` or `sonnet`/`opus`/`haiku`; with no argument, show the pin. Pins are never silently overridden |
+| `/provider auto\|off`         | route across providers (default), or Claude only                                                                                                                                                                   |
+| `/orchestrate [on\|off]`      | let a planner split a big task across cheaper workers (below)                                                                                                                                                      |
+| `/thinking [on\|off]`         | print the model's whole reasoning for the turn, or only its one-line trace; the choice is kept for the next session                                                                                                |
+| `/new`                        | start a fresh session on every provider; the saved ones stay and can be resumed                                                                                                                                    |
+| `/rename [name]`              | name this session; the footer shows the name and `/resume` lists the session by it                                                                                                                                 |
+| `/resume`                     | pick up the most recent saved session of this folder other than the running one; again, the one before                                                                                                             |
+| `/diff [file]`                | show what the last turn changed, coloured, through `$PAGER` (default `less -R`) when it is long and you are on a terminal                                                                                          |
+| `/undo`                       | revert the last turn's file changes; lists the files and asks `Revert N files? [y/N]` first; refuses without a terminal, and refuses if you edited those files since                                               |
+| `/why`                        | the full reason the router picked the last turn's model, and whether it is pinned                                                                                                                                  |
+| `/workflows`                  | orchestration in this project: whether it is on, workers running or waiting for the planner to review, recent delegations (who did what, how it went), the last day's totals (also `/workers`)                     |
+| `/clear`                      | clear the screen and start a fresh session                                                                                                                                                                         |
+| `/edit`                       | write the message in `$VISUAL`/`$EDITOR` (default `vi`), then send it                                                                                                                                              |
+| `/compact [focus]`            | have the model summarise the conversation (read-only), then start a fresh session that gets the summary with your next message; frees the context window                                                           |
+| `/context`                    | how full the last model's context window is, as tokens, a share and a bar                                                                                                                                          |
+| `/copy`                       | copy the last answer to the clipboard (`wl-copy`, `xclip`, `xsel`, `pbcopy`, else the terminal's OSC 52)                                                                                                           |
+| `/export [file]`              | save the conversation as Markdown (default `jev-session-<time>.md` in the project; never overwrites)                                                                                                               |
+| `/init`                       | have the agent write `AGENTS.md` and point `CLAUDE.md`/`GEMINI.md` at it, so every CLI gets the same instructions                                                                                                  |
+| `/memory`                     | open the instructions file (`AGENTS.md`, `CLAUDE.md` or `GEMINI.md`) in the editor                                                                                                                                 |
+| `/review [focus]`             | review the uncommitted changes for bugs, in plan mode (nothing is edited)                                                                                                                                          |
+| `/quit`                       | exit (also `/exit`)                                                                                                                                                                                                |
+| `/help`                       | commands and keys                                                                                                                                                                                                  |
+| `/status`                     | project, routing, pin, ready providers with plan use, cooldowns, last turn                                                                                                                                         |
+| `/cost`                       | tokens and time of this session by model, and how full each plan window is (also `/usage`)                                                                                                                         |
+| `/config`                     | the effective settings and the files they live in (keys show only as set / not set)                                                                                                                                |
+| `/providers [refresh\|probe]` | what was detected and why each provider can or cannot run, with the readiness rung each has reached; `refresh` probes again, `probe` runs the capability check (no prompt, no quota)                               |
+| `/mcp [list\|login <srv>]`    | show configured MCP servers across ready providers, or log in (`/mcp login <server>`)                                                                                                                              |
+| `/doctor`                     | the setup check, inside the session                                                                                                                                                                                |
+| `/update`                     | update jev-code: fetches its checkout's upstream (`origin/main`), shows the new commits and version, and after a yes fast-forwards and runs `scripts/install.sh`; `jev-code update [--yes]` from the shell         |
+| `/terminal-setup [install]`   | make Shift-Enter insert a new line: shows the line for your terminal (kitty, Ghostty, Alacritty, foot, WezTerm, VS Code); `install` adds it, with a backup                                                         |
+| `!command`                    | run a shell command in the project; its output is shown and goes with your next message                                                                                                                            |
 
 A mistyped command (`/provders`) is never sent to the model: it says so and suggests the closest one.
 
@@ -421,7 +421,7 @@ checked.
 
 **Budget: paid money and subscription quota are different limits.** `/budget` shows both, apart.
 
-- *Paid money* is a hard limit: `/budget usd 5` or `/budget tokens 2m` caps one session, and
+- _Paid money_ is a hard limit: `/budget usd 5` or `/budget tokens 2m` caps one session, and
   `/budget daily usd 20` caps one UTC day over every session. Every attempt that costs money
   (a per-token API, credits, or a CLI not on its native login) must be admitted first: it
   reserves its estimated maximum (its prompt plus an assumed 16k output tokens), and is refused
@@ -434,27 +434,27 @@ checked.
   paid amount closes the cap. A reservation whose process died is reaped the same way. A dollar
   cap also needs a price in `prices.txt` for the model. The cap is checked when an attempt starts:
   one that overruns its estimate is counted afterwards but not cut off mid-way.
-- *Subscription quota* is a soft limit: `/budget allowance 5m` sets tokens per subscription
+- _Subscription quota_ is a soft limit: `/budget allowance 5m` sets tokens per subscription
   provider and session. Past it, jev-code warns and carries on; it never refuses. The plan's real
   limit is the provider's, reported late and roughly, so jev-code cannot enforce it.
 - A new jev-code session starts with a fresh session ledger; the daily cap and `/budget` "today"
   total keep counting across sessions. `/budget off` clears the session cap, `daily off` and
   `allowance off` the others. Limits are kept in `<state dir>/budget`, one per line.
 
-| key                  | what it does                                                                                                                                                                                                                                    |
-| -------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `/`, `@`             | open the command menu or the file menu (above); Tab completes the selected item, Enter runs it                                                                                                                                                  |
-| typing during a turn | the box stays usable; Enter queues the message (queued ones are listed above the box, in order). On Claude the model takes it into the turn that is running, at its next step, as in Claude Code; on the other providers it runs after the turn |
-| Esc                  | while a turn runs: stop it; a message typed before Esc is sent right after (queued ones keep waiting)                                                                                                                                           |
-| Ctrl-C               | while a turn runs: stop it (the model CLI and everything it started are killed), drop the queue, and carry on; in the box: clear it; on an empty box, press again within 2 s to exit                                                            |
-| Ctrl-D               | exit (on an empty box)                                                                                                                                                                                                                          |
-| Shift-Enter          | a new line inside your message (terminals with the keyboard protocol: kitty, Ghostty, WezTerm, foot, iTerm2; elsewhere after `/terminal-setup`); Alt-Enter, Ctrl-J and `\` then Enter work everywhere; pasting keeps lines                      |
-| Ctrl-R               | the next earlier message containing what is typed                                                                                                                                                                                               |
-| →                    | take the dim suggestion: on an empty box, the next step the last answer offered ("Want me to commit this?" suggests `commit this`, worked out locally, nothing is sent); while typing, the rest of an earlier message                           |
-| Shift-Tab            | cycle the permission mode (ask, edit, plan, auto); a change during a turn applies from the next one                                                                                                                                             |
+| key                  | what it does                                                                                                                                                                                                                                                                          |
+| -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `/`, `@`             | open the command menu or the file menu (above); Tab completes the selected item, Enter runs it                                                                                                                                                                                        |
+| typing during a turn | the box stays usable; Enter queues the message (queued ones are listed above the box, in order). On Claude the model takes it into the turn that is running, at its next step, as in Claude Code; on the other providers it runs after the turn                                       |
+| Esc                  | while a turn runs: stop it; a message typed before Esc is sent right after (queued ones keep waiting)                                                                                                                                                                                 |
+| Ctrl-C               | while a turn runs: stop it (the model CLI and everything it started are killed), drop the queue, and carry on; in the box: clear it; on an empty box, press again within 2 s to exit                                                                                                  |
+| Ctrl-D               | exit (on an empty box)                                                                                                                                                                                                                                                                |
+| Shift-Enter          | a new line inside your message (terminals with the keyboard protocol: kitty, Ghostty, WezTerm, foot, iTerm2; elsewhere after `/terminal-setup`); Alt-Enter, Ctrl-J and `\` then Enter work everywhere; pasting keeps lines                                                            |
+| Ctrl-R               | the next earlier message containing what is typed                                                                                                                                                                                                                                     |
+| →                    | take the dim suggestion: on an empty box, the next step the last answer offered ("Want me to commit this?" suggests `commit this`, worked out locally, nothing is sent); while typing, the rest of an earlier message                                                                 |
+| Shift-Tab            | cycle the permission mode (ask, edit, plan, auto); a change during a turn applies from the next one                                                                                                                                                                                   |
 | Ctrl-V               | paste a copied PNG image, file-manager selection or text on Linux (`wl-clipboard` on Wayland, `xclip` on X11); images are saved privately under the state directory for attachment and session reuse. Use Ctrl-V for screenshots; the terminal’s usual paste shortcut only sends text |
-| drag and drop        | dropping a file or image into the terminal pastes its path; images are sent as images (Claude, Codex) or by path (Gemini, Grok), other files and folders become plain paths the model opens                                                     |
-| ↑ / ↓                | earlier messages, kept across runs in `<state dir>/history` (private, 2000 lines)                                                                                                                                                               |
+| drag and drop        | dropping a file or image into the terminal pastes its path; images are sent as images (Claude, Codex) or by path (Gemini, Grok), other files and folders become plain paths the model opens                                                                                           |
+| ↑ / ↓                | earlier messages, kept across runs in `<state dir>/history` (private, 2000 lines)                                                                                                                                                                                                     |
 
 Piped input still works (`printf 'explain src/lib.rs\n/quit\n' | jev-code`): one line per
 message, no prompt, no colours, no live line. `NO_COLOR=1` keeps the box and menus but draws them
@@ -540,13 +540,13 @@ need the Jev key to start: `JEV_API_KEY` (or `TYPESAFE_API_KEY`), `JEV_PROVIDERS
 
 What each needs, and how far to trust it:
 
-| provider | needs                                                                       | log in with               | billing                                                                   | tried against the real CLI                                                                  |
-| -------- | --------------------------------------------------------------------------- | ------------------------- | ------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------- |
-| claude   | `claude` installed and logged in                                            | `claude auth login`       | your plan; Fable only with `JEV_ALLOW_CREDITS=1` (automatic on Max/Ultra) | yes                                                                                         |
-| codex    | `codex` installed and logged in (ChatGPT plan); it needs a git repository   | `codex login`             | your plan                                                                 | yes                                                                                         |
-| gemini   | `agy` (Antigravity) logged in; `gemini` with auth only when `agy` is absent | `agy` (sign in)           | your plan                                                                 | no, from documentation only                                                                 |
-| grok     | Grok Build installed (never executed by the probe)                          | `grok` (sign in)          | your plan                                                                 | no, from documentation only                                                                 |
-| deepseek | `claude` installed and `DEEPSEEK_API_KEY` in the env or `~/.jev-router.env` | add the key               | per token; setting the key is the opt-in                                  | key check yes; that it really bypasses your Claude login and reaches DeepSeek is unverified |
+| provider | needs                                                                       | log in with         | billing                                                                   | tried against the real CLI                                                                  |
+| -------- | --------------------------------------------------------------------------- | ------------------- | ------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------- |
+| claude   | `claude` installed and logged in                                            | `claude auth login` | your plan; Fable only with `JEV_ALLOW_CREDITS=1` (automatic on Max/Ultra) | yes                                                                                         |
+| codex    | `codex` installed and logged in (ChatGPT plan); it needs a git repository   | `codex login`       | your plan                                                                 | yes                                                                                         |
+| gemini   | `agy` (Antigravity) logged in; `gemini` with auth only when `agy` is absent | `agy` (sign in)     | your plan                                                                 | no, from documentation only                                                                 |
+| grok     | Grok Build installed (never executed by the probe)                          | `grok` (sign in)    | your plan                                                                 | no, from documentation only                                                                 |
+| deepseek | `claude` installed and `DEEPSEEK_API_KEY` in the env or `~/.jev-router.env` | add the key         | per token; setting the key is the opt-in                                  | key check yes; that it really bypasses your Claude login and reaches DeepSeek is unverified |
 
 Provider IDs are the names of the CLIs jev-code drives. `gemini` runs Antigravity (`agy`) whenever it is installed, since Google retired Gemini CLI's own login; Gemini CLI is used only on a machine without `agy` where it has auth. The header row and `/providers` show which one is in use.
 
@@ -591,20 +591,20 @@ tried per turn, and a failed attempt's output is never shown as an answer.
 Each provider climbs a ladder: installed, logged in, entitled, protocol-compatible, validated for this project. A rung is
 verified only by evidence (a probe, a capability check, an answered turn) and shows when it was last seen; a rung nothing
 has shown stays "unverified", never assumed fine. Routing needs "logged in" and leaves out a provider whose rung has
-*failed*, with the reason; a provider you pinned is not swapped but told which rung failed and what to do. `/providers`
+_failed_, with the reason; a provider you pinned is not swapped but told which rung failed and what to do. `/providers`
 shows the rung reached, the last evidence time and the next retry per provider, and `jev-code doctor` adds the fix for a
 failed rung (log in, update the CLI, trust this folder).
 
 How a failure is treated depends on what it says:
 
-| Failure | Rung | Policy |
-|---|---|---|
-| login failed or expired | logged in | held until the login file changes (or `/providers refresh` sees a login), at most 24 h |
-| retired or unsupported client | protocol-compatible | held until the CLI file changes, at most 24 h |
-| the CLI refuses this folder (untrusted, not a git repo) | validated for this project | held until the folder's trust changes or `/new`, at most 24 h |
-| a model not on the plan | entitled | that model is remembered as refused for this project |
-| empty answer, stall | protocol-compatible | circuit breaker: 4 in a row pause the provider 10 min, doubling to 2 h; after the pause one trial attempt goes through, an answer closes it, a failure reopens it for twice as long |
-| usage limit | none | the cooldown above |
+| Failure                                                 | Rung                       | Policy                                                                                                                                                                              |
+| ------------------------------------------------------- | -------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| login failed or expired                                 | logged in                  | held until the login file changes (or `/providers refresh` sees a login), at most 24 h                                                                                              |
+| retired or unsupported client                           | protocol-compatible        | held until the CLI file changes, at most 24 h                                                                                                                                       |
+| the CLI refuses this folder (untrusted, not a git repo) | validated for this project | held until the folder's trust changes or `/new`, at most 24 h                                                                                                                       |
+| a model not on the plan                                 | entitled                   | that model is remembered as refused for this project                                                                                                                                |
+| empty answer, stall                                     | protocol-compatible        | circuit breaker: 4 in a row pause the provider 10 min, doubling to 2 h; after the pause one trial attempt goes through, an answer closes it, a failure reopens it for twice as long |
+| usage limit                                             | none                       | the cooldown above                                                                                                                                                                  |
 
 Verdicts are saved to `provider-readiness.json` and `provider-health.json` in the state folder, keyed by the CLI file, the
 funding backend, the login file's time and size, and the folder with its trust, so a new CLI version, account, backend or
@@ -622,6 +622,34 @@ files touched, commands run, `git status`) is put in front of the prompt. Switch
 costs a cold session, so the router changes provider only for a confident new task,
 likely correction, or security work; within a provider an upgrade is immediate and a
 downgrade is held for a few turns (the prompt cache).
+
+#### Context windows and prompt caches are per backend
+
+Both are facts about one model on one backend (its native login, an API key or a custom
+endpoint), never about the model name alone, and both are advisory: a cache never overrides
+the task's quality floor, a hard rule, plan steering or a pin.
+
+- **Windows.** The catalog's size is the cold-start value. A window the machine's own backend
+  reports replaces it for that backend only: Codex's model cache (`models_cache.json`) and
+  the `model_context_window` in a thread's rollout, the `modelUsage` window Claude Code
+  (and DeepSeek through it) prints for a turn that ran one model, and the `usage_update`
+  size an ACP agent (Grok, Antigravity) sends. A zero or absurd
+  number is ignored. A window learned on a custom endpoint is not applied to the native login.
+- **What a request holds.** Models are filtered on the session's size plus what the request
+  adds in the receiving provider's tokens: the new prompt, the catch-up text when the
+  provider is behind, tool definitions (assumed 8k) and room for the answer (assumed 16k).
+  Characters become tokens at 4 per token until a turn with a reported per-request context
+  size measures the provider's own rate; turns without known usage teach nothing.
+- **Caches.** After an answer only the part the provider reported as read (and written, where
+  it says) is treated as cached, never the whole context. How long a cache lives starts as a
+  prior (5 minutes for Claude, Codex and Grok; 1 minute where nothing is documented, so
+  Gemini and DeepSeek are never "warm forever") and a cached read is assumed to cost 10%.
+  A hit seen after a gap proves a window at least that long; a miss after a gap suggests a
+  shorter one. The hit ratio is counted per (provider, model, backend) from turns that
+  reported usage and kept, with counts and gaps only, in `cache-facts.tsv` in the state
+  folder for 30 days. `/bench` lists each ratio with its number of turns and marks each
+  window `assumed` or `observed`; a cache that counted turns show rarely hits (under 30% over
+  at least 3 turns) no longer holds a model.
 
 #### Hard security rule
 

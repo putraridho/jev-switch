@@ -20,6 +20,7 @@ fn gemini_usage(stats: &Value) -> Usage {
         output_tokens: uint(stats, "output_tokens"),
         context_tokens: None,
         measurement: measurement_of(stats),
+        ..Usage::default()
     }
 }
 

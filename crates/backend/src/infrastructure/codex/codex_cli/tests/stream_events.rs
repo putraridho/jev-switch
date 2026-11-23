@@ -13,8 +13,16 @@ fn consumption_requires_numeric_input_and_output_but_zero_is_reported() {
         let events = backend().parse_line(&line.to_string());
         let Event::Finished(finish) = &events[0] else { panic!("{events:?}") };
         assert_eq!(finish.usage, Usage { measurement, ..Usage::default() }, "{line}");
-        let usage = super::super::stream_events::usage_of(&line["usage"], Some(50_000));
-        assert_eq!(usage, Usage { measurement, context_tokens: Some(50_000), ..Usage::default() });
+        let usage = super::super::stream_events::usage_of(&line["usage"], Some(50_000), Some(475_000));
+        assert_eq!(
+            usage,
+            Usage {
+                measurement,
+                context_tokens: Some(50_000),
+                window_tokens: Some(475_000),
+                ..Usage::default()
+            }
+        );
     }
 }
 

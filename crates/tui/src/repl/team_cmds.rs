@@ -60,7 +60,8 @@ impl Repl {
             ExtCmd::Audit(n) => self.page_out(&audit_log::audit_text(&self.audit_entries(), n)),
             ExtCmd::History => self.page_out(&audit_log::history_text(&audit_log::history(&self.audit_entries()))),
             ExtCmd::Bench => {
-                self.page_out(&bench::bench_report(&self.audit_entries(), self.engine.dir()));
+                self.page_out(&bench::bench_report(&self.audit_entries(), self.engine.dir(),
+                        self.engine.cache_book()));
             }
             ExtCmd::Replay(n) => self.replay(n),
             ExtCmd::Invalid(message) => self.console.out(&format!("{} {message}", style.yellow("⚠"))),

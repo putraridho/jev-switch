@@ -27,7 +27,18 @@ fn usage_of(result: &Value) -> Usage {
         output_tokens: count(u, "output_tokens"),
         context_tokens: last.filter(|usage| usage["input_tokens"].as_u64().is_some()).map(total_input),
         measurement: measurement_of(u),
-    }
+        cache_written_tokens: Usage::narrow(u["cache_creation_input_tokens"].as_u64()),
+        window_tokens: Usage::narrow(model_window(&result["modelUsage"])) }
+}
+
+/// The window Claude Code reports for the model that ran (`modelUsage.<model>.contextWindow`);
+/// `None` when it reports none or the turn used several models (a subagent on another model),
+/// since one number could not say which model it belongs to.
+fn model_window(model_usage: &Value) -> Option<u64> {
+    let models = model_usage.as_object()?;
+    let mut windows = models.values().map(|m| m["contextWindow"].as_u64());
+    let only = windows.next()??;
+    windows.next().is_none().then_some(only)
 }
 
 pub(super) fn assistant_events(ev: &Value) -> Vec<Event> {
