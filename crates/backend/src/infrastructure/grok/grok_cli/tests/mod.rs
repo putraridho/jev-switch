@@ -9,6 +9,7 @@ use crate::{Event, Usage};
 mod auth;
 mod command;
 mod errors;
+mod key_home;
 mod stream_events;
 
 pub(super) const TURN1: &str = fixture!("grok/turn1.jsonl");

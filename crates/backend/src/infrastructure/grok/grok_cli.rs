@@ -21,6 +21,7 @@ use crate::{Backend, Decision, ErrorKind, Event, PermissionRequest, PromptFiles,
 
 mod command;
 mod errors;
+pub mod key_home;
 mod stream_events;
 #[cfg(test)]
 mod tests;

@@ -11,7 +11,7 @@ Codex, Gemini, Grok and DeepSeek, using the subscriptions you already have.
 - macOS or Linux (Windows through WSL)
 - Rust 1.83+ and git
 - A Jev API key
-- At least one provider CLI, installed and logged in: `claude`, `codex`, `gemini` or `grok` (Gemini and Grok also accept an API key, `GEMINI_API_KEY` or `XAI_API_KEY`, in your shell or `~/.jev-router.env`)
+- At least one provider CLI, installed and logged in: `claude`, `codex`, `gemini` or `grok` (Gemini and Grok also accept an API key, `GEMINI_API_KEY` or `XAI_API_KEY`, in your shell or `~/.jev-router.env`; a key set there is used even if you are also logged in)
 
 ## Installation
 

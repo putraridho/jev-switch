@@ -37,8 +37,11 @@ pub fn worker_backend_for(provider: ProviderId) -> Box<dyn Backend> {
     }
 }
 
+/// Grok with the key from the shell or `~/.jev-router.env`; when the user is also signed in,
+/// under a Grok home without the login so the key is the one used (see `key_home`).
 fn grok_backend() -> GrokBackend {
-    GrokBackend::grok().with_env(jev_backend::infrastructure::grok::grok_cli::auth_env(&envfile::lookup))
+    use jev_backend::infrastructure::grok::grok_cli::{auth_env, key_home};
+    GrokBackend::grok().with_env(key_home::with_key_home(auth_env(&envfile::lookup), &envfile::lookup))
 }
 
 /// The backends of a `jev-code` run: [`session_backend_for`] when someone can answer an

@@ -4,6 +4,12 @@ See [docs/changelog-guide.md](docs/changelog-guide.md) for changelog formatting,
 
 ## Unreleased
 
+## 1.11.12
+
+Grok bills your API key, not your login's plan.
+
+- **Grok uses your `XAI_API_KEY` even when you are also signed in with `grok login`.** The Grok CLI prefers a saved login over the key, so turns ran on the login's plan and stopped at its free usage limit. With a key set, jev-code now runs Grok under a Grok home that links everything in `~/.grok` except the login (`~/.local/state/jev-router/grok-key-home`). Sessions, config, skills and memory stay shared, and your login is left untouched for plain `grok`.
+
 ## 1.11.11
 
 Routing safeguards, honest usage accounting, bounded handoffs, and budget-aware workers.

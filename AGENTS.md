@@ -83,4 +83,5 @@ All code must follow Domain-Driven Design. The architecture is in `docs/architec
 - Git-backed tests need a git identity (`git config user.email/name`).
 - Turn records (`TurnRecord`, `TurnReport`, `audit::Event::Turn`) are built as struct literals in many tests; adding a field means fixing each. New audit fields need `#[serde(default)]` so old `audit.jsonl` lines still read.
 - Runtime state, including the audit log, is in `~/.local/state/jev-router/` (`audit.jsonl`: per-turn model, time and tokens; `/bench` reads it).
+- The Grok CLI prefers a saved `grok login` (`~/.grok/auth.json`) over `XAI_API_KEY`, and a harness cannot change that (`GROK_CONFIG` refuses auth settings). With a key set and a login present, jev-code runs Grok with `GROK_HOME=~/.local/state/jev-router/grok-key-home`: a folder of symlinks to every `~/.grok` entry except `auth.json*`, re-synced before each turn (`crates/backend/src/infrastructure/grok/grok_cli/key_home.rs`). Never write a login or real files into that folder, and never edit the user's `~/.grok` to force the key.
 - `NEXT.md` is a stale handoff note, not a spec; `.claude/` is gitignored.
