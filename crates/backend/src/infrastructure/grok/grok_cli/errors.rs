@@ -37,12 +37,21 @@ fn is_unknown_model(lower: &str) -> bool {
     lower.contains("unknown model id")
 }
 
+/// Grok ended the run itself with the bare word "cancelled" (seen twice on 2026-11-23, 13s
+/// and 80s into a turn, with no key pressed). The user's own Ctrl-C never reaches here (the
+/// engine stops the process first), so this is the run dying mid-way: a turn fails over.
+fn is_self_cancel(lower: &str) -> bool {
+    matches!(lower.trim().trim_end_matches('.'), "cancelled" | "canceled")
+}
+
 pub(super) fn classify(message: &str) -> ErrorKind {
     if let Some(kind) = classify_common(message) {
         return kind;
     }
     let lower = message.to_lowercase();
-    if is_entitlement_text(&lower) || is_unknown_model(&lower) {
+    if is_self_cancel(&lower) {
+        ErrorKind::Stalled
+    } else if is_entitlement_text(&lower) || is_unknown_model(&lower) {
         ErrorKind::NotEntitled
     } else if is_auth_text(&lower) {
         ErrorKind::Auth

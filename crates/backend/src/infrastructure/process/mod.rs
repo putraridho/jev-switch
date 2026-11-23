@@ -1,4 +1,5 @@
 pub mod child;
+mod failure_record;
 pub mod idle_watchdog;
 pub mod output_pump;
 pub mod process_group;

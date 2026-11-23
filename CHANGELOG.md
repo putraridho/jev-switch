@@ -4,6 +4,13 @@ See [docs/changelog-guide.md](docs/changelog-guide.md) for changelog formatting,
 
 ## Unreleased
 
+## 1.11.8
+
+A Grok run that dies with `cancelled` fails over instead of ending the turn, and failed CLI lines are kept for diagnosis.
+
+- **A Grok run that reports `cancelled` on its own moves to the next model.** Grok sometimes ended a turn with the bare word `cancelled` (13s and 80s in, no key pressed). It was classified as an ordinary failure, so the turn stopped with no answer and had to be sent again. It is now treated like a stalled run: the turn fails over, with a note that the model stopped answering. Your own Ctrl-C is unaffected, and a longer message that merely contains the word is still an ordinary failure.
+- **The raw line behind a failed CLI attempt is kept.** The turn log only holds the message a backend extracts, which can be one word. Every failure line a provider CLI prints is now also appended, with secrets masked and cut at 4000 characters, to `provider-failures.jsonl` in the state folder (`JEV_FAILURE_LOG` moves it), so the cause of the next one can be read.
+
 ## 1.11.7
 
 - **Paste copied images and files with Ctrl-V on Linux.** The interactive prompt now reads PNG images, file-manager selections and text from the Wayland or X11 clipboard (requires `wl-clipboard` or `xclip`). Images are saved privately and attached to the next message; clipboard failures appear in the prompt.

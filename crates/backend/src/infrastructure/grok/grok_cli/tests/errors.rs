@@ -91,3 +91,12 @@ fn auth_needs_a_login_phrase_not_common_word_pairs() {
         assert_eq!(backend().classify_error(text), ErrorKind::Auth, "{text:?}");
     }
 }
+
+#[test]
+fn a_bare_cancelled_from_grok_is_a_dead_run_that_fails_over() {
+    for message in ["cancelled", "Cancelled.", " canceled "] {
+        assert_eq!(backend().classify_error(message), ErrorKind::Stalled, "{message}");
+    }
+    // Only the bare word: a sentence that mentions it is still an ordinary failure.
+    assert_eq!(backend().classify_error("tool call cancelled by hook"), ErrorKind::Other);
+}

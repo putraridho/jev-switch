@@ -98,7 +98,9 @@ impl Pump<'_> {
         if !matches!(read, Ok(n) if n > 0) && self.raw.is_empty() {
             return Line::Eof;
         }
-        let events = self.backend.parse_line(&String::from_utf8_lossy(&self.raw));
+        let line = String::from_utf8_lossy(&self.raw);
+        let events = self.backend.parse_line(&line);
+        super::failure_record::note(self.backend.provider(), &line, &events);
         for response in self.backend.take_responses() {
             self.feed.send(response);
         }

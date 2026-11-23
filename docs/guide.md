@@ -681,6 +681,12 @@ never chosen as planner; with no planner available the turn runs normally and th
 does not read it yet. Codex attaching the tool through `-c mcp_servers...` overrides was
 checked against `codex exec --help` only, not run.
 
+When a provider CLI's output line is a failure, the line itself (secrets masked, cut at 4000
+characters) is also appended to `<state dir>/provider-failures.jsonl` as
+`{ts_ms, provider, message, truncated, raw}`. The turn log keeps only the extracted message,
+which can be one bare word (Grok's `cancelled`); this file shows what the CLI really sent.
+`JEV_FAILURE_LOG` moves it.
+
 #### Routing off (Claude only)
 
 Routing off (`/provider off`, kept for the next `jev-code`; or `JEV_PROVIDERS=off`) is the earlier Claude-only
