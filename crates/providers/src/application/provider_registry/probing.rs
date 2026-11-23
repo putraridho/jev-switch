@@ -31,6 +31,7 @@ impl Runtime {
     /// reading is saved to `plan_path`.
     fn seed_usage(&mut self) {
         self.load_health();
+        self.windows = self.host.reported_windows();
         let plan_path = self.host.plan_path();
         if let Some(path) = &plan_path {
             self.plan = self.host.load_plans(path);

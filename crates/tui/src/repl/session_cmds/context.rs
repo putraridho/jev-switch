@@ -90,7 +90,7 @@ impl Repl {
     pub fn context_percent(&self) -> Option<u8> {
         let last = self.log.turns().iter().rev().find(|t| t.usage.is_some())?;
         let usage = last.usage.unwrap_or_default();
-        let window = last.route.as_ref().and_then(|(p, m)| catalog::find(*p, m)).map(|s| s.context_tokens)?;
+        let window = last.route.as_ref().and_then(|(p, m)| catalog::find(*p, m)).map(|s| self.engine.runtime.window_of(s))?;
         let used = usage.context_tokens?;
         (window > 0).then(|| ((used.saturating_mul(100)) / window).min(100) as u8)
     }
@@ -100,7 +100,7 @@ impl Repl {
         let last = self.log.turns().iter().rev().find(|t| t.usage.is_some());
         let facts = last.map(|t| {
             let usage = t.usage.unwrap_or_default();
-            let window = t.route.as_ref().and_then(|(p, m)| catalog::find(*p, m)).map(|s| s.context_tokens);
+            let window = t.route.as_ref().and_then(|(p, m)| catalog::find(*p, m)).map(|s| self.engine.runtime.window_of(s));
             ContextFacts {
                 model: t.model.clone(),
                 used: usage.context_tokens,

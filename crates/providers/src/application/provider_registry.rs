@@ -65,6 +65,9 @@ pub struct Runtime {
     breakers: Breakers,
     /// Where `breakers` are saved; `None` when there is no state directory.
     breaker_path: Option<PathBuf>,
+    /// Context windows the machine's own backends reported, read at start; they replace the
+    /// catalog's fixed sizes in [`Runtime::usable`].
+    windows: HashMap<(ProviderId, String), u64>,
     /// The background retry of probes that timed out at startup, until
     /// [`Runtime::absorb_late`] has folded its answers into `avail`.
     late: Option<LateProbes>,
@@ -143,6 +146,7 @@ impl Runtime {
             blocked: HashMap::new(),
             breakers: Breakers::default(),
             breaker_path: None,
+            windows: HashMap::new(),
             late: None,
             host,
         }

@@ -41,3 +41,14 @@ use super::*;
         assert!(u.contains(claude[0]));
         assert!(!u.contains(claude[1]));
     }
+
+    #[test]
+    fn usable_carries_the_windows_the_backend_reported() {
+        let mut rt = runtime();
+        let codex = some_model(Codex);
+        assert_eq!(rt.usable(NOW).window_of(codex), codex.context_tokens);
+        rt.windows.insert((Codex, codex.id.to_string()), 123_456);
+        assert_eq!(rt.usable(NOW).window_of(codex), 123_456);
+        rt.blocked.insert(Claude, super::super::BlockReason::Auth);
+        assert_eq!(rt.usable(NOW).window_of(codex), 123_456, "also when another provider is skipped");
+    }

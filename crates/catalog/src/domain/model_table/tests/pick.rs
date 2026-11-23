@@ -70,6 +70,19 @@ fn a_session_bigger_than_the_window_skips_the_model() {
 }
 
 #[test]
+fn a_window_the_backend_reported_replaces_the_catalogs_and_survives_filtering() {
+    let chain = default_chain(TaskType::Review, false);
+    let reported = |tokens| std::collections::HashMap::from([((Codex, "gpt-6.1-sol".to_string()), tokens)]);
+    let wide = Usable::all_of([Codex, Claude]).with_windows(reported(900_000));
+    assert_eq!(pick(&chain, TaskType::Review, &wide, &open(), 600_000).unwrap().spec.id, "gpt-6.1-sol", "catalog says 500k, the backend says 900k");
+    let narrow = Usable::all_of([Codex, Claude]).with_windows(reported(100_000));
+    assert_eq!(pick(&chain, TaskType::Review, &Usable::all_of([Codex, Claude]), &open(), 200_000).unwrap().spec.id, "gpt-6.1-sol");
+    assert_ne!(pick(&chain, TaskType::Review, &narrow, &open(), 200_000).unwrap().spec.id, "gpt-6.1-sol", "a smaller reported window also counts");
+    let kept = wide.filter(|_, _| true).only_providers(&[Codex]).without(&Default::default());
+    assert_eq!(pick(&chain, TaskType::Review, &kept, &open(), 600_000).unwrap().spec.id, "gpt-6.1-sol", "filtering keeps the reported windows");
+}
+
+#[test]
 fn only_claude_hard_debug_picks_opus() {
     let usable = Usable::all_of([Claude]);
     let no_credits = Allowances { credits: false, per_token: false };

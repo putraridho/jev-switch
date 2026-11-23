@@ -4,6 +4,8 @@ See [docs/changelog-guide.md](docs/changelog-guide.md) for changelog formatting,
 
 ## Unreleased
 
+- **Codex models use the context window your backend reports.** jev-code reads Codex's own model list (`$CODEX_HOME/models_cache.json`, the usable share of each window) instead of assuming 500k for every Codex model, so a model with a larger window is no longer skipped for a big session, and a smaller one is no longer overfilled. `/context` shows the same window. Models Codex does not list keep the built-in size.
+
 - **A provider that keeps failing is paused instead of rediscovered every session.** After four empty answers, stalls or retired-CLI errors in a row, a provider is skipped for 10 minutes (doubling each time it fails again right after, up to 2 hours), and the pause is remembered across sessions and by workers. Any answer ends it, `/providers refresh` ends it at once, and `/providers` says why a provider is paused. Limits, logins, folder refusals and unknown errors never count.
 
 - **`JEV_VERIFY=on` checks a turn's work with your project's own tests.** After a turn that answered and changed files, jev-code runs the project's test command (the same one workers use), says whether it passed, and `/health` shows how many of each provider's turns passed. The verdict is also kept in the audit log, and `/bench` shows `tests passed N/M` per model, so you can compare models by work that held up, not by answers returned. Off by default; a run with no test command, a timeout or a Ctrl-C counts as not checked, never as a failure.

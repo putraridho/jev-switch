@@ -103,6 +103,10 @@ impl ProviderHost for SystemProbes {
         super::cooldown_file::save(path, cooldowns, now_ms)
     }
 
+    fn reported_windows(&self) -> HashMap<(ProviderId, String), u64> {
+        jev_backend::infrastructure::codex::codex_plan::codex_home().map(|home| super::codex_models::windows_in(&home.join("models_cache.json"))).unwrap_or_default()
+    }
+
     fn load_breakers(&self, path: &Path) -> crate::domain::breaker::Breakers {
         super::health_file::load(path)
     }

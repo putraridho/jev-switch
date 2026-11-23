@@ -26,10 +26,15 @@ impl Runtime {
         let cooldowns = self.current_cooldowns();
         let skipped = |p: ProviderId| self.blocked.contains_key(&p) || self.breakers.open(p, now_ms).is_some();
         if !self.avail.iter().any(|a| skipped(a.provider)) {
-            return usable_from(&self.avail, &cooldowns, &self.unusable_models, now_ms);
+            return usable_from(&self.avail, &cooldowns, &self.unusable_models, now_ms).with_windows(self.windows.clone());
         }
         let unblocked: Vec<Availability> = self.avail.iter().filter(|a| !skipped(a.provider)).cloned().collect();
-        usable_from(&unblocked, &cooldowns, &self.unusable_models, now_ms)
+        usable_from(&unblocked, &cooldowns, &self.unusable_models, now_ms).with_windows(self.windows.clone())
+    }
+
+    /// The tokens a session may fill for `spec`: the window its backend reported, else the catalog's.
+    pub fn window_of(&self, spec: &jev_catalog::domain::model_table::ModelSpec) -> u64 {
+        self.windows.get(&(spec.provider, spec.id.to_string())).copied().unwrap_or(spec.context_tokens)
     }
 
     /// How long `p` is still cooling down after a usage limit, in ms; `None` when it is not.
