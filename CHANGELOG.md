@@ -4,6 +4,12 @@ See [docs/changelog-guide.md](docs/changelog-guide.md) for changelog formatting,
 
 ## Unreleased
 
+## 1.13.3
+
+Queued messages stay in sync with the running turn.
+
+- **Keep queued messages in sync with the running turn.** Up checks pending provider updates before taking a queued message back for editing. Ctrl-C also withdraws dropped messages from the provider, so they cannot be sent after disappearing from the queue.
+
 ## 1.13.2
 
 A thread now names itself, so the terminal tab shows it.

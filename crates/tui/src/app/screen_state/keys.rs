@@ -202,8 +202,8 @@ impl App {
     fn ctrl_c(&mut self, now: Instant) -> Vec<Action> {
         if self.working.is_some() {
             let dropped = self.queue.len();
-            self.queue.clear();
-            let mut out = vec![Action::Stop];
+            let mut out: Vec<_> = self.queue.drain(..).map(Action::Unsteer).collect();
+            out.push(Action::Stop);
             if dropped > 0 {
                 let noun = if dropped == 1 { "message" } else { "messages" };
                 out.push(Action::Print(format!("  dropped {dropped} queued {noun} (Ctrl-C); Esc stops and keeps them")));

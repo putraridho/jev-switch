@@ -48,7 +48,7 @@ fn ctrl_c_stops_a_turn_and_drops_the_queue_and_twice_on_an_empty_box_exits() {
     a.on_front(FrontMsg::TurnStarted);
     a.queue.push_back("queued".into());
     let out = a.on_key(ctrl_c, Instant::now());
-    assert!(matches!(out.as_slice(), [Action::Stop, Action::Print(_)]));
+    assert!(matches!(out.as_slice(), [Action::Unsteer(text), Action::Stop, Action::Print(_)] if text == "queued"));
     assert!(a.queue.is_empty());
     a.on_front(FrontMsg::TurnEnded);
 

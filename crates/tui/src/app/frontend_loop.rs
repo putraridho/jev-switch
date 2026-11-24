@@ -27,6 +27,8 @@ mod actions;
 mod status;
 mod tty_io;
 mod turn;
+#[cfg(test)]
+mod tests;
 
 use actions::carry_out;
 use status::{provider_chips, refresh, route_label, worker_chips};
@@ -58,6 +60,16 @@ async fn finished(task: &mut Option<JoinHandle<Done>>) -> Option<Done> {
         }
         None => std::future::pending().await,
     }
+}
+
+/// Apply already-reported queue changes before a key can take a message back for editing.
+fn key_after_updates(app: &mut App, rx: &mut mpsc::UnboundedReceiver<FrontMsg>, key: crossterm::event::KeyEvent, now: Instant) -> Vec<Action> {
+    let mut actions = Vec::new();
+    while let Ok(msg) = rx.try_recv() {
+        actions.extend(app.on_front(msg));
+    }
+    actions.extend(app.on_key(key, now));
+    actions
 }
 
 /// Run the interactive session until the person quits. Returns the exit code.
@@ -156,7 +168,7 @@ pub async fn run(repl: Repl, mut rx: mpsc::UnboundedReceiver<FrontMsg>, opts: Op
                     }
                     Vec::new()
                 }
-                Some(Ok(Event::Key(k))) => app.on_key(k, Instant::now()),
+                Some(Ok(Event::Key(k))) => key_after_updates(&mut app, &mut rx, k, Instant::now()),
                 Some(Ok(Event::Paste(text))) => {
                     let pasted = crate::tty::terminal_environment::sanitize_paste(&text);
                     app.on_paste(&pasted.text);

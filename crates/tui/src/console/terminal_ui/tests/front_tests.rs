@@ -160,6 +160,24 @@ fn a_message_taken_back_out_of_the_queue_is_not_also_sent_to_the_turn() {
 }
 
 #[test]
+fn clearing_the_queue_withdraws_every_pending_copy_from_the_turn() {
+    let (front, _heard) = Front::channel();
+    let (c, _, _) = console(false, Style::off(), true);
+    let mut c = c.with_front(front);
+    let mut turn = c.steering().unwrap();
+    let wanted = c.steer_wanted().unwrap();
+    c.queue_message("run tests".into(), false);
+    c.queue_message("run tests".into(), false);
+    assert_eq!(c.clear_queue(), 2);
+    assert_eq!(c.queued_len(), 0);
+    while let Ok(text) = turn.try_recv() {
+        assert!(!wanted(&text));
+    }
+    assert!(c.steer("run tests"));
+    assert!(wanted(&turn.try_recv().unwrap()));
+}
+
+#[test]
 fn commands_typed_during_a_turn_are_never_written_into_it() {
     let (front, _heard) = Front::channel();
     let (mut c, _, _) = console(false, Style::off(), true);

@@ -140,7 +140,8 @@ impl Console {
     pub fn clear_queue(&self) -> usize {
         let mut g = self.lock();
         let n = g.queued.len();
-        g.queued.clear();
+        let dropped: Vec<_> = g.queued.drain(..).collect();
+        g.withdrawn.extend(dropped);
         n
     }
 
