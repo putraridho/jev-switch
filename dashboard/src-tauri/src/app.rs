@@ -15,7 +15,6 @@ pub const PRODUCT_NAME: &str = "Flashboard";
 
 /// Builds the service dependencies and starts the service; `None` when a required path or
 /// store could not be set up (the window still opens, but shows no data).
-#[allow(clippy::too_many_lines)]
 fn start_service(app: &tauri::AppHandle) {
     let state_dir = jev_usage_io::engine_bridge::state_dir();
     let dashboard_dir = state_dir
