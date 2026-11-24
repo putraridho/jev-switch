@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Flashboard
+Exec=/usr/bin/env jev-dashboard --hidden
+Icon=dev.jev.flashboard
+X-GNOME-Autostart-enabled=true
+Terminal=false
+Categories=Utility;

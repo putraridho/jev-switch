@@ -1873,13 +1873,13 @@ The user's bar (1a): **minimalistic but detailed and beautiful, also accessible*
 is a rule the reviewers check.
 
 - **Minimal.** An instrument, not a marketing page. Little chrome: no sidebar, no toolbar
-  rows, no shadows on cards, no decorative icons or illustrations, one header line. Few
-  colours: neutrals and **one** accent; amber and vermilion appear only when a level is
-  reached, so a screen with nothing wrong is almost monochrome. Generous whitespace (card
-  padding 16 to 24 px, 12 px between meter rows, 24 px between cards). One hierarchy per
-  card, in this order and nothing else at rest: the number, the bar, one quiet line.
+  rows, no cards or shadows, no decorative icons or illustrations, one header line. Few
+  colours: neutrals and **one** accent; alert colour appears only when a level is
+  reached, so a screen with nothing wrong is almost monochrome. Generous whitespace (16 to 24 px around provider groups, 12 px between meter
+  rows, 24 px between groups). One hierarchy per
+  provider, in this order and nothing else at rest: the number, the waffle, one quiet line.
 - **Detailed, on demand** (progressive disclosure, three levels):
-  - _Level 0, always visible_: provider, plan, and per window the percentage, the bar and the
+  - _Level 0, always visible_: provider, plan, and per window the percentage, the waffle and the
     time until reset; the freshness of the data.
   - _Level 1, on hover **or** keyboard focus of a meter row_ (the same content either way):
     the exact figure to one decimal, the absolute reset time, the window's status, when the
@@ -1893,9 +1893,9 @@ is a rule the reviewers check.
     goes back one view; one press does one of these. Its complete content is
     **always** in the row's accessible text (`aria-valuetext`), so a screen-reader user gets
     the detail without opening anything, and a keyboard user reaches it with Tab alone.
-- **Beautiful.** Considered typography (two families, a seven-step scale, tabular numerals
+- **Beautiful.** Considered typography (three families, an eight-role scale, numerals
   that line up across cards), one 4 px spacing scale, concentric radii, optical alignment,
-  hairlines instead of boxes, polished light **and** dark themes designed as equals, and
+  hairlines instead of boxes, a warm paper-and-ink palette, and
   motion that is subtle, short, tied to a value changing, and absent under reduced motion.
 - **Accessible.** A hard gate, not a goal: WCAG 2.2 AA (9.10). A task that fails any item of
   9.10 is not done, however good it looks.
@@ -1929,17 +1929,17 @@ quiet line at the bottom.
 │ ┌──────────────────────────────────────────────────────────┐ │
 │ │ ● Claude                                      Max 5x   › │ │  card header
 │ │                                                          │ │
-│ │ 5-hour            50%   ████████████░░░░░░░░░░░░░░       │ │  meter row
+│ │ 5-hour            50%   [10x10 waffle]       │ │  meter row
 │ │                   resets in 2h 14m                       │ │
-│ │ 7-day             37%   █████████░░░░░░░░░░░░░░░░░       │ │
+│ │ 7-day             37%   [10x10 waffle]       │ │
 │ │                   resets in 2d 13h                       │ │
 │ │                                         as of 12:33      │ │  freshness
 │ └──────────────────────────────────────────────────────────┘ │
 │ ┌──────────────────────────────────────────────────────────┐ │
 │ │ ● Codex                                         Plus   › │ │
-│ │ 5-hour            12%   ███░░░░░░░░░░░░░░░░░░░░░░░       │ │
+│ │ 5-hour            12%   [10x10 waffle]       │ │
 │ │                   resets in 3h 40m                       │ │
-│ │ 7-day              4%   █░░░░░░░░░░░░░░░░░░░░░░░░░       │ │
+│ │ 7-day              4%   [10x10 waffle]       │ │
 │ │                   resets in 5d 02h                       │ │
 │ └──────────────────────────────────────────────────────────┘ │
 │ ┌──────────────────────────────────────────────────────────┐ │
@@ -1970,9 +1970,9 @@ quiet line at the bottom.
   in Settings the line is absent.
 - The wireframe shows level 0 (9.1). Hovering or focusing a meter row shows level 1 next to
   it: "50.0 % used · resets today 14:00 · status allowed · seen 12:33".
-- The percentage is the largest element in a row (type `num-lg`), right-aligned in a fixed
+- The percentage is the largest element in a row (type Number), right-aligned in a fixed
   column so digits line up across cards (tabular numerals).
-- The bar is 8 px high, full radius, with tick marks at the warn and critical thresholds.
+- The meter is a 10x10 waffle of dots with an 80% warning marker and a 95% critical threshold (9.7).
 - Layout is fluid (a tiling compositor decides the size): one column below 640 px, two
   columns from 640 px, three from 1100 px; card max width 520 px; page padding 16 px (24 px
   from 640 px). Minimum supported window 320 x 400.
@@ -1989,7 +1989,7 @@ quiet line at the bottom.
 - The plan is shown by its display name ("Max 5x", "Free"): `copy.ts` maps the known plan
   labels and falls back to the label with `_` as spaces and the first letter capitalised.
 - Balance meters (DeepSeek) show the amount as the hero (`¥110.00`) with "granted ¥10.00 ·
-  topped up ¥100.00" as the secondary line, and no bar.
+  topped up ¥100.00" as the secondary line, and no waffle.
 
 ### 9.4 Provider detail
 
@@ -1999,11 +1999,11 @@ quiet line at the bottom.
 ├──────────────────────────────────────────────────────────────┤
 │  5-hour                                                      │
 │  50%          resets in 2h 14m                               │
-│  ████████████░░░░░░░░░░░░   today 14:00 · status: allowed    │
+│  [10x10 waffle]   today 14:00 · status: allowed    │
 │                                                              │
 │  7-day                                                       │
 │  37%          resets in 2d 13h                               │
-│  █████████░░░░░░░░░░░░░░░   Thu 02:00 · status: allowed      │
+│  [10x10 waffle]   Thu 02:00 · status: allowed      │
 ├──────────────────────────────────────────────────────────────┤
 │  History      [ 5-hour ▾ ]              ( Day  Week  Month  Quarter )
 │ 100%┤                                                        │
@@ -2050,15 +2050,15 @@ PENDING            │ ● Codex                                │  skeleton ro
                    │ Checking…                              │  only if the fetch takes > 150 ms
 
 STALE (quiet)      │ ● Claude                      Max 5x   │  values keep full contrast;
-                   │ 5-hour   50%  ████████░░░░░░           │  the freshness line turns into
+                   │ 5-hour   50%  [10x10 waffle]           │  the freshness line turns into
                    │          resets in 12m                 │  a labelled note with a clock icon
                    │ ◷ Last seen 2h 05m ago · updates when you use jev-claude │
 
-ELAPSED window     │ 5-hour    —   ░░░░░░░░░░░░░░           │  no number is invented
+ELAPSED window     │ 5-hour    —   [10x10 waffle]           │  no number is invented
                    │          Reset at 14:00 · waiting for your next request   │
 
 STALE (failing)    │ ● Codex                         Free   │
-                   │ 30-day    4%  █░░░░░░░░░░░░░           │
+                   │ 30-day    4%  [10x10 waffle]           │
                    │ ⚠ Can't reach Codex · showing 12:31 · retrying in 4m  [Retry] │
 
 UNAVAILABLE        │ ▲ Codex                                │  no reading at all
@@ -2150,70 +2150,64 @@ Tokens are defined once in `src/lib/design/tokens.css` as CSS custom properties.
 use tokens only (a stylelint rule bans raw colours, raw font sizes and raw spacing in
 component styles).
 
-**Type.** Geist Variable for text, Geist Mono Variable for every number, time and command
-(both OFL, self-hosted, latin subset, `font-display: block` since they are local). Fallback
-`system-ui`, `ui-monospace`. All numerals `font-variant-numeric: tabular-nums`. Sizes are
-authored in `rem` (the table gives them in px at the 16 px default), so a larger default
-font size scales all text.
+**Type.** DM Sans for UI, Instrument Serif for big numbers and section titles, and DM Mono
+for commands. Fallbacks are `system-ui`, `serif`, and `ui-monospace` respectively. Sizes
+are authored in `rem` (shown in px at the 16 px default).
 
-| token     | size / line  | weight | use                       |
-| --------- | ------------ | ------ | ------------------------- |
-| `text-xs` | 12 / 16      | 450    | captions, axis labels     |
-| `text-sm` | 13 / 18      | 450    | secondary lines           |
-| `text-md` | 14 / 20      | 450    | body, controls            |
-| `text-lg` | 16 / 22      | 550    | card titles               |
-| `text-xl` | 20 / 26      | 600    | view titles               |
-| `num-lg`  | 28 / 32 mono | 550    | meter percentage on cards |
-| `num-xl`  | 40 / 44 mono | 550    | hero number in detail     |
+| role | size / line | weight | family / use |
+| --- | --- | --- | --- |
+| Number | 64 / 64 | 400 | Instrument Serif; big numbers |
+| Title | 48 / 56 | 400 | Instrument Serif; section titles |
+| Name | 14 / 20 | 600 | DM Sans |
+| Body | 14 / 20 | 400 | DM Sans |
+| Caption | 13 / 20 | 400 | DM Sans; muted |
+| Label | 13 / 20 | 500 | DM Sans |
+| Mono | 13 / 20 | 400 | DM Mono; commands |
+| Micro | 12 / 16 | 400 | DM Sans; muted |
 
-**Space** (4 px base): `1`=4, `2`=8, `3`=12, `4`=16, `6`=24, `8`=32, `12`=48.
-**Radius**: `sm` 6, `md` 10, `lg` 14, `full`. Nested radii are concentric (inner = outer −
-padding). **Borders**: 1 px hairlines; elevation is a border plus a surface step, no drop
-shadows except the focus ring and dialogs. **Hit targets**: at least 32 x 32 px for every
-pointer target (WCAG 2.5.8 asks for 24 x 24), controls at least 28 px high with the hit area
-extended to 32.
+**Space** (4 px base): `1`=4, `2`=8, `3`=12, `4`=16, `6`=24, `8`=32,
+`12`=48, `14`=56, `18`=72. The waffle cell pitch is 24 px.
 
-**Colour** (OKLCH; light / dark). Neutrals carry a slight cool tint so status hues stay clean.
+**Radius**: control 6 px, pill 14 px, full 50%.
 
-| token           | light                    | dark                     | use                                                                                                |
-| --------------- | ------------------------ | ------------------------ | -------------------------------------------------------------------------------------------------- |
-| `bg`            | `oklch(98.5% 0.003 250)` | `oklch(16% 0.008 250)`   | window                                                                                             |
-| `surface`       | `oklch(100% 0 0)`        | `oklch(20.5% 0.009 250)` | cards                                                                                              |
-| `surface-2`     | `oklch(96.5% 0.004 250)` | `oklch(24.5% 0.010 250)` | wells, bar track                                                                                   |
-| `border`        | `oklch(90% 0.006 250)`   | `oklch(30% 0.011 250)`   | hairlines                                                                                          |
-| `border-strong` | `oklch(60% 0.010 250)`   | `oklch(58% 0.012 250)`   | control outlines (3:1)                                                                             |
-| `text`          | `oklch(21% 0.012 250)`   | `oklch(95% 0.005 250)`   | primary                                                                                            |
-| `text-2`        | `oklch(44% 0.012 250)`   | `oklch(74% 0.008 250)`   | secondary (AA)                                                                                     |
-| `accent`        | `oklch(52% 0.16 255)`    | `oklch(74% 0.13 255)`    | focus, links, selected                                                                             |
-| `ok`            | = `accent`               | = `accent`               | below warn. An alias of the accent, not a fourth hue: a healthy screen shows neutrals and one blue |
-| `warn`          | `oklch(54% 0.11 70)`     | `oklch(80% 0.13 80)`     | warn level (amber)                                                                                 |
-| `critical`      | `oklch(52% 0.19 30)`     | `oklch(72% 0.17 32)`     | critical level (vermilion)                                                                         |
-| `unknown`       | `oklch(58% 0.006 250)`   | `oklch(62% 0.006 250)`   | no data (glyph and outline only, never a text colour)                                              |
+**Borders**: rule 1 px `#DDD8CD`; outline 1 px `#968F83`; focus ring 2 px
+`#26262A` with 2 px offset; empty waffle cells 1.5 px `#968F83`.
+**Hit targets**: at least 32 x 32 px for every pointer target (WCAG 2.5.8 asks for
+24 x 24), controls at least 28 px high with the hit area extended to 32.
 
-Computed for this review from the table (OKLCH → sRGB → WCAG contrast): every text colour
-(`text`, `text-2`, `accent`, `warn`, `critical`) is ≥ 4.5:1 on `bg`, `surface` **and**
-`surface-2` in both themes (lowest: light `warn` 4.69 on `surface-2`), `border-strong` and
-`unknown` are ≥ 3:1, and every value is inside the sRGB gamut. The earlier light `warn`
-(`56% 0.13 70`) was outside the gamut and 4.32:1 on `surface-2`; it is replaced above.
-`border` (about 1.3:1) is decoration only: nothing that must be seen to operate or
-understand the UI relies on it. Status words are set in `text`/`text-2` or their level's
-hue, never in `unknown`.
+**Colour**: warm paper and ink, with one status text colour.
 
-Status is **never colour alone**: each level also has a shape and a word.
+| token | value | use |
+| --- | --- | --- |
+| `paper` | `#FAF8F4` | background |
+| `ink` | `#26262A` | primary text and filled cells below 80% |
+| `muted` | `#625D54` | secondary text |
+| `faint` | `#968F83` | outlines and empty cells |
+| `rule` | `#DDD8CD` | dividers |
+| `chip` | `#EFEBE3` | chip surface |
+| `alert` | `#B3391C` | the only status text colour, for 80% and above |
+| `critical-fill` | `#D9573A` | waffle cells past 80% |
+| `stale` | `#8A5A00` | stale clock icon |
 
-| level    | hue         | glyph           | bar                            | word                           |
-| -------- | ----------- | --------------- | ------------------------------ | ------------------------------ |
-| ok       | accent blue | ● filled circle | solid                          | none                           |
-| warn     | amber       | ▲ triangle      | solid + threshold tick reached | "High"                         |
-| critical | vermilion   | ■ square        | diagonal hatch                 | "Almost out" / "Limit reached" |
-| unknown  | grey        | ○ ring          | empty track, dashed outline    | "No data"                      |
+No cards, no shadows: the only divider is the 1 px rule; the only filled surface is the
+chip. The meter is a 10x10 waffle of dots, filled row-major from the top-left, with a
+warning marker at 80% and a critical threshold at 95%.
 
-The blue/amber/vermilion triple (Okabe-Ito family) stays distinguishable under protanopia,
-deuteranopia and tritanopia; shapes and words cover monochromacy. Contrast is tested from the
-token file: text ≥ 4.5:1 (target 7:1 for `text`), large numerals ≥ 4.5:1, UI boundaries and
-status glyphs ≥ 3:1, in both themes.
+Status is **never colour alone**: the number, glyph and word convey the state alongside
+the waffle.
 
-**Theme** follows the OS (`prefers-color-scheme`) with a Settings override applied as
+| level | number / glyph | waffle | word |
+| --- | --- | --- | --- |
+| ok (below 80%) | ink; ● filled circle | filled cells ink | none |
+| warn (80% to below 95%) | alert; ▲ triangle | cells past the 80% marker use critical-fill | "High" |
+| critical (95% and above) | alert; ■ square | cells past the 80% marker use critical-fill | "Almost out" / "Limit reached" |
+| unknown | ○ ring | empty outlined cells | "No data" |
+| stale | clock icon in `#8A5A00` | last observed value | "Stale" |
+
+Text and meaningful UI boundaries are checked against WCAG 2.2 AA; shapes, words and the
+numeric value convey status without relying on colour.
+
+**Theme preference** follows the OS (`prefers-color-scheme`) with a Settings override applied as
 `data-theme` on `<html>` before the app renders anything: the shell puts the saved theme in
 the URL fragment when it creates the window (7.3), and `boot.ts`, the **first import of the
 entry module**, sets the attribute. It cannot be an inline script (the CSP forbids that) or
@@ -2227,8 +2221,8 @@ controls match. `forced-colors: active` is supported (system colours, borders in
 fills).
 
 **Motion.** Durations `fast` 120 ms, `base` 200 ms, `slow` 320 ms; easing
-`cubic-bezier(0.2, 0, 0, 1)`; only `transform`, `opacity` and the bar's scale animate.
-A bar animates to a new value (`slow`); a changed number cross-fades (`fast`); views
+`cubic-bezier(0.2, 0, 0, 1)`; only `transform` and `opacity` animate.
+Waffle cells update to a new value (`slow`); a changed number cross-fades (`fast`); views
 cross-fade (`fast`), no slides. Nothing loops. `prefers-reduced-motion: reduce` removes all
 movement and keeps at most a 100 ms opacity change; skeletons become static.
 
@@ -2239,13 +2233,13 @@ movement and keeps at most a 100 ms opacity change; skeletons become static.
   refresh the user started, never for background updates. A second click while busy does
   nothing.
 - Copy: the button label becomes "Copied" with a tick for 1.5 s and is announced.
-- Threshold change: the tick marks on every bar move live while the slider moves.
+- Threshold change: the threshold markers on every waffle move live while the slider moves.
 - A value that crosses a threshold changes glyph, hue and word together, once, with no
   flashing or shaking.
 - Hover or focus on a meter row shows the level-1 detail of 9.1
   ("50.0 % used · resets today 14:00 · status allowed · seen 12:33"), under the rules of
   WCAG 1.4.13 (hoverable, dismissible with `Esc`, persistent).
-- Card press: 1 px translate and a `surface-2` flash (`fast`).
+- Card press: 1 px translate and a `chip` flash (`fast`).
 
 ### 9.9 Numbers, time and copy
 
@@ -2278,11 +2272,11 @@ contrast. Each line below is checked by a named test or by the manual pass, and 
 blocks the task.
 
 - **Contrast** (1.4.3, 1.4.11): text ≥ 4.5:1 (primary text ≥ 7:1), large numerals ≥ 4.5:1,
-  control boundaries, focus ring, bar fill against track, status glyphs, and the chart's
+  control boundaries, focus ring, waffle cells, status glyphs, and the chart's
   line and threshold lines against the plot background ≥ 3:1, in both themes, on every
   surface a colour is used on (`bg`, `surface`, `surface-2`); computed from the token file
   by a test.
-- **Not colour alone** (1.4.1): every level has a glyph shape, a bar pattern and a word (9.7).
+- **Not colour alone** (1.4.1): every level has a glyph shape, waffle position and a word (9.7).
 - **Keyboard** (2.1.1, 2.1.2): every function, no trap. Tab order equals reading order
   (2.4.3). Shortcuts: `R` refresh, `,` settings, `Esc` back, `1`–`6` open provider, `?`
   shortcut list. `1`–`6` follow the fixed order of `ProviderKey::ALL` (Claude, Codex,
@@ -2380,7 +2374,7 @@ hidden element referenced by `aria-describedby`.
   ─────────────────────────────
   Quit
   ```
-  Rows use absolute reset times in a form that stays true without a timer: a reset within
+  Tray menu rows come from `core::text`. Rows use absolute reset times in a form that stays true without a timer: a reset within
   the next 24 hours is "HH:MM", within 6 days "Thu HH:MM", later "16 Dec" (no "today" or
   "tomorrow", which would go wrong at midnight). A stale row's "as of" is always date and
   time, which stays true however long the row is not rebuilt. A provider without a reading
@@ -2451,7 +2445,7 @@ hidden element referenced by `aria-describedby`.
 | Chart     | Hand-written SVG component (`Chart.svelte`, about 250 lines)                                                                                                                                                                                                                                                                                                                              | Full control of accessibility, theming, step rendering and gaps; no dependency.                                                                              |
 | Styles    | Plain CSS with custom properties, scoped per component                                                                                                                                                                                                                                                                                                                                    | No CSS framework, no runtime.                                                                                                                                |
 | Icons     | Inline SVG sprites (about 12 icons, own set)                                                                                                                                                                                                                                                                                                                                              | No icon package.                                                                                                                                             |
-| Fonts     | `@fontsource-variable/geist` and `geist-mono`, latin subset                                                                                                                                                                                                                                                                                                                               | Local, consistent numerals.                                                                                                                                  |
+| Fonts     | DM Sans, Instrument Serif and DM Mono, latin subset                                                                                                                                                                                                                                                                                                                               | Local, consistent numerals.                                                                                                                                  |
 
 **Type discipline (1a), enforced three times.**
 
