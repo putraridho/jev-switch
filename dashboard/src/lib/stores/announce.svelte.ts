@@ -1,13 +1,22 @@
-// The single polite live region's queue (docs/dashboard/DESIGN.md 9.10): merges messages
-// within 2 s and drops a repeat within 60 s. The shape is final; T07 writes the body.
+let current = $state("");
+let queued: string[] = [];
+const recent: Record<string, number> = {};
+let timer: ReturnType<typeof setTimeout> | null = null;
 
-/** What the live region says. */
-export const announce: {
-  say(message: string): void;
-  readonly current: string;
-} = {
-  say: () => {
-    return;
+export const announce = {
+  get current(): string {
+    return current;
   },
-  current: "",
+  say(message: string): void {
+    const now = Date.now();
+    const last = recent[message];
+    if (last !== undefined && now - last < 60_000) return;
+    recent[message] = now;
+    queued.push(message);
+    timer ??= setTimeout(() => {
+      current = queued.join(". ");
+      queued = [];
+      timer = null;
+    }, 2_000);
+  },
 };

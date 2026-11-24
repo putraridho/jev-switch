@@ -1,5 +1,15 @@
-// The UI's clock (docs/dashboard/DESIGN.md 7.2): epoch milliseconds, ticking on the minute
-// and only while the document is visible. The shape is final; T07 writes the body.
+let now = $state(Date.now());
+if (typeof document !== "undefined") {
+  setInterval(() => {
+    if (!document.hidden) now = Date.now();
+  }, 1_000);
+  document.addEventListener("visibilitychange", () => {
+    if (!document.hidden) now = Date.now();
+  });
+}
 
-/** "Now" for countdowns and ages. */
-export const clock: { readonly now: number } = { now: 0 };
+export const clock = {
+  get now(): number {
+    return now;
+  },
+};

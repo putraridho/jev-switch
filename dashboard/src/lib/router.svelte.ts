@@ -1,21 +1,41 @@
-// The in-memory router (docs/dashboard/DESIGN.md 7.3, 10): the initial route and theme come
-// from the URL fragment. The shape is final; T07 writes the rune-based body.
-
+import type { ProviderKey } from "./ipc/bindings/ProviderKey";
 import type { Route } from "./ipc/bindings/Route";
+import type { IpcClient } from "./ipc/client";
 
-const overview: Route = { name: "overview" };
-
-/** The current screen and the two ways to change it. */
-export const router: {
-  readonly route: Route;
-  go(r: Route): void;
-  back(): void;
-} = {
-  route: overview,
-  go: () => {
-    return;
+const providers: readonly ProviderKey[] = [
+  "claude",
+  "codex",
+  "deepseek",
+  "gemini",
+  "antigravity",
+  "grok",
+];
+function initialRoute(): Route {
+  if (typeof window === "undefined") return { name: "overview" };
+  const params = new URLSearchParams(window.location.hash.slice(1));
+  if (params.get("view") === "settings") return { name: "settings" };
+  if (params.get("view") === "provider") {
+    const provider = providers.find((key) => key === params.get("provider"));
+    if (provider !== undefined) return { name: "provider", provider };
+  }
+  return { name: "overview" };
+}
+let route = $state<Route>(initialRoute());
+const history: Route[] = [];
+export const router = {
+  get route(): Route {
+    return route;
   },
-  back: () => {
-    return;
+  go(next: Route): void {
+    history.push(route);
+    route = next;
+  },
+  back(): void {
+    route = history.pop() ?? { name: "overview" };
   },
 };
+export function initRouter(client: IpcClient): Promise<() => void> {
+  return client.onNavigate((next) => {
+    router.go(next);
+  });
+}

@@ -2,6 +2,8 @@
 // each script (every one lists all six providers). This stub gives every name the same
 // empty script.
 
+import type { ProviderKey } from "./bindings/ProviderKey";
+import type { UsageView } from "./bindings/UsageView";
 import type { MockScript } from "./mock";
 
 /** The name of a fixture script. */
@@ -17,7 +19,25 @@ export type FixtureName =
   | "mixed";
 
 const empty: MockScript = {
-  snapshot: { generated_at: 0, providers: [], headline: null },
+  snapshot: {
+    generated_at: 1700000000000,
+    providers: (
+      ["claude", "codex", "deepseek", "gemini", "antigravity", "grok"] as const
+    ).map((provider) => ({
+      provider,
+      enabled: true,
+      usage: { state: "pending" },
+      refresh: {
+        in_flight: false,
+        last_attempt_at: null,
+        next_at: null,
+        free_refresh: true,
+        live_check: false,
+        live_check_error: null,
+      },
+    })),
+    headline: null,
+  },
   settings: {
     version: 1,
     warn_bp: 8000,
@@ -55,15 +75,57 @@ const empty: MockScript = {
   fail: {},
 };
 
-/** A whole script per name: `first_run` differs in `settings`, not in the snapshot. */
+const reading = { observed_at: 1700000000000, plan: "Example", meters: [] };
+const states: Record<FixtureName, UsageView> = {
+  pending: { state: "pending" },
+  known: { state: "known", reading },
+  stale_quiet: {
+    state: "stale",
+    reading,
+    since: 1700000000000,
+    cause: { kind: "quiet" },
+  },
+  stale_failing: {
+    state: "stale",
+    reading,
+    since: 1700000000000,
+    cause: { kind: "failing", reason: "offline" },
+  },
+  elapsed: { state: "known", reading },
+  unavailable: { state: "unavailable", reason: "offline" },
+  not_configured: { state: "not_configured", setup: "use_gateway" },
+  first_run: { state: "pending" },
+  mixed: { state: "pending" },
+};
+const mixed: Record<ProviderKey, UsageView> = {
+  claude: states.known,
+  codex: states.stale_quiet,
+  deepseek: states.unavailable,
+  gemini: states.pending,
+  antigravity: states.not_configured,
+  grok: states.stale_failing,
+};
+function fixture(name: FixtureName): MockScript {
+  return {
+    ...empty,
+    settings: { ...empty.settings, first_run_seen: name !== "first_run" },
+    snapshot: {
+      ...empty.snapshot,
+      providers: empty.snapshot.providers.map((provider) => ({
+        ...provider,
+        usage: name === "mixed" ? mixed[provider.provider] : states[name],
+      })),
+    },
+  };
+}
 export const fixtures: Record<FixtureName, MockScript> = {
-  pending: empty,
-  known: empty,
-  stale_quiet: empty,
-  stale_failing: empty,
-  elapsed: empty,
-  unavailable: empty,
-  not_configured: empty,
-  first_run: empty,
-  mixed: empty,
+  pending: fixture("pending"),
+  known: fixture("known"),
+  stale_quiet: fixture("stale_quiet"),
+  stale_failing: fixture("stale_failing"),
+  elapsed: fixture("elapsed"),
+  unavailable: fixture("unavailable"),
+  not_configured: fixture("not_configured"),
+  first_run: fixture("first_run"),
+  mixed: fixture("mixed"),
 };

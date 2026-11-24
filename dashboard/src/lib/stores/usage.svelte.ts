@@ -1,18 +1,51 @@
-// The usage read model (docs/dashboard/DESIGN.md 10). The shape is final; T07 writes the
-// rune-based body.
-
+import type { IpcClient } from "../ipc/client";
 import type { Outcome } from "../ipc/bindings/Outcome";
 import type { RefreshTarget } from "../ipc/bindings/RefreshTarget";
 import type { Snapshot } from "../ipc/bindings/Snapshot";
 
-/** The latest snapshot and the manual refresh. */
-export const usage: {
-  readonly snapshot: Snapshot | null;
-  readonly refreshing: boolean;
-  refresh(t?: RefreshTarget): Promise<Outcome<null>>;
-} = {
-  snapshot: null,
-  refreshing: false,
-  refresh: () =>
-    Promise.resolve({ status: "error", error: { code: "internal" } }),
+let snapshot = $state<Snapshot | null>(null);
+let refreshing = $state(false);
+let client: IpcClient | null = null;
+let pending = 0;
+
+/** Subscribe before reading the initial snapshot so no newer event is lost. */
+export async function initUsage(ipc: IpcClient): Promise<() => void> {
+  client = ipc;
+  snapshot = null;
+  let active = true;
+  const accept = (next: Snapshot) => {
+    if (
+      active &&
+      (snapshot === null || next.generated_at > snapshot.generated_at)
+    )
+      snapshot = next;
+  };
+  const unsubscribe = await ipc.onSnapshot(accept);
+  const result = await ipc.getSnapshot();
+  if (result.status === "ok") accept(result.value);
+  return () => {
+    active = false;
+    unsubscribe();
+  };
+}
+
+export const usage = {
+  get snapshot(): Snapshot | null {
+    return snapshot;
+  },
+  get refreshing(): boolean {
+    return refreshing;
+  },
+  async refresh(
+    target: RefreshTarget = { kind: "all" },
+  ): Promise<Outcome<null>> {
+    if (client === null)
+      return { status: "error", error: { code: "internal" } };
+    pending += 1;
+    refreshing = true;
+    const result = await client.refresh(target);
+    pending -= 1;
+    refreshing = pending > 0;
+    return result;
+  },
 };
