@@ -1,5 +1,7 @@
 use super::*;
+#[cfg(unix)]
 use std::future::Future;
+#[cfg(unix)]
 use std::pin::Pin;
 use tokio::process::Command;
 use tokio::sync::mpsc;

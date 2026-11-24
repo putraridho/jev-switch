@@ -1,6 +1,7 @@
 //! Undo in real temporary repositories.
 
 use std::collections::HashMap;
+#[cfg(unix)]
 use std::path::Path;
 
 use crate::application::undo_turn::undo;

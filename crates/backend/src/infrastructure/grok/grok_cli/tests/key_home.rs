@@ -1,6 +1,8 @@
 use std::path::{Path, PathBuf};
 
-use super::super::key_home::{needs_mirror, real_home, sync_mirror};
+use super::super::key_home::{needs_mirror, real_home};
+#[cfg(unix)]
+use super::super::key_home::sync_mirror;
 
 fn scratch(tag: &str) -> PathBuf {
     let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
@@ -9,6 +11,7 @@ fn scratch(tag: &str) -> PathBuf {
     dir
 }
 
+#[cfg(unix)]
 fn names(dir: &Path) -> Vec<String> {
     let mut v: Vec<String> = std::fs::read_dir(dir).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect();
     v.sort();

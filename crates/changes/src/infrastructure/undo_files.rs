@@ -87,7 +87,9 @@ pub(in crate) fn remove_file_and_empty_parents(root: &Path, rel: &str) -> Result
 }
 #[cfg(test)]
 mod tests {
+    #[cfg(unix)]
     use super::*;
+    #[cfg(unix)]
     use crate::test_support::{repo, Scratch};
 
     #[cfg(unix)]
