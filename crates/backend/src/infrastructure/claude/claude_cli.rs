@@ -24,6 +24,7 @@ use crate::{
 };
 
 mod command;
+mod elicitation_wire;
 pub mod mcp_config;
 mod permission_wire;
 mod stream_events;
@@ -124,6 +125,10 @@ impl Backend for ClaudeBackend {
         self.steer_message(text)
     }
 
+    fn elicitation_response(&self, req: &crate::ElicitationRequest, answer: &crate::ElicitationAnswer) -> Option<String> {
+        Some(elicitation_wire::response(req, answer))
+    }
+
     fn permission_response(&self, req: &PermissionRequest, decision: &Decision) -> Option<String> {
         let answer = match decision {
             Decision::Allow | Decision::AllowAlways => json!({ "behavior": "allow", "updatedInput": jev_approval::infrastructure::tool_input_wire::tool_input_to_json(&req.input) }),
@@ -164,7 +169,8 @@ impl Backend for ClaudeBackend {
                 ev["tool_name"].as_str().unwrap_or("tool")
             ))],
             Some("result") => vec![result_event(&ev)],
-            Some("control_request") => permission_request(&ev).map(Event::PermissionRequest).into_iter().collect(),
+            Some("control_request") => elicitation_wire::request(&ev).map(Event::ElicitationRequest)
+                .or_else(|| permission_request(&ev).map(Event::PermissionRequest)).into_iter().collect(),
             Some("control_cancel_request") => withdrawn_request(&ev).into_iter().collect(),
             Some("rate_limit_event") => plan_of(&ev).map(Event::Plan).into_iter().collect(),
             _ => vec![],

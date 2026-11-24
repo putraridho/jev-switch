@@ -11,6 +11,12 @@ impl App {
         if self.approval.as_ref().is_some_and(Approval::withdrawn) {
             self.approval = None;
         }
+        if self.elicitation.as_ref().is_some_and(Elicitation::withdrawn) {
+            self.elicitation = None;
+        }
+        if self.elicitation.is_some() {
+            return self.elicitation_key(k, now);
+        }
         if self.confirm.is_some() {
             return self.confirm_key(k);
         }

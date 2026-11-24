@@ -9,6 +9,7 @@ use crate::{Decision, ErrorKind, Event, McpAttachment, PermissionRequest, Provid
 mod command;
 mod mcp_config;
 mod permission_wire;
+mod elicitation;
 mod stream_events;
 mod stream_input;
 

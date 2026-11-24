@@ -24,6 +24,8 @@ use crate::input::vim;
 use crate::input::vim::{Outcome, Vim};
 
 mod dialogs;
+mod elicitation;
+pub use elicitation::Elicitation;
 mod front;
 mod keys;
 mod completion;
@@ -152,6 +154,7 @@ pub struct App {
     pub working: Option<Working>,
     pub approval: Option<Approval>,
     pub confirm: Option<Confirm>,
+    pub elicitation: Option<Elicitation>,
     /// Messages typed during a turn, run after it in order.
     pub queue: VecDeque<String>,
     pub mode: Mode,
@@ -237,6 +240,7 @@ impl App {
             working: None,
             approval: None,
             confirm: None,
+            elicitation: None,
             queue: VecDeque::new(),
             mode,
             route,

@@ -91,6 +91,14 @@ impl EngineApprover<'_> {
 }
 
 impl Approver for EngineApprover<'_> {
+    fn elicit<'a>(&'a self, req: &'a backend::ElicitationRequest) -> std::pin::Pin<Box<dyn std::future::Future<Output = backend::ElicitationAnswer> + Send + 'a>> {
+        lock_ui(self.ui).elicit(req)
+    }
+
+    fn elicitation_withdrawn(&self, req: &backend::ElicitationRequest) {
+        lock_ui(self.ui).elicitation_withdrawn(req);
+    }
+
     fn decide<'a>(&'a self, req: &'a PermissionRequest) -> std::pin::Pin<Box<dyn std::future::Future<Output = Decision> + Send + 'a>> {
         Box::pin(self.answer(req))
     }

@@ -312,3 +312,82 @@ def a_long_command_scrolls_inside_its_card_and_a_withdrawal_takes_the_card_away(
         quit_with_ctrl_d(p)
     finally:
         p.close()
+
+
+@scenario
+def elicitation_returns_a_boolean_answer_even_in_auto_mode(w):
+    p = Pty(w, ["--mode", "auto", w.repo], "elicitation-auto")
+    try:
+        prompt_ready(p)
+        p.send("elicitation please quick\r")
+        p.expect("lunagraph needs your input", 15, "the MCP question in auto mode")
+        p.expect("Run pnpm install?", 5, "the server's question")
+        p.expect("Approve", 5, "the boolean field")
+        answer_card(p, "\x1b[B")  # false -> true
+        p.send("\r")  # review
+        p.expect("Send answer", 5, "the final confirmation")
+        p.send("\x1b[A\r")  # decline -> send
+        p.expect("FAKE ELICITATION DONE", 10, "the result after the answer")
+        reply = host_reply(w)
+        if reply != {"subtype": "success", "request_id": "elicit-1", "response": {"action": "accept", "content": {"approve": True}}}:
+            raise Fail(f"wrong elicitation response: {reply}")
+        if settings_rules(w) is not None:
+            raise Fail("an elicitation must not save a permission rule")
+        wait_prompt(p, 10, "the next prompt")
+        quit_with_ctrl_d(p)
+    finally:
+        p.close()
+
+
+@scenario
+def elicitation_decline_returns_to_the_running_turn(w):
+    p = Pty(w, [w.repo], "elicitation-decline")
+    try:
+        prompt_ready(p)
+        p.send("elicitation please quick\r")
+        p.expect("lunagraph needs your input", 15, "the MCP question")
+        answer_card(p, "\r")  # retain false, review
+        p.expect("Send answer", 5, "the final confirmation")
+        p.send("\r")  # decline is selected initially
+        p.expect("FAKE ELICITATION DONE", 10, "the result after declining")
+        if host_reply(w)["response"] != {"action": "decline"}:
+            raise Fail(f"expected decline: {host_reply(w)}")
+        wait_prompt(p, 10, "the next prompt")
+        quit_with_ctrl_d(p)
+    finally:
+        p.close()
+
+
+@scenario
+def elicitation_escape_cancels_the_question(w):
+    p = Pty(w, [w.repo], "elicitation-cancel")
+    try:
+        prompt_ready(p)
+        p.send("elicitation please quick\r")
+        p.expect("lunagraph needs your input", 15, "the MCP question")
+        answer_card(p, "\x1b")
+        p.expect("FAKE ELICITATION DONE", 10, "the result after cancelling")
+        if host_reply(w)["response"] != {"action": "cancel"}:
+            raise Fail(f"expected cancel: {host_reply(w)}")
+        wait_prompt(p, 10, "the next prompt")
+        quit_with_ctrl_d(p)
+    finally:
+        p.close()
+
+
+@scenario
+def elicitation_withdrawal_removes_the_form_without_an_answer(w):
+    p = Pty(w, [w.repo], "elicitation-withdraw")
+    try:
+        prompt_ready(p)
+        p.send("elicitation withdraw quick\r")
+        p.expect("lunagraph needs your input", 15, "the MCP question")
+        p.expect("FAKE ELICITATION DONE", 10, "the result after withdrawal")
+        wait_prompt(p, 10, "the next prompt")
+        if os.path.exists(os.path.join(w.pids, "reply.json")):
+            raise Fail("a withdrawn form must not send a response")
+        if "lunagraph needs your input" in screen_text(p.vt):
+            raise Fail("the withdrawn form is still on screen")
+        quit_with_ctrl_d(p)
+    finally:
+        p.close()

@@ -111,6 +111,20 @@ answer="FAKE ANSWER hello"
 emit() { printf '%s\n' "$1"; }
 emit '{"type":"system","subtype":"init","session_id":"sess-1"}'
 case "$last" in
+  *elicitation*)
+    emit '{"type":"control_request","request_id":"elicit-1","request":{"subtype":"elicitation","mcp_server_name":"lunagraph","message":"Run pnpm install?","requested_schema":{"type":"object","properties":{"approve":{"type":"boolean","title":"Approve","description":"Let the agent do this.","default":false}},"required":["approve"]}}}'
+    case "$last" in
+      *withdraw*)
+        sleep 0.7
+        emit '{"type":"control_cancel_request","request_id":"elicit-1"}'
+        ;;
+      *)
+        IFS= read -r reply
+        printf '%s\n' "$reply" > "$FAKE_PIDS/reply.json"
+        ;;
+    esac
+    answer="FAKE ELICITATION DONE"
+    ;;
   *approve*)
     emit '{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t9","name":"Bash","input":{"command":"cargo test --quiet"}}]}}'
     # Claude Code reads the project's allow rules itself: a saved rule means no question.

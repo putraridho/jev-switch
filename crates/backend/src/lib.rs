@@ -14,6 +14,7 @@ pub use jev_approval::domain::permission_request::{Decision, PermissionRequest};
 pub use jev_shared::{Measurement, ProviderId, Usage};
 pub use application::ports::*;
 pub use domain::effort::Effort;
+pub use domain::elicitation::*;
 pub use domain::error_kind::ErrorKind;
 pub use domain::error_text::*;
 pub use domain::event::{Event, Finish};

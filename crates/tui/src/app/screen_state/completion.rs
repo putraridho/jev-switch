@@ -7,7 +7,7 @@ impl App {
     /// empty box, else the rest of a sent message (or an `@file`) that starts with what is
     /// typed. Only at the end of a one-line text, and never over a menu, card or history.
     pub fn ghost(&self) -> Option<String> {
-        if self.menu.is_some() || self.approval.is_some() || self.confirm.is_some() || self.history.browsing() {
+        if self.menu.is_some() || self.approval.is_some() || self.confirm.is_some() || self.elicitation.is_some() || self.history.browsing() {
             return None;
         }
         let text = self.editor.text();

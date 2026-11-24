@@ -40,9 +40,11 @@ pub enum Event {
     /// that are [`Backend::interactive`] produce it; [`run_turn_with`] answers it through
     /// the [`Approver`] and it never reaches `on_event`.
     PermissionRequest(PermissionRequest),
-    /// The CLI no longer needs the answer to the request `id` (the turn was interrupted, a
+    /// A server asks the person for information, regardless of tool permission mode.
+    ElicitationRequest(super::elicitation::ElicitationRequest),
+    /// The CLI no longer needs the answer to a permission or elicitation request `id` (the turn was interrupted, a
     /// hook settled it, it timed out). [`run_turn_with`] drops the pending question, tells the
-    /// [`Approver`] ([`Approver::withdrawn`]) and writes no answer for it; it never reaches
+    /// [`Approver`] through its corresponding withdrawal callback and writes no answer; it never reaches
     /// `on_event`. An id that is not waiting (answered already, or not a question) is ignored.
     PermissionWithdrawn { id: String },
     /// A message the person typed while the turn ran (see [`Backend::steer_line`]) was picked

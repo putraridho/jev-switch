@@ -38,6 +38,9 @@ impl Backend for AskFake {
                     blocked_path: None,
                 })]
             }
+            Some(("ELICIT", id)) => vec![Event::ElicitationRequest(backend::ElicitationRequest {
+                id: id.into(), server: "lunagraph".into(), message: "Run command?".into(), kind: backend::ElicitationKind::Form(vec![]),
+            })],
             Some(("WITHDRAW", id)) => vec![Event::PermissionWithdrawn { id: id.into() }],
             Some(("FIN", t)) => vec![Event::Finished(backend::Finish { text: t.into(), session_id: None, usage: Usage::default() })],
             _ => vec![],
@@ -49,6 +52,9 @@ impl Backend for AskFake {
             Decision::Deny { reason } => format!("DENY:{reason}"),
         })
     }
+    fn elicitation_response(&self, _: &backend::ElicitationRequest, answer: &backend::ElicitationAnswer) -> Option<String> {
+        Some(match answer { backend::ElicitationAnswer::Accept(_) => "ACCEPT", backend::ElicitationAnswer::Decline => "DECLINE", backend::ElicitationAnswer::Cancel => "CANCEL" }.into())
+    }
     fn classify_error(&self, m: &str) -> ErrorKind {
         classify_common(m).unwrap_or(ErrorKind::Other)
     }
@@ -58,6 +64,7 @@ impl Backend for AskFake {
 #[derive(Default)]
 struct Asked {
     answers: std::collections::VecDeque<Option<Decision>>,
+    elicitations: usize,
     questions: Vec<(String, String, Option<String>)>,
     settled: Vec<Settled>,
     texts: Vec<String>,
@@ -76,6 +83,10 @@ impl Ui for Asked {
     }
     fn note(&mut self, line: &str) {
         self.notes.push(line.into());
+    }
+    fn elicit(&mut self, _: &backend::ElicitationRequest) -> crate::application::ports::ElicitationReply {
+        self.elicitations += 1;
+        Box::pin(std::future::ready(backend::ElicitationAnswer::Accept(vec![])))
     }
     fn ask_permission(&mut self, req: &PermissionRequest, offer: &Offer) -> Answer {
         let rule = offer.as_ref().ok().and_then(|a| a.rules.first().cloned());
@@ -339,5 +350,21 @@ async fn a_question_the_cli_withdraws_while_the_person_is_still_deciding_is_drop
     assert_eq!((report.status, report.text.as_str()), (TurnStatus::Answered, "ran"));
     assert_eq!(ui.asked, 2);
     assert_eq!(ui.withdrawn.len(), 1, "an answered question is never reported as withdrawn");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+
+#[tokio::test]
+async fn auto_mode_still_asks_the_person_for_mcp_elicitation() {
+    let script = r#"read p; echo 'ELICIT:e1'; read answer; echo "FIN:$answer""#;
+    let (engine, dir) = ask_engine_running("elicitation-auto", Box::new(move |_| Box::new(AskFake(script))));
+    let mut engine = engine.with_mode(Mode::Auto);
+    let mut ui = Asked::default();
+    let report = ask_turn(&mut engine, &mut ui).await;
+    assert_eq!((report.status, report.text.as_str()), (TurnStatus::Answered, "ACCEPT"));
+    assert_eq!(ui.elicitations, 1);
+    assert!(ui.questions.is_empty());
+    assert!(ui.settled.is_empty());
+    assert!(!settings_document::local_settings_path(&dir).exists());
     let _ = std::fs::remove_dir_all(&dir);
 }

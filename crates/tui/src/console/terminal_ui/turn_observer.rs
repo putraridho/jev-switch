@@ -137,6 +137,15 @@ impl Ui for Console {
         self.lock().discard_preview();
     }
 
+    fn elicit(&mut self, req: &backend::ElicitationRequest) -> jev_turn::application::ports::ElicitationReply {
+        self.ask_elicitation(req)
+    }
+
+    fn elicitation_withdrawn(&mut self, _req: &backend::ElicitationRequest) {
+        self.lock().asking = None;
+        if let Some(front) = self.front() { front.send(FrontMsg::ElicitationGone); }
+    }
+
     /// Stops the status line, prints the question and returns the wait for one key.
     fn ask_permission(&mut self, req: &PermissionRequest, offer: &Offer) -> Answer {
         self.ask_with_pager(req, offer, Arc::new(page_on_terminal))

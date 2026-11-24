@@ -9,6 +9,7 @@
 //! writers are injected, so every behaviour is a unit test over byte buffers.
 
 mod approval_prompt;
+mod elicitation_prompt;
 mod console_api;
 pub mod key_reader;
 pub mod lines;

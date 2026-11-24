@@ -4,6 +4,8 @@ See [docs/changelog-guide.md](docs/changelog-guide.md) for changelog formatting,
 
 ## Unreleased
 
+- **MCP servers can ask questions in jev-code.** Claude and DeepSeek elicitation requests now show an interactive form, including in auto mode, and return typed answers, declines or cancellations to the server. Cancelled requests close the form without sending a stale answer.
+
 - **`/update` still finds the install folder after the running binary was replaced.** On Linux, replacing `jev-code` on disk while a session stays open makes `/proc/self/exe` end in ` (deleted)`, which caused a subsequent `/update` in that same session to fail with `cannot tell where jev-code is installed: No such file or directory`. The release updater now falls back to stripping ` (deleted)` or resolving the parent folder directly.
 
 ## 1.14.2

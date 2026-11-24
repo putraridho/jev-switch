@@ -2,6 +2,7 @@ use super::*;
 use std::path::Path;
 
 mod dialogs;
+mod elicitation;
 mod ghost;
 mod keys;
 mod menu;

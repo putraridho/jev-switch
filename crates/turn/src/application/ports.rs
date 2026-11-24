@@ -92,10 +92,19 @@ pub trait Ui: Send {
     /// The question asked for `req` was dropped unanswered: take it off the screen. Called
     /// once per such question, never for one that was answered.
     fn permission_withdrawn(&mut self, _req: &PermissionRequest) {}
+
+    /// A server asks for information. This is never settled by tool permission policy.
+    fn elicit(&mut self, _req: &backend::ElicitationRequest) -> ElicitationReply {
+        Box::pin(std::future::ready(backend::ElicitationAnswer::Cancel))
+    }
+
+    fn elicitation_withdrawn(&mut self, _req: &backend::ElicitationRequest) {}
 }
 
 /// The person's answer to a question, not yet given. It owns what it needs, so the UI is
 /// free to print while the person thinks.
+pub type ElicitationReply = std::pin::Pin<Box<dyn std::future::Future<Output = backend::ElicitationAnswer> + Send>>;
+
 pub type Answer = std::pin::Pin<Box<dyn std::future::Future<Output = Option<Decision>> + Send>>;
 
 /// Settle a question's answer: the one place "always" is saved. The offer is what was shown;

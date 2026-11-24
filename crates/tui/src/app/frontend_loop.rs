@@ -139,7 +139,7 @@ pub async fn run(repl: Repl, mut rx: mpsc::UnboundedReceiver<FrontMsg>, opts: Op
             }
         }
         if !app.suspended {
-            let activity = if app.approval.is_some() || app.confirm.is_some() {
+            let activity = if app.approval.is_some() || app.confirm.is_some() || app.elicitation.is_some() {
                 Activity::Waiting
             } else if app.working.is_some() {
                 Activity::Running

@@ -11,7 +11,41 @@ use super::stdin_feed::StdinFeed;
 use jev_approval::domain::permission_request::{Decision, PermissionRequest};
 use crate::application::ports::{Approver, Backend, Steering, NO_ONE_TO_ASK};
 use crate::domain::event::{Event, Finish};
+use crate::domain::elicitation::{ElicitationRequest, ElicitationAnswer};
 use crate::domain::plan_usage::PlanUsage;
+
+/// Both kinds share the cancellation, queueing and process-lifetime contract.
+pub(super) enum Question {
+    Permission(PermissionRequest),
+    Elicitation(ElicitationRequest),
+}
+
+enum Reply {
+    Permission(Decision),
+    Elicitation(ElicitationAnswer),
+}
+
+impl Question {
+    fn id(&self) -> &str {
+        match self { Self::Permission(r) => &r.id, Self::Elicitation(r) => &r.id }
+    }
+
+    fn ask<'a>(&'a self, approver: &'a dyn Approver) -> std::pin::Pin<Box<dyn std::future::Future<Output = Reply> + Send + 'a>> {
+        Box::pin(async move {
+            match self {
+                Self::Permission(r) => Reply::Permission(approver.decide(r).await),
+                Self::Elicitation(r) => Reply::Elicitation(approver.elicit(r).await),
+            }
+        })
+    }
+
+    fn withdrawn(&self, approver: &dyn Approver) {
+        match self {
+            Self::Permission(r) => approver.withdrawn(r),
+            Self::Elicitation(r) => approver.elicitation_withdrawn(r),
+        }
+    }
+}
 
 /// How long the CLI may stay silent after its answer before the runner stops reading and
 /// reaps it (see [`Pump::next_line`]).
@@ -48,7 +82,7 @@ pub struct Pump<'a> {
     pub(super) feed: &'a mut StdinFeed,
     pub(super) finished: Option<Finish>,
     /// Questions the CLI asked while another was being decided, oldest first.
-    pub(super) queue: VecDeque<PermissionRequest>,
+    pub(super) queue: VecDeque<Question>,
     /// Messages from the person while the turn runs, to be added to it ([`Backend::steer_line`]).
     pub(super) steer: Option<Steering<'a>>,
     /// Messages written to the CLI that it has not reported picking up yet, oldest first: what
@@ -166,12 +200,18 @@ impl Pump<'_> {
             Event::Failed { message } => Some(Signal::Failed(message)),
             Event::PermissionRequest(req) => {
                 if self.finished.is_none() {
-                    self.queue.push_back(req);
+                    self.queue.push_back(Question::Permission(req));
+                }
+                None
+            }
+            Event::ElicitationRequest(req) => {
+                if self.finished.is_none() {
+                    self.queue.push_back(Question::Elicitation(req));
                 }
                 None
             }
             Event::PermissionWithdrawn { id } => {
-                self.queue.retain(|q| q.id != id);
+                self.queue.retain(|q| q.id() != id);
                 Some(Signal::Withdrawn(id))
             }
             // The CLI echoes the person's own prompt too: only what was sent in is reported.
@@ -200,9 +240,9 @@ impl Pump<'_> {
     /// Decide `req` while reading on. Its answer is written once, when the decision
     /// completes. A withdrawal of `req`, the result, a failure or the end of the stream
     /// drops the decision instead and tells the approver; nothing is written then.
-    async fn ask(&mut self, req: PermissionRequest) -> Asked {
+    async fn ask(&mut self, req: Question) -> Asked {
         let approver = self.approver;
-        let mut decision = approver.decide(&req);
+        let mut decision = req.ask(approver);
         let mut held: Vec<Event> = Vec::new();
         let mut ended: Option<Ended> = None;
         let answer = loop {
@@ -229,7 +269,7 @@ impl Pump<'_> {
                         over = true;
                     }
                     Some(Signal::Finished) => over = true,
-                    Some(Signal::Withdrawn(id)) => over |= id == req.id,
+                    Some(Signal::Withdrawn(id)) => over |= id == req.id(),
                     None => {}
                 }
             }
@@ -239,16 +279,23 @@ impl Pump<'_> {
         };
         match answer {
             Some(d) => {
-                if matches!(&d, Decision::Deny { reason } if reason == NO_ONE_TO_ASK) {
-                    self.denied_unasked.push(req.tool.clone());
-                }
-                if let Some(line) = self.backend.permission_response(&req, &d) {
+                let line = match (&req, d) {
+                    (Question::Permission(req), Reply::Permission(d)) => {
+                        if matches!(&d, Decision::Deny { reason } if reason == NO_ONE_TO_ASK) {
+                            self.denied_unasked.push(req.tool.clone());
+                        }
+                        self.backend.permission_response(req, &d)
+                    }
+                    (Question::Elicitation(req), Reply::Elicitation(answer)) => self.backend.elicitation_response(req, &answer),
+                    _ => unreachable!("the question determines its reply type"),
+                };
+                if let Some(line) = line {
                     self.feed.send(format!("{line}\n"));
                 }
             }
             None => {
                 drop(decision);
-                approver.withdrawn(&req);
+                req.withdrawn(approver);
             }
         }
         for event in held {

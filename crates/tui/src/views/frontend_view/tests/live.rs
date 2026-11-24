@@ -98,3 +98,26 @@ fn every_row_fits_one_column_short_of_the_terminal_at_every_width_and_style() {
         }
     }
 }
+
+#[test]
+fn elicitation_shows_a_safe_form_and_preserves_terminal_width() {
+    use jev_backend::{ElicitationRequest, ElicitationKind, ElicitationField, FieldKind};
+    let mut a = app();
+    let (reply, _) = tokio::sync::oneshot::channel();
+    a.on_front(crate::console::front::FrontMsg::Elicitation {
+        request: ElicitationRequest { id: "e".into(), server: "lunagraph".into(), message: "Run pnpm install?\n\x1b[2J".into(), kind: ElicitationKind::Form(vec![ElicitationField {
+            name: "approve".into(), title: "Approve".into(), description: "Let the agent do this".into(), required: true, kind: FieldKind::Boolean, default: "false".into(), min: None, max: None, min_length: None, max_length: None,
+        }]) }, reply,
+    });
+    for width in [30, 80] {
+        let frame = render(&a, width, Instant::now(), OFF);
+        let text = frame.rows.join("\n");
+        assert!(text.contains("Run pnpm install?"));
+        assert!(text.contains("false"));
+        assert!(text.contains("␛[2J"));
+        assert!(!text.contains('\x1b'));
+        assert!(frame.rows.iter().all(|r| display_width(r) < width));
+        let (row, col) = frame.cursor.unwrap();
+        assert!(row < frame.rows.len() && col < width);
+    }
+}

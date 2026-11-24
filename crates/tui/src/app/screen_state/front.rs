@@ -15,6 +15,7 @@ impl App {
                 self.live_answer = None;
                 self.working = None;
                 self.approval = None;
+                self.elicitation = None;
             }
             FrontMsg::Label(label) => {
                 if let Some(w) = self.working.as_mut() {
@@ -29,6 +30,8 @@ impl App {
             }
             FrontMsg::Approval(ask) => self.approval = Some(Approval::new(*ask, Instant::now())),
             FrontMsg::ApprovalGone => self.approval = None,
+            FrontMsg::Elicitation { request, reply } => self.elicitation = Some(Elicitation::new(request, reply, Instant::now())),
+            FrontMsg::ElicitationGone => self.elicitation = None,
             FrontMsg::Confirm { question, reply } => self.confirm = Some(Confirm { question, reply: Some(reply), selected: 1 }),
             FrontMsg::Suspend { ack } => {
                 self.suspended = true;
@@ -59,7 +62,9 @@ impl App {
 
     /// Pasted text goes into the box as one piece (line breaks kept).
     pub fn on_paste(&mut self, text: &str) {
-        if self.approval.is_none() && self.confirm.is_none() {
+        if let Some(e) = self.elicitation.as_mut() {
+            if e.editing() { e.editor.insert_str(text); }
+        } else if self.approval.is_none() && self.confirm.is_none() {
             self.editor.insert_str(text);
             self.edited();
         }

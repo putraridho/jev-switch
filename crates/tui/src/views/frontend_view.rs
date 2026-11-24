@@ -11,6 +11,7 @@
 
 mod activity;
 mod approval;
+mod elicitation;
 mod chat;
 mod header;
 mod input_box;
@@ -72,7 +73,7 @@ fn live(app: &App, width: usize, now: Instant, style: Style, place: Place) -> Fr
     }
 
     // The working row steps aside while a question waits: one thing to look at.
-    if let Some(work) = app.working.as_ref().filter(|_| app.approval.is_none()) {
+    if let Some(work) = app.working.as_ref().filter(|_| app.approval.is_none() && app.elicitation.is_none()) {
         let hint = "esc to stop";
         let elapsed = now.duration_since(work.started);
         // Who is working goes first when the row is short: what runs and how to stop it stay.
@@ -92,7 +93,11 @@ fn live(app: &App, width: usize, now: Instant, style: Style, place: Place) -> Fr
         rows.push(th.muted(&format!("  … and {} more queued", app.queue.len() - 3)));
     }
 
-    if let Some(c) = &app.confirm {
+    if let Some(e) = &app.elicitation {
+        let (card, at) = elicitation::card(e, w, &th);
+        cursor = at.map(|(r, c)| (rows.len() + r, c));
+        rows.extend(card);
+    } else if let Some(c) = &app.confirm {
         rows.push(raised_row(&th.strong(&c.question), w, &th));
         rows.push(raised_row("", w, &th));
         for (i, label) in ["Yes", "No"].iter().enumerate() {

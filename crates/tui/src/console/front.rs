@@ -51,6 +51,9 @@ pub enum FrontMsg {
     Activity(String),
     /// A tool call waits for the person.
     Approval(Box<ApprovalAsk>),
+    /// A server needs an answer while its tool call is running.
+    Elicitation { request: jev_backend::ElicitationRequest, reply: oneshot::Sender<jev_backend::ElicitationAnswer> },
+    ElicitationGone,
     /// The pending approval was withdrawn by the CLI: take it off the screen.
     ApprovalGone,
     /// A yes/no question from a command (`/undo`); the answer goes back on `reply`.

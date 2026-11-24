@@ -5,6 +5,7 @@ use std::time::Duration;
 
 mod approvals;
 mod approvals_pending;
+mod elicitation;
 mod process_group;
 mod prompt_files;
 mod run_turn;

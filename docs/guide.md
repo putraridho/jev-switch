@@ -740,6 +740,29 @@ That sandbox has no network and opens no local ports, so `vitest`, a dev server,
 stay confined to the workspace. Without it, the first failed command that looks like this gets a
 hint saying so. Plan mode stays read-only and closed either way.
 
+#### MCP elicitation
+
+On Claude and DeepSeek, an MCP server can pause a tool call to ask you a question through
+elicitation. jev-code shows the server's name, its message and a form in place of the input
+box. Tool permission rules and `auto` mode never answer these questions for you.
+
+Type a field's answer, or use ↑/↓ for a boolean or a choice. Enter advances to the next field;
+Shift-Tab goes back. After the last field, choose **Send answer**, **Decline** (selected by
+default), or **Cancel** with ↑/↓ and Enter. Esc cancels the question; Ctrl-C also stops the turn.
+PgUp/PgDn scroll the question and review. Your message draft and queued messages are kept.
+The provider's idle watchdog pauses while you answer, but the MCP server can still enforce
+its own deadline; a withdrawn request closes the form and receives no stale answer.
+
+Forms support string, boolean, integer and number fields, string choices, defaults, required
+fields, numeric bounds and text length limits. Unsupported schemas show an explanation and
+can be declined or cancelled. URL requests show the URL for you to open manually; **Send
+answer** acknowledges the request, and the browser action completes separately. No browser
+opens automatically. Classic UI (`JEV_CLASSIC_UI`) supports only empty forms and URL prompts;
+use the default UI for forms with fields. Runs without an interactive UI cancel questions.
+
+The server must send an MCP elicitation request. An approval sent only to another app's
+window cannot appear here, and typing “I approve” after that app's timeout cannot answer it.
+
 #### Logs
 
 `JEV_CODE_LOG` (turn log, one row per attempt with the decision reason, Jev's

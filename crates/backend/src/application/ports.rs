@@ -9,6 +9,7 @@ use tokio::sync::mpsc;
 
 use jev_approval::domain::permission_request::{Decision, PermissionRequest};
 use crate::domain::effort::Effort;
+use crate::domain::elicitation::{ElicitationRequest, ElicitationAnswer};
 use crate::domain::error_kind::ErrorKind;
 use crate::domain::event::Event;
 use crate::domain::mcp_attachment::McpAttachment;
@@ -18,7 +19,7 @@ use jev_shared::ProviderId;
 /// Why a request is denied when nobody can be asked.
 pub const NO_ONE_TO_ASK: &str = "no one to ask: this session has no terminal to approve tool calls";
 
-/// Whoever answers [`PermissionRequest`]s while a turn runs. The turn waits for the answer
+/// Whoever answers tool permissions and MCP elicitation while a turn runs. The turn waits for the answer
 /// without any idle timeout: a person can take as long as they need. The turn keeps reading
 /// the CLI meanwhile, so the decision may be abandoned: the future is dropped and
 /// [`Approver::withdrawn`] follows. Only a future that yields can be abandoned, so an
@@ -30,6 +31,13 @@ pub trait Approver: Send + Sync {
     /// it, finished, or died. Take the question off the screen. Called after the `decide`
     /// future is dropped, once per such question, never for one that was answered.
     fn withdrawn(&self, _req: &PermissionRequest) {}
+
+    /// Ask the person directly. Permission modes and remembered tool rules do not answer it.
+    fn elicit<'a>(&'a self, _req: &'a ElicitationRequest) -> Pin<Box<dyn Future<Output = ElicitationAnswer> + Send + 'a>> {
+        Box::pin(std::future::ready(ElicitationAnswer::Cancel))
+    }
+
+    fn elicitation_withdrawn(&self, _req: &ElicitationRequest) {}
 }
 
 /// The approver of a run that has no one to ask: every request is denied at once.
@@ -69,6 +77,11 @@ pub trait Backend: Send + Sync {
     /// The line (without the newline) that answers `req` on the CLI's stdin. Only called
     /// when [`Backend::interactive`].
     fn permission_response(&self, _req: &PermissionRequest, _decision: &Decision) -> Option<String> {
+        None
+    }
+
+    /// Reply to a server's question on the provider control channel.
+    fn elicitation_response(&self, _req: &ElicitationRequest, _answer: &ElicitationAnswer) -> Option<String> {
         None
     }
 
