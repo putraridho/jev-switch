@@ -2,14 +2,26 @@
 //! T03 writes the body.
 
 use jev_usage_core::port::SourceId;
+use std::ffi::OsString;
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc;
+use tokio::task::AbortHandle;
 
 /// Dropping it stops the watch and its re-arm timer.
 #[derive(Debug)]
 pub struct WatchGuard {
-    _private: (),
+    stop: Arc<AtomicBool>,
+    handle: AbortHandle,
+}
+
+impl Drop for WatchGuard {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::SeqCst);
+        self.handle.abort();
+    }
 }
 
 /// The watch's timings.
@@ -34,12 +46,12 @@ impl Default for WatchOptions {
     }
 }
 
-/// inotify (its descriptor in tokio's `AsyncFd` on `rt`'s reactor, no thread and no stream
-/// adapter): MODIFY on the file, and CREATE | MOVED_TO | MOVED_FROM | DELETE on the parent
-/// directory filtered to the file name. Throttled: the first event arms `coalesce`, the
-/// signal is sent when it fires. Never fails: when the directory is missing or the watch is
-/// lost it re-arms itself at 1, 2, 4 … 15 min and signals once when armed. A queue overflow
-/// is a signal.
+/// inotify: `MODIFY` on the file, and `CREATE | MOVED_TO | MOVED_FROM | DELETE` on the parent
+/// directory filtered to the file name. The read is a blocking `read` on a blocking thread
+/// (tokio's `AsyncFd` is unsound/deprecated in the pinned tokio, so no stream adapter is
+/// used). Throttled: the first event arms `coalesce`, the signal is sent when it fires.
+/// Never fails: when the directory is missing or the watch is lost it re-arms itself at
+/// 1, 2, 4 … 15 min and signals once when armed. A queue overflow is a signal.
 pub fn watch_file(
     path: &Path,
     id: SourceId,
@@ -47,8 +59,93 @@ pub fn watch_file(
     opts: WatchOptions,
     rt: &tokio::runtime::Handle,
 ) -> WatchGuard {
-    let _ = (path, id, tx, opts, rt);
-    WatchGuard { _private: () }
+    let path = path.to_path_buf();
+    let file_name = path.file_name().map(OsString::from);
+    let stop = Arc::new(AtomicBool::new(false));
+    let stop_worker = Arc::clone(&stop);
+    let handle = rt.spawn(async move {
+        let _ = tokio::task::spawn_blocking(move || {
+            watch_blocking(&path, file_name.as_deref(), id, &tx, opts, &stop_worker);
+        })
+        .await;
+    });
+    WatchGuard {
+        stop,
+        handle: handle.abort_handle(),
+    }
+}
+
+fn watch_blocking(
+    path: &Path,
+    file_name: Option<&std::ffi::OsStr>,
+    id: SourceId,
+    tx: &mpsc::Sender<SourceId>,
+    opts: WatchOptions,
+    stop: &AtomicBool,
+) {
+    use inotify::{EventMask, Inotify, WatchMask};
+
+    let mut buffer = [0_u8; 4096];
+    let mut rearm = opts.rearm_first;
+    loop {
+        if stop.load(Ordering::SeqCst) {
+            return;
+        }
+        let Ok(mut inotify) = Inotify::init() else {
+            std::thread::sleep(rearm);
+            rearm = next_rearm(rearm, opts);
+            continue;
+        };
+        let file_wd = inotify.watches().add(path, WatchMask::MODIFY).ok();
+        let _dir_wd = path.parent().and_then(|parent| {
+            inotify
+                .watches()
+                .add(
+                    parent,
+                    WatchMask::CREATE | WatchMask::MOVED_TO | WatchMask::MOVED_FROM | WatchMask::DELETE,
+                )
+                .ok()
+        });
+
+        loop {
+            if stop.load(Ordering::SeqCst) {
+                return;
+            }
+            let Ok(events) = inotify.read_events_blocking(&mut buffer) else {
+                break;
+            };
+            let mut hit = false;
+            for event in events {
+                if event.mask.contains(EventMask::Q_OVERFLOW) {
+                    if tx.blocking_send(id).is_err() {
+                        return;
+                    }
+                    continue;
+                }
+                let matches = match event.name {
+                    Some(name) => Some(name) == file_name,
+                    None => file_wd.as_ref().is_some_and(|wd| event.wd == *wd),
+                };
+                if matches {
+                    hit = true;
+                }
+            }
+            if hit {
+                std::thread::sleep(opts.coalesce);
+                if tx.blocking_send(id).is_err() {
+                    return;
+                }
+            }
+        }
+
+        // Watch lost: re-arm with backoff.
+        std::thread::sleep(rearm);
+        rearm = next_rearm(rearm, opts);
+    }
+}
+
+fn next_rearm(current: Duration, opts: WatchOptions) -> Duration {
+    current.saturating_mul(2).min(opts.rearm_max)
 }
 
 #[cfg(test)]
@@ -71,5 +168,12 @@ mod tests {
         assert_eq!(opts.coalesce, Duration::from_millis(1500));
         assert_eq!(opts.rearm_first.as_secs(), 60);
         assert_eq!(opts.rearm_max.as_secs(), 900);
+    }
+
+    #[test]
+    fn rearm_doubles_to_the_maximum() {
+        let opts = WatchOptions::default();
+        assert_eq!(next_rearm(Duration::from_mins(1), opts).as_secs(), 120);
+        assert_eq!(next_rearm(Duration::from_mins(8), opts).as_secs(), 900);
     }
 }

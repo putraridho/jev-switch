@@ -22,7 +22,7 @@ async fn fake_timer_fires_when_the_clock_advances_past_the_deadline() {
     let timer = FakeTimer::new(clock.clone());
     let advance = tokio::spawn(async move {
         tokio::time::sleep(Duration::from_millis(10)).await;
-        clock.advance(Duration::from_millis(5_000));
+        clock.advance(Duration::from_secs(5));
     });
     let wake = timer.sleep_until(UnixMillis(5_000)).await;
     assert_eq!(wake, Wake::Due);
@@ -52,10 +52,13 @@ async fn fake_timer_fires_at_once_for_a_past_deadline() {
 #[tokio::test]
 async fn system_timer_fires_at_a_short_deadline_and_at_once_for_the_past() {
     let timer = SystemTimer::new();
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_millis() as u64;
+    let now = u64::try_from(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis(),
+    )
+    .unwrap();
     let past = timer.sleep_until(UnixMillis(now.saturating_sub(1_000))).await;
     assert_eq!(past, Wake::Due);
     let soon = timer.sleep_until(UnixMillis(now + 50)).await;
