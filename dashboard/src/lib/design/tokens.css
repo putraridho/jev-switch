@@ -95,6 +95,36 @@
   --waffle-empty-d: 14.5px; /* outline dot diameter */
 }
 
+/* Dark theme (S57): the same warm paper, lit from the other side. Warm ink on warm
+   charcoal; one alert color; no shadows. */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --color-paper: #1b1b1e;
+    --color-ink: #ece9e2;
+    --color-muted: #a29b90;
+    --color-faint: #6f695f;
+    --color-rule: #34332f;
+    --color-chip: #262529;
+    --color-alert: #e0664a;
+    --color-critical-fill: #e0664a;
+    --color-stale: #d9a441;
+  }
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --color-paper: #1b1b1e;
+  --color-ink: #ece9e2;
+  --color-muted: #a29b90;
+  --color-faint: #6f695f;
+  --color-rule: #34332f;
+  --color-chip: #262529;
+  --color-alert: #e0664a;
+  --color-critical-fill: #e0664a;
+  --color-stale: #d9a441;
+}
+
 /* Reduced motion: no movement, at most a 100 ms opacity change. */
 @media (prefers-reduced-motion: reduce) {
   :root {
