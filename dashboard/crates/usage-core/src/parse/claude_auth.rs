@@ -1,19 +1,55 @@
-//! The whole output of `claude auth status` (DESIGN 8.3, 8.6). T01 writes the body.
-
+//! Allow-list for Claude login status.
 use crate::label::Label;
+use serde::Deserialize;
 
-/// What the login probe keeps of `claude auth status`: nothing that identifies the account.
+/// The non-identifying login facts.
 #[derive(Clone, Eq, PartialEq, Debug)]
 pub struct ClaudeLogin {
     /// Whether the CLI is signed in.
     pub logged_in: bool,
-    /// The plan name, when the output carries one.
+    /// The plan name, when present and valid.
     pub plan: Option<Label>,
 }
 
-/// The three-field allow-list over the JSON form, else the text rule; `None` when neither
-/// says anything.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct Status<'a> {
+    logged_in: bool,
+    #[serde(borrow)]
+    plan_tier: Option<&'a str>,
+    #[serde(borrow)]
+    subscription_type: Option<&'a str>,
+}
+
+/// Parse the three allowed JSON fields, or the text login status.
 pub fn parse(output: &[u8]) -> Option<ClaudeLogin> {
-    let _ = output;
-    None
+    if let Ok(status) = serde_json::from_slice::<Status<'_>>(output) {
+        let plan = status
+            .plan_tier
+            .or(status.subscription_type)
+            .and_then(|value| {
+                let normalized = value.to_ascii_lowercase().replace(['-', ' '], "_");
+                Label::parse(&normalized)
+            });
+        return Some(ClaudeLogin {
+            logged_in: status.logged_in,
+            plan,
+        });
+    }
+    let contains = |needle: &[u8]| {
+        output
+            .windows(needle.len())
+            .any(|part| part.eq_ignore_ascii_case(needle))
+    };
+    let logged_in = if contains(b"not logged in") || contains(b"not authenticated") {
+        false
+    } else if contains(b"logged in") {
+        true
+    } else {
+        return None;
+    };
+    Some(ClaudeLogin {
+        logged_in,
+        plan: None,
+    })
 }
