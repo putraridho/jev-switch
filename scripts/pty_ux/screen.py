@@ -286,3 +286,40 @@ def a_slow_provider_probe_that_finishes_at_the_prompt_is_reported_at_the_next_in
         quit_with_ctrl_d(p)
     finally:
         p.close()
+
+
+@scenario
+def a_wheel_burst_scrolls_the_chat_and_a_lone_arrow_still_recalls_history(w):
+    """With the mouse left to the terminal, the wheel arrives as arrow keys (alternate scroll
+    mode): several written at once for one notch. Those scroll the chat; one arrow is a key press
+    and brings back the last message, which Enter then sends again. A turn shows its working row
+    (`Reading a.txt`), so a message sent again is a new such row; scrolling redraws the chat and
+    repeats the message text, which says nothing."""
+    p = Pty(w, [w.repo], "wheel", env=w.env(JEV_INLINE=None), cols=130, rows=34)
+    try:
+        p.expect("Ask anything", 15, "the box")
+        p.send("explain the code quick\r")
+        p.expect(ANSWER, 20, "the answer in the chat pane")
+        p.settle(1.0)
+        working = "Reading a.txt"
+        turns = p.printed().count(working)
+        # A burst of arrows in one write is the wheel: Enter on the still-empty box sends nothing.
+        p.send("\x1b[A\x1b[A\x1b[A")
+        p.settle(0.5)
+        p.send("\r")
+        p.settle(1.5)
+        if p.printed().count(working) != turns:
+            raise Fail(f"a wheel burst must not recall history; the message was sent again:\n{p.tail()}")
+        # One arrow is a key press: history comes back and Enter sends it.
+        p.send("\x1b[A")
+        p.settle(0.5)
+        p.send("\r")
+        p.expect(working, 20, "the working row of the recalled message")
+        p.expect(ANSWER, 20, "the answer to the recalled message")
+        p.settle(1.0)
+        p.send("\x04")
+        code = p.wait_exit(10)
+        if code != 0:
+            raise Fail(f"Ctrl-D should exit with 0, got {code}")
+    finally:
+        p.close()

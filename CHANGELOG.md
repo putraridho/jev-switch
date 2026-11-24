@@ -4,6 +4,8 @@ See [docs/changelog-guide.md](docs/changelog-guide.md) for changelog formatting,
 
 ## Unreleased
 
+- **The mouse wheel scrolls the chat in full-screen mode, and text selection still works.** With the mouse left to the terminal, most terminals send the wheel as Up and Down arrow keys, which recalled history or moved the cursor instead of scrolling. A burst of arrows that arrive together in one direction (one wheel notch) now scrolls the chat one row per arrow, while a single arrow press keeps its meaning. The terminal reports nothing, so this is a heuristic: a wheel that sends one arrow per notch still looks like a key press, and the arrows go to a completion menu or an approval question when one is open. Use PageUp/PageDown, or `JEV_INLINE=1` for the terminal's own scrollback, in those cases.
+
 ## 1.14.0
 
 Downloadable releases, `/update` that installs them, and experimental native Windows.

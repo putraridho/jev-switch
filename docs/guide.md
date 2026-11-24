@@ -324,7 +324,7 @@ providers that are ready, named in words (`claude, codex ready`; `no provider re
 
 Type in the box at the bottom and press Enter. jev-code fills the terminal: a header row on
 top, the chat under it, and the input box at the bottom. Only the input box is boxed; the rest
-is rows of text set apart by space and weight. Scroll the chat with
+is rows of text set apart by space and weight. Scroll the chat with the wheel or
 PageUp/PageDown; Ctrl-Home and Ctrl-End jump to the start and the end. New output
 does not move you while you read back. Because the app draws the screen, the terminal's own
 scrollback does not apply, but the mouse is left to the terminal, so select text and click links as usual. `JEV_INLINE=1` starts the inline layout instead: the conversation goes

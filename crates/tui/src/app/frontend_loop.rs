@@ -42,12 +42,46 @@ pub struct Options {
     pub history: Option<PathBuf>,
 }
 
-/// The next key or paste, or `None` while the terminal belongs to a command.
-async fn next_event(events: &mut Option<EventStream>) -> Option<std::io::Result<Event>> {
+/// The next key or paste, or `None` while the terminal belongs to a command. Events that were
+/// read ahead (to tell a wheel burst from a key) come first.
+async fn next_event(events: &mut Option<EventStream>, ahead: &mut std::collections::VecDeque<Event>) -> Option<std::io::Result<Event>> {
+    if let Some(event) = ahead.pop_front() {
+        return Some(Ok(event));
+    }
     match events {
         Some(stream) => stream.next().await,
         None => std::future::pending().await,
     }
+}
+
+/// How long to wait for the rest of a burst of arrows. A wheel notch is written in one piece,
+/// but the terminal library hands its keys over one by one, a moment apart; a person's key
+/// repeat is far slower than this.
+const WHEEL_WAIT: std::time::Duration = std::time::Duration::from_millis(12);
+
+/// The wheel, which a terminal sends as arrow keys: a burst of arrows read together scrolls the
+/// chat, in full-screen mode with nothing else using the arrows. `None` when this is a plain key.
+async fn wheel_rows(app: &App, key: &crossterm::event::KeyEvent, events: &mut Option<EventStream>, ahead: &mut std::collections::VecDeque<Event>) -> Option<isize> {
+    use crate::input::wheel;
+    let direction = wheel::arrow(key)?;
+    if !app.fullscreen || app.approval.is_some() || app.confirm.is_some() || app.menu.is_some() {
+        return None;
+    }
+    // Take in what follows the arrow, until something that is not one of them (kept for the
+    // loop to handle next) or nothing more comes at once.
+    while ahead.back().is_none_or(|last| matches!(last, Event::Key(k) if wheel::arrow(k) == Some(direction))) {
+        let Some(stream) = events.as_mut() else { break };
+        match tokio::time::timeout(WHEEL_WAIT, stream.next()).await {
+            Ok(Some(Ok(event))) => ahead.push_back(event),
+            _ => break,
+        }
+    }
+    let mut kept = Vec::new();
+    let more = wheel::following(direction, &mut || ahead.pop_front(), &mut |e| kept.push(e));
+    for event in kept.into_iter().rev() {
+        ahead.push_front(event);
+    }
+    (more > 0).then(|| wheel::scroll_rows(direction, more + 1))
 }
 
 /// The running line, or never.
@@ -101,6 +135,8 @@ pub async fn run(repl: Repl, mut rx: mpsc::UnboundedReceiver<FrontMsg>, opts: Op
 
     let mut screen = Screen::new(std::io::stdout(), style.enabled);
     let mut events = Some(EventStream::new());
+    // Events read ahead to tell a wheel burst from a key press.
+    let mut ahead: std::collections::VecDeque<Event> = std::collections::VecDeque::new();
     let (stop_tx, stop_rx) = mpsc::unbounded_channel();
     let mut idle: Option<(Repl, Stops)> = Some((repl, Stops(stop_rx)));
     let mut task: Option<JoinHandle<Done>> = None;
@@ -156,7 +192,7 @@ pub async fn run(repl: Repl, mut rx: mpsc::UnboundedReceiver<FrontMsg>, opts: Op
         }
 
         let mut actions = tokio::select! {
-            ev = next_event(&mut events) => match ev {
+            ev = next_event(&mut events, &mut ahead) => match ev {
                 Some(Ok(Event::Key(k))) if k.code == KeyCode::Char('v')
                     && k.modifiers == KeyModifiers::CONTROL
                     && k.kind != KeyEventKind::Release
@@ -168,7 +204,13 @@ pub async fn run(repl: Repl, mut rx: mpsc::UnboundedReceiver<FrontMsg>, opts: Op
                     }
                     Vec::new()
                 }
-                Some(Ok(Event::Key(k))) => key_after_updates(&mut app, &mut rx, k, Instant::now()),
+                Some(Ok(Event::Key(k))) => match wheel_rows(&app, &k, &mut events, &mut ahead).await {
+                    Some(rows) => {
+                        app.scroll_chat(rows);
+                        Vec::new()
+                    }
+                    None => key_after_updates(&mut app, &mut rx, k, Instant::now()),
+                },
                 Some(Ok(Event::Paste(text))) => {
                     let pasted = crate::tty::terminal_environment::sanitize_paste(&text);
                     app.on_paste(&pasted.text);
