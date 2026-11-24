@@ -600,7 +600,7 @@ checksum = "8f42a60cbdf9a97f5d2305f08a87dc4e09308d1276d28c869c684d7777685682"
 
 [[package]]
 name = "jev-approval"
-version = "1.13.0"
+version = "1.13.1"
 dependencies = [
  "jev-shared",
  "jev-testkit",
@@ -612,7 +612,7 @@ dependencies = [
 
 [[package]]
 name = "jev-backend"
-version = "1.13.0"
+version = "1.13.1"
 dependencies = [
  "jev-approval",
  "jev-shared",
@@ -625,7 +625,7 @@ dependencies = [
 
 [[package]]
 name = "jev-calibration"
-version = "1.13.0"
+version = "1.13.1"
 dependencies = [
  "jev-testkit",
  "tokio",
@@ -633,7 +633,7 @@ dependencies = [
 
 [[package]]
 name = "jev-catalog"
-version = "1.13.0"
+version = "1.13.1"
 dependencies = [
  "jev-shared",
  "jev-testkit",
@@ -643,7 +643,7 @@ dependencies = [
 
 [[package]]
 name = "jev-changes"
-version = "1.13.0"
+version = "1.13.1"
 dependencies = [
  "jev-shared",
  "jev-testkit",
@@ -652,7 +652,7 @@ dependencies = [
 
 [[package]]
 name = "jev-chat"
-version = "1.13.0"
+version = "1.13.1"
 dependencies = [
  "anyhow",
  "jev-catalog",
@@ -665,7 +665,7 @@ dependencies = [
 
 [[package]]
 name = "jev-doctor"
-version = "1.13.0"
+version = "1.13.1"
 dependencies = [
  "jev-judgment",
  "jev-providers",
@@ -677,7 +677,7 @@ dependencies = [
 
 [[package]]
 name = "jev-gateway"
-version = "1.13.0"
+version = "1.13.1"
 dependencies = [
  "anyhow",
  "axum",
@@ -696,7 +696,7 @@ dependencies = [
 
 [[package]]
 name = "jev-judgment"
-version = "1.13.0"
+version = "1.13.1"
 dependencies = [
  "anyhow",
  "jev-catalog",
@@ -710,7 +710,7 @@ dependencies = [
 
 [[package]]
 name = "jev-orchestration"
-version = "1.13.0"
+version = "1.13.1"
 dependencies = [
  "anyhow",
  "jev-backend",
@@ -727,7 +727,7 @@ dependencies = [
 
 [[package]]
 name = "jev-providers"
-version = "1.13.0"
+version = "1.13.1"
 dependencies = [
  "jev-backend",
  "jev-catalog",
@@ -741,7 +741,7 @@ dependencies = [
 
 [[package]]
 name = "jev-router"
-version = "1.13.0"
+version = "1.13.1"
 dependencies = [
  "anyhow",
  "axum",
@@ -775,7 +775,7 @@ dependencies = [
 
 [[package]]
 name = "jev-routing"
-version = "1.13.0"
+version = "1.13.1"
 dependencies = [
  "jev-catalog",
  "jev-judgment",
@@ -786,7 +786,7 @@ dependencies = [
 
 [[package]]
 name = "jev-session"
-version = "1.13.0"
+version = "1.13.1"
 dependencies = [
  "jev-backend",
  "jev-shared",
@@ -798,7 +798,7 @@ dependencies = [
 
 [[package]]
 name = "jev-shared"
-version = "1.13.0"
+version = "1.13.1"
 dependencies = [
  "jev-testkit",
  "libc",
@@ -809,7 +809,7 @@ dependencies = [
 
 [[package]]
 name = "jev-testkit"
-version = "1.13.0"
+version = "1.13.1"
 dependencies = [
  "serde_json",
  "tokio",
@@ -817,7 +817,7 @@ dependencies = [
 
 [[package]]
 name = "jev-tui"
-version = "1.13.0"
+version = "1.13.1"
 dependencies = [
  "crossterm",
  "futures-util",
@@ -844,7 +844,7 @@ dependencies = [
 
 [[package]]
 name = "jev-turn"
-version = "1.13.0"
+version = "1.13.1"
 dependencies = [
  "jev-approval",
  "jev-backend",

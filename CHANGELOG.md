@@ -4,6 +4,14 @@ See [docs/changelog-guide.md](docs/changelog-guide.md) for changelog formatting,
 
 ## Unreleased
 
+## 1.13.1
+
+Terminal selection, readable reasoning lines and thread-named tabs.
+
+- **Mouse stays with the terminal in full-screen mode.** `jev-code` no longer enables terminal mouse tracking, so clicking and dragging selects text (including block selection) and clicks links as usual in your terminal; use PageUp/PageDown and Ctrl-Home/Ctrl-End to scroll the chat pane.
+- **Thought lines wrap instead of truncating.** Long `◆ Thought` lines now wrap onto indented continuation rows aligned under the first word rather than cutting off with `…`.
+- **Terminal tabs show the thread name and state.** The window and tab title now shows the activity mark (`○`, `●`, `?`, `✓`, `✗`) followed directly by the session name (or `jev-code` when unnamed).
+
 ## 1.13.0
 
 True billing, one shared budget, measured quality and provider health.

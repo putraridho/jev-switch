@@ -27,6 +27,7 @@ from .fakes import *  # noqa: F401,F403
 
 
 CSI = re.compile(r"\x1b\[([0-9;?<>=]*)([ -/]*[@-~])")
+OSC = re.compile(r"\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)")
 
 
 def clean(text):
@@ -50,6 +51,10 @@ def clean(text):
                         del line[col:]
                     elif params == "2":
                         line = []
+                i = m.end()
+                continue
+            m = OSC.match(text, i)
+            if m:
                 i = m.end()
                 continue
             i += 2 if text[i + 1 : i + 2] in ("7", "8") else 1
@@ -105,7 +110,11 @@ class VT:
                     self.csi(m.group(1), m.group(2))
                     i = m.end()
                     continue
-                if i + 1 >= len(text) or text[i + 1] == "[":
+                m = OSC.match(text, i)
+                if m:
+                    i = m.end()
+                    continue
+                if i + 1 >= len(text) or text[i + 1] in ("[", "]"):
                     self.tail = text[i:]  # an escape sequence split across two reads
                     return
                 i += 2  # ESC 7, ESC 8, ESC =, ...
@@ -397,4 +406,4 @@ def quit_with_ctrl_d(p):
 
 
 def strip_known_escapes(raw):
-    return re.sub(r"\x1b\[[0-9;?<>=]*[ -/]*[@-~]|\x1b[78]", "", raw)
+    return re.sub(r"\x1b\[[0-9;?<>=]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[78]", "", raw)
