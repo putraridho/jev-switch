@@ -19,8 +19,9 @@
 
   h1 {
     margin: 0;
-    font-size: var(--text-xl);
-    font-weight: var(--text-xl-weight);
-    line-height: var(--text-xl-line);
+    font-family: var(--font-serif);
+    font-size: var(--title-xl);
+    font-weight: var(--title-xl-weight);
+    line-height: var(--title-xl-line);
   }
 </style>
