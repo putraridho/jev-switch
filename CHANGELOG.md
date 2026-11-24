@@ -4,6 +4,13 @@ See [docs/changelog-guide.md](docs/changelog-guide.md) for changelog formatting,
 
 ## Unreleased
 
+## 1.14.2
+
+Smooth working-row shimmer and eased mouse wheel scrolling.
+
+- **Soft highlight shimmer on the active row.** While a turn works, a soft highlight now sweeps smoothly across the working row text (for example `cargo test`) at 60 fps (`FRAME_TICK`), rewriting only changed rows inside synchronized updates. It falls back to the plain accent on light terminals, with `NO_COLOR`, or when reduced motion is requested.
+- **Eased mouse wheel scrolling in full-screen mode.** Full-screen mode now enables SGR mouse reporting so every mouse wheel notch smoothly scrolls 4 rows and eases to a stop instead of jumping or relying on arrow-burst heuristics. PageUp and PageDown also glide to their destination. Hold Shift to select text or click a link in the terminal, or set `JEV_INLINE=1` to use the terminal's own scrollback.
+
 ## 1.14.1
 
 The mouse wheel scrolls the chat.
