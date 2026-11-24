@@ -58,6 +58,14 @@ pub(super) fn start(idle: &mut Option<(Repl, Stops)>, line: &str, style: Style, 
     let stamp = crate::render::local_clock();
     let block = crate::render::sent_block(line, first, stamp.as_deref(), style, text_width(app));
     show(screen, app, &block, style);
+    // A thread with no name takes one from its first message, so the tab and header have a title.
+    if repl.engine.sessions.name().is_none() {
+        let title = crate::render::session_title::auto_title(line);
+        if !title.is_empty() {
+            repl.engine.sessions.set_name(Some(&title));
+            app.session_name = repl.engine.sessions.name().map(String::from);
+        }
+    }
     let line = line.to_string();
     Some(tokio::spawn(async move {
         let mut confirm = CardConfirm(repl.console.front());

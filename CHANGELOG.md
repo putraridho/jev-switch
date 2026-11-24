@@ -4,6 +4,12 @@ See [docs/changelog-guide.md](docs/changelog-guide.md) for changelog formatting,
 
 ## Unreleased
 
+## 1.13.2
+
+A thread now names itself, so the terminal tab shows it.
+
+- **A new thread is named from its first message.** The terminal tab and header showed `jev-code` until you ran `/rename`, because nothing named a thread on its own. An unnamed thread now takes a short title from the message you send (slash commands do not name it), and the tab shows it as soon as the turn starts. `/rename` still overrides it.
+
 ## 1.13.1
 
 Terminal selection, readable reasoning lines and thread-named tabs.
