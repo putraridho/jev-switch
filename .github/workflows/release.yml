@@ -1,0 +1,76 @@
+name: release
+
+# Pushing a tag vX.Y.Z builds jev-code for each platform and publishes a GitHub release that
+# `/update` and scripts/install-release.sh download. The tag must match the version in Cargo.toml.
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: never
+
+jobs:
+  build:
+    name: build (${{ matrix.platform }})
+    runs-on: ${{ matrix.os }}
+    continue-on-error: ${{ matrix.experimental == true }}
+    defaults:
+      run:
+        shell: bash
+    strategy:
+      # One platform failing must not stop the others from being released.
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-latest, platform: linux-x86_64 }
+          - { os: ubuntu-24.04-arm, platform: linux-aarch64 }
+          - { os: macos-15-intel, platform: macos-x86_64 }
+          - { os: macos-latest, platform: macos-aarch64 }
+          # Never built on a real runner before: if it fails, the release goes out without it.
+          - { os: windows-latest, platform: windows-x86_64, experimental: true }
+    steps:
+      - uses: actions/checkout@v4
+      - name: The tag matches Cargo.toml
+        run: |
+          version=$(sed -n '/^\[workspace.package\]/,/^\[/{s/^version = "\(.*\)"/\1/p}' Cargo.toml)
+          test "v$version" = "$GITHUB_REF_NAME" || { echo "tag $GITHUB_REF_NAME is not v$version"; exit 1; }
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.95.0
+      - uses: Swatinem/rust-cache@v2
+      - name: Build
+        env:
+          # Marks the binary as a downloaded release: `/update` then updates from releases.
+          JEV_RELEASE_BUILD: "1"
+        run: cargo build --release --locked --bin code --bin ask --bin chat --bin gateway --bin delegate_mcp
+      - name: Package
+        run: scripts/package-release.sh "$GITHUB_REF_NAME" "${{ matrix.platform }}" dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: jev-code-${{ matrix.platform }}
+          path: dist/*
+          if-no-files-found: error
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Release notes from the changelog
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          awk -v v="## $version" '$0 == v {on=1; next} /^## / {on=0} on' CHANGELOG.md > notes.md
+          test -s notes.md || echo "jev-code $version" > notes.md
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" dist/* --title "jev-code ${GITHUB_REF_NAME#v}" --notes-file notes.md --verify-tag

@@ -35,6 +35,7 @@ const SYSTEM: &str =
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    jev_router::shared::infrastructure::platform::ensure_home();
     if let Some(flag) = std::env::args().nth(1) {
         match flag.as_str() {
             "-h" | "--help" => {

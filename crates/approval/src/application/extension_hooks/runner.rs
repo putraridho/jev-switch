@@ -44,11 +44,50 @@ pub(super) fn kept_text(bytes: &[u8]) -> String {
     text
 }
 
+/// The hook's command line through the platform's shell: `sh -c`, `cmd /C` on Windows. The same
+/// shape as `jev_shared::infrastructure::platform::shell`, kept here because this layer may not
+/// reach that one (the architecture test).
+fn shell(script: &str) -> Command {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        let mut cmd = Command::new("cmd");
+        // `/S` strips exactly the outer quotes, so the script reaches cmd as typed.
+        cmd.args(["/D", "/S", "/C"]).raw_arg(format!("\"{script}\""));
+        cmd
+    }
+    #[cfg(not(windows))]
+    {
+        let mut cmd = Command::new("sh");
+        cmd.arg("-c").arg(script);
+        cmd
+    }
+}
+
+/// Stop the hook and everything it started: its process group on Unix (made with
+/// `process_group(0)` below), its process tree on Windows.
+fn kill_tree(pid: u32) {
+    #[cfg(unix)]
+    if let Some(target) = i32::try_from(pid).ok().filter(|p| *p > 0).map(|p| -p) {
+        // SAFETY: plain `kill(2)` on a negative pid: the process group made below.
+        unsafe {
+            libc::kill(target, libc::SIGKILL);
+        }
+    }
+    #[cfg(windows)]
+    {
+        let _ = Command::new("taskkill")
+            .args(["/PID", &pid.to_string(), "/T", "/F"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+    }
+}
+
 pub(super) fn run_command(command: &str, dir: &Path, input: &str, event: Event, tool: Option<&str>, timeout: Duration) -> Ran {
-    let mut cmd = Command::new("sh");
-    cmd.arg("-c")
-        .arg(command)
-        .current_dir(dir)
+    let mut cmd = shell(command);
+    cmd.current_dir(dir)
         .env("JEV_HOOK_EVENT", event.as_str())
         .env("JEV_HOOK_TOOL", tool.unwrap_or(""))
         .stdin(Stdio::piped())
@@ -103,13 +142,7 @@ pub(super) fn run_command(command: &str, dir: &Path, input: &str, event: Event, 
         match child.try_wait() {
             Ok(Some(status)) => break status,
             Ok(None) if started.elapsed() >= timeout => {
-                #[cfg(unix)]
-                if let Ok(pid) = i32::try_from(child.id()) {
-                    // SAFETY: plain `kill(2)` on a negative pid: the process group made above.
-                    unsafe {
-                        libc::kill(-pid, libc::SIGKILL);
-                    }
-                }
+                kill_tree(child.id());
                 let _ = child.kill();
                 let _ = child.wait();
                 return Ran::TimedOut;

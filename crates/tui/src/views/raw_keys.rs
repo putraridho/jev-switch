@@ -103,6 +103,43 @@ fn interrupted() -> bool {
     std::io::Error::last_os_error().kind() == std::io::ErrorKind::Interrupted
 }
 
+/// The Windows console, read as key events turned into bytes.
+#[cfg(windows)]
+pub struct RawKeys {
+    // Dropped first: the console goes back before the line editor may read again.
+    _raw: crate::tty::key_bytes::console_keys::RawMode,
+    _owner: std::sync::MutexGuard<'static, ()>,
+}
+
+#[cfg(windows)]
+impl RawKeys {
+    /// Raw mode on the console, or `None` when stdin is not a terminal.
+    pub fn enter() -> Option<Self> {
+        if !std::io::IsTerminal::is_terminal(&std::io::stdin()) {
+            return None;
+        }
+        let owner = crate::input::line_editor::approval::STDIN_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let raw = crate::tty::key_bytes::console_keys::RawMode::enter()?;
+        crate::tty::key_bytes::console_keys::drain();
+        Some(Self { _raw: raw, _owner: owner })
+    }
+
+    /// Wait for keys, at most `timeout_ms` (`None`: as long as it takes).
+    pub fn read(&self, timeout_ms: Option<i32>) -> Read {
+        use crate::tty::key_bytes::console_keys::{poll_bytes, Polled};
+        use std::time::Duration;
+        let slice = Duration::from_millis(timeout_ms.map_or(100, |ms| u64::try_from(ms).unwrap_or(0)));
+        loop {
+            match poll_bytes(slice) {
+                Polled::Bytes(bytes) => return Read::Bytes(bytes),
+                Polled::Closed => return Read::Closed,
+                Polled::Timeout if timeout_ms.is_some() => return Read::Timeout,
+                Polled::Timeout => {}
+            }
+        }
+    }
+}
+
 /// Lines drawn below the cursor and redrawn in place; [`Block::clear`] takes them away.
 #[derive(Default)]
 pub struct Block {

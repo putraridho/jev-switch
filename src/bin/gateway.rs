@@ -25,5 +25,6 @@
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    jev_router::shared::infrastructure::platform::ensure_home();
     jev_router::gateway::interface::http::compose::run().await
 }

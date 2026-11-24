@@ -32,7 +32,7 @@ pub fn home_path_exists(rel: &str) -> bool {
 }
 
 pub fn installed_for_real(bin: &str) -> bool {
-    if bin.contains('/') {
+    if jev_shared::domain::platform::is_path(bin) {
         return is_executable_file(Path::new(bin)) && !is_mise_wrapper(Path::new(bin));
     }
     let dirs: Vec<PathBuf> = std::env::var_os("PATH").map(|p| std::env::split_paths(&p).collect()).unwrap_or_default();

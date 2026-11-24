@@ -99,8 +99,27 @@ pub fn restore_on_termination() {
     }
 }
 
-#[cfg(not(unix))]
-pub fn restore_on_termination() {}
+/// Windows has no SIGTERM; the console tells a program that its window is closing (or the
+/// machine is shutting down) through these events.
+#[cfg(windows)]
+pub fn restore_on_termination() {
+    use tokio::signal::windows::{ctrl_close, ctrl_logoff, ctrl_shutdown};
+    macro_rules! watch {
+        ($stream:expr) => {
+            if let Ok(mut stream) = $stream {
+                tokio::spawn(async move {
+                    if stream.recv().await.is_some() {
+                        restore();
+                        std::process::exit(1);
+                    }
+                });
+            }
+        };
+    }
+    watch!(ctrl_close());
+    watch!(ctrl_logoff());
+    watch!(ctrl_shutdown());
+}
 
 #[cfg(unix)]
 static SAVED_TERMIOS: std::sync::OnceLock<libc::termios> = std::sync::OnceLock::new();
@@ -254,9 +273,10 @@ fn ioctl_size() -> Option<(usize, usize)> {
     None
 }
 
-#[cfg(not(unix))]
+/// The console's window size, from the console API.
+#[cfg(windows)]
 fn ioctl_size() -> Option<(usize, usize)> {
-    None
+    crossterm::terminal::size().ok().map(|(cols, rows)| (usize::from(cols), usize::from(rows)))
 }
 
 /// What a panic tells the user and what it writes to the log. The user text is short and

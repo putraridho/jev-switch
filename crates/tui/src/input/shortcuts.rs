@@ -3,7 +3,7 @@
 
 use std::io::Write;
 use std::path::Path;
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 
 /// What a line of input means.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -44,9 +44,9 @@ pub struct ShellResult {
 /// The most output kept from a shell command (the rest is counted).
 pub const MAX_SHELL_OUTPUT: usize = 20_000;
 
-/// Run `cmd` through `sh -c` in `cwd`, stdout and stderr together, with no input.
+/// Run `cmd` through the platform's shell (`sh -c`, `cmd /C` on Windows) in `cwd`, stdout and stderr together, with no input.
 pub fn run_shell(cmd: &str, cwd: &Path) -> std::io::Result<ShellResult> {
-    let out = Command::new("sh").arg("-c").arg(format!("exec 2>&1\n{cmd}")).current_dir(cwd).stdin(Stdio::null()).output()?;
+    let out = jev_shared::infrastructure::platform::shell_merged(cmd).current_dir(cwd).stdin(Stdio::null()).output()?;
     let mut text = String::from_utf8_lossy(&out.stdout).into_owned();
     if text.len() > MAX_SHELL_OUTPUT {
         let mut cut = MAX_SHELL_OUTPUT;

@@ -242,9 +242,135 @@ fn plan_lines(plan: &Plan) -> Vec<String> {
     }
 }
 
+/// Where this jev-code gets its updates from.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Source {
+    /// The git checkout it was built from: fetch, fast-forward, `scripts/install.sh`.
+    Checkout(PathBuf),
+    /// GitHub releases: download the tarball for this platform and replace the programs.
+    Release,
+}
+
+/// A downloaded release updates from releases; a build from a checkout updates the checkout.
+/// `JEV_SOURCE_DIR` names a checkout explicitly and so always wins.
+pub fn source() -> Result<Source, String> {
+    let named = jev_shared::infrastructure::env_file::lookup("JEV_SOURCE_DIR").is_some_and(|d| !d.trim().is_empty());
+    if crate::app::release_update::is_release_build() && !named {
+        Ok(Source::Release)
+    } else {
+        source_dir().map(Source::Checkout)
+    }
+}
+
+impl Source {
+    /// What is being asked, for "checking … for a new version"; `show` writes a folder.
+    pub fn label(&self, show: impl Fn(&Path) -> String) -> String {
+        match self {
+            Source::Checkout(dir) => show(dir),
+            Source::Release => format!("github.com/{} releases", crate::app::release_update::REPO),
+        }
+    }
+}
+
+/// What carrying out an update does.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Action {
+    Checkout { dir: PathBuf, pull: bool },
+    Release(crate::app::release_update::Release),
+}
+
+impl Action {
+    /// Do it, reporting progress line by line; the version now installed.
+    pub fn run(&self, on_line: &mut dyn FnMut(&str)) -> Result<String, String> {
+        match self {
+            Action::Checkout { dir, pull } => apply(dir, *pull, on_line),
+            Action::Release(release) => crate::app::release_update::apply(release, on_line),
+        }
+    }
+}
+
+/// What `/update` found, ready to show.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Prepared {
+    /// The running program is the newest.
+    UpToDate(Vec<String>),
+    /// It cannot be done; the lines say why.
+    Refused(Vec<String>),
+    /// There is something newer: show `lines`, ask `question`, and on a yes run `action`.
+    Offer { lines: Vec<String>, question: &'static str, action: Action },
+}
+
+/// What installing a release does besides replacing the programs, said before the question.
+pub const RELEASE_NOTE: &str = "no build is needed; installing stops a running jev-gateway, so an open jev-claude needs a restart";
+
+/// Look at the source (the network, never a file of the install) and decide.
+pub fn prepare(source: &Source) -> Prepared {
+    match source {
+        Source::Checkout(dir) => {
+            let plan = match check(dir) {
+                Ok(facts) => plan(&facts, running_version()),
+                Err(why) => Plan::Refused(why),
+            };
+            let lines = plan_text(&plan);
+            match plan {
+                Plan::UpToDate { .. } => Prepared::UpToDate(lines),
+                Plan::Refused(_) => Prepared::Refused(lines),
+                Plan::Update { pull, .. } => Prepared::Offer {
+                    lines,
+                    question: if pull { "Pull it and reinstall jev-code now? [y/N] " } else { "Reinstall jev-code from the checkout now? [y/N] " },
+                    action: Action::Checkout { dir: dir.clone(), pull },
+                },
+            }
+        }
+        Source::Release => prepare_release(crate::app::release_update::latest(), running_version()),
+    }
+}
+
+/// [`prepare`] for a release, pure over what the API said.
+fn prepare_release(latest: Result<crate::app::release_update::Release, String>, running: &str) -> Prepared {
+    let release = match latest {
+        Ok(release) => release,
+        Err(why) => return Prepared::Refused(vec![format!("cannot update: {why}")]),
+    };
+    if !crate::app::update_notice::is_newer(&release.version, running) {
+        return Prepared::UpToDate(vec![format!("jev-code {running} is the newest version")]);
+    }
+    let mut lines = vec![format!("jev-code {running} → {}", release.version)];
+    if !release.page.is_empty() {
+        lines.push(format!("  {}", crate::render::clean_text(&release.page)));
+    }
+    lines.push(format!("({RELEASE_NOTE})"));
+    Prepared::Offer { lines, question: "Download it and replace jev-code now? [y/N] ", action: Action::Release(release) }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn release(version: &str) -> crate::app::release_update::Release {
+        use crate::app::release_update::{Allow, Platform, Release};
+        Release {
+            version: version.into(),
+            tag: format!("v{version}"),
+            page: "https://github.com/x/y/releases/tag/v1".into(),
+            platform: Platform::LinuxX86_64,
+            archive_url: "https://h/a".into(),
+            checksum_url: "https://h/b".into(),
+            allow: Allow::HttpsOnly,
+        }
+    }
+
+    #[test]
+    fn a_newer_release_is_offered_and_the_same_or_older_is_not() {
+        let Prepared::Offer { lines, question, action } = prepare_release(Ok(release("1.14.0")), "1.13.3") else { panic!() };
+        assert_eq!(lines[0], "jev-code 1.13.3 → 1.14.0");
+        assert!(lines.last().is_some_and(|l| l.contains("jev-gateway")) && question.contains("Download"), "{lines:?}");
+        assert!(matches!(action, Action::Release(r) if r.version == "1.14.0"));
+        assert!(matches!(prepare_release(Ok(release("1.13.3")), "1.13.3"), Prepared::UpToDate(_)));
+        assert!(matches!(prepare_release(Ok(release("1.12.0")), "1.13.3"), Prepared::UpToDate(_)), "an older release is never an update");
+        let Prepared::Refused(lines) = prepare_release(Err("offline".into()), "1.13.3") else { panic!() };
+        assert_eq!(lines, vec!["cannot update: offline".to_string()]);
+    }
 
     #[test]
     fn failed_git_reports_status_even_without_diagnostics() {

@@ -1,18 +1,11 @@
 //! Killing the whole process group of a CLI.
 
-/// The negative process-group id `kill(2)` takes to signal a whole group. `None` for
-/// a pid that would signal something else: `kill(-0)` is `kill(0)`, our own group.
-#[cfg(any(test, unix))]
-fn group_signal_target(pid: u32) -> Option<i32> {
-    i32::try_from(pid).ok().filter(|p| *p > 0).map(|p| -p)
-}
-
 /// Owns the process group of a running CLI. The CLIs spawn helpers (shells, test
 /// runs, MCP servers) and `kill_on_drop` reaches only the direct child, so when the
 /// turn ends badly or is cancelled (the future dropped) the whole group gets SIGKILL.
 /// A turn that finished cleanly [`disarm`](Self::disarm)s it: background work an
-/// agent started on purpose is not ours to kill. Off unix there are no groups and
-/// the direct-child kill remains.
+/// agent started on purpose is not ours to kill. On Windows the process tree
+/// under the CLI is killed instead.
 pub(super) struct GroupKill(pub(super) Option<u32>);
 
 impl GroupKill {
@@ -23,13 +16,10 @@ impl GroupKill {
 
 impl Drop for GroupKill {
     fn drop(&mut self) {
-        #[cfg(unix)]
-        if let Some(target) = self.0.and_then(group_signal_target) {
-            // SAFETY: plain `kill(2)` on a negative pid, which is a process group this
-            // runner created with `process_group(0)`; no memory is involved.
-            unsafe {
-                libc::kill(target, libc::SIGKILL);
-            }
+        // The group this runner created with `process_group(0)` on Unix; the process tree
+        // under the CLI on Windows.
+        if let Some(pid) = self.0 {
+            jev_shared::infrastructure::platform::kill_tree(pid);
         }
     }
 }
@@ -61,11 +51,10 @@ fn is_zombie(pid: i32) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use std::time::Duration;
-
-    use super::*;
     #[cfg(unix)]
     use super::process_alive as alive;
+    #[cfg(unix)]
+    use std::time::Duration;
 
     #[cfg(unix)]
     #[test]
@@ -86,12 +75,5 @@ mod tests {
         assert!(!alive(pid), "a zombie is not alive");
         child.wait().unwrap();
         assert!(!alive(pid), "a reaped process is gone");
-    }
-
-    #[test]
-    fn the_group_signal_never_targets_our_own_group_or_everything() {
-        assert_eq!(group_signal_target(4242), Some(-4242));
-        assert_eq!(group_signal_target(0), None);
-        assert_eq!(group_signal_target(u32::MAX), None);
     }
 }

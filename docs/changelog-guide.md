@@ -116,31 +116,19 @@ git commit -am "jev-code 1.4.0: inline steering, delegate tool, and trimmed hint
 git tag -a v1.4.0 -m "jev-code 1.4.0: inline steering, delegate tool, and trimmed hints"
 ```
 
-### Step 6: Push Commit & Tags to Origin
+### Step 6: Push Commit & Tag to Origin
 
-Push the commit and the new tag to GitHub:
-
-```bash
-git push origin main --tags
-```
-
-### Step 7: Publish GitHub Release
-
-Use the GitHub CLI (`gh`) to publish an official release with the notes extracted from `CHANGELOG.md`:
+Push the commit and the new tag by name (not `--tags`, which also pushes local tags that differ from the remote):
 
 ```bash
-gh release create v1.4.0 \
-  --title "v1.4.0: Inline steering, delegate MCP tool, and trimmed hints" \
-  --notes-file /tmp/release-notes-v1.4.0.md
+git push origin main v1.4.0
 ```
 
-Or pass notes inline:
+### Step 7: The Release Is Published by CI
 
-```bash
-gh release create v1.4.0 \
-  --title "v1.4.0: Inline steering, delegate MCP tool, and trimmed hints" \
-  --notes "Release highlights from CHANGELOG.md..."
-```
+Pushing the tag starts the `release` workflow (`.github/workflows/release.yml`). It checks that the tag matches the version in `Cargo.toml`, builds jev-code with `JEV_RELEASE_BUILD=1` for linux-x86_64, linux-aarch64, macos-x86_64, macos-aarch64 and windows-x86_64, packages each with `scripts/package-release.sh`, and publishes the GitHub release with `jev-code-v1.4.0-<platform>.tar.gz` and its `.sha256`. The release notes are this version's section of `CHANGELOG.md`. **Do not create the release by hand with `gh release create`**: a release made first has no binaries, and the workflow then fails to create its own.
+
+Installed releases pick it up with `/update`, and `scripts/install-release.sh` installs it fresh. Watch the run with `gh run watch`.
 
 ### Step 8: Reinstall Locally & Verify
 

@@ -279,15 +279,30 @@ $EDITOR ~/.jev-router.env     # put your Jev key on the JEV_API_KEY= line
 `jev-delegate-mcp` is the tool `/orchestrate` hands to a planner model; `jev-code` finds it next
 to itself (or at `JEV_DELEGATE_BIN`). Re-run `scripts/install.sh` after changing the code.
 
-To get a new version once it is on main, run `/update` in a session (or `jev-code update` in a
-shell). It updates the checkout jev-code was built from (`JEV_SOURCE_DIR` names another one):
-it fetches the branch's upstream, lists the new commits and the version change, and after you
-confirm, fast-forwards and reinstalls. It never merges or discards anything: changes to tracked
-files, a detached head or a branch that has diverged from its upstream stop it, with what to do.
-A running session keeps the old program until you restart it.
+To skip the build, install a release: `curl -fsSL https://raw.githubusercontent.com/putraridho/jev-switch/main/scripts/install-release.sh | sh`
+downloads the newest release for your platform (Linux or macOS, x86_64 or arm64; on Windows, `scripts/install-release.ps1`,
+experimental), checks its SHA-256 and installs the same programs and the orchestrate mod.
 
-You are also told when a version is waiting: an interactive session checks the same upstream in
-the background at most once a day (the answer is kept in `<state dir>/update-check`) and prints
+To get a new version, run `/update` in a session (or `jev-code update [--yes]` in a shell). What it
+updates depends on how jev-code was installed:
+
+- **A downloaded release** (the install script above, or a release binary) looks at the newest GitHub
+  release, shows the version change, and after you confirm downloads the tarball for your platform,
+  verifies its SHA-256, and replaces the programs. Everything is staged next to its final place before
+  anything is replaced, so a failed download, a bad checksum or an unwritable folder changes nothing.
+  The programs are replaced where the running `jev-code` lives (`JEV_INSTALL_DIR` names another folder).
+- **A build from a checkout** (`scripts/install.sh`) updates the checkout jev-code was built from
+  (`JEV_SOURCE_DIR` names another one, and always selects this mode): it fetches the branch's upstream,
+  lists the new commits and the version change, and after you confirm, fast-forwards and reinstalls. It
+  never merges or discards anything: changes to tracked files, a detached head or a branch that has
+  diverged from its upstream stop it, with what to do.
+
+Either way a running session keeps the old program until you restart it, and installing stops a running
+`jev-gateway`. A release is published by pushing a `vX.Y.Z` tag; the `release` workflow builds it for the
+five platforms and attaches `jev-code-vX.Y.Z-<platform>.tar.gz` with its `.sha256`.
+
+You are also told when a version is waiting: an interactive session checks the same source in the
+background at most once a day (the answer is kept in `<state dir>/update-check`) and prints
 `jev-code X is available (you have Y): run /update` before a prompt. It only reads; nothing is
 installed. A failed check (offline, no upstream) is silent, and `JEV_UPDATE_CHECK=off` turns it off.
 
@@ -397,7 +412,7 @@ to change an accent, glyph or badge; truecolor, 256 and 16-colour terminals are 
 | `/providers [refresh\|probe]` | what was detected and why each provider can or cannot run, with the readiness rung each has reached; `refresh` probes again, `probe` runs the capability check (no prompt, no quota)                               |
 | `/mcp [list\|login <srv>]`    | show configured MCP servers across ready providers, or log in (`/mcp login <server>`)                                                                                                                              |
 | `/doctor`                     | the setup check, inside the session                                                                                                                                                                                |
-| `/update`                     | update jev-code: fetches its checkout's upstream (`origin/main`), shows the new commits and version, and after a yes fast-forwards and runs `scripts/install.sh`; `jev-code update [--yes]` from the shell         |
+| `/update`                     | update jev-code: a downloaded release fetches the newest GitHub release, verifies it and replaces the programs; a build from a checkout fast-forwards the checkout and runs `scripts/install.sh`; `jev-code update [--yes]` from the shell         |
 | `/terminal-setup [install]`   | make Shift-Enter insert a new line: shows the line for your terminal (kitty, Ghostty, Alacritty, foot, WezTerm, VS Code); `install` adds it, with a backup                                                         |
 | `!command`                    | run a shell command in the project; its output is shown and goes with your next message                                                                                                                            |
 

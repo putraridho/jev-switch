@@ -125,8 +125,62 @@ pub fn read_answer(always_offered: bool, cancel: &std::sync::atomic::AtomicBool)
     answer
 }
 
-/// Without a terminal API there is no key to wait for: say no.
-#[cfg(not(unix))]
-pub fn read_answer(_always_offered: bool, _cancel: &std::sync::atomic::AtomicBool) -> Option<AnswerKey> {
-    Some(AnswerKey::No)
+/// What a chunk of key bytes answers, for readers that get whole chunks (the Windows console):
+/// Esc alone says no, an escape sequence (an arrow key) says nothing, else the first byte that
+/// answers does. Same rules as the byte-at-a-time Unix reader.
+#[cfg(any(windows, test))]
+pub fn answer_for_chunk(chunk: &[u8], always_offered: bool) -> Option<AnswerKey> {
+    match chunk.first() {
+        Some(0x1b) if chunk.len() == 1 => Some(AnswerKey::No),
+        Some(0x1b) => None,
+        _ => chunk.iter().find_map(|b| answer_for_byte(*b, always_offered)),
+    }
+}
+
+/// The Windows console: the same question, read as key events turned into bytes. Ctrl-C is a
+/// key while the console is raw, so it interrupts the turn as it does on Unix.
+#[cfg(windows)]
+pub fn read_answer(always_offered: bool, cancel: &std::sync::atomic::AtomicBool) -> Option<AnswerKey> {
+    use crate::tty::key_bytes::console_keys::{drain, poll_bytes, Polled, RawMode};
+    use std::io::IsTerminal;
+    use std::sync::atomic::Ordering;
+    // The type-ahead reader stays off the console until the question is answered.
+    let _owner = STDIN_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    if !std::io::stdin().is_terminal() {
+        return Some(AnswerKey::No);
+    }
+    let Some(_raw) = RawMode::enter() else { return Some(AnswerKey::No) };
+    // Anything typed before the question appeared must not answer it.
+    drain();
+    loop {
+        if cancel.load(Ordering::Acquire) {
+            return None;
+        }
+        match poll_bytes(std::time::Duration::from_millis(KEY_POLL_MS as u64)) {
+            Polled::Timeout => {}
+            Polled::Closed => return Some(AnswerKey::No),
+            Polled::Bytes(chunk) => {
+                if let Some(answer) = answer_for_chunk(&chunk, always_offered) {
+                    return Some(answer);
+                }
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_chunk_answers_like_the_keys_in_it() {
+        assert_eq!(answer_for_chunk(b"y", false), Some(AnswerKey::Yes));
+        assert_eq!(answer_for_chunk(b"N", false), Some(AnswerKey::No));
+        assert_eq!(answer_for_chunk(b"a", true), Some(AnswerKey::Always));
+        assert_eq!(answer_for_chunk(b"a", false), None, "no rule can be saved");
+        assert_eq!(answer_for_chunk(&[0x03], true), Some(AnswerKey::Interrupt));
+        assert_eq!(answer_for_chunk(&[0x1b], true), Some(AnswerKey::No), "Esc alone says no");
+        assert_eq!(answer_for_chunk(b"\x1b[A", true), None, "an arrow key says nothing");
+        assert_eq!(answer_for_chunk(b"\r", true), None, "Enter never answers");
+    }
 }

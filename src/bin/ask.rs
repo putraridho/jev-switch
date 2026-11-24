@@ -30,6 +30,7 @@ fn usage_error(msg: &str) -> ExitCode {
 
 #[tokio::main]
 async fn main() -> ExitCode {
+    jev_router::shared::infrastructure::platform::ensure_home();
     let args: Vec<String> = std::env::args().skip(1).collect();
     let [provider, model, dir] = args.as_slice() else { return usage_error("expected 3 arguments") };
     let id: ProviderId = match provider.parse() {

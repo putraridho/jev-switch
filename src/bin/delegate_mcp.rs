@@ -13,6 +13,7 @@
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    jev_router::shared::infrastructure::platform::ensure_home();
     jev_router::orchestration::interface::mcp::compose::run(Box::new(|state, dir| {
         let guards = jev_router::turn::application::guards::Guards::load(&jev_router::shared::infrastructure::system_host::SystemHost, std::sync::Arc::new(jev_router::turn::infrastructure::privacy_audit::FilePrivacyAudit), Some(state), dir);
         // The workers' paid-use checks follow how each CLI is funded, as the planner's do.

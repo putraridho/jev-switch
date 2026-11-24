@@ -13,6 +13,7 @@
 
 #[tokio::main]
 async fn main() {
+    jev_router::shared::infrastructure::platform::ensure_home();
     let code = jev_router::tui::app::code::entry::run().await;
     // Every guard is dropped by now. Leave without waiting for a thread blocked on stdin.
     std::process::exit(code);

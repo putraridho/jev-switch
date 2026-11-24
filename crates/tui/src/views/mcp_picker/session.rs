@@ -5,7 +5,6 @@ use crate::render::Style;
 
 /// Show the picker until the person picks a login or leaves. Health answers arriving on
 /// `updates` redraw it. Without a terminal, or with no servers: `None`.
-#[cfg(unix)]
 pub fn run(
     servers: Vec<McpServer>,
     updates: std::sync::mpsc::Receiver<jev_backend::infrastructure::mcp_health_check::Answer>,
@@ -55,15 +54,4 @@ pub fn run(
     };
     block.clear();
     chosen
-}
-
-#[cfg(not(unix))]
-pub fn run(
-    _servers: Vec<McpServer>,
-    _updates: std::sync::mpsc::Receiver<jev_backend::infrastructure::mcp_health_check::Answer>,
-    _style: Style,
-    _rows: Option<usize>,
-    _width: usize,
-) -> Option<(String, McpScope)> {
-    None
 }

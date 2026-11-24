@@ -7,6 +7,7 @@ pub mod host;
 pub mod layered_settings;
 pub mod preferences;
 pub mod screen_state;
+pub mod release_update;
 pub mod self_update;
 pub mod startup_timeline;
 pub mod update_notice;

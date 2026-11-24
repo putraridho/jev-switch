@@ -1,8 +1,8 @@
 //! The passive update check: at the start of an interactive session, tell the person when a
 //! newer jev-code is waiting, so they know to run `/update`.
 //!
-//! It reuses [`self_update::check`] (a `git fetch` of the checkout's upstream) on a background
-//! thread, so the banner never waits for the network. The network is asked at most once a day:
+//! It asks the update source ([`self_update::Source`]: the newest GitHub release, or a
+//! checkout's upstream by `git fetch`) on a background thread, so the banner never waits for the network. The network is asked at most once a day:
 //! the answer is kept in `<state dir>/update-check`, and a newer version found earlier is
 //! announced again from there at every start until it is installed. Nothing is installed or
 //! changed, and a failed check (offline, no upstream, not a checkout) says nothing.
@@ -101,6 +101,17 @@ fn read_cache(state_dir: &Path) -> Option<Cache> {
     Cache::parse(&std::fs::read_to_string(cache_path(state_dir)).ok()?)
 }
 
+/// What the source says: `None` when it could not be asked, `Some(None)` when nothing is newer.
+fn look(source: &self_update::Source, running: &str) -> Option<Option<String>> {
+    match source {
+        self_update::Source::Checkout(dir) => {
+            let env = quiet_ssh(dir);
+            self_update::check_with(dir, &env).ok().map(|facts| newer_version(&facts, running))
+        }
+        self_update::Source::Release => crate::app::release_update::latest().ok().map(|r| Some(r.version).filter(|v| is_newer(v, running))),
+    }
+}
+
 /// Announce a version found earlier and, when a day has passed, ask the network on a
 /// background thread. Returns at once. Notices go through the console, which holds them for
 /// the prompt, so they never land inside a turn's output or the line being typed.
@@ -108,7 +119,7 @@ pub fn start(state_dir: Option<&Path>, console: &Console, now_ms: u64) {
     if !enabled(jev_shared::infrastructure::env_file::lookup("JEV_UPDATE_CHECK").as_deref()) {
         return;
     }
-    let (Some(state_dir), Ok(dir)) = (state_dir, self_update::source_dir()) else { return };
+    let (Some(state_dir), Ok(source)) = (state_dir, self_update::source()) else { return };
     let running = self_update::running_version();
     let cache = read_cache(state_dir);
     let announced = cache.as_ref().and_then(|c| c.newer.clone()).filter(|v| is_newer(v, running));
@@ -120,9 +131,7 @@ pub fn start(state_dir: Option<&Path>, console: &Console, now_ms: u64) {
     }
     let (console, state_dir) = (console.clone(), state_dir.to_path_buf());
     std::thread::spawn(move || {
-        let env = quiet_ssh(&dir);
-        let Ok(facts) = self_update::check_with(&dir, &env) else { return };
-        let newer = newer_version(&facts, running);
+        let Some(newer) = look(&source, running) else { return };
         let _ = jev_shared::infrastructure::private_file::write_atomic(&cache_path(&state_dir), &Cache { checked_ms: now_ms, newer: newer.clone() }.render());
         if let Some(newer) = newer.filter(|n| announced.as_ref() != Some(n)) {
             console.notify(&notice(&newer, running));

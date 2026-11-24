@@ -4,6 +4,15 @@ See [docs/changelog-guide.md](docs/changelog-guide.md) for changelog formatting,
 
 ## Unreleased
 
+## 1.14.0
+
+Downloadable releases, `/update` that installs them, and experimental native Windows.
+
+- **Releases are downloadable binaries, and `/update` updates them.** Pushing a `vX.Y.Z` tag now builds jev-code for Linux and macOS (x86_64 and arm64) and publishes `jev-code-vX.Y.Z-<platform>.tar.gz` with its SHA-256 on GitHub. A downloaded jev-code runs `/update` (or `jev-code update [--yes]`) against the newest release: it shows the version change, and after you confirm downloads the tarball, verifies the checksum and replaces `jev-code`, `jev-ask`, `jev-chat`, `jev-gateway`, `jev-delegate-mcp`, `jev-claude` and the orchestrate mod. Every file is staged before any is replaced, so a failed download, a checksum mismatch or an unwritable folder changes nothing. A build from a checkout still updates the checkout; `JEV_SOURCE_DIR` always selects that. `JEV_INSTALL_DIR` names another install folder. The once-a-day startup notice and `JEV_UPDATE_CHECK=off` work the same for both.
+- **Native Windows support (experimental).** jev-code now builds and passes clippy on Windows in CI (a hard check; the old Windows job failed on `libc` and was allowed to), and releases include `jev-code-vX.Y.Z-windows-x86_64.zip`. On the Windows console, approval questions read keys (they used to answer "no" without asking), typing ahead during a turn, `/resume` and `/mcp` work, and the terminal width is read from the console. `!command`, hooks and checks run through `cmd /C`, a cancelled turn's process tree is stopped with `taskkill /T`, `HOME` falls back to `USERPROFILE`, and provider CLIs are found as `.exe` or `.cmd`. `/update` replaces running programs by renaming them aside. `scripts/install-release.ps1` installs a release and `jev-claude.cmd` starts the new `jev-claude.ps1`. Nobody has used it on a real Windows machine yet; see `docs/platforms.md` for what is verified and the known gaps.
+- **Update checksums no longer need `sha256sum` or `shasum`.** The release updater checks the SHA-256 itself.
+- **Install without building.** `scripts/install-release.sh` (`curl … | sh`) downloads the newest release for your platform, verifies it and installs it into `~/.local/bin`.
+
 ## 1.13.3
 
 Queued messages stay in sync with the running turn.

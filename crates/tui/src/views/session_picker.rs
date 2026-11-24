@@ -186,7 +186,6 @@ pub fn page_for(rows: Option<usize>) -> usize {
 
 /// Show the list and wait for a choice: the index of the chosen entry, or `None` when the
 /// person left. Without a terminal to read keys from there is nobody to choose: `None`.
-#[cfg(unix)]
 pub fn run(entries: Vec<SessionEntry>, now_ms: u64, style: Style, rows: Option<usize>, width: usize) -> Option<usize> {
     use super::raw_keys::{Block, RawKeys, Read};
 
@@ -211,11 +210,6 @@ pub fn run(entries: Vec<SessionEntry>, now_ms: u64, style: Style, rows: Option<u
     };
     block.clear();
     chosen
-}
-
-#[cfg(not(unix))]
-pub fn run(_entries: Vec<SessionEntry>, _now_ms: u64, _style: Style, _rows: Option<usize>, _width: usize) -> Option<usize> {
-    None
 }
 
 /// The list as plain lines, numbered, for a terminal that cannot take keys: `/resume 2`

@@ -1,3 +1,4 @@
+#[cfg(unix)]
 use super::*;
 #[cfg(unix)]
 use crate::infrastructure::gemini::gemini_cli::{Flavor, GeminiBackend};

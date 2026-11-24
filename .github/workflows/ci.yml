@@ -31,11 +31,35 @@ jobs:
       - run: scripts/check.sh
 
   windows:
-    name: build (windows, no pty suite)
+    name: build and check (windows)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.95.0
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo clippy --all-targets -- -D warnings
+      - name: The PowerShell scripts parse
+        shell: pwsh
+        run: |
+          foreach ($f in 'scripts/jev-claude.ps1', 'scripts/install-release.ps1') {
+            $errors = $null
+            [System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path $f), [ref]$null, [ref]$errors) | Out-Null
+            if ($errors) { $errors | ForEach-Object { Write-Error "$f: $_" }; exit 1 }
+          }
+
+  windows-tests:
+    # Advisory: the unit tests were written on Unix and some still run `sh`. A failure here is
+    # a to-do, not a broken build; see docs/platforms.md.
+    name: unit tests (windows, advisory)
     runs-on: windows-latest
     continue-on-error: true
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.95.0
       - uses: Swatinem/rust-cache@v2
-      - run: cargo build --all-targets
+      - run: cargo test --workspace

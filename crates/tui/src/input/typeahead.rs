@@ -20,7 +20,7 @@ use crate::console::terminal_ui::Console;
 use reader::read_loop;
 
 mod draft;
-mod keys;
+pub(crate) mod keys;
 mod reader;
 #[cfg(test)]
 mod tests;
@@ -97,13 +97,7 @@ impl Drop for TypeAhead {
     }
 }
 
-#[cfg(unix)]
 fn reader_available() -> bool {
     use std::io::IsTerminal;
     std::io::stdin().is_terminal()
-}
-
-#[cfg(not(unix))]
-fn reader_available() -> bool {
-    false
 }

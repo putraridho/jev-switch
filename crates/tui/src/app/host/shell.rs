@@ -2,7 +2,7 @@
 
 use std::collections::VecDeque;
 use std::path::Path;
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 
 /// Lines of `!command` output kept for the next message.
 pub const SHELL_KEEP_LINES: usize = 200;
@@ -24,11 +24,10 @@ pub struct ShellRun {
     pub failed: Option<String>,
 }
 
-/// Run `command` with `sh -c` in `dir`, stdin closed, stderr joined to stdout; each line
+/// Run `command` with the platform's shell (`sh -c`, `cmd /C` on Windows) in `dir`, stdin closed, stderr joined to stdout; each line
 /// goes to `on_line` as it is printed, and a bounded tail comes back in the result.
 pub fn run_shell(command: &str, dir: &Path, on_line: &mut dyn FnMut(&str)) -> ShellRun {
-    let script = format!("exec 2>&1\n{command}");
-    let child = Command::new("sh").arg("-c").arg(script).current_dir(dir).stdin(Stdio::null()).stdout(Stdio::piped()).spawn();
+    let child = jev_shared::infrastructure::platform::shell_merged(command).current_dir(dir).stdin(Stdio::null()).stdout(Stdio::piped()).spawn();
     let mut child = match child {
         Ok(c) => c,
         Err(e) => return ShellRun { command: command.to_string(), output: String::new(), truncated: false, code: None, failed: Some(e.to_string()) },

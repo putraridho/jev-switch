@@ -2,7 +2,7 @@
 
 /// One key, as far as the draft cares.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) enum Key {
+pub(crate) enum Key {
     Text(String),
     /// A new line inside the message (Alt-Enter, or a line break inside pasted text).
     Newline,
@@ -20,7 +20,7 @@ pub(super) enum Key {
 /// What one chunk read from the terminal means. Escape sequences (arrows, function keys)
 /// are dropped; Esc + Enter is a new line; a line break that is not the last byte of the
 /// chunk is pasted text and also a new line, so a multi-line paste is one message.
-pub(super) fn keys(chunk: &[u8]) -> Vec<Key> {
+pub(crate) fn keys(chunk: &[u8]) -> Vec<Key> {
     let mut out: Vec<Key> = Vec::new();
     let mut text: Vec<u8> = Vec::new();
     let flush = |text: &mut Vec<u8>, out: &mut Vec<Key>| {

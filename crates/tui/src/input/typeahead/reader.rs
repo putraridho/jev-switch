@@ -6,7 +6,9 @@ use std::sync::atomic::Ordering;
 #[cfg(unix)]
 use std::time::Duration;
 
+#[cfg(any(test, unix, windows))]
 use super::draft::{Draft, Effect};
+#[cfg(any(test, unix, windows))]
 use super::keys::keys;
 #[cfg(unix)]
 use super::TURN_MODE;
@@ -17,7 +19,7 @@ use crate::console::terminal_ui::Console;
 const ESC_WAIT_MS: i32 = 40;
 
 /// Apply one chunk of input to the draft through the console; true when Esc was pressed.
-#[cfg(any(test, unix))]
+#[cfg(any(test, unix, windows))]
 pub(super) fn handle_chunk(console: &Console, draft: &mut Draft, chunk: &[u8]) -> bool {
     let mut esc = false;
     for key in keys(chunk) {
@@ -109,8 +111,44 @@ pub(super) fn read_loop(console: &Console, stop: &AtomicBool, esc: &tokio::sync:
     unsafe { libc::tcsetattr(fd, libc::TCSANOW, &saved) };
 }
 
-#[cfg(not(unix))]
-pub(super) fn read_loop(_console: &Console, _stop: &AtomicBool, _esc: &tokio::sync::Notify) {}
+/// The Windows console. Keys are read as events, which the console never echoes and which leave
+/// Ctrl-C a signal, so no mode is changed; the loop only keeps away from questions and pagers.
+#[cfg(windows)]
+pub(super) fn read_loop(console: &Console, stop: &AtomicBool, esc: &tokio::sync::Notify) {
+    use crate::tty::key_bytes::console_keys::{poll_bytes, Polled};
+    use std::sync::atomic::Ordering;
+    use std::time::Duration;
+    let mut draft = Draft { text: console.take_draft() };
+    if !draft.text.is_empty() {
+        console.set_draft(&draft.text);
+    }
+    let pause = Duration::from_millis(crate::input::line_editor::approval::KEY_POLL_MS as u64);
+    while !stop.load(Ordering::Acquire) {
+        if console.is_paging() || console.is_asking() {
+            std::thread::sleep(pause);
+            continue;
+        }
+        let Ok(_owner) = crate::input::line_editor::approval::STDIN_LOCK.try_lock() else {
+            std::thread::sleep(pause);
+            continue;
+        };
+        // Checked again under the lock: a question may have begun meanwhile.
+        if console.is_asking() || console.is_paging() {
+            continue;
+        }
+        match poll_bytes(pause) {
+            Polled::Bytes(chunk) => {
+                if handle_chunk(console, &mut draft, &chunk) {
+                    esc.notify_one();
+                }
+            }
+            Polled::Timeout => {}
+            Polled::Closed => break,
+        }
+    }
+    // What is still typed goes back to the prompt.
+    console.keep_draft(&draft.text);
+}
 
 /// The bytes that arrive within `wait_ms` (nothing when none do).
 #[cfg(unix)]

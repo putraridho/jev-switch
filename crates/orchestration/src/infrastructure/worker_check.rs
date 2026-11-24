@@ -11,7 +11,7 @@
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
@@ -69,8 +69,8 @@ fn output_file() -> PathBuf {
 }
 
 fn spawn(dir: &Path, command: &str, out: &File) -> std::io::Result<Child> {
-    let mut cmd = Command::new("sh");
-    cmd.arg("-c").arg(command).current_dir(dir).env("CI", "true").stdin(Stdio::null()).stdout(out.try_clone()?).stderr(out.try_clone()?);
+    let mut cmd = jev_shared::infrastructure::platform::shell(command);
+    cmd.current_dir(dir).env("CI", "true").stdin(Stdio::null()).stdout(out.try_clone()?).stderr(out.try_clone()?);
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt as _;
@@ -79,17 +79,9 @@ fn spawn(dir: &Path, command: &str, out: &File) -> std::io::Result<Child> {
     cmd.spawn()
 }
 
-/// Kill the whole process group the shell leads, then reap the shell.
+/// Kill the whole process group (the process tree, on Windows) the shell leads, then reap the shell.
 fn kill_group(child: &mut Child) {
-    #[cfg(unix)]
-    {
-        if let Ok(pid) = i32::try_from(child.id()) {
-            // SAFETY: kill(2) with a negative pid signals that process group; no memory is involved.
-            unsafe {
-                libc::kill(-pid, libc::SIGKILL);
-            }
-        }
-    }
+    jev_shared::infrastructure::platform::kill_tree(child.id());
     let _ = child.kill();
     let _ = child.wait();
 }

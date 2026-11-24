@@ -8,34 +8,34 @@ use crate::render::Style;
 /// the newest, 1 refused or failed, 2 not confirmed.
 pub(super) fn update_command(yes: bool) -> i32 {
     use crate::app::self_update as selfupdate;
-    use crate::app::self_update::Plan;
+    use crate::app::self_update::Prepared;
     use std::io::{BufRead, IsTerminal, Write};
-    let dir = match selfupdate::source_dir() {
-        Ok(dir) => dir,
+    let source = match selfupdate::source() {
+        Ok(source) => source,
         Err(why) => {
             eprintln!("cannot update: {why}");
             return 1;
         }
     };
-    eprintln!("checking {} for a new version...", dir.display());
-    let plan = match selfupdate::check(&dir) {
-        Ok(facts) => selfupdate::plan(&facts, selfupdate::running_version()),
-        Err(why) => Plan::Refused(why),
+    eprintln!("checking {} for a new version...", source.label(|d| d.display().to_string()));
+    let (lines, question, action) = match selfupdate::prepare(&source) {
+        Prepared::UpToDate(lines) => {
+            lines.iter().for_each(|l| println!("{l}"));
+            return 0;
+        }
+        Prepared::Refused(lines) => {
+            lines.iter().for_each(|l| println!("{l}"));
+            return 1;
+        }
+        Prepared::Offer { lines, question, action } => (lines, question, action),
     };
-    for line in selfupdate::plan_text(&plan) {
-        println!("{line}");
-    }
-    let pull = match plan {
-        Plan::UpToDate { .. } => return 0,
-        Plan::Refused(_) => return 1,
-        Plan::Update { pull, .. } => pull,
-    };
+    lines.iter().for_each(|l| println!("{l}"));
     if !yes {
         if !std::io::stdin().is_terminal() {
             eprintln!("not updated: run it in a terminal to be asked, or pass --yes");
             return 2;
         }
-        eprint!("{}", if pull { "Pull it and reinstall jev-code now? [y/N] " } else { "Reinstall jev-code from the checkout now? [y/N] " });
+        eprint!("{question}");
         let _ = std::io::stderr().flush();
         let mut answer = String::new();
         let _ = std::io::stdin().lock().read_line(&mut answer);
@@ -44,7 +44,7 @@ pub(super) fn update_command(yes: bool) -> i32 {
             return 2;
         }
     }
-    match selfupdate::apply(&dir, pull, &mut |line| println!("  {line}")) {
+    match action.run(&mut |line| println!("  {line}")) {
         Ok(version) => {
             println!("jev-code {version} is installed");
             0

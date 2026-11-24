@@ -31,6 +31,18 @@ $EDITOR ~/.jev-router.env    # set JEV_API_KEY
 
 Check the setup with `jev-code doctor`.
 
+To skip the build, download the newest release instead of running `scripts/install.sh`:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/putraridho/jev-switch/main/scripts/install-release.sh | sh
+```
+
+On Windows (experimental, see [Platforms](docs/platforms.md)), in PowerShell:
+
+```powershell
+irm https://raw.githubusercontent.com/putraridho/jev-switch/main/scripts/install-release.ps1 | iex
+```
+
 ## Usage
 
 ```bash
@@ -47,7 +59,7 @@ To run a single prompt from a script:
 jev-code -p "explain this codebase"
 ```
 
-To update to the latest version, run `/update` inside jev-code.
+To update to the latest version, run `/update` inside jev-code. A downloaded release downloads the newest release; a build from a checkout updates the checkout.
 
 ## Documentation
 
