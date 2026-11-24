@@ -35,7 +35,9 @@ fn start_service(app: &tauri::AppHandle) {
         Ok(store) => Arc::new(store),
         Err(_) => return,
     };
-    let settings = Arc::new(jev_usage_io::settings_file::JsonSettingsStore::new(settings_path));
+    let settings = Arc::new(jev_usage_io::settings_file::JsonSettingsStore::new(
+        settings_path,
+    ));
 
     let clock: Arc<dyn jev_usage_core::time::Clock> = Arc::new(jev_usage_io::clock::SystemClock);
     let timer: Arc<dyn jev_usage_io::timer::WallTimer> =
@@ -47,9 +49,7 @@ fn start_service(app: &tauri::AppHandle) {
     let runner = Arc::new(jev_usage_io::proc::ProcRunner::system(workdir));
     let probe: Arc<dyn jev_usage_io::probe::LoginProbe> =
         Arc::new(jev_usage_io::probe::CliProbe::new(Arc::clone(&runner)));
-    let facts = jev_usage_io::probe::FactsCell::new(
-        jev_usage_io::probe::LoginFacts::unknown(),
-    );
+    let facts = jev_usage_io::probe::FactsCell::new(jev_usage_io::probe::LoginFacts::unknown());
 
     let http = match jev_usage_io::http::HttpClient::new() {
         Ok(http) => Arc::new(http),
@@ -109,11 +109,25 @@ fn start_service(app: &tauri::AppHandle) {
     }
 }
 
+/// SIGTERM ends the app through its normal exit, so the service is shut down and any
+/// subprocess it started (killed with its process group) does not outlive it.
+fn exit_on_sigterm(handle: tauri::AppHandle) {
+    tauri::async_runtime::spawn(async move {
+        let Ok(mut term) =
+            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+        else {
+            return;
+        };
+        term.recv().await;
+        handle.exit(0);
+    });
+}
+
 /// Runs the app until it exits.
 pub fn run() {
     hardening::apply();
     let args = cli::parse(std::env::args().skip(1));
-    let outcome = tauri::Builder::default()
+    let built = tauri::Builder::default()
         // Registered first: a second process ends here, before anything else is created.
         // Its arguments and working directory are dropped, never stored or logged.
         .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
@@ -135,10 +149,20 @@ pub fn run() {
             if !args.hidden {
                 window::open(app.handle(), Route::Overview);
             }
+            exit_on_sigterm(app.handle().clone());
+            jev_usage_io::diag::emit(jev_usage_io::diag::DiagEvent::Started);
             Ok(())
         })
-        .run(tauri::generate_context!());
-    if outcome.is_err() {
+        .build(tauri::generate_context!());
+    let Ok(app) = built else {
         std::process::exit(1);
-    }
+    };
+    app.run(|handle, event| {
+        if matches!(event, tauri::RunEvent::Exit) {
+            jev_usage_io::diag::emit(jev_usage_io::diag::DiagEvent::Stopping);
+            if let Some(svc) = handle.try_state::<jev_usage_io::service::ServiceHandle>() {
+                tauri::async_runtime::block_on(svc.shutdown());
+            }
+        }
+    });
 }

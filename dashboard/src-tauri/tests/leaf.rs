@@ -36,7 +36,12 @@ fn cli_parses_hidden_anywhere() {
 #[test]
 fn tray_icon_render_is_deterministic_and_sized() {
     for step in [0_u8, 10, 20] {
-        for level in [Severity::Ok, Severity::Warn, Severity::Critical, Severity::Unknown] {
+        for level in [
+            Severity::Ok,
+            Severity::Warn,
+            Severity::Critical,
+            Severity::Unknown,
+        ] {
             let spec = tray_icon::IconSpec {
                 used_step: step,
                 level,

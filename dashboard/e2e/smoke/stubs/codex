@@ -6,6 +6,8 @@ if [ "$#" -eq 2 ] && [ "$1" = "login" ] && [ "$2" = "status" ]; then
   exit 0
 fi
 if [ "$#" -eq 1 ] && [ "$1" = "app-server" ]; then
+  # The smoke test's hang case: a file named `hang` next to this stub makes it never answer.
+  if [ -e "${0%/*}/hang" ]; then exec /usr/bin/sleep 86413; fi
   while IFS= read -r line; do
     case "$line" in
       *'"id":1,'*)

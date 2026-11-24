@@ -59,7 +59,9 @@ async fn system_timer_fires_at_a_short_deadline_and_at_once_for_the_past() {
             .as_millis(),
     )
     .unwrap();
-    let past = timer.sleep_until(UnixMillis(now.saturating_sub(1_000))).await;
+    let past = timer
+        .sleep_until(UnixMillis(now.saturating_sub(1_000)))
+        .await;
     assert_eq!(past, Wake::Due);
     let soon = timer.sleep_until(UnixMillis(now + 50)).await;
     assert_eq!(soon, Wake::Due);

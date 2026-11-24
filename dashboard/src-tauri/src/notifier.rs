@@ -50,11 +50,7 @@ impl DesktopNotifier {
         clock: Arc<dyn Clock>,
         sink: Arc<dyn NotificationSink>,
     ) -> Self {
-        Self {
-            local,
-            clock,
-            sink,
-        }
+        Self { local, clock, sink }
     }
 }
 

@@ -27,7 +27,17 @@ if [ "$mode" = uninstall ]; then
         [ -n "${HOME-}" ] || fail 'HOME is not set and XDG_CONFIG_HOME is unset'
         config=$HOME/.config
     fi
+    if [ -n "${XDG_DATA_HOME-}" ]; then
+        data=$XDG_DATA_HOME
+    else
+        [ -n "${HOME-}" ] || fail 'HOME is not set and XDG_DATA_HOME is unset'
+        data=$HOME/.local/share
+    fi
     status=0
+    rm -f -- "$data/applications/dev.jev.flashboard.desktop" || status=1
+    for size in 16x16 32x32 48x48 64x64 128x128 256x256; do
+        rm -f -- "$data/icons/hicolor/$size/apps/dev.jev.flashboard.png" || status=1
+    done
     rm -f -- "$dest/jev-dashboard" || { printf '%s\n' 'Flashboard: could not remove the installed binary' >&2; status=1; }
     rm -f -- "$config/autostart/dev.jev.flashboard.desktop" || { printf '%s\n' 'Flashboard: could not remove the autostart entry' >&2; status=1; }
     exit "$status"
@@ -70,3 +80,25 @@ if [ -e "$dest/jev-dashboard" ] || [ -L "$dest/jev-dashboard" ]; then
 else
     mv -- "$stage/new" "$dest/jev-dashboard" || fail 'cannot install the new binary'
 fi
+
+# Desktop entry (absolute Exec) and hicolor icons, under the user's data directory only.
+if [ -n "${XDG_DATA_HOME-}" ]; then
+    data=$XDG_DATA_HOME
+else
+    [ -n "${HOME-}" ] || fail 'HOME is not set and XDG_DATA_HOME is unset'
+    data=$HOME/.local/share
+fi
+case $dest in
+    /*) abs_dest=$dest ;;
+    *) abs_dest=$(CDPATH= cd -- "$dest" && pwd) || fail 'cannot resolve the destination' ;;
+esac
+mkdir -p -- "$data/applications" || fail 'cannot create the applications directory'
+sed "s|^Exec=.*|Exec=$abs_dest/jev-dashboard --hidden|" "$script_dir/../packaging/dev.jev.flashboard.desktop" \
+    > "$data/applications/dev.jev.flashboard.desktop" || fail 'cannot write the desktop entry'
+for pair in 16x16:16x16.png 32x32:32x32.png 48x48:48x48.png 64x64:64x64.png 128x128:128x128.png 256x256:256x256.png; do
+    size=${pair%%:*}
+    file=${pair#*:}
+    mkdir -p -- "$data/icons/hicolor/$size/apps" || fail 'cannot create the icon directory'
+    cp -- "$script_dir/../src-tauri/icons/$file" "$data/icons/hicolor/$size/apps/dev.jev.flashboard.png" \
+        || fail 'cannot install an icon'
+done

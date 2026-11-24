@@ -3,8 +3,10 @@
 
 /// Applies the hardening. Called first, before any thread or child exists.
 pub fn apply() {
-    use rustix::process::{set_dumpable_behavior, setrlimit, umask, DumpableBehavior, Rlimit, Resource};
     use rustix::fs::Mode;
+    use rustix::process::{
+        set_dumpable_behavior, setrlimit, umask, DumpableBehavior, Resource, Rlimit,
+    };
 
     // umask 077: files created by the app default to private.
     let _ = umask(Mode::from_bits_truncate(0o077));

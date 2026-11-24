@@ -16,7 +16,9 @@ test("the scaffold renders under the production CSP", async ({
     width: 720,
     route: { name: "overview" },
   });
-  await expect(page.getByRole("heading", { name: "Flashboard" })).toBeVisible();
+  await expect(
+    page.getByRole("heading", { name: "Usage at a glance" }),
+  ).toBeVisible();
   await expect(page.locator("html")).toHaveAttribute("lang", "en");
   expect(violations()).toEqual([]);
   expect(foreign()).toEqual([]);

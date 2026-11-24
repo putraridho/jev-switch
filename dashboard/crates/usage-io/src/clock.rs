@@ -17,9 +17,9 @@ impl Clock for SystemClock {
 }
 
 #[cfg(feature = "test-support")]
-pub use fake::FakeClock;
-#[cfg(feature = "test-support")]
 pub(crate) use fake::ClockMove;
+#[cfg(feature = "test-support")]
+pub use fake::FakeClock;
 
 #[cfg(feature = "test-support")]
 mod fake {

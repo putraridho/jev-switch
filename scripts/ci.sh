@@ -2,14 +2,18 @@
 # One command that runs every gate (docs/dashboard/DESIGN.md 11.4).
 #
 #   scripts/ci.sh               stages 1-13, fail-fast, then the stage table
+#   scripts/ci.sh --no-cache    ignore the result cache (target/ci-cache); --release implies it
 #   scripts/ci.sh --keep-going  run every stage even after a failure (still exits non-zero)
 #   scripts/ci.sh --release     SKIPPED and NOT RUN count as failures (stage 12 is advisory)
 #   scripts/ci.sh --bootstrap   install the missing cargo tools at pinned versions (no root)
 #   scripts/ci.sh --only N[,N]  run only these stages
 #
 # Stage 1 is the engine's own gate and comes first. Stages 2-9 are Flashboard's. Stages
-# 10-13 (real-binary smoke test, coverage, fuzz, WebDriver) are T12's: until then they
-# report SKIPPED with the reason; no stage is ever skipped silently.
+# 10-13 are the real-binary smoke test, coverage thresholds, fuzz (advisory) and the
+# WebDriver end-to-end test. A stage whose tool is missing prints SKIPPED (or, for the
+# WebDriver stage, NOT RUN) with the install command; no stage is ever skipped silently, and
+# NOT RUN is never a pass. The idle budgets (D11.3, ten minutes) are measured separately:
+#   dashboard/scripts/measure-idle.sh [--floor <empty-scaffold-binary>]
 set -u
 
 root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -21,6 +25,12 @@ P=(-p jev-usage-core -p jev-usage-io -p jev-dashboard)
 # Pinned tool versions for --bootstrap.
 CARGO_DENY_VERSION="0.22.0"
 CARGO_AUDIT_VERSION="0.23.0"
+CARGO_LLVM_COV_VERSION="0.6.16"
+CARGO_FUZZ_VERSION="0.12.0"
+TAURI_DRIVER_VERSION="2.0.1"
+# The pinned nightly for the fuzz stage; override with FLASHBOARD_NIGHTLY.
+NIGHTLY="${FLASHBOARD_NIGHTLY:-nightly-2026-11-01}"
+FUZZ_SECONDS="${FUZZ_SECONDS:-60}"
 
 # No gate may start an installer through a mise wrapper (DESIGN 3.1, 8.6).
 export MISE_OFFLINE=1 MISE_AUTO_INSTALL=false MISE_EXEC_AUTO_INSTALL=false MISE_NOT_FOUND_AUTO_INSTALL=false
@@ -31,17 +41,24 @@ only=""
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --keep-going) keep_going=1 ;;
-    --release) release=1 ;;
+    --no-cache) use_cache=0 ;;
+    --release) release=1; use_cache=0 ;;
     --only) shift; only=",${1:-},";;
     --bootstrap)
+      # No root. Every cargo tool is installed --locked at a pinned version.
       set -e
       command -v cargo-deny >/dev/null 2>&1 || cargo install cargo-deny --version "$CARGO_DENY_VERSION" --locked
       command -v cargo-audit >/dev/null 2>&1 || cargo install cargo-audit --version "$CARGO_AUDIT_VERSION" --locked
-      echo "bootstrap: cargo-deny and cargo-audit are installed."
-      echo "bootstrap: cargo-llvm-cov, cargo-fuzz, the nightly toolchain and tauri-driver are added by T12 (stages 10-13)."
+      command -v cargo-llvm-cov >/dev/null 2>&1 || cargo install cargo-llvm-cov --version "$CARGO_LLVM_COV_VERSION" --locked
+      rustup component add llvm-tools-preview
+      command -v cargo-fuzz >/dev/null 2>&1 || cargo install cargo-fuzz --version "$CARGO_FUZZ_VERSION" --locked
+      rustup toolchain install "$NIGHTLY" --profile minimal
+      command -v tauri-driver >/dev/null 2>&1 || cargo install tauri-driver --version "$TAURI_DRIVER_VERSION" --locked
+      pnpm --dir dashboard exec playwright install chromium
+      echo "bootstrap: done. WebKitWebDriver needs root: sudo pacman -S webkitgtk-6.0"
       exit 0
       ;;
-    -h|--help) sed -n '2,12p' "${BASH_SOURCE[0]}"; exit 0 ;;
+    -h|--help) sed -n '2,16p' "${BASH_SOURCE[0]}"; exit 0 ;;
     *) echo "ci.sh: unknown argument: $1" >&2; exit 2 ;;
   esac
   shift
@@ -69,27 +86,105 @@ wanted() {
   return 1
 }
 
-# stage <number> <name> <function>
+# Result cache: a stage that passed on exactly the same inputs is not run again. The key is a
+# hash of the tracked and untracked (not ignored) files under the stage's input paths plus
+# ci.sh itself. Stages that depend on the clock or the network (supply chain, 10-13) are never
+# cached. `--no-cache` and `--release` always run everything.
+cache_dir="$root/target/ci-cache"
+use_cache=1
+declare -A INPUTS=(
+  [1]="Cargo.toml Cargo.lock src crates tests"
+  [2]="dashboard Cargo.toml Cargo.lock"
+  [3]="dashboard Cargo.toml Cargo.lock"
+  [4]="dashboard/crates dashboard/src/lib/ipc/bindings Cargo.lock"
+  [6]="dashboard"
+  [7]="dashboard"
+  [8]="dashboard"
+  [9]="dashboard Cargo.toml Cargo.lock"
+)
+
+inputs_hash() {
+  # shellcheck disable=SC2086
+  { git ls-files -co --exclude-standard -- $1 scripts/ci.sh | LC_ALL=C sort -u | while IFS= read -r f; do
+      [ -f "$f" ] && sha1sum -- "$f"
+    done; } | sha1sum | cut -d' ' -f1
+}
+
+# run_one <number> <function> <out-prefix>: runs the stage (or reuses its cached pass) and
+# writes <out-prefix>.status (PASS, CACHED or FAIL), <out-prefix>.time and <out-prefix>.log.
+run_one() {
+  local number="$1" fn="$2" out="$3" key="" start end status
+  start=$(date +%s)
+  if [ "$use_cache" -eq 1 ] && [ -n "${INPUTS[$number]:-}" ]; then
+    key="$(inputs_hash "${INPUTS[$number]}")"
+    if [ -f "$cache_dir/$number" ] && [ "$(cat "$cache_dir/$number")" = "$key" ] \
+       && { [ "$number" != 2 ] || [ -d dashboard/dist ]; }; then
+      echo "cached: inputs unchanged since the last pass" > "$out.log"
+      echo CACHED > "$out.status"; echo 0 > "$out.time"
+      return 0
+    fi
+  fi
+  # Not inside `if`: a command tested by `if` runs with errexit off, which would let a
+  # failing command in the middle of a stage pass unnoticed.
+  ( set -e; "$fn" ) > "$out.log" 2>&1
+  status=$?
+  end=$(date +%s)
+  echo $((end - start)) > "$out.time"
+  if [ "$status" -eq 0 ]; then
+    [ -z "$key" ] || { mkdir -p "$cache_dir"; echo "$key" > "$cache_dir/$number"; }
+    echo PASS > "$out.status"
+  else
+    [ -z "$key" ] || rm -f "$cache_dir/$number"
+    echo "FAIL exit $status" > "$out.status"
+  fi
+}
+
+# collect <number> <name> <out-prefix>: print the log and record the result.
+collect() {
+  local number="$1" name="$2" out="$3" status secs
+  status="$(cat "$out.status")"; secs="$(cat "$out.time")"
+  printf '\n=== stage %s: %s ===\n' "$number" "$name"
+  cat "$out.log"
+  case "$status" in
+    PASS) record "$number $name" "PASS" "" "$secs" ;;
+    CACHED) record "$number $name" "PASS" "cached" 0 ;;
+    *) record "$number $name" "FAIL" "${status#FAIL }" "$secs"
+       [ "$keep_going" -eq 1 ] || stopped=1 ;;
+  esac
+}
+
+tmp_out="$(mktemp -d)"
+trap 'rm -rf "$tmp_out"' EXIT
+
+# stage <number> <name> <function>: serial.
 stage() {
-  local number="$1" name="$2" fn="$3" start end status
+  local number="$1" name="$2" fn="$3"
   wanted "$number" || return 0
   if [ "$stopped" -eq 1 ]; then
     record "$number $name" "NOT REACHED" "an earlier stage failed (fail-fast)" 0
     return 0
   fi
-  printf '\n=== stage %s: %s ===\n' "$number" "$name"
-  start=$(date +%s)
-  # Not inside `if`: a command tested by `if` runs with errexit off, which would let a
-  # failing command in the middle of a stage pass unnoticed.
-  ( set -e; "$fn" )
-  status=$?
-  end=$(date +%s)
-  if [ "$status" -eq 0 ]; then
-    record "$number $name" "PASS" "" $((end - start))
-  else
-    record "$number $name" "FAIL" "exit $status" $((end - start))
-    [ "$keep_going" -eq 1 ] || stopped=1
+  run_one "$number" "$fn" "$tmp_out/$number"
+  collect "$number" "$name" "$tmp_out/$number"
+}
+
+# pstage <number> <name> <function>: start in the background; pwait collects in order.
+pnames=(); pnums=()
+pstage() {
+  local number="$1" name="$2" fn="$3"
+  wanted "$number" || return 0
+  if [ "$stopped" -eq 1 ]; then
+    record "$number $name" "NOT REACHED" "an earlier stage failed (fail-fast)" 0
+    return 0
   fi
+  pnums+=("$number"); pnames+=("$name")
+  run_one "$number" "$fn" "$tmp_out/$number" &
+}
+pwait() {
+  wait
+  local i
+  for i in "${!pnums[@]}"; do collect "${pnums[$i]}" "${pnames[$i]}" "$tmp_out/${pnums[$i]}"; done
+  pnums=(); pnames=()
 }
 
 # skipped <number> <name> <reason> [advisory]
@@ -195,21 +290,106 @@ stage_release_build() {
   [ "$(wc -c < target/dist/jev-dashboard)" -le 15728640 ]
 }
 
+# run_external <number> <name> <advisory|required> <command...>: a stage whose script reports its
+# own state: 0 pass, 3 NOT RUN (a tool or the display is missing), 4 pass with a noted caveat,
+# anything else FAIL.
+run_external() {
+  local number="$1" name="$2" kind="$3" start end status
+  shift 3
+  wanted "$number" || return 0
+  if [ "$stopped" -eq 1 ]; then
+    record "$number $name" "NOT REACHED" "an earlier stage failed (fail-fast)" 0
+    return 0
+  fi
+  printf '\n=== stage %s: %s ===\n' "$number" "$name"
+  start=$(date +%s)
+  "$@"
+  status=$?
+  end=$(date +%s)
+  case "$status" in
+    0) record "$number $name" "PASS" "" $((end - start)) ;;
+    3) record "$number $name" "NOT RUN" "see the message above for the install command" $((end - start)) "$kind" ;;
+    4) record "$number $name" "PASS" "with a caveat: see the message above" $((end - start)) ;;
+    *) record "$number $name" "FAIL" "exit $status" $((end - start))
+       [ "$keep_going" -eq 1 ] || stopped=1 ;;
+  esac
+}
+
+stage_smoke() {
+  dashboard/e2e/smoke/smoke.sh target/dist/jev-dashboard
+}
+
+stage_webdriver() {
+  python3 -I dashboard/e2e/webdriver/webdriver.py target/dist/jev-dashboard
+}
+
+stage_coverage() {
+  if ! command -v cargo-llvm-cov >/dev/null 2>&1; then
+    echo "SKIPPED: cargo-llvm-cov is not installed: scripts/ci.sh --bootstrap" >&2
+    return 3
+  fi
+  # Line coverage: core >= 95 %, io >= 85 % (D11.3); the shell is glue and is covered by e2e.
+  local ignore='(/tests/|/stubs/|/fuzz/|/src-tauri/)'
+  cargo llvm-cov -p jev-usage-core --locked --ignore-filename-regex "$ignore" --fail-under-lines 95 || return 1
+  cargo llvm-cov -p jev-usage-io --locked --ignore-filename-regex "$ignore" --fail-under-lines 85 || return 1
+  # Vitest: src/lib logic >= 95 %, components >= 85 % (thresholds live in vitest.config.ts).
+  pnpm --dir dashboard exec vitest run --coverage
+}
+
+stage_fuzz() {
+  if ! command -v cargo-fuzz >/dev/null 2>&1 || ! rustup toolchain list | grep -q "^${NIGHTLY}"; then
+    echo "SKIPPED: cargo-fuzz or the $NIGHTLY toolchain is missing: scripts/ci.sh --bootstrap" >&2
+    return 3
+  fi
+  local target seeds corpus
+  for seeds in dashboard/fuzz/seeds/*/; do
+    target="$(basename "$seeds")"
+    corpus="dashboard/fuzz/corpus/$target"
+    mkdir -p "$corpus"
+    cp -n "$seeds"* "$corpus"/ 2>/dev/null || true
+    (cd dashboard/fuzz && cargo +"$NIGHTLY" fuzz run "$target" -- -max_total_time="$FUZZ_SECONDS" -rss_limit_mb=2048) || return 1
+  done
+}
+
+# A stage that returns 3 from a plain function: SKIPPED, not a failure.
+soft_stage() {
+  local number="$1" name="$2" fn="$3" kind="$4" start end status
+  wanted "$number" || return 0
+  if [ "$stopped" -eq 1 ]; then
+    record "$number $name" "NOT REACHED" "an earlier stage failed (fail-fast)" 0
+    return 0
+  fi
+  printf '\n=== stage %s: %s ===\n' "$number" "$name"
+  start=$(date +%s)
+  ( set -e; "$fn" )
+  status=$?
+  end=$(date +%s)
+  case "$status" in
+    0) record "$number $name" "PASS" "" $((end - start)) ;;
+    3) record "$number $name" "SKIPPED" "tool missing: scripts/ci.sh --bootstrap" $((end - start)) "$kind" ;;
+    *) record "$number $name" "FAIL" "exit $status" $((end - start))
+       [ "$keep_going" -eq 1 ] || stopped=1 ;;
+  esac
+}
+
 total_start=$(date +%s)
 
 stage 1 "engine build and tests" stage_engine
 stage 2 "UI build, fmt, clippy (app crates)" stage_ui_build_and_static
-stage 3 "app Rust tests (property tests at CI counts)" stage_rust_tests
-stage 4 "bindings drift" stage_bindings
-stage 5 "cargo deny, cargo audit" stage_supply_chain
-stage 6 "UI lint, types, check-types, unit tests, audit" stage_ui_static_and_unit
-stage 7 "bundle budgets" stage_budgets
-stage 8 "Playwright screens" stage_screens
+# Stages 3-8 only read what stage 2 built, so they run side by side (cargo serialises its own
+# build lock; the pnpm, Playwright and audit stages overlap with it).
+pstage 3 "app Rust tests (property tests at CI counts)" stage_rust_tests
+pstage 4 "bindings drift" stage_bindings
+pstage 5 "cargo deny, cargo audit" stage_supply_chain
+pstage 6 "UI lint, types, check-types, unit tests, audit" stage_ui_static_and_unit
+pstage 7 "bundle budgets" stage_budgets
+pstage 8 "Playwright screens" stage_screens
+pwait
 stage 9 "release build (profile dist)" stage_release_build
-skipped 10 "real-binary smoke test" "not built yet: T12 (dashboard/e2e/smoke)"
-skipped 11 "coverage thresholds" "not built yet: T12 (cargo-llvm-cov)"
-skipped 12 "fuzz" "not built yet: T12 (cargo-fuzz, nightly); advisory" advisory
-skipped 13 "WebDriver end-to-end" "not built yet: T12 (tauri-driver + WebKitWebDriver)"
+run_external 10 "real-binary smoke test" required stage_smoke
+soft_stage 11 "coverage thresholds" stage_coverage required
+soft_stage 12 "fuzz (advisory)" stage_fuzz advisory
+run_external 13 "WebDriver end-to-end" required stage_webdriver
 
 total_end=$(date +%s)
 

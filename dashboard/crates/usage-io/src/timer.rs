@@ -48,8 +48,7 @@ impl WallTimer for SystemTimer {
                     timerfd_create, timerfd_settime, Itimerspec, TimerfdClockId, TimerfdFlags,
                     TimerfdTimerFlags, Timespec,
                 };
-                let Ok(fd) = timerfd_create(TimerfdClockId::Realtime, TimerfdFlags::CLOEXEC)
-                else {
+                let Ok(fd) = timerfd_create(TimerfdClockId::Realtime, TimerfdFlags::CLOEXEC) else {
                     return Wake::ClockChanged;
                 };
                 let spec = Itimerspec {

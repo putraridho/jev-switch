@@ -81,7 +81,9 @@ fn last_model() -> &'static Mutex<Option<TrayModel>> {
 /// Touches the menu and icon only when `next` differs from the model last applied.
 pub fn apply<R: Runtime>(app: &AppHandle<R>, next: TrayModel) {
     let changed = {
-        let mut last = last_model().lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut last = last_model()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if *last == Some(next.clone()) {
             false
         } else {

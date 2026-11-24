@@ -43,7 +43,11 @@ fn collect_rs(dir: &Path, out: &mut Vec<PathBuf>) {
 fn src_files() -> Vec<PathBuf> {
     let root = dashboard_root();
     let mut files = Vec::new();
-    for dir in ["crates/usage-core/src", "crates/usage-io/src", "src-tauri/src"] {
+    for dir in [
+        "crates/usage-core/src",
+        "crates/usage-io/src",
+        "src-tauri/src",
+    ] {
         collect_rs(&root.join(dir), &mut files);
     }
     files
@@ -89,14 +93,13 @@ fn each_forbidden_api_lives_only_in_its_one_file() {
     failures.extend(only_in(
         &files,
         &n_exit,
-        &["crates/usage-core/src/secret.rs", "crates/usage-io/src/http.rs"],
+        &[
+            "crates/usage-core/src/secret.rs",
+            "crates/usage-io/src/http.rs",
+        ],
     ));
     failures.extend(only_in(&files, &n_http, &["crates/usage-io/src/http.rs"]));
-    failures.extend(only_in(
-        &files,
-        &n_proc,
-        &["crates/usage-io/src/proc.rs"],
-    ));
+    failures.extend(only_in(&files, &n_proc, &["crates/usage-io/src/proc.rs"]));
     failures.extend(only_in(&files, &n_bus, &["src-tauri/src/bus.rs"]));
     failures.extend(only_in(&files, &n_notify, &["src-tauri/src/notifier.rs"]));
     failures.extend(only_in(&files, &n_probe, &[]));

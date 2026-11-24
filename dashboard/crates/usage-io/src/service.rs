@@ -75,8 +75,14 @@ pub struct ServiceDeps {
 /// A command the shell sends the loop through the handle.
 enum Command {
     Refresh(RefreshTarget, oneshot::Sender<Result<(), CommandError>>),
-    History(HistoryQuery, oneshot::Sender<Result<HistorySeries, CommandError>>),
-    UpdateSettings(SettingsPatch, oneshot::Sender<Result<Settings, CommandError>>),
+    History(
+        HistoryQuery,
+        oneshot::Sender<Result<HistorySeries, CommandError>>,
+    ),
+    UpdateSettings(
+        SettingsPatch,
+        oneshot::Sender<Result<Settings, CommandError>>,
+    ),
     SetVisible(bool),
     Diagnostics(ShellFacts, oneshot::Sender<Diagnostics>),
     Shutdown,
@@ -88,6 +94,17 @@ pub struct ServiceHandle {
     snapshot: watch::Sender<Snapshot>,
     settings: watch::Sender<Settings>,
     cmd: mpsc::Sender<Command>,
+    /// Wakes the fetch wait so a shutdown does not sit behind a hanging source.
+    stop: Arc<tokio::sync::Notify>,
+}
+
+/// Aborts its task when dropped, so cancelling a fetch drops the fetch's process-group guard.
+struct AbortOnDrop<T>(tokio::task::JoinHandle<T>);
+
+impl<T> Drop for AbortOnDrop<T> {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
 }
 
 impl ServiceHandle {
@@ -132,7 +149,12 @@ impl ServiceHandle {
     /// Validates and applies a patch, saves it, and returns the new settings.
     pub async fn update_settings(&self, patch: SettingsPatch) -> Result<Settings, CommandError> {
         let (tx, rx) = oneshot::channel();
-        if self.cmd.send(Command::UpdateSettings(patch, tx)).await.is_err() {
+        if self
+            .cmd
+            .send(Command::UpdateSettings(patch, tx))
+            .await
+            .is_err()
+        {
             return Err(CommandError::Internal);
         }
         rx.await.unwrap_or(Err(CommandError::Internal))
@@ -146,7 +168,12 @@ impl ServiceHandle {
     /// Version, per-source state and store size; reads store statistics off the loop.
     pub async fn diagnostics(&self, shell: ShellFacts) -> Diagnostics {
         let (tx, rx) = oneshot::channel();
-        if self.cmd.send(Command::Diagnostics(shell, tx)).await.is_err() {
+        if self
+            .cmd
+            .send(Command::Diagnostics(shell, tx))
+            .await
+            .is_err()
+        {
             return empty_diagnostics(shell);
         }
         rx.await.unwrap_or_else(|_| empty_diagnostics(shell))
@@ -155,7 +182,10 @@ impl ServiceHandle {
     /// Cancels in-flight fetches (killing their process groups) and stops the task.
     /// Bounded: 2 s.
     pub async fn shutdown(&self) {
+        self.stop.notify_one();
         let _ = self.cmd.send(Command::Shutdown).await;
+        // The loop drops its command receiver as it ends, after the fetches are cancelled.
+        let _ = tokio::time::timeout(Duration::from_secs(2), self.cmd.closed()).await;
     }
 }
 
@@ -201,7 +231,11 @@ fn slot_of(provider: ProviderKey) -> usize {
 }
 
 fn provider_at(slot: usize) -> ProviderKey {
-    ProviderKey::ALL.iter().copied().nth(slot).unwrap_or(ProviderKey::Claude)
+    ProviderKey::ALL
+        .iter()
+        .copied()
+        .nth(slot)
+        .unwrap_or(ProviderKey::Claude)
 }
 
 fn delay_millis(d: Duration) -> u64 {
@@ -222,6 +256,7 @@ pub fn spawn(deps: ServiceDeps, rt: &tokio::runtime::Handle) -> ServiceHandle {
         snapshot,
         settings,
         cmd: cmd_tx,
+        stop: Arc::new(tokio::sync::Notify::new()),
     };
     rt.spawn(run(deps, cmd_rx, handle.clone()));
     handle
@@ -243,7 +278,9 @@ async fn run(deps: ServiceDeps, mut cmd_rx: mpsc::Receiver<Command>, handle: Ser
     } = deps;
 
     let mut settings = settings_store.load();
-    let mut alert_memory = store.load_alerts().unwrap_or_else(|_| AlertMemory::default());
+    let mut alert_memory = store
+        .load_alerts()
+        .unwrap_or_else(|_| AlertMemory::default());
     let mut visible = true;
     let mut last_probe_at = clock.now();
 
@@ -392,22 +429,51 @@ async fn run(deps: ServiceDeps, mut cmd_rx: mpsc::Receiver<Command>, handle: Ser
             }
             let timeout = meta.timeout;
             let source = Arc::clone(source);
+            let source_id = meta.id;
             set.spawn(async move {
-                let task = tokio::spawn(async move { source.fetch().await });
-                let result = match tokio::time::timeout(timeout, task).await {
+                let began = std::time::Instant::now();
+                let mut task = AbortOnDrop(tokio::spawn(async move { source.fetch().await }));
+                let result = match tokio::time::timeout(timeout, &mut task.0).await {
                     Ok(Ok(r)) => r,
                     Ok(Err(_)) => Err(SourceError::Unavailable(Unavailable::Internal)),
                     Err(_) => Err(SourceError::Unavailable(Unavailable::Timeout)),
                 };
+                match &result {
+                    Ok(_) => crate::diag::emit(crate::diag::DiagEvent::SourceOk {
+                        source: source_id,
+                        took_ms: u32::try_from(began.elapsed().as_millis()).unwrap_or(u32::MAX),
+                    }),
+                    Err(SourceError::Unavailable(reason)) => {
+                        crate::diag::emit(crate::diag::DiagEvent::SourceFailed {
+                            source: source_id,
+                            reason: *reason,
+                        });
+                    }
+                    Err(_) => {}
+                }
                 (i, result)
             });
         }
 
         let mut results: Vec<(usize, Result<Reading, SourceError>)> = Vec::new();
-        while let Some(outcome) = set.join_next().await {
-            if let Ok(pair) = outcome {
-                results.push(pair);
+        let mut stopping = false;
+        while !set.is_empty() {
+            tokio::select! {
+                outcome = set.join_next() => {
+                    if let Some(Ok(pair)) = outcome {
+                        results.push(pair);
+                    }
+                }
+                () = handle.stop.notified() => {
+                    // Cancel every fetch; dropping each one kills its process group.
+                    set.abort_all();
+                    while set.join_next().await.is_some() {}
+                    stopping = true;
+                }
             }
+        }
+        if stopping {
+            break;
         }
 
         let mut alerts = Vec::new();
@@ -438,7 +504,8 @@ async fn run(deps: ServiceDeps, mut cmd_rx: mpsc::Receiver<Command>, handle: Ser
                     let store = Arc::clone(&store);
                     let record_provider = meta.provider;
                     let r = reading.clone();
-                    let _ = tokio::task::spawn_blocking(move || store.record(record_provider, &r)).await;
+                    let _ = tokio::task::spawn_blocking(move || store.record(record_provider, &r))
+                        .await;
                     let (next_memory, mut step_alerts) = jev_usage_core::alerts::step(
                         &alert_memory,
                         meta.provider,
@@ -466,10 +533,8 @@ async fn run(deps: ServiceDeps, mut cmd_rx: mpsc::Receiver<Command>, handle: Ser
                             meta.last_error = Some(reason);
                             provider.state.last_failure =
                                 Some((now, SourceError::Unavailable(reason)));
-                            let delay =
-                                Backoff::next_delay(meta.failures, reason, jitter.next());
-                            meta.next_due =
-                                UnixMillis(now.0.saturating_add(delay_millis(delay)));
+                            let delay = Backoff::next_delay(meta.failures, reason, jitter.next());
+                            meta.next_due = UnixMillis(now.0.saturating_add(delay_millis(delay)));
                             if matches!(meta.trigger, Trigger::Manual)
                                 && provider.state.last_good.is_some()
                             {
@@ -501,7 +566,11 @@ async fn run(deps: ServiceDeps, mut cmd_rx: mpsc::Receiver<Command>, handle: Ser
     }
 }
 
-fn recompute_live_check(metas: &[SourceMeta], providers: &mut [ProviderState], settings: &Settings) {
+fn recompute_live_check(
+    metas: &[SourceMeta],
+    providers: &mut [ProviderState],
+    settings: &Settings,
+) {
     for meta in metas {
         let slot = slot_of(meta.provider);
         if let Some(provider) = providers.get_mut(slot) {
@@ -549,18 +618,17 @@ fn merge_reading(state: &mut SourceState, reading: &Reading) {
 fn schedule_next(trigger: Trigger, now: UnixMillis, visible: bool) -> UnixMillis {
     match trigger {
         Trigger::OnSignal | Trigger::Manual => UnixMillis(u64::MAX),
-        Trigger::Interval { visible: vis, hidden } => {
+        Trigger::Interval {
+            visible: vis,
+            hidden,
+        } => {
             let d = if visible { vis } else { hidden };
             UnixMillis(now.0.saturating_add(delay_millis(d)))
         }
     }
 }
 
-fn next_deadline(
-    metas: &[SourceMeta],
-    providers: &[ProviderState],
-    now: UnixMillis,
-) -> UnixMillis {
+fn next_deadline(metas: &[SourceMeta], providers: &[ProviderState], now: UnixMillis) -> UnixMillis {
     let mut next = u64::MAX;
     for m in metas {
         if !m.in_flight {
@@ -710,7 +778,12 @@ async fn handle_diagnostics(
 }
 
 /// Recomputes the snapshot and sends it when its content differs from the last one.
-fn emit_snapshot(handle: &ServiceHandle, providers: &[ProviderState], settings: &Settings, now: UnixMillis) {
+fn emit_snapshot(
+    handle: &ServiceHandle,
+    providers: &[ProviderState],
+    settings: &Settings,
+    now: UnixMillis,
+) {
     let usages: Vec<Usage> = providers
         .iter()
         .map(|p| {

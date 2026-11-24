@@ -121,7 +121,9 @@
 
 <style>
   section {
-    padding: var(--space-12);
+    padding: var(--space-6) var(--space-4);
+    max-width: 40rem;
+    margin-inline: auto;
     color: var(--color-text);
     font-family: var(--font-sans);
   }

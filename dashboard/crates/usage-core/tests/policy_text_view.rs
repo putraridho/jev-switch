@@ -55,7 +55,9 @@ fn shared_format_vectors() {
         serde_json::from_str(include_str!("../../../fixtures/format-vectors.json")).unwrap();
     for v in vectors["percent"].as_array().unwrap() {
         assert_eq!(
-            text::percent(Percent::from_basis_points(u32::try_from(v["bp"].as_u64().unwrap()).unwrap())),
+            text::percent(Percent::from_basis_points(
+                u32::try_from(v["bp"].as_u64().unwrap()).unwrap()
+            )),
             v["expect"].as_str().unwrap(),
             "{}",
             v["id"]

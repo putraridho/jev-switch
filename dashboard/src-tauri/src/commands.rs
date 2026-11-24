@@ -14,6 +14,7 @@ use tauri::{AppHandle, Runtime, State};
 /// The latest snapshot; always `ok`.
 #[tauri::command]
 pub fn get_snapshot(svc: State<'_, ServiceHandle>) -> Outcome<Snapshot> {
+    crate::window::first_snapshot_served();
     Outcome::Ok {
         value: svc.snapshot(),
     }

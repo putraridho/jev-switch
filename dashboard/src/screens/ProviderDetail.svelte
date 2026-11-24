@@ -67,7 +67,9 @@
 
 <style>
   section {
-    padding: var(--space-12);
+    padding: var(--space-6) var(--space-4);
+    max-width: 40rem;
+    margin-inline: auto;
     font-family: var(--font-sans);
     color: var(--color-text);
   }
@@ -84,6 +86,7 @@
     font-family: var(--font-serif);
     font-size: var(--num-xl);
     line-height: var(--num-xl-line);
+    font-variant-numeric: tabular-nums;
   }
   button {
     min-height: var(--hit-min);

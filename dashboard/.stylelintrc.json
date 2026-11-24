@@ -1,6 +1,12 @@
 {
   "plugins": ["stylelint-declaration-strict-value"],
-  "overrides": [{ "files": ["**/*.svelte"], "customSyntax": "postcss-html" }],
+  "overrides": [
+    { "files": ["**/*.svelte"], "customSyntax": "postcss-html" },
+    {
+      "files": ["src/lib/design/fonts.css"],
+      "rules": { "scale-unlimited/declaration-strict-value": null }
+    }
+  ],
   "rules": {
     "color-no-hex": true,
     "color-named": "never",

@@ -102,7 +102,10 @@ fn watch_blocking(
                 .watches()
                 .add(
                     parent,
-                    WatchMask::CREATE | WatchMask::MOVED_TO | WatchMask::MOVED_FROM | WatchMask::DELETE,
+                    WatchMask::CREATE
+                        | WatchMask::MOVED_TO
+                        | WatchMask::MOVED_FROM
+                        | WatchMask::DELETE,
                 )
                 .ok()
         });

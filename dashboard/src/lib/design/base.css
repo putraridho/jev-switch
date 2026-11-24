@@ -1,0 +1,119 @@
+/*
+ * Flashboard base styles: the shared look of plain elements, written with tokens only.
+ * Presentation only (T13): focus ring, controls, numerals, reflow, reduced motion.
+ */
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html {
+  background: var(--color-bg);
+  color: var(--color-text);
+  font-family: var(--font-sans);
+  -webkit-text-size-adjust: 100%;
+}
+
+body {
+  margin: 0;
+  font-size: var(--text-md);
+  line-height: var(--text-md-line);
+}
+
+h1,
+h2,
+p {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+p {
+  color: var(--color-text-2);
+  font-size: var(--text-sm);
+  line-height: var(--text-sm-line);
+  overflow-wrap: anywhere;
+}
+
+/* One focus ring everywhere (WCAG 2.4.7, 2.4.11): 2 px accent, 2 px offset. */
+:focus-visible {
+  outline: var(--focus-ring) solid var(--color-accent);
+  outline-offset: 2px;
+}
+
+button,
+input,
+select,
+summary {
+  font: inherit;
+  color: inherit;
+}
+
+/* Buttons are quiet text controls with a hairline: no fill, no shadow. */
+button {
+  min-height: var(--hit-min);
+  min-width: var(--hit-min);
+  padding-inline: var(--space-3);
+  background: none;
+  border: var(--outline) solid var(--color-border);
+  border-radius: var(--radius-control);
+  cursor: pointer;
+  transition-property: background-color, border-color;
+  transition-duration: var(--duration-fast);
+  transition-timing-function: var(--ease);
+}
+
+button:hover:not(:disabled) {
+  background: var(--color-surface-2);
+}
+
+button:disabled {
+  color: var(--color-text-2);
+  cursor: default;
+}
+
+input[type="number"],
+select {
+  min-height: var(--control-min);
+  padding-inline: var(--space-2);
+  background: var(--color-surface);
+  border: var(--outline) solid var(--color-border-strong);
+  border-radius: var(--radius-control);
+}
+
+input[type="number"] {
+  width: 5rem;
+  font-variant-numeric: tabular-nums;
+}
+
+input[type="checkbox"] {
+  width: 1rem;
+  height: 1rem;
+  accent-color: var(--color-ink);
+}
+
+summary {
+  min-height: var(--hit-min);
+  display: flex;
+  align-items: center;
+  color: var(--color-text-2);
+  font-size: var(--text-sm);
+  cursor: pointer;
+}
+
+/* Reflow (1.4.10): the 320 CSS px view never scrolls sideways. */
+svg {
+  max-width: 100%;
+  height: auto;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    transition-duration: var(--duration-fast);
+    animation-duration: var(--duration-fast);
+    scroll-behavior: auto;
+  }
+}

@@ -13,3 +13,6 @@ src-tauri/
 # Shared fixtures are frozen byte for byte (also read by Rust tests).
 fixtures/
 e2e/smoke/
+# Fuzz seed corpora: raw fixture bytes, never reformatted.
+fuzz/seeds/
+fuzz/target/

@@ -4,6 +4,22 @@ use crate::bus::TrayHost;
 use jev_usage_core::ipc::Route;
 use tauri::{AppHandle, Emitter, Manager, Runtime, WebviewUrl, WebviewWindowBuilder};
 
+/// When the current web view was created, until its first snapshot has been served.
+static CREATED_AT: std::sync::Mutex<Option<std::time::Instant>> = std::sync::Mutex::new(None);
+
+/// Called by `get_snapshot`: the first call after a window was created emits `WindowReady`
+/// with the milliseconds since creation (DESIGN 11.4); later calls do nothing.
+pub fn first_snapshot_served() {
+    let Ok(mut created) = CREATED_AT.lock() else {
+        return;
+    };
+    if let Some(began) = created.take() {
+        jev_usage_io::diag::emit(jev_usage_io::diag::DiagEvent::WindowReady {
+            took_ms: u32::try_from(began.elapsed().as_millis()).unwrap_or(u32::MAX),
+        });
+    }
+}
+
 /// Creates the window at `route` (URL fragment: view, provider, theme; incognito; zoom;
 /// drag-and-drop handler off), or shows the existing one and sends it `navigate`.
 pub fn open<R: Runtime>(app: &AppHandle<R>, route: Route) {
@@ -12,6 +28,9 @@ pub fn open<R: Runtime>(app: &AppHandle<R>, route: Route) {
         let _ = window.set_focus();
         let _ = window.emit(crate::events::EVENT_NAVIGATE, route);
         return;
+    }
+    if let Ok(mut created) = CREATED_AT.lock() {
+        *created = Some(std::time::Instant::now());
     }
     let fragment = route_fragment(&route);
     let url = WebviewUrl::App(format!("index.html{fragment}").into());

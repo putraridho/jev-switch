@@ -30,8 +30,7 @@ impl TrayHost for SessionBusTrayHost {
             let Ok(path) = zbus::ObjectPath::try_from("/StatusNotifierWatcher") else {
                 return false;
             };
-            let Ok(iface) =
-                zbus::names::InterfaceName::try_from("org.kde.StatusNotifierWatcher")
+            let Ok(iface) = zbus::names::InterfaceName::try_from("org.kde.StatusNotifierWatcher")
             else {
                 return false;
             };

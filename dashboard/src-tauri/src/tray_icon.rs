@@ -120,8 +120,14 @@ fn circle_table() -> (Vec<i64>, Vec<i64>) {
         if let Some(e) = sin.get_mut(i) {
             *e = s;
         }
-        let nc = c.saturating_mul(COS1).saturating_sub(s.saturating_mul(SIN1)) / 65_536;
-        let ns = c.saturating_mul(SIN1).saturating_add(s.saturating_mul(COS1)) / 65_536;
+        let nc = c
+            .saturating_mul(COS1)
+            .saturating_sub(s.saturating_mul(SIN1))
+            / 65_536;
+        let ns = c
+            .saturating_mul(SIN1)
+            .saturating_add(s.saturating_mul(COS1))
+            / 65_536;
         c = nc;
         s = ns;
     }

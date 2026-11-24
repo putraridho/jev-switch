@@ -23,6 +23,14 @@ export default defineConfig({
       provider: "v8",
       include: ["src/**/*.{ts,svelte}"],
       exclude: ["src/lib/ipc/bindings/**", "src/**/*.test.ts", "src/env.d.ts"],
+      // DESIGN 11.3: `src/lib` logic >= 95 %, components >= 85 % (line coverage).
+      thresholds: {
+        "src/lib/components/**": { lines: 85 },
+        "src/lib/format/**": { lines: 95 },
+        "src/lib/stores/**": { lines: 95 },
+        "src/lib/router.svelte.ts": { lines: 95 },
+        "src/lib/copy.ts": { lines: 95 },
+      },
     },
   },
 });

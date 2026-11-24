@@ -122,13 +122,16 @@
 
 <style>
   section {
-    padding: var(--space-12);
+    padding: var(--space-6) var(--space-4);
+    max-width: 40rem;
+    margin-inline: auto;
     color: var(--color-text);
     font-family: var(--font-sans);
   }
   header {
     display: flex;
     align-items: center;
+    flex-wrap: wrap;
     justify-content: space-between;
     gap: var(--space-4);
   }
@@ -153,6 +156,7 @@
     font-family: var(--font-serif);
     font-size: var(--num-xl);
     line-height: var(--num-xl-line);
+    font-variant-numeric: tabular-nums;
   }
   .muted {
     color: var(--color-muted);
