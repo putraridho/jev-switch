@@ -4,6 +4,8 @@ See [docs/changelog-guide.md](docs/changelog-guide.md) for changelog formatting,
 
 ## Unreleased
 
+- **`/update` still finds the install folder after the running binary was replaced.** On Linux, replacing `jev-code` on disk while a session stays open makes `/proc/self/exe` end in ` (deleted)`, which caused a subsequent `/update` in that same session to fail with `cannot tell where jev-code is installed: No such file or directory`. The release updater now falls back to stripping ` (deleted)` or resolving the parent folder directly.
+
 ## 1.14.2
 
 Smooth working-row shimmer and eased mouse wheel scrolling.

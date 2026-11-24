@@ -244,13 +244,35 @@ pub fn latest_from(api: &str, platform: Platform, allow: Allow) -> Result<Releas
 }
 
 /// The folder the programs are installed in: `JEV_INSTALL_DIR`, else where the running
-/// `jev-code` really lives (a symlink is followed).
+/// `jev-code` really lives (a symlink is followed, and an already-replaced binary still resolves
+/// its folder).
 pub fn install_dir() -> Result<PathBuf, String> {
     if let Some(dir) = jev_shared::infrastructure::env_file::lookup(DIR_ENV).filter(|d| !d.trim().is_empty()) {
         return Ok(PathBuf::from(dir.trim()));
     }
-    let exe = std::env::current_exe().and_then(|p| p.canonicalize()).map_err(|e| format!("cannot tell where jev-code is installed: {e}"))?;
-    exe.parent().map(Path::to_path_buf).ok_or_else(|| "cannot tell where jev-code is installed".to_string())
+    let exe = std::env::current_exe().map_err(|e| format!("cannot tell where jev-code is installed: {e}"))?;
+    resolve_install_dir(&exe)
+}
+
+/// The folder holding `exe`, following symlinks when `exe` still exists. When the running binary
+/// was already replaced on disk (for instance by an earlier `/update` in the same session, which
+/// makes Linux's `/proc/self/exe` end in ` (deleted)`), strip that suffix if a replacement lives
+/// there, else canonicalise the parent folder directly.
+fn resolve_install_dir(exe: &Path) -> Result<PathBuf, String> {
+    if let Ok(real) = exe.canonicalize() {
+        return real.parent().map(Path::to_path_buf).ok_or_else(|| "cannot tell where jev-code is installed".to_string());
+    }
+    if let (Some(parent), Some(name)) = (exe.parent(), exe.file_name().and_then(|n| n.to_str())) {
+        if let Some(stripped) = name.strip_suffix(" (deleted)") {
+            if let Ok(real) = parent.join(stripped).canonicalize() {
+                if let Some(dir) = real.parent() {
+                    return Ok(dir.to_path_buf());
+                }
+            }
+        }
+    }
+    let parent = exe.parent().ok_or_else(|| "cannot tell where jev-code is installed".to_string())?;
+    parent.canonicalize().map_err(|e| format!("cannot tell where jev-code is installed: {e}"))
 }
 
 /// Where `jev-claude` loads the orchestrate mod from.
@@ -595,6 +617,44 @@ mod tests {
         assert_eq!(latest_from(&url, Platform::LinuxX86_64, Allow::HttpsOrFile).unwrap().version, "3.1.0");
         assert!(latest_from(&url, Platform::LinuxX86_64, Allow::HttpsOnly).is_err(), "a file address is refused unless allowed");
         assert!(latest_from(&format!("file://{}/none.json", root.display()), Platform::LinuxX86_64, Allow::HttpsOrFile).is_err());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn install_dir_resolves_after_the_running_binary_was_replaced() {
+        let root = std::env::temp_dir().join(format!("jev-install-dir-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let bin = root.join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        let canonical_bin = bin.canonicalize().unwrap();
+
+        // Normal existing binary.
+        let exe = bin.join("jev-code");
+        std::fs::write(&exe, "v2").unwrap();
+        assert_eq!(resolve_install_dir(&exe).unwrap(), canonical_bin);
+
+        // Linux `/proc/self/exe` after an earlier update replaced the binary on disk.
+        let deleted = bin.join("jev-code (deleted)");
+        assert_eq!(resolve_install_dir(&deleted).unwrap(), canonical_bin);
+
+        // Symlinked install whose target was replaced (Linux appends ` (deleted)`).
+        #[cfg(unix)]
+        {
+            let link_dir = root.join("links");
+            std::fs::create_dir_all(&link_dir).unwrap();
+            let link = link_dir.join("jev-code");
+            std::os::unix::fs::symlink(&exe, &link).unwrap();
+            assert_eq!(resolve_install_dir(&link).unwrap(), canonical_bin);
+            assert_eq!(resolve_install_dir(&link_dir.join("jev-code (deleted)")).unwrap(), canonical_bin);
+        }
+
+        // Unlinked binary with no replacement yet still resolves to its parent directory.
+        assert_eq!(resolve_install_dir(&bin.join(".jev-code.old (deleted)")).unwrap(), canonical_bin);
+
+        // A missing parent directory is still an error.
+        let missing = root.join("gone").join("jev-code (deleted)");
+        assert!(resolve_install_dir(&missing).is_err());
+
         let _ = std::fs::remove_dir_all(&root);
     }
 }
