@@ -18,6 +18,8 @@ impl Clock for SystemClock {
 
 #[cfg(feature = "test-support")]
 pub use fake::FakeClock;
+#[cfg(feature = "test-support")]
+pub(crate) use fake::ClockMove;
 
 #[cfg(feature = "test-support")]
 mod fake {
@@ -25,36 +27,67 @@ mod fake {
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::sync::Arc;
     use std::time::Duration;
+    use tokio::sync::watch;
+
+    /// How the clock moved: `advance` only ever moves forward; `set` may move anywhere.
+    #[derive(Copy, Clone, Debug, Eq, PartialEq)]
+    pub(crate) enum ClockMove {
+        /// The clock moved forward by a duration.
+        Advanced,
+        /// The clock was set to an absolute value (it may have moved backwards).
+        Set,
+    }
 
     /// A clock tests set and advance by hand (feature `test-support`).
-    #[derive(Debug)]
-    pub struct FakeClock(AtomicU64);
+    pub struct FakeClock {
+        ms: AtomicU64,
+        changed: watch::Sender<ClockMove>,
+    }
+
+    impl std::fmt::Debug for FakeClock {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.debug_tuple("FakeClock")
+                .field(&self.ms.load(Ordering::SeqCst))
+                .finish()
+        }
+    }
 
     impl FakeClock {
         /// A clock that reads `ms` (epoch milliseconds).
         pub fn at(ms: u64) -> Arc<Self> {
-            Arc::new(Self(AtomicU64::new(ms)))
+            let (changed, _rx) = watch::channel(ClockMove::Advanced);
+            Arc::new(Self {
+                ms: AtomicU64::new(ms),
+                changed,
+            })
+        }
+
+        /// A receiver that sees every move of the clock (used by `FakeTimer`).
+        pub(crate) fn moves(&self) -> watch::Receiver<ClockMove> {
+            self.changed.subscribe()
         }
 
         /// Moves the clock forward by `d` (saturating).
         pub fn advance(&self, d: Duration) {
             let step = u64::try_from(d.as_millis()).unwrap_or(u64::MAX);
             let _ = self
-                .0
+                .ms
                 .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |now| {
                     Some(now.saturating_add(step))
                 });
+            self.changed.send_replace(ClockMove::Advanced);
         }
 
         /// Sets the clock to `ms`; it may move backwards.
         pub fn set(&self, ms: u64) {
-            self.0.store(ms, Ordering::SeqCst);
+            self.ms.store(ms, Ordering::SeqCst);
+            self.changed.send_replace(ClockMove::Set);
         }
     }
 
     impl Clock for FakeClock {
         fn now(&self) -> UnixMillis {
-            UnixMillis(self.0.load(Ordering::SeqCst))
+            UnixMillis(self.ms.load(Ordering::SeqCst))
         }
     }
 }
