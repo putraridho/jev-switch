@@ -10,5 +10,4 @@ pub mod shortcuts;
 pub mod suggest;
 pub mod typeahead;
 pub mod vim;
-pub mod wheel;
 pub mod workstation;

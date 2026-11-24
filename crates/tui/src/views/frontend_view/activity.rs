@@ -36,7 +36,8 @@ pub fn working_line(work: &crate::app::screen_state::Working, elapsed: std::time
     let secs = elapsed.as_secs();
     let time = if secs >= 60 { format!("{}m{:02}s", secs / 60, secs % 60) } else { format!("{secs}s") };
     let (verb, rest) = doing_parts(work.activity.as_deref());
-    let what = if rest.is_empty() { style.bold(&verb) } else { format!("{} {}", style.dim(&verb), style.accent(&rest)) };
+    // The words shimmer: a highlight sweeps along them, so the row moves between spinner frames.
+    let what = if rest.is_empty() { style.shimmer(&verb, elapsed) } else { format!("{} {}", style.dim(&verb), style.shimmer(&rest, elapsed)) };
     truncate_to_width(&format!("{} {what} {}", style.accent(spinner), style.dim(&time)), width)
 }
 

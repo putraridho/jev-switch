@@ -15,8 +15,9 @@ const SYNC_ON: &str = "\x1b[?2026h";
 const SYNC_OFF: &str = "\x1b[?2026l";
 const HIDE: &str = "\x1b[?25l";
 const SHOW: &str = "\x1b[?25h";
-/// The alternate screen. The mouse is not captured, so the terminal keeps selection and link clicks.
-pub const FULL_ON: &str = "\x1b[?1049h";
+/// The alternate screen, with the mouse reported (wheel scrolling) in the SGR encoding. The
+/// terminal's own selection and link clicks need Shift held while the mouse is reported.
+pub const FULL_ON: &str = "\x1b[?1049h\x1b[?1000h\x1b[?1006h";
 /// Clear from the cursor to the end of the screen.
 const CLEAR_DOWN: &str = "\x1b[J";
 

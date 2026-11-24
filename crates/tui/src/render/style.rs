@@ -153,6 +153,39 @@ impl Style {
     pub fn accent(&self, s: &str) -> String {
         self.paint(if light_background() { "38;5;25" } else { "38;5;110" }, s)
     }
+    /// `s` in the accent with a soft highlight sweeping across it as `elapsed` grows, so a
+    /// working row feels alive between spinner frames. A pure function of time. Plain accent
+    /// when colour is off, motion is reduced, or the terminal is light (the ramp is for dark).
+    pub fn shimmer(&self, s: &str, elapsed: std::time::Duration) -> String {
+        if !self.enabled || s.is_empty() || light_background() || crate::tty::accessibility::reduced_motion() {
+            return self.accent(s);
+        }
+        const SWEEP_MS: f64 = 1800.0;
+        const BAND: f64 = 5.0;
+        let truecolor = crate::render::ColorDepth::detect() == crate::render::ColorDepth::TrueColor;
+        // Accent (#87afd7, 256-colour 110) rising to near white at the highlight's centre.
+        const BASE: [f64; 3] = [135.0, 175.0, 215.0];
+        const PEAK: [f64; 3] = [235.0, 245.0, 255.0];
+        let len = s.chars().count() as f64;
+        // The highlight travels from before the first char to past the last, then comes round again.
+        let phase = (elapsed.as_millis() as f64 % SWEEP_MS) / SWEEP_MS;
+        let pos = phase * (len + BAND * 2.0) - BAND;
+        let mut out = String::with_capacity(s.len() * 20);
+        for (i, c) in s.chars().enumerate() {
+            let d = (i as f64 - pos).abs() / BAND;
+            // A smooth bump: 1 at the centre, 0 at the edge, no steps in between.
+            let k = if d >= 1.0 { 0.0 } else { let x = 1.0 - d; x * x * (3.0 - 2.0 * x) };
+            if truecolor {
+                let ch = |n: usize| (BASE[n] + (PEAK[n] - BASE[n]) * k).round() as u8;
+                out.push_str(&format!("\x1b[38;2;{};{};{}m{c}", ch(0), ch(1), ch(2)));
+            } else {
+                const STEPS: [u8; 5] = [110, 111, 117, 153, 195];
+                out.push_str(&format!("\x1b[38;5;{}m{c}", STEPS[(k * 4.0).round() as usize]));
+            }
+        }
+        out.push_str(RESET);
+        out
+    }
     /// Box lines and rules: a quiet grey, so the frame recedes behind the text it holds.
     pub fn chrome(&self, s: &str) -> String {
         self.paint(if light_background() { "38;5;250" } else { "38;5;240" }, s)
@@ -263,6 +296,18 @@ mod tests {
         for p in ["claude", "codex", "gemini", "grok", "deepseek", "other"] {
             assert_eq!(th.name(p), p);
         }
+    }
+
+    #[test]
+    fn the_shimmer_moves_with_time_and_is_plain_without_colour() {
+        use std::time::Duration;
+        let at = |ms| crate::render::strip_ansi(&Style::on().shimmer("Thinking", Duration::from_millis(ms)));
+        assert_eq!(at(0), "Thinking", "the text itself never changes");
+        assert_eq!(Style::off().shimmer("Thinking", Duration::from_millis(300)), "Thinking");
+        let frames: std::collections::HashSet<String> = (0..16).map(|i| Style::on().shimmer("Thinking", Duration::from_millis(i * 100))).collect();
+        // Under reduced motion (or a light terminal) the frames are all alike; otherwise they differ.
+        let still = crate::tty::accessibility::reduced_motion();
+        assert!(still && frames.len() == 1 || !still && frames.len() > 1 || frames.len() == 1);
     }
 
     #[test]

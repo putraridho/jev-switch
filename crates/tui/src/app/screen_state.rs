@@ -191,6 +191,9 @@ pub struct App {
     pub fullscreen: bool,
     /// The conversation, in the full-screen layout.
     pub transcript: crate::views::transcript::Transcript,
+    /// Rows the chat still has to scroll (positive goes back in time): a wheel notch or a
+    /// page asks for them and [`App::step_scroll`] eases the view there a few rows a frame.
+    pub scroll_pending: isize,
     /// Rows of the chat pane at the last draw, for how far a page scrolls.
     pub pane_rows: usize,
     /// The answer as it is being written, for the live preview in the full-screen layout.
@@ -255,6 +258,7 @@ impl App {
             suggestion: None,
             fullscreen: false,
             transcript: crate::views::transcript::Transcript::default(),
+            scroll_pending: 0,
             pane_rows: 20,
             live_answer: None,
         }
@@ -264,7 +268,22 @@ impl App {
     /// scrollback does it).
     pub fn scroll_chat(&mut self, by: isize) {
         if self.fullscreen {
-            self.transcript.scroll_by(by, self.pane_rows);
+            self.scroll_pending = self.scroll_pending.saturating_add(by);
+        }
+    }
+
+    /// One frame of the eased scroll: a third of what is left, at least a row, so a notch
+    /// glides and a long page slows as it lands. Reaching either end drops what is left.
+    pub fn step_scroll(&mut self) {
+        if self.scroll_pending == 0 {
+            return;
+        }
+        let step = (self.scroll_pending.abs() / 3).max(1) * self.scroll_pending.signum();
+        let before = self.transcript.scrolled();
+        self.transcript.scroll_by(step, self.pane_rows);
+        self.scroll_pending -= step;
+        if self.transcript.scrolled() == before {
+            self.scroll_pending = 0;
         }
     }
 
@@ -275,7 +294,7 @@ impl App {
 
     /// Something to animate or expire: the loop redraws on its timer only then.
     pub fn needs_ticks(&self) -> bool {
-        self.working.is_some() || self.notice.is_some() || self.workers.iter().any(|w| w.running)
+        self.working.is_some() || self.notice.is_some() || self.scroll_pending != 0 || self.workers.iter().any(|w| w.running)
     }
 
     /// Drop a notice that has been up long enough.

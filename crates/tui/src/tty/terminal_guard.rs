@@ -52,8 +52,8 @@ pub fn width_cap() -> Option<usize> {
     Some(WIDTH_CAP.load(Ordering::SeqCst)).filter(|c| *c > 0)
 }
 
-/// Leave the alternate screen.
-pub const LEAVE_ALT_SCREEN: &[u8] = b"\x1b[?1049l";
+/// Leave the mouse modes and the alternate screen.
+pub const LEAVE_ALT_SCREEN: &[u8] = b"\x1b[?1006l\x1b[?1000l\x1b[?1049l";
 
 /// Set while the keyboard protocol is pushed (it is not asked for inside tmux, on a console
 /// or on a dumb terminal, see [`crate::tty::terminal_environment`]), so [`restore`] only pops what was pushed.

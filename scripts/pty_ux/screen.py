@@ -21,9 +21,9 @@ def the_terminal_is_restored_when_the_program_ends(w):
 @scenario
 def full_screen_draws_header_chat_and_box_and_leaves_the_terminal_clean(w):
     """Without JEV_INLINE the app takes the alternate screen: the header row on top, the chat
-    under it, the box at the bottom; PageUp is read, the mouse is not captured; and the alternate screen
-    is given back at exit. The tiny emulator does not know absolute cursor
-    moves, so this reads the bytes written."""
+    under it, the box at the bottom; PageUp is read, SGR mouse reporting is enabled for wheel
+    scrolling, and both the mouse modes and the alternate screen are given back at exit. The tiny
+    emulator does not know absolute cursor moves, so this reads the bytes written."""
     p = Pty(w, [w.repo], "fullscreen", env=w.env(JEV_INLINE=None), cols=130, rows=34)
     try:
         p.expect("Ask anything", 15, "the box")
@@ -31,9 +31,13 @@ def full_screen_draws_header_chat_and_box_and_leaves_the_terminal_clean(w):
         p.expect(ANSWER, 20, "the answer in the chat pane")
         p.settle(0.5)
         raw = p.raw.decode("utf-8", "replace")
-        if "\x1b[?1000h" in raw:
-            raise Fail("full screen must leave the mouse to the terminal (selection and links)")
-        for needle, what in (("\x1b[?1049h", "the alternate screen"), ("\x1b[1;1H", "rows drawn in place"), ("orchestrate on", "the header row")):
+        for needle, what in (
+            ("\x1b[?1049h", "the alternate screen"),
+            ("\x1b[?1000h", "mouse reporting"),
+            ("\x1b[?1006h", "SGR mouse encoding"),
+            ("\x1b[1;1H", "rows drawn in place"),
+            ("orchestrate on", "the header row"),
+        ):
             if needle not in raw:
                 raise Fail(f"full screen should use {what} ({needle!r}):\n{p.tail()}")
         # PageUp is a key the app reads, not text in the box.
@@ -46,6 +50,8 @@ def full_screen_draws_header_chat_and_box_and_leaves_the_terminal_clean(w):
         if code != 0:
             raise Fail(f"Ctrl-D should exit with 0, got {code}")
         raw = p.raw.decode("utf-8", "replace")
+        if raw.rfind("\x1b[?1000l") < raw.rfind("\x1b[?1000h") or raw.rfind("\x1b[?1006l") < raw.rfind("\x1b[?1006h"):
+            raise Fail("mouse reporting was not turned off at exit")
         if raw.rfind("\x1b[?1049l") < raw.rfind("\x1b[?1049h"):
             raise Fail("the alternate screen was not left at exit")
         if raw.rfind("\x1b[?25l") > raw.rfind("\x1b[?25h"):
@@ -289,12 +295,10 @@ def a_slow_provider_probe_that_finishes_at_the_prompt_is_reported_at_the_next_in
 
 
 @scenario
-def a_wheel_burst_scrolls_the_chat_and_a_lone_arrow_still_recalls_history(w):
-    """With the mouse left to the terminal, the wheel arrives as arrow keys (alternate scroll
-    mode): several written at once for one notch. Those scroll the chat; one arrow is a key press
-    and brings back the last message, which Enter then sends again. A turn shows its working row
-    (`Reading a.txt`), so a message sent again is a new such row; scrolling redraws the chat and
-    repeats the message text, which says nothing."""
+def mouse_wheel_scrolls_the_chat_and_an_arrow_still_recalls_history(w):
+    """In full-screen mode with SGR mouse reporting enabled, mouse wheel events scroll the chat
+    without typing into the box or recalling history, while an Up arrow still recalls the last
+    message."""
     p = Pty(w, [w.repo], "wheel", env=w.env(JEV_INLINE=None), cols=130, rows=34)
     try:
         p.expect("Ask anything", 15, "the box")
@@ -303,13 +307,13 @@ def a_wheel_burst_scrolls_the_chat_and_a_lone_arrow_still_recalls_history(w):
         p.settle(1.0)
         working = "Reading a.txt"
         turns = p.printed().count(working)
-        # A burst of arrows in one write is the wheel: Enter on the still-empty box sends nothing.
-        p.send("\x1b[A\x1b[A\x1b[A")
+        # SGR mouse wheel up (\x1b[<64;10;10M) scrolls the chat: Enter on the still-empty box sends nothing.
+        p.send("\x1b[<64;10;10M")
         p.settle(0.5)
         p.send("\r")
-        p.settle(1.5)
+        p.settle(1.0)
         if p.printed().count(working) != turns:
-            raise Fail(f"a wheel burst must not recall history; the message was sent again:\n{p.tail()}")
+            raise Fail(f"mouse wheel must not recall history; the message was sent again:\n{p.tail()}")
         # One arrow is a key press: history comes back and Enter sends it.
         p.send("\x1b[A")
         p.settle(0.5)

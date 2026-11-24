@@ -35,7 +35,8 @@ fn a_running_turn_shows_the_working_row_the_queue_and_the_keys_for_now() {
     assert_eq!(s.lines().last(), Some("  Enter:queue │ Shift+Enter:newline │ Shift+Tab:mode"), "Esc is said once, on the working row: {s}");
     assert_eq!(s.matches("esc").count(), 1, "{s}");
     let on = render(&a, 80, Instant::now(), ON).rows[1].clone();
-    assert!(on.contains("\x1b[2mRunning") && on.contains("cargo test"), "the verb dim, what it acts on in the accent: {on:?}");
+    // What it acts on shimmers, so it is painted a letter at a time: read it with the colour off.
+    assert!(on.contains("\x1b[2mRunning") && on.contains("\x1b[38;5;110m") && crate::render::strip_ansi(&on).contains("cargo test"), "the verb dim, what it acts on in the accent: {on:?}");
 }
 
 #[test]

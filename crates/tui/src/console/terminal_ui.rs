@@ -48,6 +48,9 @@ use self::lines::*;
 
 /// How often the status line is redrawn (the spinner frame changes every 100 ms).
 pub const TICK: Duration = Duration::from_millis(100);
+/// How often the full-screen layout redraws while something animates: about 60 frames a second.
+/// A redraw that changes nothing writes nothing, and one that does rewrites only its rows.
+pub const FRAME_TICK: Duration = Duration::from_millis(16);
 
 /// Home the cursor, clear the screen, and clear its scrollback: the whole display belongs to
 /// this session. Shared by the startup clear, `/clear`, and Ctrl-L.

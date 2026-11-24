@@ -65,6 +65,13 @@ fn page_up_scrolls_the_chat_back_and_new_output_leaves_the_view_alone() {
     a.pane_rows = pane;
     assert!(f.rows[pane].contains("line 59"));
     a.on_key(KeyEvent::new(KeyCode::PageUp, KeyModifiers::NONE), Instant::now());
+    assert_eq!(a.transcript.scrolled(), 0, "the view glides: nothing moves until a frame steps it");
+    a.step_scroll();
+    assert!(a.transcript.scrolled() > 0 && a.scroll_pending > 0, "one frame moves part of the way");
+    while a.scroll_pending != 0 {
+        a.step_scroll();
+    }
+    assert_eq!(a.transcript.scrolled(), pane - 2, "it lands exactly a page back");
     let (f, _) = render_full(&a, 140, 30, Instant::now(), OFF);
     assert!(!f.rows[pane].contains("line 59"), "{}", f.rows[pane]);
     a.show("a new line");

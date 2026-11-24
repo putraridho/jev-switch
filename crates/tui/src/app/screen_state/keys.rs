@@ -151,8 +151,14 @@ impl App {
             KeyCode::Char('f') if ctrl(&k) => self.editor.right(),
             KeyCode::PageUp => self.scroll_chat(self.pane_rows.saturating_sub(2).max(1) as isize),
             KeyCode::PageDown => self.scroll_chat(-(self.pane_rows.saturating_sub(2).max(1) as isize)),
-            KeyCode::End if ctrl(&k) => self.transcript.to_end(),
-            KeyCode::Home if ctrl(&k) => self.transcript.to_start(self.pane_rows),
+            KeyCode::End if ctrl(&k) => {
+                self.scroll_pending = 0;
+                self.transcript.to_end();
+            }
+            KeyCode::Home if ctrl(&k) => {
+                self.scroll_pending = 0;
+                self.transcript.to_start(self.pane_rows);
+            }
             KeyCode::Home => self.editor.home(),
             KeyCode::End => self.editor.end(),
             KeyCode::Char('a') if ctrl(&k) => self.editor.home(),
