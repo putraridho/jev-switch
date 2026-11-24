@@ -86,20 +86,82 @@ pub trait LoginProbe: Send + Sync {
 /// under every rule of DESIGN 8.6. It opens no file of any CLI.
 #[derive(Debug)]
 pub struct CliProbe {
-    _runner: Arc<ProcRunner>,
+    runner: Arc<ProcRunner>,
 }
 
 impl CliProbe {
     /// A probe that starts its two status commands through `runner`.
     pub fn new(runner: Arc<ProcRunner>) -> Self {
-        Self { _runner: runner }
+        Self { runner }
     }
 }
 
 impl LoginProbe for CliProbe {
     fn probe(&self, providers: Vec<ProviderKey>) -> ProbeFuture<'_> {
-        let _ = providers;
-        Box::pin(std::future::ready(LoginFacts::unknown()))
+        Box::pin(async move {
+            use crate::proc::{Flow, ProcSpec, Program, Resolved, Stderr};
+            use std::time::Duration;
+            use zeroize::Zeroizing;
+            let mut facts = LoginFacts::unknown();
+            for provider in providers {
+                let (program, args): (Program, &'static [&'static str]) = match provider {
+                    ProviderKey::Codex => (Program::Codex, &["login", "status"]),
+                    ProviderKey::Claude => (Program::Claude, &["auth", "status"]),
+                    _ => continue,
+                };
+                if self.runner.resolve(program) == Resolved::NotInstalled {
+                    facts = facts.with(provider, Readiness::NotInstalled, None);
+                    continue;
+                }
+                let spec = ProcSpec {
+                    program,
+                    args,
+                    stdin: b"",
+                    deadline: Duration::from_secs(5),
+                    stderr: Stderr::Merge,
+                    max_output: 65536,
+                };
+                let mut output = Zeroizing::new(Vec::new());
+                let result = self
+                    .runner
+                    .run(&spec, &mut |line| {
+                        output.extend_from_slice(line);
+                        Flow::Continue
+                    })
+                    .await;
+                let (readiness, plan) = match (provider, result) {
+                    (ProviderKey::Codex, Ok(exit)) => {
+                        let parsed = std::str::from_utf8(&output).ok().and_then(|text| {
+                            crate::engine_bridge::codex_logged_in(exit.success, text)
+                        });
+                        (
+                            match parsed {
+                                Some(true) => Readiness::Ready,
+                                Some(false) => Readiness::NotLoggedIn,
+                                None => Readiness::Unknown,
+                            },
+                            None,
+                        )
+                    }
+                    (ProviderKey::Claude, Ok(_)) => {
+                        match jev_usage_core::parse::claude_auth::parse(&output) {
+                            Some(login) => (
+                                if login.logged_in {
+                                    Readiness::Ready
+                                } else {
+                                    Readiness::NotLoggedIn
+                                },
+                                login.plan,
+                            ),
+                            None => (Readiness::Unknown, None),
+                        }
+                    }
+                    _ => (Readiness::Unknown, None),
+                };
+                facts = facts.with(provider, readiness, plan);
+            }
+            facts
+        })
     }
 }
 
@@ -306,15 +368,5 @@ mod tests {
         assert_eq!(empty.calls(), 1);
         let shared: Arc<dyn LoginProbe> = probe;
         assert_eq!(now(shared.probe(vec![])), LoginFacts::unknown());
-    }
-
-    #[test]
-    fn cli_probe_stub_answers_unknown() {
-        let runner = Arc::new(ProcRunner::system(std::path::PathBuf::from("/nonexistent")));
-        let probe = CliProbe::new(runner);
-        assert_eq!(
-            now(probe.probe(vec![ProviderKey::Claude, ProviderKey::Codex])),
-            LoginFacts::unknown()
-        );
     }
 }

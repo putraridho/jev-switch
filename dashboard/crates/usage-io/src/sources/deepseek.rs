@@ -1,22 +1,24 @@
 //! The DeepSeek balance as a source (DESIGN 6.4). The type and the descriptor are fixed
 //! here; T05 writes the body.
 
-use crate::http::HttpClient;
-use crate::secrets::KeySources;
+use crate::http::{Endpoint, HttpClient};
+use crate::secrets::{deepseek_key, KeySources};
+use jev_usage_core::meter::Reading;
+use jev_usage_core::parse::deepseek::parse_balance;
 use jev_usage_core::port::{
     Cost, FetchFuture, SourceDescriptor, SourceError, SourceId, Trigger, UsageSource,
 };
 use jev_usage_core::provider::ProviderKey;
 use jev_usage_core::time::Clock;
-use jev_usage_core::usage::Unavailable;
+use jev_usage_core::usage::{Setup, Unavailable};
 use std::sync::Arc;
 use std::time::Duration;
 
 /// Reads the balance with a key that lives for one fetch.
 pub struct DeepSeekBalanceSource {
-    _http: Arc<HttpClient>,
-    _clock: Arc<dyn Clock>,
-    _keys: Arc<dyn Fn() -> KeySources + Send + Sync>,
+    http: Arc<HttpClient>,
+    clock: Arc<dyn Clock>,
+    keys: Arc<dyn Fn() -> KeySources + Send + Sync>,
 }
 
 impl DeepSeekBalanceSource {
@@ -26,11 +28,7 @@ impl DeepSeekBalanceSource {
         clock: Arc<dyn Clock>,
         keys: Arc<dyn Fn() -> KeySources + Send + Sync>,
     ) -> Self {
-        Self {
-            _http: http,
-            _clock: clock,
-            _keys: keys,
-        }
+        Self { http, clock, keys }
     }
 }
 
@@ -52,8 +50,25 @@ impl UsageSource for DeepSeekBalanceSource {
     }
 
     fn fetch(&self) -> FetchFuture<'_> {
-        Box::pin(std::future::ready(Err(SourceError::Unavailable(
-            Unavailable::Internal,
-        ))))
+        let http = Arc::clone(&self.http);
+        let clock = Arc::clone(&self.clock);
+        let keys = Arc::clone(&self.keys);
+        Box::pin(async move {
+            let key = tokio::task::spawn_blocking(move || deepseek_key(keys()))
+                .await
+                .map_err(|_| SourceError::Unavailable(Unavailable::Internal))?
+                .ok_or(SourceError::NotConfigured(Setup::AddDeepSeekKey))?;
+            let body = http
+                .get_json(Endpoint::DeepSeekBalance, &key)
+                .await
+                .map_err(SourceError::Unavailable)?;
+            drop(key);
+            let meters = parse_balance(&body).map_err(SourceError::Unavailable)?;
+            Ok(Reading {
+                meters,
+                plan: None,
+                observed_at: clock.now(),
+            })
+        })
     }
 }

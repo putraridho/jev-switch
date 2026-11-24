@@ -102,34 +102,115 @@ pub const ENV_CONST: &[(&str, &str)] = &[
 /// launcher counts only when a version directory under `<mise data>/installs/<tool>/` holds
 /// the executable `<tool>` or `bin/<tool>`.
 pub fn resolve_in(name: &str, path_dirs: &[PathBuf], mise_data: Option<&Path>) -> Resolved {
-    let _ = (name, path_dirs, mise_data);
-    Resolved::NotInstalled
+    let Some(hit) = path_dirs
+        .iter()
+        .map(|dir| dir.join(name))
+        .find(|p| executable(p))
+    else {
+        return Resolved::NotInstalled;
+    };
+    let launcher = hit
+        .components()
+        .any(|c| matches!(c.as_os_str().to_str(), Some("command-wrappers" | "shims")))
+        || hit
+            .canonicalize()
+            .ok()
+            .and_then(|p| p.file_name().map(|n| n == "mise"))
+            .unwrap_or(false);
+    if !launcher {
+        return Resolved::Installed;
+    }
+    let installed = mise_data
+        .and_then(|data| std::fs::read_dir(data.join("installs").join(name)).ok())
+        .is_some_and(|entries| {
+            entries.flatten().any(|entry| {
+                let dir = entry.path();
+                dir.is_dir()
+                    && (executable(&dir.join(name)) || executable(&dir.join("bin").join(name)))
+            })
+        });
+    if installed {
+        Resolved::Installed
+    } else {
+        Resolved::NotInstalled
+    }
+}
+
+fn executable(path: &Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::metadata(path).is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
+}
+
+struct GroupGuard(Option<rustix::process::Pid>);
+impl Drop for GroupGuard {
+    fn drop(&mut self) {
+        if let Some(pid) = self.0 {
+            let _ = rustix::process::kill_process_group(pid, rustix::process::Signal::KILL);
+        }
+    }
 }
 
 /// Starts programs under the rules of DESIGN 8.6.
 #[derive(Debug)]
 pub struct ProcRunner {
-    _workdir: PathBuf,
-    _codex: Option<PathBuf>,
-    _claude: Option<PathBuf>,
+    workdir: PathBuf,
+    codex: Option<PathBuf>,
+    claude: Option<PathBuf>,
 }
 
 impl ProcRunner {
     /// Runs `codex` and `claude` by name, through `PATH`, in `workdir`.
     pub fn system(workdir: PathBuf) -> Self {
-        Self { _workdir: workdir, _codex: None, _claude: None }
+        Self {
+            workdir,
+            codex: None,
+            claude: None,
+        }
     }
 
     /// Runs the given files instead of the names on `PATH` (feature `test-support`).
     #[cfg(feature = "test-support")]
     pub fn with_programs(workdir: PathBuf, codex: PathBuf, claude: PathBuf) -> Self {
-        Self { _workdir: workdir, _codex: Some(codex), _claude: Some(claude) }
+        Self {
+            workdir,
+            codex: Some(codex),
+            claude: Some(claude),
+        }
     }
 
     /// Whether `program` can be started; runs nothing.
     pub fn resolve(&self, program: Program) -> Resolved {
-        let _ = program;
-        Resolved::NotInstalled
+        let path = match program {
+            Program::Codex => &self.codex,
+            Program::Claude => &self.claude,
+        };
+        let name = match program {
+            Program::Codex => "codex",
+            Program::Claude => "claude",
+        };
+        let dirs = path.as_ref().and_then(|p| p.parent()).map_or_else(
+            || {
+                std::env::var_os("PATH")
+                    .map_or_else(Vec::new, |p| std::env::split_paths(&p).collect())
+            },
+            |p| vec![p.to_path_buf()],
+        );
+        if let Some(path) = path {
+            if path.file_name().is_some_and(|n| n != name) {
+                return if executable(path) {
+                    Resolved::Installed
+                } else {
+                    Resolved::NotInstalled
+                };
+            }
+        }
+        let data = std::env::var_os("MISE_DATA_DIR")
+            .map(PathBuf::from)
+            .or_else(|| std::env::var_os("XDG_DATA_HOME").map(|p| PathBuf::from(p).join("mise")))
+            .or_else(|| {
+                std::env::var_os("HOME").map(|p| PathBuf::from(p).join(".local/share/mise"))
+            });
+        resolve_in(name, &dirs, data.as_deref())
     }
 
     /// Spawns under the rules of DESIGN 8.6, writes `stdin`, calls `on_line` per output line.
@@ -138,8 +219,123 @@ impl ProcRunner {
         spec: &ProcSpec,
         on_line: &mut (dyn FnMut(&[u8]) -> Flow + Send),
     ) -> Result<Exit, Unavailable> {
-        let _ = (spec, on_line);
-        Err(Unavailable::Internal)
+        use std::process::Stdio;
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use zeroize::{Zeroize, Zeroizing};
+        if spec.stderr == Stderr::Merge
+            && !matches!(
+                (spec.program, spec.args),
+                (Program::Codex, ["login", "status"]) | (Program::Claude, ["auth", "status"])
+            )
+        {
+            return Err(Unavailable::Protocol);
+        }
+        if self.resolve(spec.program) == Resolved::NotInstalled {
+            return Err(Unavailable::NotInstalled);
+        }
+        let path = match spec.program {
+            Program::Codex => self.codex.as_deref().unwrap_or(Path::new("codex")),
+            Program::Claude => self.claude.as_deref().unwrap_or(Path::new("claude")),
+        };
+        let mut command = tokio::process::Command::new(path);
+        command
+            .args(spec.args)
+            .current_dir(&self.workdir)
+            .env_clear()
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(if spec.stderr == Stderr::Merge {
+                Stdio::piped()
+            } else {
+                Stdio::null()
+            })
+            .process_group(0);
+        for key in ENV_ALLOW {
+            if let Some(value) = std::env::var_os(key) {
+                command.env(key, value);
+            }
+        }
+        for (key, value) in ENV_CONST {
+            command.env(key, value);
+        }
+        let mut child = command.spawn().map_err(|_| Unavailable::NotInstalled)?;
+        let mut guard = GroupGuard(
+            child
+                .id()
+                .and_then(|id| i32::try_from(id).ok())
+                .and_then(rustix::process::Pid::from_raw),
+        );
+        let operation = async {
+            let mut stdin = child.stdin.take().ok_or(Unavailable::Protocol)?;
+            stdin
+                .write_all(spec.stdin)
+                .await
+                .map_err(|_| Unavailable::Protocol)?;
+            let mut stdout = child.stdout.take().ok_or(Unavailable::Protocol)?;
+            let mut stderr = child.stderr.take();
+            let mut buffer = Zeroizing::new(vec![0_u8; 8192]);
+            let mut err_buffer = Zeroizing::new(vec![0_u8; 8192]);
+            let mut line = Zeroizing::new(Vec::new());
+            let mut total = 0_usize;
+            let mut out_open = true;
+            let mut err_open = stderr.is_some();
+            while out_open || err_open {
+                let (count, is_out) = tokio::select! {
+                    result = stdout.read(&mut buffer), if out_open => (result.map_err(|_| Unavailable::Protocol)?, true),
+                    result = async { match stderr.as_mut() { Some(stream) => stream.read(&mut err_buffer).await, None => Ok(0) } }, if err_open => (result.map_err(|_| Unavailable::Protocol)?, false),
+                };
+                if count == 0 {
+                    if is_out {
+                        out_open = false;
+                    } else {
+                        err_open = false;
+                    }
+                    continue;
+                }
+                total = total.checked_add(count).ok_or(Unavailable::Protocol)?;
+                if total > spec.max_output {
+                    return Err(Unavailable::Protocol);
+                }
+                let bytes = if is_out { &buffer } else { &err_buffer };
+                for byte in bytes.iter().take(count) {
+                    line.push(*byte);
+                    if line.len() > 1024 * 1024 {
+                        return Err(Unavailable::Protocol);
+                    }
+                    if *byte == b'\n' {
+                        if on_line(&line) == Flow::Done {
+                            drop(stdin);
+                            return child
+                                .wait()
+                                .await
+                                .map(|s| Exit {
+                                    success: s.success(),
+                                })
+                                .map_err(|_| Unavailable::Protocol);
+                        }
+                        line.zeroize();
+                    }
+                }
+            }
+            if !line.is_empty() {
+                on_line(&line);
+            }
+            drop(stdin);
+            child
+                .wait()
+                .await
+                .map(|s| Exit {
+                    success: s.success(),
+                })
+                .map_err(|_| Unavailable::Protocol)
+        };
+        let result = tokio::time::timeout(spec.deadline, operation)
+            .await
+            .map_err(|_| Unavailable::Timeout)?;
+        if result.is_ok() {
+            guard.0 = None;
+        }
+        result
     }
 }
 
