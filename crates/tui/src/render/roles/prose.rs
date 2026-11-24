@@ -4,7 +4,7 @@ use super::tool::plural;
 use crate::render::ansi::clean_text;
 use crate::render::style::Style;
 use crate::render::text::one_line;
-use crate::render::width::{clamp_width, truncate_to_width};
+use crate::render::width::clamp_width;
 use crate::render::wrap::wrap_to_width;
 
 /// What the model says between tool calls: it is a message to you, so full brightness (the
@@ -23,11 +23,25 @@ pub fn narration(text: &str, _style: Style, width: usize) -> String {
 /// The most lines of the model's reasoning shown; the rest are counted.
 pub const THINKING_LINES: usize = 3;
 
-/// The trace reasoning leaves in the scrollback: `  ◆ Thought · its latest line`, dim, one row.
+/// The trace reasoning leaves in the scrollback: `  ◆ Thought · its latest line`, dim. The
+/// line is wrapped under its first word, never cut.
 pub fn thought_row(latest: &str, style: Style, width: usize) -> String {
+    const LEAD: usize = 14; // "  ◆ Thought · "
     let latest = one_line(latest);
-    let tail = if latest.is_empty() { String::new() } else { style.dim(&style.italic(&format!(" · {latest}"))) };
-    truncate_to_width(&format!("  {} {}{tail}", style.dim("◆"), style.dim(&style.bold("Thought"))), clamp_width(width))
+    let head = format!("  {} {}", style.dim("◆"), style.dim(&style.bold("Thought")));
+    if latest.is_empty() {
+        return head;
+    }
+    let parts = wrap_to_width(&latest, clamp_width(width).saturating_sub(LEAD).max(10));
+    let mut rows = Vec::new();
+    for (i, part) in parts.iter().enumerate() {
+        if i == 0 {
+            rows.push(format!("{head}{}", style.dim(&style.italic(&format!(" · {part}")))));
+        } else {
+            rows.push(format!("{}{}", " ".repeat(LEAD), style.dim(&style.italic(part))));
+        }
+    }
+    rows.join("\n")
 }
 
 /// The model's reasoning, when asked for in full: `  ◆ Thought`, then its first lines dim

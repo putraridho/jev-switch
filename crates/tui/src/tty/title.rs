@@ -15,16 +15,6 @@ pub enum Activity {
 }
 
 impl Activity {
-    fn label(self) -> &'static str {
-        match self {
-            Self::Idle => "ready",
-            Self::Running => "working",
-            Self::Waiting => "needs you",
-            Self::Done => "done",
-            Self::Failed => "failed",
-        }
-    }
-
     fn mark(self) -> &'static str {
         match self {
             Self::Idle => "○",
@@ -36,13 +26,14 @@ impl Activity {
     }
 }
 
-/// The OSC sequence that sets the window title: `● working · session name · jev-code`.
-/// Control characters in the session name are dropped so a name can never end the sequence.
+/// The OSC sequence that sets the tab title: the activity mark and the thread's name
+/// (`● Parser fix`), or `● jev-code` when it has none. Control characters in the name are
+/// dropped so a name can never end the sequence.
 pub fn title_sequence(activity: Activity, session: &str) -> String {
     let name: String = session.chars().filter(|c| !c.is_control()).collect();
     let name = name.trim();
-    let tail = if name.is_empty() { String::new() } else { format!(" · {name}") };
-    format!("\x1b]0;{} {}{tail} · jev-code\x07", activity.mark(), activity.label())
+    let name = if name.is_empty() { "jev-code" } else { name };
+    format!("\x1b]0;{} {name}\x07", activity.mark())
 }
 
 pub const BELL: &str = "\x07";
@@ -73,9 +64,9 @@ mod tests {
 
     #[test]
     fn title_says_what_is_happening() {
-        assert_eq!(title_sequence(Activity::Running, "parser fix"), "\x1b]0;● working · parser fix · jev-code\x07");
-        assert_eq!(title_sequence(Activity::Done, ""), "\x1b]0;✓ done · jev-code\x07");
-        assert_eq!(title_sequence(Activity::Waiting, "x"), "\x1b]0;? needs you · x · jev-code\x07");
+        assert_eq!(title_sequence(Activity::Running, "parser fix"), "\x1b]0;● parser fix\x07");
+        assert_eq!(title_sequence(Activity::Done, ""), "\x1b]0;✓ jev-code\x07");
+        assert_eq!(title_sequence(Activity::Waiting, "x"), "\x1b]0;? x\x07");
     }
 
     #[test]

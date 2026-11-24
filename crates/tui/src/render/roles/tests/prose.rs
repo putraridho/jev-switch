@@ -7,6 +7,10 @@ use super::*;
         assert_eq!(long, "  ◆ Thought\n    a\n    b\n    c\n    … 2 more lines of thinking");
         assert_eq!(thought_row("check the\ncallers", OFF, 80), "  ◆ Thought · check the callers");
         assert_eq!(thought_row("", OFF, 80), "  ◆ Thought");
+        let long = "word ".repeat(40);
+        let rows = thought_row(&long, OFF, 40);
+        assert!(rows.lines().count() > 1, "a long thought wraps: {rows}");
+        assert_eq!(rows.split_whitespace().filter(|w| *w == "word").count(), 40, "nothing is cut");
         assert!(thinking_block("a\nb\nc\nd", OFF, 80).ends_with("… 1 more line of thinking"));
     }
 

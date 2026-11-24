@@ -15,6 +15,7 @@ use tokio::task::JoinHandle;
 use crate::app::screen_state::{Action, App};
 use crate::input::history::History;
 use crate::tty::frontend_screen::Screen;
+use crate::tty::title::{title_sequence, Activity};
 use crate::views::frontend_view as view;
 use crate::console::terminal_ui::TICK;
 use crate::console::front::FrontMsg;
@@ -98,6 +99,9 @@ pub async fn run(repl: Repl, mut rx: mpsc::UnboundedReceiver<FrontMsg>, opts: Op
     // command) makes none. A resumed session's last answer is not suggested from.
     let mut answer_seen: Option<String> = idle.as_ref().and_then(|(r, _)| r.engine.last_answer()).map(String::from);
 
+    // The tab title follows what the agent is doing, so a background tab says when it needs you.
+    let mut title: Option<String> = None;
+    let mut was_working = false;
     let code = loop {
         // Idle: catch up with the session, then run the next queued message, if any.
         if let Some((repl, _)) = idle.as_mut() {
@@ -120,6 +124,22 @@ pub async fn run(repl: Repl, mut rx: mpsc::UnboundedReceiver<FrontMsg>, opts: Op
             }
         }
         if !app.suspended {
+            let activity = if app.approval.is_some() || app.confirm.is_some() {
+                Activity::Waiting
+            } else if app.working.is_some() {
+                Activity::Running
+            } else if was_working {
+                Activity::Done
+            } else {
+                Activity::Idle
+            };
+            was_working = app.working.is_some() || (was_working && app.approval.is_some());
+            let name = app.session_name.clone().unwrap_or_default();
+            let sequence = title_sequence(activity, &name);
+            if title.as_deref() != Some(sequence.as_str()) {
+                screen.raw(&sequence);
+                title = Some(sequence);
+            }
             draw(&mut screen, &mut app, style);
         }
 
