@@ -156,8 +156,19 @@ impl Backoff {
     /// of kind `kind`: `min(60 min, 1 min x 2^(failures-1))`, starting at 15 min for
     /// `RateLimited` and `Unauthorized`, with ±10 % from `jitter` in `0.0..1.0`.
     pub fn next_delay(failures: u32, kind: Unavailable, jitter: f64) -> Duration {
-        let _ = (failures, kind, jitter);
-        Duration::ZERO
+        let base: u64 = if matches!(kind, Unavailable::RateLimited | Unavailable::Unauthorized) {
+            15
+        } else {
+            1
+        };
+        let factor = 2_u64.saturating_pow(failures.saturating_sub(1));
+        let minutes = base.saturating_mul(factor).min(60);
+        let jitter = if jitter.is_finite() {
+            jitter.clamp(0.0, 1.0)
+        } else {
+            0.5
+        };
+        Duration::from_secs(minutes.saturating_mul(60)).mul_f64(0.9_f64.mul_add(1.0, jitter * 0.2))
     }
 }
 
@@ -167,6 +178,11 @@ pub struct SystemJitter;
 
 impl Jitter for SystemJitter {
     fn next(&self) -> f64 {
-        0.5
+        use std::hash::{BuildHasher, Hasher};
+        let hash = std::collections::hash_map::RandomState::new()
+            .build_hasher()
+            .finish();
+        let upper = u32::try_from(hash >> 32).unwrap_or_default();
+        f64::from(upper) / (f64::from(u32::MAX) + 1.0)
     }
 }
