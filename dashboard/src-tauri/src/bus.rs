@@ -13,6 +13,41 @@ pub struct SessionBusTrayHost;
 
 impl TrayHost for SessionBusTrayHost {
     fn present(&self) -> bool {
-        false
+        let Ok(rt) = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+        else {
+            return false;
+        };
+        rt.block_on(async {
+            let builder = zbus::connection::Builder::session();
+            let Ok(conn) = builder.build().await else {
+                return false;
+            };
+            let Ok(dest) = zbus::names::BusName::try_from("org.kde.StatusNotifierWatcher") else {
+                return false;
+            };
+            let Ok(path) = zbus::ObjectPath::try_from("/StatusNotifierWatcher") else {
+                return false;
+            };
+            let Ok(iface) =
+                zbus::names::InterfaceName::try_from("org.kde.StatusNotifierWatcher")
+            else {
+                return false;
+            };
+            let reply = conn
+                .call_method(
+                    Some(dest),
+                    path,
+                    Some(iface),
+                    "IsStatusNotifierHostRegistered",
+                    &(),
+                )
+                .await;
+            match reply {
+                Ok(msg) => msg.body().deserialize::<bool>().unwrap_or(false),
+                Err(_) => false,
+            }
+        })
     }
 }

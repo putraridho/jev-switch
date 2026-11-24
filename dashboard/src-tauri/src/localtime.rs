@@ -9,14 +9,25 @@ pub struct SystemLocalTime;
 
 impl LocalTime for SystemLocalTime {
     fn local(&self, at: UnixSeconds) -> LocalStamp {
-        let _ = at;
-        LocalStamp {
-            year: 1970,
-            month: 1,
-            day: 1,
-            weekday: 3,
-            hour: 0,
-            minute: 0,
+        use chrono::{Datelike, Local, TimeZone, Timelike};
+        let secs = i64::try_from(at.0).unwrap_or(0);
+        match Local.timestamp_opt(secs, 0).single() {
+            Some(dt) => LocalStamp {
+                year: dt.year(),
+                month: u8::try_from(dt.month()).unwrap_or(1),
+                day: u8::try_from(dt.day()).unwrap_or(1),
+                weekday: u8::try_from(dt.weekday().num_days_from_monday()).unwrap_or(0),
+                hour: u8::try_from(dt.hour()).unwrap_or(0),
+                minute: u8::try_from(dt.minute()).unwrap_or(0),
+            },
+            None => LocalStamp {
+                year: 1970,
+                month: 1,
+                day: 1,
+                weekday: 3,
+                hour: 0,
+                minute: 0,
+            },
         }
     }
 }
