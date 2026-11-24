@@ -1,0 +1,72 @@
+[package]
+name = "jev-dashboard"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Flashboard: the Jev usage dashboard (Tauri shell: window, tray, notifications)."
+
+[lib]
+name = "jev_dashboard"
+path = "src/lib.rs"
+doctest = false
+
+[[bin]]
+name = "jev-dashboard"
+path = "src/main.rs"
+test = false
+
+[build-dependencies]
+tauri-build = { version = "=2.7.6", features = [] }
+
+[dependencies]
+jev-usage-core = { path = "../crates/usage-core" }
+jev-usage-io = { path = "../crates/usage-io" }
+tokio = { version = "=1.53.3", features = ["rt", "sync", "time", "macros", "signal"] }
+tauri = { version = "=2.12.7", features = ["tray-icon"] }
+tauri-plugin-single-instance = "=2.5.5"
+notify-rust = { version = "=4.19.0", default-features = false, features = ["z"] }
+zbus = { version = "=6.5.0", default-features = false }
+chrono = { version = "=0.4.45", default-features = false, features = ["clock"] }
+rustix = { version = "=1.1.6", features = ["fs", "process"] }
+
+[dev-dependencies]
+jev-usage-io = { path = "../crates/usage-io", features = ["test-support"] }
+tauri = { version = "=2.12.7", features = ["tray-icon", "test"] }
+tokio = { version = "=1.53.3", features = ["test-util"] }
+tempfile = "=3.27.0"
+serde_json = "=1.0.151"
+
+# The same table in all three app crates (DESIGN 5 invariant 3, 11.1); a test compares them.
+[lints.rust]
+unsafe_code = "forbid"
+missing_docs = "warn"
+
+[lints.clippy]
+all = { level = "deny", priority = -1 }
+pedantic = { level = "deny", priority = -1 }
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+indexing_slicing = "deny"
+arithmetic_side_effects = "deny"
+as_conversions = "deny"
+print_stdout = "deny"
+print_stderr = "deny"
+dbg_macro = "deny"
+todo = "deny"
+unimplemented = "deny"
+disallowed_types = "deny"
+disallowed_macros = "deny"
+# The pedantic allow-list: style opinions that fight the signatures fixed by the design.
+module_name_repetitions = "allow"
+doc_markdown = "allow"
+must_use_candidate = "allow"
+return_self_not_must_use = "allow"
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+needless_pass_by_value = "allow"
+too_many_lines = "allow"
+trivially_copy_pass_by_ref = "allow"
+struct_excessive_bools = "allow"
+unused_async = "allow"
+unused_self = "allow"

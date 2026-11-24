@@ -1,0 +1,1 @@
+Not logged in. Run claude auth login (last account: canary-email@example.invalid, JEVCANARY_9f3c1b7e_DO_NOT_SURFACE Org)

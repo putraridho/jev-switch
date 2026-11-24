@@ -1,0 +1,58 @@
+# cargo-deny policy for the whole workspace (docs/dashboard/DESIGN.md 8.9).
+# Run: cargo deny check        (scripts/ci.sh stage 5)
+
+[graph]
+# Flashboard ships for Linux only; the engine builds here too. Other targets' crates
+# (Windows, macOS, Android back ends of Tauri) are in Cargo.lock but never compiled.
+targets = ["x86_64-unknown-linux-gnu"]
+all-features = true
+
+[advisories]
+# D8.9: deny vulnerabilities, unsound and yanked. Vulnerabilities are always errors in
+# cargo-deny (no config key). `unsound` stays at its default scope: denied in the
+# workspace's direct dependencies (the transitive glib `VariantStrIter` advisory
+# RUSTSEC-2024-0429 arrives through Tauri's webkit2gtk stack and is out of the app's reach).
+# Unmaintained advisories are deliberately not denied: D8.9 pins `chrono` directly and
+# single-instance's zbus 5 line (zvariant, zbus_names, zvariant_derive, proc-macro-error)
+# transitively, so `unmaintained = "none"`.
+unmaintained = "none"
+yanked = "deny"
+ignore = []
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []
+
+[bans]
+multiple-versions = "allow"
+wildcards = "deny"
+# A path dependency without a version counts as a wildcard. The workspace's internal lines
+# are exactly that; this exempts them for private (`publish = false`) crates only.
+allow-wildcard-paths = true
+deny = [
+    { crate = "openssl", reason = "rustls only (DESIGN 8.7, 8.9)" },
+    { crate = "openssl-sys", reason = "rustls only (DESIGN 8.7, 8.9)" },
+    { crate = "native-tls", reason = "rustls only (DESIGN 8.7, 8.9)" },
+]
+
+[licenses]
+# An explicit allow-list: a crate under any other licence fails the check.
+allow = [
+    "MPL-2.0",             # Tauri HTML/CSS parsing dependencies
+    "Zlib",                # foldhash
+    "Apache-2.0 WITH LLVM-exception", # Tauri Windows support
+    "MIT",
+    "Apache-2.0",
+    "BSD-3-Clause",
+    "ISC",
+    "Unicode-3.0",            # ICU data crates (the `url`/`idna` stack)
+    "CDLA-Permissive-2.0",    # webpki-roots (the bundled root certificates)
+]
+confidence-threshold = 0.8
+
+# The workspace's own crates have no licence field. Unpublished (`publish = false`) crates
+# are not checked.
+[licenses.private]
+ignore = true

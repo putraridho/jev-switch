@@ -1,0 +1,3 @@
+Logged in as canary-email@example.invalid
+Organization: JEVCANARY_9f3c1b7e_DO_NOT_SURFACE Org (jevcanary_9f3c1b7e)
+Plan: jevcanary_9f3c1b7e

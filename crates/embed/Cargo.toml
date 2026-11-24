@@ -1,0 +1,13 @@
+[package]
+name = "jev-embed"
+version.workspace = true
+edition.workspace = true
+publish = false
+description = "The engine's one stable surface for other programs (Flashboard): re-exports only."
+
+[lib]
+doctest = false
+
+[dependencies]
+jev-shared = { path = "../shared" }
+jev-providers = { path = "../providers" }

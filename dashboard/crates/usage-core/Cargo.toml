@@ -1,0 +1,60 @@
+[package]
+name = "jev-usage-core"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Flashboard's pure domain: types, parsers, policy and the IPC read model. No IO."
+
+[lib]
+doctest = false
+
+[features]
+# Derives `ts_rs::TS` on the IPC types and enables the `export_bindings` test that writes
+# dashboard/src/lib/ipc/bindings/*.ts.
+bindings = ["dep:ts-rs"]
+
+[dependencies]
+serde = { version = "=1.0.229", features = ["derive"] }
+serde_json = "=1.0.151"
+zeroize = "=1.9.0"
+ts-rs = { version = "=10.1.0", optional = true }
+
+[dev-dependencies]
+proptest = "=1.12.0"
+static_assertions = "=1.1.0"
+syn = { version = "=2.0.119", features = ["full"] }
+
+# The same table in all three app crates (DESIGN 5 invariant 3, 11.1); a test compares them.
+[lints.rust]
+unsafe_code = "forbid"
+missing_docs = "warn"
+
+[lints.clippy]
+all = { level = "deny", priority = -1 }
+pedantic = { level = "deny", priority = -1 }
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+indexing_slicing = "deny"
+arithmetic_side_effects = "deny"
+as_conversions = "deny"
+print_stdout = "deny"
+print_stderr = "deny"
+dbg_macro = "deny"
+todo = "deny"
+unimplemented = "deny"
+disallowed_types = "deny"
+disallowed_macros = "deny"
+# The pedantic allow-list: style opinions that fight the signatures fixed by the design.
+module_name_repetitions = "allow"
+doc_markdown = "allow"
+must_use_candidate = "allow"
+return_self_not_must_use = "allow"
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+needless_pass_by_value = "allow"
+too_many_lines = "allow"
+trivially_copy_pass_by_ref = "allow"
+struct_excessive_bools = "allow"
+unused_async = "allow"
+unused_self = "allow"

@@ -1,0 +1,56 @@
+{
+  "plugins": ["stylelint-declaration-strict-value"],
+  "overrides": [{ "files": ["**/*.svelte"], "customSyntax": "postcss-html" }],
+  "rules": {
+    "color-no-hex": true,
+    "color-named": "never",
+    "function-disallowed-list": [
+      "rgb",
+      "rgba",
+      "hsl",
+      "hsla",
+      "hwb",
+      "lab",
+      "lch",
+      "oklab",
+      "oklch",
+      "color"
+    ],
+    "declaration-no-important": true,
+    "scale-unlimited/declaration-strict-value": [
+      [
+        "/color$/",
+        "fill",
+        "stroke",
+        "background",
+        "font-family",
+        "font-size",
+        "font-weight",
+        "line-height",
+        "/^margin/",
+        "/^padding/",
+        "gap",
+        "row-gap",
+        "column-gap",
+        "border-radius",
+        "transition-duration",
+        "transition-timing-function",
+        "animation-duration",
+        "animation-timing-function"
+      ],
+      {
+        "ignoreValues": [
+          "0",
+          "auto",
+          "inherit",
+          "currentColor",
+          "transparent",
+          "none",
+          "unset"
+        ],
+        "disableFix": true
+      }
+    ]
+  },
+  "ignoreFiles": ["src/lib/design/tokens.css", "dist/**", "node_modules/**"]
+}

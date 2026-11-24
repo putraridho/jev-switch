@@ -1,0 +1,22 @@
+#!/bin/sh
+# Stub `codex` for development runs and the smoke test (T12 replaces it). Synthetic answers
+# only: no network, no real CLI, no files written.
+if [ "$#" -eq 2 ] && [ "$1" = "login" ] && [ "$2" = "status" ]; then
+  echo "Logged in using ChatGPT" >&2
+  exit 0
+fi
+if [ "$#" -eq 1 ] && [ "$1" = "app-server" ]; then
+  while IFS= read -r line; do
+    case "$line" in
+      *'"id":1,'*)
+        printf '%s\n' '{"id":1,"result":{"userAgent":"stub","codexHome":"/synthetic/.codex","platformFamily":"unix","platformOs":"linux"}}'
+        printf '%s\n' '{"method":"account/updated","params":{"authMode":"chatgpt","planType":"plus"},"emittedAtMs":1794893672496}'
+        ;;
+      *'"id":2,'*)
+        printf '%s\n' '{"id":2,"result":{"ordinaryUsageAllowed":true,"rateLimits":{"limitId":"codex","limitName":null,"normalModelSlug":null,"primary":{"usedPercent":23,"windowDurationMins":300,"resetsAt":4102444800},"secondary":{"usedPercent":61.5,"windowDurationMins":10080,"resetsAt":4102444800},"credits":{"hasCredits":false,"unlimited":false,"balance":null},"individualLimit":null,"spendControlReached":false,"planType":"plus","rateLimitReachedType":null},"rateLimitsByLimitId":{},"rateLimitResetCredits":{"availableCount":0,"credits":[]},"accountId":"00000000-0000-4000-8000-000000000002","rateLimitUpsell":null}}'
+        ;;
+    esac
+  done
+  exit 0
+fi
+exit 1
