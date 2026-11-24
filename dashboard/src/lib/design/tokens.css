@@ -14,34 +14,34 @@
   --font-mono: "DM Mono", ui-monospace, monospace;
 
   /* Scale (px at 16 default), from S06. */
-  --text-micro: 0.75rem;      /* 12 / 16 */
+  --text-micro: 0.75rem; /* 12 / 16 */
   --text-micro-line: 1rem;
   --text-micro-weight: 400;
-  --text-sm: 0.8125rem;       /* 13 / 20 caption and label */
+  --text-sm: 0.8125rem; /* 13 / 20 caption and label */
   --text-sm-line: 1.25rem;
   --text-sm-weight: 400;
   --text-sm-weight-strong: 500;
-  --text-md: 0.875rem;        /* 14 / 20 body and name */
+  --text-md: 0.875rem; /* 14 / 20 body and name */
   --text-md-line: 1.25rem;
   --text-md-weight: 400;
   --text-md-weight-strong: 600;
-  --num-xl: 4rem;             /* 64 / 64 big number (Instrument Serif) */
+  --num-xl: 4rem; /* 64 / 64 big number (Instrument Serif) */
   --num-xl-line: 4rem;
   --num-xl-weight: 400;
-  --title-xl: 3rem;           /* 48 / 56 section title (Instrument Serif) */
+  --title-xl: 3rem; /* 48 / 56 section title (Instrument Serif) */
   --title-xl-line: 3.5rem;
   --title-xl-weight: 400;
 
   /* Space, 4 px base (S08). */
-  --space-1: 0.25rem;         /* 4 */
-  --space-2: 0.5rem;          /* 8 */
-  --space-3: 0.75rem;         /* 12 */
-  --space-4: 1rem;            /* 16 */
-  --space-6: 1.5rem;          /* 24 (waffle cell pitch) */
-  --space-8: 2rem;            /* 32 */
-  --space-12: 3rem;           /* 48 */
-  --space-14: 3.5rem;         /* 56 */
-  --space-18: 4.5rem;         /* 72 */
+  --space-1: 0.25rem; /* 4 */
+  --space-2: 0.5rem; /* 8 */
+  --space-3: 0.75rem; /* 12 */
+  --space-4: 1rem; /* 16 */
+  --space-6: 1.5rem; /* 24 (waffle cell pitch) */
+  --space-8: 2rem; /* 32 */
+  --space-12: 3rem; /* 48 */
+  --space-14: 3.5rem; /* 56 */
+  --space-18: 4.5rem; /* 72 */
 
   /* Radius (S09). */
   --radius-control: 6px;
@@ -62,15 +62,15 @@
   --ease: cubic-bezier(0.2, 0, 0, 1);
 
   /* Colour: the Waffle paper-and-ink palette (S02, S03). */
-  --color-paper: #FAF8F4;
-  --color-ink: #26262A;
-  --color-muted: #625D54;
-  --color-faint: #968F83;
-  --color-rule: #DDD8CD;
-  --color-chip: #EFEBE3;
-  --color-alert: #B3391C;
-  --color-critical-fill: #D9573A;
-  --color-stale: #8A5A00;
+  --color-paper: #faf8f4;
+  --color-ink: #26262a;
+  --color-muted: #625d54;
+  --color-faint: #968f83;
+  --color-rule: #ddd8cd;
+  --color-chip: #efebe3;
+  --color-alert: #b3391c;
+  --color-critical-fill: #d9573a;
+  --color-stale: #8a5a00;
 
   /* Aliases so the shell/scaffold's token names keep working. */
   --color-bg: var(--color-paper);
@@ -87,12 +87,12 @@
   --color-unknown: var(--color-faint);
 
   /* Waffle anatomy (S13–S18). */
-  --waffle-pitch: 1.5rem;            /* 24 px cell pitch */
-  --waffle-fill: var(--color-ink);   /* below the 80% warning mark */
+  --waffle-pitch: 1.5rem; /* 24 px cell pitch */
+  --waffle-fill: var(--color-ink); /* below the 80% warning mark */
   --waffle-empty: var(--color-faint);
   --waffle-empty-stroke: 1.5px;
-  --waffle-filled-d: 16px;           /* filled dot diameter */
-  --waffle-empty-d: 14.5px;          /* outline dot diameter */
+  --waffle-filled-d: 16px; /* filled dot diameter */
+  --waffle-empty-d: 14.5px; /* outline dot diameter */
 }
 
 /* Reduced motion: no movement, at most a 100 ms opacity change. */
