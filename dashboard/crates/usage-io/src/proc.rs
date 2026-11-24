@@ -110,19 +110,20 @@ pub fn resolve_in(name: &str, path_dirs: &[PathBuf], mise_data: Option<&Path>) -
 #[derive(Debug)]
 pub struct ProcRunner {
     _workdir: PathBuf,
+    _codex: Option<PathBuf>,
+    _claude: Option<PathBuf>,
 }
 
 impl ProcRunner {
     /// Runs `codex` and `claude` by name, through `PATH`, in `workdir`.
     pub fn system(workdir: PathBuf) -> Self {
-        Self { _workdir: workdir }
+        Self { _workdir: workdir, _codex: None, _claude: None }
     }
 
     /// Runs the given files instead of the names on `PATH` (feature `test-support`).
     #[cfg(feature = "test-support")]
     pub fn with_programs(workdir: PathBuf, codex: PathBuf, claude: PathBuf) -> Self {
-        let _ = (codex, claude);
-        Self { _workdir: workdir }
+        Self { _workdir: workdir, _codex: Some(codex), _claude: Some(claude) }
     }
 
     /// Whether `program` can be started; runs nothing.

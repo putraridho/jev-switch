@@ -157,13 +157,50 @@ impl Settings {
     /// The same settings with every value brought into range (thresholds 50..=100 % with
     /// warn below critical, zoom snapped to a step, a wrong version replaced by defaults).
     pub fn validated(self) -> Self {
-        self
+        if self.version != SETTINGS_VERSION {
+            return Self::defaults();
+        }
+        let mut result = self;
+        result.warn_bp = result.warn_bp.clamp(5_000, 9_999);
+        result.critical_bp = result
+            .critical_bp
+            .clamp(5_000, 10_000)
+            .max(result.warn_bp.saturating_add(1));
+        result.zoom_pct = [100_u16, 125, 150, 175, 200]
+            .into_iter()
+            .min_by_key(|step| step.abs_diff(result.zoom_pct))
+            .unwrap_or(100);
+        result
     }
 
     /// These settings with `p` applied; `InvalidArgument` when the result is out of range.
     pub fn apply(&self, p: SettingsPatch) -> Result<Self, CommandError> {
-        let _ = p;
-        Err(CommandError::Internal)
+        let mut result = self.clone();
+        macro_rules! apply { ($($field:ident),*) => { $(if let Some(value) = p.$field { result.$field = value; })* }; }
+        apply!(
+            warn_bp,
+            critical_bp,
+            notifications,
+            notify_warn,
+            notify_critical,
+            theme,
+            hour_cycle,
+            zoom_pct,
+            close_to_tray,
+            autostart,
+            shortcuts,
+            claude_live_check,
+            first_run_seen,
+            hidden_providers
+        );
+        if !(5_000..=10_000).contains(&result.warn_bp)
+            || !(5_000..=10_000).contains(&result.critical_bp)
+            || result.warn_bp >= result.critical_bp
+            || ![100, 125, 150, 175, 200].contains(&result.zoom_pct)
+        {
+            return Err(CommandError::InvalidArgument);
+        }
+        Ok(result)
     }
 
     /// The warn and critical levels as a checked pair.

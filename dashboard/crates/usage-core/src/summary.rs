@@ -30,6 +30,36 @@ pub fn headline(
     now: UnixMillis,
     settings: &Settings,
 ) -> Option<Headline> {
-    let _ = (providers, now, settings);
-    None
+    let mut best: Option<Headline> = None;
+    for (provider, usage) in providers {
+        if settings.hidden_providers.contains(provider) {
+            continue;
+        }
+        let reading = match usage {
+            Usage::Known(r) => r,
+            Usage::Stale { last, .. } => last,
+            _ => continue,
+        };
+        for meter in reading.meters.as_slice() {
+            if let crate::meter::Meter::Window(w) = meter {
+                let severity = crate::assess::severity(meter, now, &settings.thresholds());
+                if severity == Severity::Unknown {
+                    continue;
+                }
+                if best
+                    .as_ref()
+                    .is_none_or(|b| w.used > b.used || (w.used == b.used && *provider < b.provider))
+                {
+                    best = Some(Headline {
+                        provider: *provider,
+                        meter: meter.id(),
+                        used: w.used,
+                        severity,
+                        resets_at: w.resets_at,
+                    });
+                }
+            }
+        }
+    }
+    best
 }

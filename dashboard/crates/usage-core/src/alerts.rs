@@ -61,6 +61,68 @@ pub fn step(
     now: UnixMillis,
     settings: &Settings,
 ) -> (AlertMemory, Vec<Alert>) {
-    let _ = (provider, reading, now, settings);
-    (memory.clone(), Vec::new())
+    let mut next = memory.clone();
+    let mut alerts = Vec::new();
+    if settings.hidden_providers.contains(&provider)
+        || now.0.saturating_sub(reading.observed_at.0) > 600_000
+    {
+        return (next, alerts);
+    }
+    for meter in reading.meters.as_slice() {
+        let crate::meter::Meter::Window(window) = meter else {
+            continue;
+        };
+        if crate::assess::phase(window, now) == crate::assess::Phase::Elapsed {
+            continue;
+        }
+        let id = meter.id();
+        let thresholds = settings.thresholds();
+        let levels = [
+            (AlertLevel::Warn, thresholds.warn(), settings.notify_warn),
+            (
+                AlertLevel::Critical,
+                thresholds.critical(),
+                settings.notify_critical,
+            ),
+        ];
+        let mut crossed = Vec::new();
+        for (level, threshold, enabled) in levels {
+            next.entries.retain(|entry| {
+                entry.provider != provider
+                    || entry.meter != id
+                    || entry.level != level
+                    || (entry
+                        .window_resets_at
+                        .is_none_or(|reset| reset.0.saturating_mul(1_000) > now.0)
+                        && window.used.basis_points()
+                            >= threshold.basis_points().saturating_sub(500))
+            });
+            if window.used >= threshold
+                && !next.entries.iter().any(|entry| {
+                    entry.provider == provider && entry.meter == id && entry.level == level
+                })
+            {
+                next.entries.push(AlertEntry {
+                    provider,
+                    meter: id.clone(),
+                    level,
+                    fired_at: UnixSeconds(now.0.checked_div(1_000).unwrap_or(0)),
+                    window_resets_at: window.resets_at,
+                });
+                crossed.push((level, enabled));
+            }
+        }
+        if let Some((level, enabled)) = crossed.last() {
+            if settings.notifications && *enabled {
+                alerts.push(Alert {
+                    provider,
+                    window: window.kind.clone(),
+                    level: *level,
+                    used: window.used,
+                    resets_at: window.resets_at,
+                });
+            }
+        }
+    }
+    (next, alerts)
 }
