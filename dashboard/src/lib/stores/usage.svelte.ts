@@ -2,6 +2,9 @@ import type { IpcClient } from "../ipc/client";
 import type { Outcome } from "../ipc/bindings/Outcome";
 import type { RefreshTarget } from "../ipc/bindings/RefreshTarget";
 import type { Snapshot } from "../ipc/bindings/Snapshot";
+import { announce } from "./announce.svelte";
+import { snapshotChanges } from "./changes";
+import { settings } from "./settings.svelte";
 
 let snapshot = $state<Snapshot | null>(null);
 let refreshing = $state(false);
@@ -17,8 +20,18 @@ export async function initUsage(ipc: IpcClient): Promise<() => void> {
     if (
       active &&
       (snapshot === null || next.generated_at > snapshot.generated_at)
-    )
+    ) {
+      // A level or state change is announced once, from the difference of two snapshots.
+      for (const sentence of snapshotChanges(
+        snapshot,
+        next,
+        Date.now(),
+        settings.value.hour_cycle,
+      )) {
+        announce.say(sentence);
+      }
       snapshot = next;
+    }
   };
   const unsubscribe = await ipc.onSnapshot(accept);
   const result = await ipc.getSnapshot();

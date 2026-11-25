@@ -59,13 +59,18 @@ button {
   border: var(--outline) solid var(--color-border);
   border-radius: var(--radius-control);
   cursor: pointer;
-  transition-property: background-color, border-color;
+  transition-property: background-color, border-color, scale;
   transition-duration: var(--duration-fast);
   transition-timing-function: var(--ease);
 }
 
 button:hover:not(:disabled) {
   background: var(--color-surface-2);
+}
+
+/* Press feedback: exactly 0.96, never below. */
+button:active:not(:disabled) {
+  scale: 0.96;
 }
 
 button:disabled {
@@ -115,5 +120,9 @@ svg {
     transition-duration: var(--duration-fast);
     animation-duration: var(--duration-fast);
     scroll-behavior: auto;
+  }
+
+  button:active:not(:disabled) {
+    scale: 1;
   }
 }

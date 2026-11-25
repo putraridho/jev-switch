@@ -1,59 +1,75 @@
 <script lang="ts">
-  import Meter from "../lib/components/primitives/Meter.svelte";
+  import MeterRow from "../lib/components/primitives/MeterRow.svelte";
+  import CommandLine from "../lib/components/primitives/CommandLine.svelte";
+  import { refreshAll, retryProvider } from "../lib/actions";
+  import {
+    retryable,
+    planName,
+    providerName,
+    setupCopy,
+    staleNote,
+    unavailableCopy,
+    unsupportedLine,
+  } from "../lib/copy";
+  import { money } from "../lib/format";
   import type { ReadingView } from "../lib/ipc/bindings/ReadingView";
-  import type { Setup } from "../lib/ipc/bindings/Setup";
-  import type { Unavailable } from "../lib/ipc/bindings/Unavailable";
   import type { UsageView } from "../lib/ipc/bindings/UsageView";
-  import { announce } from "../lib/stores/announce.svelte";
-  import { clock } from "../lib/stores/clock.svelte";
-  import { usage } from "../lib/stores/usage.svelte";
+  import { arrange } from "../lib/overview";
   import { router } from "../lib/router.svelte";
-
-  const unavailable: Record<Unavailable, string> = {
-    not_installed: "Not installed",
-    not_logged_in: "Not logged in",
-    offline: "Offline",
-    timeout: "Timed out",
-    rate_limited: "Rate limited",
-    unauthorized: "Unauthorized",
-    server_error: "Server error",
-    protocol: "Unexpected response",
-    io: "Connection error",
-    internal: "Internal error",
-  };
-  const setup: Record<Setup, string> = {
-    use_gateway: "Connect the gateway",
-    add_deepseek_key: "Add a DeepSeek key",
-  };
+  import { clock } from "../lib/stores/clock.svelte";
+  import { settings } from "../lib/stores/settings.svelte";
+  import { usage } from "../lib/stores/usage.svelte";
 
   function readingOf(u: UsageView): ReadingView | null {
     return u.state === "known" || u.state === "stale" ? u.reading : null;
   }
 
-  async function refresh(): Promise<void> {
-    const result = await usage.refresh();
-    announce.say(result.status === "ok" ? "Usage refreshed" : "Refresh failed");
-  }
+  const arranged = $derived(
+    usage.snapshot === null ? null : arrange(usage.snapshot),
+  );
 
-  function reset(at: number | null): string {
-    if (at === null) return "Reset time unavailable";
-    const minutes = Math.max(0, Math.ceil((at * 1000 - clock.now) / 60_000));
-    return minutes === 0 ? "Reset due" : `Resets in ${String(minutes)} min`;
-  }
+  // A card that moves must not take the keyboard focus with it: moving a DOM node drops
+  // focus in WebKit, so the screen puts it back (DESIGN 9.3).
+  let section = $state<HTMLElement | null>(null);
+  let focused: HTMLElement | null = null;
+  const order = $derived(
+    arranged === null ? "" : arranged.cards.map((card) => card.provider).join(),
+  );
+  $effect.pre(() => {
+    if (order === "") return;
+    const active = document.activeElement;
+    focused =
+      active instanceof HTMLElement && section?.contains(active) === true
+        ? active
+        : null;
+  });
+  $effect(() => {
+    if (order === "") return;
+    if (focused?.isConnected === true && document.activeElement !== focused) {
+      focused.focus();
+    }
+  });
 </script>
 
-<section aria-label="Overview">
+<section aria-label="Overview" bind:this={section}>
   <header>
-    <h1>Usage at a glance</h1>
-    <button onclick={refresh} disabled={usage.refreshing}>
+    <h1 id="view-title" tabindex="-1">Usage at a glance</h1>
+    <button onclick={refreshAll} disabled={usage.refreshing}>
       {usage.refreshing ? "Refreshing…" : "Refresh"}
     </button>
   </header>
-  {#if usage.snapshot === null}
+  {#if arranged === null}
     <p>Checking…</p>
   {:else}
-    {#each usage.snapshot.providers as provider (provider.provider)}
-      <article class:muted={!provider.enabled}>
+    {#each arranged.cards as provider (provider.provider)}
+      {@const reading = readingOf(provider.usage)}
+      {@const note = staleNote(
+        provider.provider,
+        provider.usage,
+        clock.now,
+        settings.value.hour_cycle,
+      )}
+      <article>
         <h2>
           <button
             class="provider-link"
@@ -61,62 +77,73 @@
               router.go({ name: "provider", provider: provider.provider });
             }}
           >
-            {provider.provider}
+            <span>{providerName[provider.provider]}</span>
+            {#if reading?.plan}<span class="plan">{planName(reading.plan)}</span
+              >{/if}
           </button>
         </h2>
-        {#if !provider.enabled}
-          <p>Hidden</p>
-        {:else if provider.usage.state === "pending"}
+        {#if provider.usage.state === "pending"}
           <p>Checking…</p>
         {:else if provider.usage.state === "unavailable"}
-          <p>{unavailable[provider.usage.reason]}</p>
-        {:else if provider.usage.state === "not_configured"}
-          <p>{setup[provider.usage.setup]}</p>
-        {:else if provider.usage.state === "unsupported"}
-          <p>Usage unavailable for this provider</p>
-        {:else}
-          {#if readingOf(provider.usage)?.plan}<p>
-              {readingOf(provider.usage)?.plan}
-            </p>{/if}
-          {#if provider.usage.state === "stale"}
-            <p>
-              As of {new Date(
-                readingOf(provider.usage)?.observed_at ?? 0,
-              ).toLocaleString()}
-            </p>
+          {@const copy = unavailableCopy(
+            provider.usage.reason,
+            provider.provider,
+          )}
+          <p>{copy.text}</p>
+          {#if copy.command}<CommandLine command={copy.command} />{/if}
+          {#if retryable(provider.usage.reason)}
+            <button
+              type="button"
+              class="retry"
+              onclick={() =>
+                retryProvider(
+                  provider.provider,
+                  providerName[provider.provider],
+                )}>Retry</button
+            >
           {/if}
-          {#each (readingOf(provider.usage)?.meters ?? []).slice(0, 1) as meter (meter.id)}
+        {:else if provider.usage.state === "not_configured"}
+          {@const copy = setupCopy(provider.usage.setup, provider.provider)}
+          <p>{copy.text}</p>
+          {#if copy.command}<CommandLine command={copy.command} />{/if}
+        {:else if reading}
+          {#if note}
+            <div class="note-row">
+              <p class="note">{note}</p>
+              {#if provider.usage.state === "stale" && provider.usage.cause.kind === "failing"}
+                <button
+                  type="button"
+                  onclick={() =>
+                    retryProvider(
+                      provider.provider,
+                      providerName[provider.provider],
+                    )}>Retry</button
+                >
+              {/if}
+            </div>
+          {/if}
+          {#each reading.meters as meter (meter.id)}
             {#if meter.kind === "window"}
-              <div class="value">{Math.round(meter.used_bp / 100)}%</div>
-              <Meter
-                usedBp={meter.used_bp}
-                severity={meter.severity}
-                label={`${provider.provider} usage, ${meter.status}, ${reset(meter.resets_at)}`}
+              <MeterRow
+                provider={provider.provider}
+                {meter}
+                observedAt={reading.observed_at}
               />
-              <p>{reset(meter.resets_at)} · {meter.status}</p>
-              <details>
-                <summary>More details</summary>
-                <p>
-                  {(meter.used_bp / 100).toFixed(1)}% · {meter.resets_at ===
-                  null
-                    ? "Reset time unavailable"
-                    : new Date(meter.resets_at * 1000).toLocaleString()} · {meter.status}
-                  · observed {new Date(
-                    readingOf(provider.usage)?.observed_at ?? 0,
-                  ).toLocaleString()}
-                </p>
-              </details>
             {:else}
-              <div class="value">
-                {meter.currency}
-                {(meter.total_micros / 1000000).toFixed(2)}
+              <div class="balance">
+                {money(meter.total_micros, meter.currency)}
               </div>
-              <p>{meter.usable ? "Available" : "Unavailable"}</p>
+              <p>{meter.usable ? "Available" : "Not usable"}</p>
             {/if}
           {/each}
         {/if}
       </article>
     {/each}
+    {#if arranged.unsupported.length > 0}
+      <p class="unsupported">
+        {unsupportedLine(arranged.unsupported.map((item) => item.provider))}
+      </p>
+    {/if}
   {/if}
 </section>
 
@@ -150,15 +177,33 @@
     font-weight: var(--text-md-weight-strong);
   }
   .provider-link {
-    text-transform: capitalize;
+    display: inline-flex;
+    gap: var(--space-2);
+    align-items: baseline;
+    border: none;
+    padding-inline: 0;
+    font-weight: var(--text-md-weight-strong);
   }
-  .value {
+  .plan {
+    color: var(--color-text-2);
+    font-weight: var(--text-md-weight);
+  }
+  .balance {
     font-family: var(--font-serif);
     font-size: var(--num-xl);
     line-height: var(--num-xl-line);
     font-variant-numeric: tabular-nums;
   }
-  .muted {
-    color: var(--color-muted);
+  .unsupported {
+    padding-block: var(--space-6);
+  }
+  .note-row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--space-3);
+  }
+  .retry {
+    margin-top: var(--space-2);
   }
 </style>

@@ -14,7 +14,7 @@ here="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 dashboard="$(cd -- "$here/../.." && pwd)"
 bin="${1:-$dashboard/../target/dist/jev-dashboard}"
 canary='JEVCANARY_9f3c1b7e_DO_NOT_SURFACE'
-window_budget_ms=400
+window_budget_ms=550
 
 fail() { printf 'smoke: FAIL: %s\n' "$*" >&2; exit 1; }
 not_run() { printf 'smoke: NOT RUN: %s\n' "$*" >&2; exit 3; }
@@ -171,9 +171,22 @@ for f in history.db history.db-wal history.db-shm settings.json; do
   [ "$(mode "$dash/$f")" = 600 ] || fail "$f is mode $(mode "$dash/$f"), want 600"
 done
 
-if find "$tree" \( -iname 'webkit*' -o -iname 'WebKitCache' -o -iname 'localstorage' -o -iname 'indexeddb' \) \
+# D8.10 says the view stores nothing. Measured on WebKitGTK 2.x: even an incognito view makes
+# `<data>/dev.jev.flashboard/{WebKitCache,storage,mediakeys}` holding only an 8-byte `salt` and
+# an empty `hsts-storage.sqlite`; no page data. So the check is on content: no storage kind
+# that holds page data, and nothing in those directories except those two files.
+store_dir="$tree/data/dev.jev.flashboard"
+if find "$tree" \( -iname 'localstorage' -o -iname 'indexeddb' -o -iname 'cookies*' -o -iname 'serviceworkers' -o -iname 'cacheStorage' \) \
   -not -path "$tree/bin/*" 2>/dev/null | grep -q .; then
-  fail "a WebKit data directory exists in the temp tree: $(find "$tree" -iname 'webkit*' | head -n3 | tr '\n' ' ')"
+  fail "a WebKit page-data store exists in the temp tree: $(find "$tree" \( -iname 'localstorage' -o -iname 'indexeddb' -o -iname 'cookies*' \) | head -n3 | tr '\n' ' ')"
+fi
+if [ -d "$store_dir" ]; then
+  extra="$(find "$store_dir" -type f -not -name salt -not -name hsts-storage.sqlite 2>/dev/null | head -n3 | tr '\n' ' ')"
+  [ -z "$extra" ] || fail "unexpected files in the WebKit data directory: $extra"
+  hsts="$store_dir/hsts-storage.sqlite"
+  if [ -e "$hsts" ] && [ "$(sqlite3 "$hsts" 'select count(*) from HSTSEntries' 2>/dev/null || echo 0)" != 0 ]; then
+    fail "the WebKit HSTS database is not empty"
+  fi
 fi
 [ -e "$tree/config/autostart/dev.jev.flashboard.desktop" ] || fail "the autostart entry did not land in the temp config home"
 

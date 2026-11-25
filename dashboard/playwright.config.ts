@@ -15,6 +15,9 @@ export default defineConfig({
   use: {
     baseURL: `http://127.0.0.1:${String(port)}`,
     trace: "off",
+    // The fixtures are written for Asia/Jakarta, 12:33 on Monday 14 Dec 2026.
+    timezoneId: "Asia/Jakarta",
+    locale: "en-US",
   },
   projects: [{ name: "chromium", use: { ...devices["Desktop Chrome"] } }],
   webServer: {

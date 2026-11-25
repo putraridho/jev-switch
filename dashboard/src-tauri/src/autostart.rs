@@ -46,6 +46,10 @@ pub fn reconcile(enabled: bool, exec: &Path, config_home: &Path) -> Result<(), A
         };
     }
     let exec_str = exec.to_str().ok_or(AutostartError::InvalidExec)?;
+    // A line break in the path would start a new line of the entry.
+    if exec_str.contains(['\n', '\r']) {
+        return Err(AutostartError::InvalidExec);
+    }
     if !exec.is_file() {
         return Err(AutostartError::InvalidExec);
     }
@@ -56,5 +60,27 @@ pub fn reconcile(enabled: bool, exec: &Path, config_home: &Path) -> Result<(), A
     match jev_usage_io::fsutil::write_private_atomic(&path, text.as_bytes()) {
         Ok(()) => Ok(()),
         Err(_) => Err(AutostartError::Write),
+    }
+}
+
+/// The user's config home: `XDG_CONFIG_HOME`, else `~/.config`.
+fn config_home() -> Option<std::path::PathBuf> {
+    match std::env::var_os("XDG_CONFIG_HOME") {
+        Some(dir) if !dir.is_empty() => Some(std::path::PathBuf::from(dir)),
+        _ => std::env::var_os("HOME")
+            .filter(|home| !home.is_empty())
+            .map(|home| std::path::PathBuf::from(home).join(".config")),
+    }
+}
+
+/// Makes the autostart entry match `enabled` for the running binary and reports a failure on
+/// the diagnostic channel (the app keeps running either way).
+pub fn apply(enabled: bool) {
+    let result = match (std::env::current_exe(), config_home()) {
+        (Ok(exec), Some(config)) => reconcile(enabled, &exec, &config),
+        _ => Err(AutostartError::InvalidExec),
+    };
+    if result.is_err() {
+        jev_usage_io::diag::emit(jev_usage_io::diag::DiagEvent::AutostartFailed);
     }
 }

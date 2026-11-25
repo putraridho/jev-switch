@@ -12,41 +12,47 @@ pub trait TrayHost: Send + Sync {
 pub struct SessionBusTrayHost;
 
 impl TrayHost for SessionBusTrayHost {
+    /// Runs the bus call on its own thread: it needs its own runtime, and building one on a
+    /// thread that already drives async tasks (an async command) panics.
     fn present(&self) -> bool {
-        let Ok(rt) = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
+        std::thread::spawn(ask_bus).join().unwrap_or(false)
+    }
+}
+
+fn ask_bus() -> bool {
+    let Ok(rt) = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+    else {
+        return false;
+    };
+    rt.block_on(async {
+        let builder = zbus::connection::Builder::session();
+        let Ok(conn) = builder.build().await else {
+            return false;
+        };
+        let Ok(dest) = zbus::names::BusName::try_from("org.kde.StatusNotifierWatcher") else {
+            return false;
+        };
+        let Ok(path) = zbus::ObjectPath::try_from("/StatusNotifierWatcher") else {
+            return false;
+        };
+        let Ok(iface) = zbus::names::InterfaceName::try_from("org.kde.StatusNotifierWatcher")
         else {
             return false;
         };
-        rt.block_on(async {
-            let builder = zbus::connection::Builder::session();
-            let Ok(conn) = builder.build().await else {
-                return false;
-            };
-            let Ok(dest) = zbus::names::BusName::try_from("org.kde.StatusNotifierWatcher") else {
-                return false;
-            };
-            let Ok(path) = zbus::ObjectPath::try_from("/StatusNotifierWatcher") else {
-                return false;
-            };
-            let Ok(iface) = zbus::names::InterfaceName::try_from("org.kde.StatusNotifierWatcher")
-            else {
-                return false;
-            };
-            let reply = conn
-                .call_method(
-                    Some(dest),
-                    path,
-                    Some(iface),
-                    "IsStatusNotifierHostRegistered",
-                    &(),
-                )
-                .await;
-            match reply {
-                Ok(msg) => msg.body().deserialize::<bool>().unwrap_or(false),
-                Err(_) => false,
-            }
-        })
-    }
+        let reply = conn
+            .call_method(
+                Some(dest),
+                path,
+                Some(iface),
+                "IsStatusNotifierHostRegistered",
+                &(),
+            )
+            .await;
+        match reply {
+            Ok(msg) => msg.body().deserialize::<bool>().unwrap_or(false),
+            Err(_) => false,
+        }
+    })
 }

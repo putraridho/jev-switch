@@ -37,6 +37,7 @@ export MISE_OFFLINE=1 MISE_AUTO_INSTALL=false MISE_EXEC_AUTO_INSTALL=false MISE_
 
 keep_going=0
 release=0
+use_cache=1
 only=""
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -91,7 +92,6 @@ wanted() {
 # ci.sh itself. Stages that depend on the clock or the network (supply chain, 10-13) are never
 # cached. `--no-cache` and `--release` always run everything.
 cache_dir="$root/target/ci-cache"
-use_cache=1
 declare -A INPUTS=(
   [1]="Cargo.toml Cargo.lock src crates tests"
   [2]="dashboard Cargo.toml Cargo.lock"
@@ -329,9 +329,11 @@ stage_coverage() {
     return 3
   fi
   # Line coverage: core >= 95 %, io >= 85 % (D11.3); the shell is glue and is covered by e2e.
-  local ignore='(/tests/|/stubs/|/fuzz/|/src-tauri/)'
+  # The engine's own crates (root crates/ and src/) are a dependency of usage-io and have their
+  # own gate in stage 1; only Flashboard's files count here.
+  local ignore="(/tests/|/stubs/|/fuzz/|/src-tauri/|^$root/(crates|src)/)"
   cargo llvm-cov -p jev-usage-core --locked --ignore-filename-regex "$ignore" --fail-under-lines 95 || return 1
-  cargo llvm-cov -p jev-usage-io --locked --ignore-filename-regex "$ignore" --fail-under-lines 85 || return 1
+  cargo llvm-cov -p jev-usage-io --locked --ignore-filename-regex "$ignore|/usage-core/" --fail-under-lines 85 || return 1
   # Vitest: src/lib logic >= 95 %, components >= 85 % (thresholds live in vitest.config.ts).
   pnpm --dir dashboard exec vitest run --coverage
 }
@@ -347,7 +349,7 @@ stage_fuzz() {
     corpus="dashboard/fuzz/corpus/$target"
     mkdir -p "$corpus"
     cp -n "$seeds"* "$corpus"/ 2>/dev/null || true
-    (cd dashboard/fuzz && cargo +"$NIGHTLY" fuzz run "$target" -- -max_total_time="$FUZZ_SECONDS" -rss_limit_mb=2048) || return 1
+    cargo +"$NIGHTLY" fuzz run --fuzz-dir dashboard/fuzz "$target" -- -max_total_time="$FUZZ_SECONDS" -rss_limit_mb=2048 || return 1
   done
 }
 

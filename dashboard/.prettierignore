@@ -16,3 +16,6 @@ e2e/smoke/
 # Fuzz seed corpora: raw fixture bytes, never reformatted.
 fuzz/seeds/
 fuzz/target/
+fuzz/corpus
+fuzz/artifacts
+fuzz/target

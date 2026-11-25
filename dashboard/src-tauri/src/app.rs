@@ -95,6 +95,7 @@ fn start_service(app: &tauri::AppHandle) {
     let runtime_handle = tauri::async_runtime::handle();
     let rt = runtime_handle.inner();
     let handle = jev_usage_io::service::spawn(deps, rt);
+    crate::events::forward_snapshots(app.clone(), handle.subscribe());
     app.manage(handle);
 
     if let Some(log) = usage_log {
@@ -145,6 +146,9 @@ pub fn run() {
         ])
         .setup(move |app| {
             start_service(app.handle());
+            if let Some(svc) = app.try_state::<jev_usage_io::service::ServiceHandle>() {
+                crate::autostart::apply(svc.settings().autostart);
+            }
             let _ = tray::install(app.handle());
             if !args.hidden {
                 window::open(app.handle(), Route::Overview);

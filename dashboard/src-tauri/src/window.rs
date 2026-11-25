@@ -20,6 +20,20 @@ pub fn first_snapshot_served() {
     }
 }
 
+/// True only when `tauri-driver` launched the app for the WebDriver end-to-end test. wry gives an
+/// incognito view its own ephemeral context, which cannot be automated (D16, checked in
+/// T12), so that one test runs the view non-incognito inside its temp tree. Normal launches
+/// never have this variable and stay incognito.
+fn automation_requested() -> bool {
+    automation_flag(std::env::var("TAURI_WEBVIEW_AUTOMATION").ok().as_deref())
+}
+
+/// The variable counts only when it is exactly `true` (what `tauri-driver` sets); anything
+/// else, including `1`, `TRUE` or an empty value, leaves the view incognito.
+pub fn automation_flag(value: Option<&str>) -> bool {
+    value == Some("true")
+}
+
 /// Creates the window at `route` (URL fragment: view, provider, theme; incognito; zoom;
 /// drag-and-drop handler off), or shows the existing one and sends it `navigate`.
 pub fn open<R: Runtime>(app: &AppHandle<R>, route: Route) {
@@ -38,9 +52,19 @@ pub fn open<R: Runtime>(app: &AppHandle<R>, route: Route) {
         .title("Flashboard")
         .inner_size(420.0, 640.0)
         .min_inner_size(320.0, 400.0)
-        .incognito(true)
+        .incognito(!automation_requested())
         .disable_drag_drop_handler()
         .build();
+    if let Some(svc) = app.try_state::<jev_usage_io::service::ServiceHandle>() {
+        apply_zoom(app, svc.settings().zoom_pct);
+    }
+}
+
+/// Applies the zoom setting (100 to 200 %) to the whole web view (DESIGN 9.10, 8.8).
+pub fn apply_zoom<R: Runtime>(app: &AppHandle<R>, zoom_pct: u16) {
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.set_zoom(f64::from(zoom_pct) / 100.0);
+    }
 }
 
 /// A tray host present now and `close_to_tray`: hide, destroy after 30 s; else quit.

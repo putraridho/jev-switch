@@ -60,7 +60,7 @@ class Driver:
 
     def start(self, binary):
         value = self.call("POST", "/session", {"capabilities": {"alwaysMatch": {
-            "browserName": "wry", "tauri:options": {"application": binary}}}})
+            "tauri:options": {"application": binary}}}})
         self.session = value["sessionId"]
 
     def s(self, path):
@@ -88,7 +88,12 @@ class Driver:
             if needle in self.text():
                 return
             time.sleep(0.2)
-        fail("text %r never appeared; the view says: %r" % (needle, self.text()[:400]))
+        html = ""
+        try:
+            html = str(self.script("return document.body.innerHTML"))[:1500]
+        except SystemExit:
+            pass
+        fail("text %r never appeared; the view says: %r; html: %s" % (needle, self.text()[:400], html))
 
     def quit(self):
         if self.session:
@@ -127,8 +132,27 @@ def main():
     for stub in ("codex", "claude"):
         shutil.copy(os.path.join(SMOKE, "stubs", stub), os.path.join(tree, "bin", stub))
         os.chmod(os.path.join(tree, "bin", stub), 0o755)
-    shutil.copy(os.path.join(DASH, "fixtures", "claude-gateway", "canary.jsonl"),
-                os.path.join(tree, "state", "jev-router", "usage.jsonl"))
+    usage_path = os.path.join(tree, "state", "jev-router", "usage.jsonl")
+    shutil.copy(os.path.join(DASH, "fixtures", "claude-gateway", "canary.jsonl"), usage_path)
+    # The fixture's timestamps are old, so its windows have elapsed. Append one fresh row (the
+    # first canary row with the clock and the windows moved to now) so the cards show live
+    # numbers: 5-hour 50 %, 7-day 37 %.
+    now = int(time.time())
+    with open(os.path.join(DASH, "fixtures", "claude-gateway", "canary.jsonl")) as source:
+        row = json.loads(source.readline())
+    limits = row["ratelimit"]
+    row["ts_ms"] = now * 1000
+    for key in list(limits):
+        if key.endswith("5h-utilization"):
+            limits[key] = "0.50"
+        elif key.endswith("7d-utilization"):
+            limits[key] = "0.37"
+        elif key.endswith("5h-reset") or key.endswith("unified-reset"):
+            limits[key] = str(now + 3 * 3600)
+        elif key.endswith("7d-reset"):
+            limits[key] = str(now + 3 * 86400)
+    with open(usage_path, "a") as out:
+        out.write(json.dumps(row, separators=(",", ":")) + "\n")
     env = {
         "PATH": os.path.join(tree, "bin") + ":" + os.path.dirname(tauri_driver) + ":" + os.path.dirname(native),
         "HOME": os.path.join(tree, "home"),
@@ -159,6 +183,8 @@ def main():
 
         # 1. The overview shows the fixture numbers (canary.jsonl: 5h 50 %, 7d 37 %; stub codex: 23 %, 61.5 %).
         driver.wait_text("Flashboard")
+        driver.wait_text("Continue")
+        driver.script("[...document.querySelectorAll('button')].find(b => b.textContent.trim() === 'Continue').click()")
         for number in ("50%", "37%", "23%"):
             driver.wait_text(number)
         print("webdriver: overview shows the fixture numbers")
@@ -183,8 +209,8 @@ def main():
             fail("no Warning threshold input in Settings")
         key = [k for k in element if k.startswith("element-")][0]
         eid = element[key]
-        driver.call("POST", driver.s("/element/%s/clear" % eid), {})
-        driver.call("POST", driver.s("/element/%s/value" % eid), {"text": "70"})
+        driver.call("POST", driver.s("/element/%s/click" % eid), {})
+        driver.call("POST", driver.s("/element/%s/value" % eid), {"text": "\ue010\ue003\ue003\ue003" + "70" + "\ue004"})
         settings_path = os.path.join(tree, "state", "jev-router", "dashboard", "settings.json")
         end = time.time() + 10
         saved = None

@@ -94,8 +94,21 @@ fn contains(haystack: &[u8], needle: &str) -> bool {
         .any(|window| window == needle.as_bytes())
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn canaries_never_reach_ipc_store_settings_or_diag() {
+/// A hand-built runtime so it can be shut down with a time limit: the real timer waits on a
+/// blocking thread until its deadline, which `#[tokio::test]` would wait for at the end (a
+/// minute) for no reason.
+#[test]
+fn canaries_never_reach_ipc_store_settings_or_diag() {
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()
+        .unwrap();
+    runtime.block_on(canaries_flow());
+    runtime.shutdown_timeout(Duration::from_secs(1));
+}
+
+async fn canaries_flow() {
     let capture = diag::capture();
     let root = tempfile::tempdir().unwrap();
     let state = root.path().join("state");

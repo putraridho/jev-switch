@@ -14,11 +14,24 @@ export default defineConfig({
   },
   test: {
     environment: "jsdom",
-    include: ["src/**/*.test.ts", "scripts/**/*.test.ts"],
     testTimeout: 60_000,
     hookTimeout: 120_000,
-    // The lint self-test writes scratch files into src/ that the project scan would see.
-    fileParallelism: false,
+    // Two projects: the unit and component tests run in parallel; the lint self-tests write
+    // scratch files into src/ that the project scan would see, so they run one at a time.
+    projects: [
+      {
+        extends: true,
+        test: { name: "unit", include: ["src/**/*.test.ts"] },
+      },
+      {
+        extends: true,
+        test: {
+          name: "scripts",
+          include: ["scripts/**/*.test.ts"],
+          fileParallelism: false,
+        },
+      },
+    ],
     coverage: {
       provider: "v8",
       include: ["src/**/*.{ts,svelte}"],

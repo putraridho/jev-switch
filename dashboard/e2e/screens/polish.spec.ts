@@ -6,6 +6,7 @@ import AxeBuilder from "@axe-core/playwright";
 import { expect, test } from "@playwright/test";
 import type { Route } from "../../src/lib/ipc/bindings/Route";
 import { fragment, themes, type ThemeName } from "./_harness/index.ts";
+import { FIXTURE_NOW_MS } from "../../src/lib/ipc/fixtures";
 
 const routes: Route[] = [
   { name: "overview" },
@@ -28,9 +29,12 @@ for (const route of routes) {
           deviceScaleFactor: view.scale,
           colorScheme: theme satisfies ThemeName,
           reducedMotion: "reduce",
+          timezoneId: "Asia/Jakarta",
+          locale: "en-US",
         });
         const page = await context.newPage();
-        await page.goto(`${baseURL ?? ""}/${fragment(route, theme)}`);
+        await page.clock.setFixedTime(FIXTURE_NOW_MS);
+        await page.goto(`${baseURL ?? ""}/${fragment(route, theme, "mixed")}`);
         await expect(page.locator("main")).toBeVisible();
         const results = await new AxeBuilder({ page }).analyze();
         expect(results.violations.map((v) => v.id)).toEqual([]);

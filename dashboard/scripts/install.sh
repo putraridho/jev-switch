@@ -93,8 +93,21 @@ case $dest in
     *) abs_dest=$(CDPATH= cd -- "$dest" && pwd) || fail 'cannot resolve the destination' ;;
 esac
 mkdir -p -- "$data/applications" || fail 'cannot create the applications directory'
-sed "s|^Exec=.*|Exec=$abs_dest/jev-dashboard --hidden|" "$script_dir/../packaging/dev.jev.flashboard.desktop" \
-    > "$data/applications/dev.jev.flashboard.desktop" || fail 'cannot write the desktop entry'
+# The Exec path is quoted as the Desktop Entry spec asks (a space, quote, backtick, dollar or
+# backslash is escaped, % is doubled) and written without sed, so no character in the path can
+# end the substitution or add a line. A newline in the path is refused.
+case $abs_dest in
+    *'
+'*) fail 'the destination must not contain a newline' ;;
+esac
+exec_quoted=$(printf '%s' "$abs_dest/jev-dashboard" | sed -e 's/[\\"`$]/\\&/g' -e 's/%/%%/g')
+entry=$data/applications/dev.jev.flashboard.desktop
+while IFS= read -r line || [ -n "$line" ]; do
+    case $line in
+        Exec=*) printf 'Exec="%s" --hidden\n' "$exec_quoted" ;;
+        *) printf '%s\n' "$line" ;;
+    esac
+done < "$script_dir/../packaging/dev.jev.flashboard.desktop" > "$entry" || fail 'cannot write the desktop entry'
 for pair in 16x16:16x16.png 32x32:32x32.png 48x48:48x48.png 64x64:64x64.png 128x128:128x128.png 256x256:256x256.png; do
     size=${pair%%:*}
     file=${pair#*:}

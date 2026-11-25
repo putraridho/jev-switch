@@ -8,9 +8,19 @@
     severity: Severity;
     /** The accessible name, required. */
     label: string;
+    /** The full level-1 sentence for `aria-valuetext`; "N% used" when absent. */
+    valueText?: string;
+    /** Makes the meter a tab stop, so keyboard users reach its detail. */
+    focusable?: boolean;
   }
 
-  const { usedBp, severity, label }: Props = $props();
+  const {
+    usedBp,
+    severity,
+    label,
+    valueText,
+    focusable = false,
+  }: Props = $props();
 
   // The waffle is a 10x10 grid: 100 cells, row-major from the top-left. Cells past the
   // 80% warning mark fill with the critical colour; below it, ink.
@@ -27,18 +37,22 @@
           : "var(--waffle-fill)",
     })),
   );
-  const valueText = $derived(
-    severity === "unknown" ? "No data" : `${String(valueNow)}% used`,
+  const text = $derived(
+    valueText ??
+      (severity === "unknown" ? "No data" : `${String(valueNow)}% used`),
   );
 </script>
 
+<!-- A meter is a tab stop so keyboard users reach its detail (DESIGN 9.3, 9.10). -->
+<!-- svelte-ignore a11y_no_noninteractive_tabindex -->
 <div
   class="meter"
   role="meter"
   aria-valuemin="0"
   aria-valuemax="100"
   aria-valuenow={valueNow}
-  aria-valuetext={valueText}
+  aria-valuetext={text}
+  tabindex={focusable ? 0 : undefined}
   aria-label={label}
 >
   <svg
@@ -70,7 +84,9 @@
     line-height: 0;
   }
 
+  /* Optical alignment: the first dot's edge sits on the text edge, not its cell's. */
   .waffle {
     display: block;
+    margin-inline-start: calc(var(--space-1) * -1);
   }
 </style>

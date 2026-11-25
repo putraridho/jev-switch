@@ -1,8 +1,23 @@
 <script lang="ts">
-  import Meter from "../lib/components/primitives/Meter.svelte";
+  import { retryProvider } from "../lib/actions";
+  import CommandLine from "../lib/components/primitives/CommandLine.svelte";
+  import MeterRow from "../lib/components/primitives/MeterRow.svelte";
+  import HistorySection from "../lib/components/shell/HistorySection.svelte";
+  import {
+    retryable,
+    planName,
+    providerName,
+    setupCopy,
+    staleNote,
+    unavailableCopy,
+    unsupportedCopy,
+  } from "../lib/copy";
+  import { money } from "../lib/format";
   import { router } from "../lib/router.svelte";
+  import { clock } from "../lib/stores/clock.svelte";
+  import { settings } from "../lib/stores/settings.svelte";
   import { usage } from "../lib/stores/usage.svelte";
-  const {}: Record<string, string> = $props();
+
   const provider = $derived(
     router.route.name === "provider"
       ? usage.snapshot?.providers.find(
@@ -11,6 +26,16 @@
             item.provider === router.route.provider,
         )
       : undefined,
+  );
+  const note = $derived(
+    provider === undefined
+      ? null
+      : staleNote(
+          provider.provider,
+          provider.usage,
+          clock.now,
+          settings.value.hour_cycle,
+        ),
   );
 </script>
 
@@ -21,48 +46,64 @@
     }}>Back</button
   >
   {#if provider}
-    <h1>{provider.provider}</h1>
+    <h1 id="view-title" tabindex="-1">{providerName[provider.provider]}</h1>
     {#if provider.usage.state === "known" || provider.usage.state === "stale"}
-      {#if provider.usage.state === "stale"}<p>
-          As of {new Date(provider.usage.reading.observed_at).toLocaleString()}
-        </p>{/if}
-      {#if provider.usage.reading.plan}<p>{provider.usage.reading.plan}</p>{/if}
-      {#each provider.usage.reading.meters as meter (meter.id)}
-        {#if meter.kind === "window"}
-          <p>{meter.id}</p>
-          <div class="value">{Math.round(meter.used_bp / 100)}%</div>
-          <Meter
-            usedBp={meter.used_bp}
-            severity={meter.severity}
-            label={`${provider.provider} ${meter.id}, ${meter.status}`}
-          />
-          <p>
-            {meter.resets_at === null
-              ? "Reset time unavailable"
-              : `Resets ${new Date(meter.resets_at * 1000).toLocaleString()}`} · {meter.status}
-          </p>
-        {:else}<div class="value">
-            {meter.currency}
-            {(meter.total_micros / 1000000).toFixed(2)}
-          </div>{/if}
-      {/each}
-    {:else if provider.usage.state === "pending"}<p>Checking…</p>
-    {:else if provider.usage.state === "not_configured"}<p>Not configured</p>
-    {:else if provider.usage.state === "unavailable"}<p>
-        Unavailable: {provider.usage.reason.replaceAll("_", " ")}
-      </p>
-    {:else}<p>Usage unavailable for this provider</p>{/if}
-    <h2>History</h2>
-    <p>History is not available yet.</p>
-    {#if provider.usage.state === "not_configured"}<p>
-        Connect: <code
-          >{provider.usage.setup === "use_gateway"
-            ? "jev-claude"
-            : "DEEPSEEK_API_KEY"}</code
+      {@const reading = provider.usage.reading}
+      {#if reading.plan}<p>{planName(reading.plan)}</p>{/if}
+      {#if note}<p class="note">{note}</p>{/if}
+      {#if provider.usage.state === "stale" && provider.usage.cause.kind === "failing"}
+        <button
+          type="button"
+          class="retry"
+          onclick={() =>
+            retryProvider(provider.provider, providerName[provider.provider])}
+          >Retry</button
         >
-      </p>{/if}
-  {:else}<h1>Provider</h1>
-    <p>Checking…</p>{/if}
+      {/if}
+      {#each reading.meters as meter (meter.id)}
+        {#if meter.kind === "window"}
+          <MeterRow
+            provider={provider.provider}
+            {meter}
+            observedAt={reading.observed_at}
+          />
+        {:else}
+          <div class="balance">{money(meter.total_micros, meter.currency)}</div>
+          <p>{meter.usable ? "Available" : "Not usable"}</p>
+        {/if}
+      {/each}
+    {:else if provider.usage.state === "pending"}
+      <p>Checking…</p>
+    {:else if provider.usage.state === "not_configured"}
+      {@const copy = setupCopy(provider.usage.setup, provider.provider)}
+      <p>{copy.text}</p>
+      {#if copy.command}<CommandLine command={copy.command} />{/if}
+    {:else if provider.usage.state === "unavailable"}
+      {@const copy = unavailableCopy(provider.usage.reason, provider.provider)}
+      <p>{copy.text}</p>
+      {#if copy.command}<CommandLine command={copy.command} />{/if}
+      {#if retryable(provider.usage.reason)}
+        <button
+          type="button"
+          class="retry"
+          onclick={() =>
+            retryProvider(provider.provider, providerName[provider.provider])}
+          >Retry</button
+        >
+      {/if}
+    {:else}
+      <p>{unsupportedCopy(provider.provider)}</p>
+    {/if}
+    {#if provider.usage.state === "known" || provider.usage.state === "stale"}
+      <HistorySection
+        provider={provider.provider}
+        meters={provider.usage.reading.meters}
+      />
+    {/if}
+  {:else}
+    <h1 id="view-title" tabindex="-1">Provider</h1>
+    <p>Checking…</p>
+  {/if}
 </section>
 
 <style>
@@ -77,24 +118,14 @@
     font-family: var(--font-serif);
     font-size: var(--title-xl);
     line-height: var(--title-xl-line);
-    text-transform: capitalize;
   }
-  h2 {
-    margin-top: var(--space-8);
+  .retry {
+    margin-block: var(--space-2);
   }
-  .value {
+  .balance {
     font-family: var(--font-serif);
     font-size: var(--num-xl);
     line-height: var(--num-xl-line);
     font-variant-numeric: tabular-nums;
-  }
-  button {
-    min-height: var(--hit-min);
-    cursor: pointer;
-  }
-  code {
-    font-family: var(--font-mono);
-    background: var(--color-chip);
-    padding: var(--space-2);
   }
 </style>

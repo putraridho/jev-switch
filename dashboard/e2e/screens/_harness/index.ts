@@ -1,11 +1,16 @@
 // The Playwright harness for the screen tests (docs/dashboard/DESIGN.md 10): the theme and
-// width matrix, the axe runner, the no-network guard and the CSP-violation guard. The
-// exported names and signatures are final; T07 completes the bodies (mock IPC selection,
-// the axe run).
+// width matrix, the axe runner, the no-network guard and the CSP-violation guard. Outside
+// Tauri the built UI runs on a named mock script (`#fixture=...`, `src/lib/ipc/select.ts`),
+// and the page clock is frozen at the instant every fixture is written for, so every figure
+// and every baseline is reproducible. The time zone and locale come from playwright.config.ts.
 
-import type { Page } from "@playwright/test";
+import AxeBuilder from "@axe-core/playwright";
+import { expect, type Page } from "@playwright/test";
 import type { Route } from "../../../src/lib/ipc/bindings/Route";
-import type { FixtureName } from "../../../src/lib/ipc/fixtures";
+import {
+  FIXTURE_NOW_MS,
+  type FixtureName,
+} from "../../../src/lib/ipc/fixtures";
 
 /** The two themes every screen is captured in. */
 export const themes = ["light", "dark"] as const;
@@ -25,13 +30,17 @@ export type ScreenOptions = {
   route: Route;
 };
 
-/** The URL fragment of DESIGN 7.3 for a route and theme. */
-export function fragment(route: Route, theme: ThemeName): string {
+/** The URL fragment of DESIGN 7.3 for a route and theme, and the fixture to run on. */
+export function fragment(
+  route: Route,
+  theme: ThemeName,
+  fixture: FixtureName = "pending",
+): string {
   const view =
     route.name === "provider"
       ? `view=provider&provider=${route.provider}`
       : `view=${route.name}`;
-  return `#${view}&theme=${theme}`;
+  return `#${view}&theme=${theme}&fixture=${fixture}`;
 }
 
 /** Opens the built UI at the given width, theme and route. */
@@ -41,12 +50,21 @@ export async function openScreen(
 ): Promise<void> {
   await page.setViewportSize({ width: options.width, height: 800 });
   await page.emulateMedia({ colorScheme: options.theme });
-  await page.goto(`/${fragment(options.route, options.theme)}`);
+  await page.clock.setFixedTime(FIXTURE_NOW_MS);
+  await page.goto(
+    `/${fragment(options.route, options.theme, options.fixture)}`,
+  );
+  await page.locator("main").waitFor();
 }
 
-/** Fails the test when axe finds a violation on the page. */
-export function expectNoAxeViolations(_page: Page): Promise<void> {
-  return Promise.resolve();
+/** Fails the test when axe finds a violation of any impact on the page. */
+export async function expectNoAxeViolations(page: Page): Promise<void> {
+  const results = await new AxeBuilder({ page }).analyze();
+  expect(
+    results.violations.map(
+      (v) => `${v.id}: ${v.nodes.map((n) => n.target.join(" ")).join(", ")}`,
+    ),
+  ).toEqual([]);
 }
 
 /** Records every request that is not the app origin; call the result to read them. */

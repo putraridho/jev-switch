@@ -641,7 +641,13 @@ fn next_deadline(metas: &[SourceMeta], providers: &[ProviderState], now: UnixMil
                 .observed_at
                 .0
                 .saturating_add(delay_millis(p.fresh_for));
-            next = next.min(expires);
+            // Only an expiry still ahead is worth waking for. One that has passed was handled
+            // by the iteration that woke for it (the snapshot is re-derived every pass); keeping
+            // it would make the deadline "now" for as long as the reading stays old, and the
+            // loop would never sleep.
+            if expires > now.0 {
+                next = next.min(expires);
+            }
         }
     }
     UnixMillis(if next > now.0 { next } else { now.0 })

@@ -25,16 +25,24 @@ const initial: Settings = {
 };
 
 let value = $state<Settings>(initial);
+let loaded = $state(false);
 let client: IpcClient | null = null;
 
 /** Load settings from the same client used by the usage store. */
 export async function initSettings(ipc: IpcClient): Promise<void> {
   client = ipc;
   const result = await ipc.getSettings();
-  if (result.status === "ok") value = result.value;
+  if (result.status === "ok") {
+    value = result.value;
+    loaded = true;
+  }
 }
 
 export const settings = {
+  /** True once the real settings have been read (the defaults are not the user's). */
+  get loaded(): boolean {
+    return loaded;
+  },
   get value(): Settings {
     return value;
   },

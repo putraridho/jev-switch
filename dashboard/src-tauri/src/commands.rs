@@ -49,11 +49,16 @@ pub fn get_settings(svc: State<'_, ServiceHandle>) -> Outcome<Settings> {
 /// Applies a patch (validated in core); the shell then reconciles the autostart entry.
 #[tauri::command]
 pub async fn update_settings<R: Runtime>(
-    _app: AppHandle<R>,
+    app: AppHandle<R>,
     svc: State<'_, ServiceHandle>,
     patch: SettingsPatch,
 ) -> Result<Outcome<Settings>, CommandError> {
-    Ok(Outcome::from(svc.update_settings(patch).await))
+    let result = svc.update_settings(patch).await;
+    if let Ok(settings) = &result {
+        crate::autostart::apply(settings.autostart);
+        crate::window::apply_zoom(&app, settings.zoom_pct);
+    }
+    Ok(Outcome::from(result))
 }
 
 /// Version, per-source state and store size.

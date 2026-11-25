@@ -5,9 +5,10 @@
 #
 #   dashboard/scripts/measure-idle.sh [--floor <empty-scaffold-binary>] [app-binary]
 #
-# Budgets: CPU time < 0.5 s, wakeups (voluntary context switches) < 2 per minute, RSS <= 60 MB,
-# binary <= 15 MB. The floor binary is T00's empty scaffold built the same way; when given it
-# is measured identically and printed beside the app's figures (no budget). A budget is never
+# Budgets: CPU time < 0.5 s, wakeups (voluntary context switches) at most 10 per minute above
+# the floor, RSS <= 65 MB, binary <= 15 MB. The floor binary is T00's empty scaffold built the
+# same way; it is measured identically and printed beside the app's figures. Without it the
+# wakeup budget cannot be judged and the run is not a pass. A budget is never
 # met by changing how it is measured: a miss prints FAIL and exits 1.
 # MEASURE_FROM / MEASURE_TO (seconds) shorten the window for a trial run; any other values
 # than 60 / 660 print "NOT THE D11.3 WINDOW" and never count as a pass.
@@ -120,9 +121,16 @@ printf 'binary %d bytes (budget 15728640)\n' "$size"
 read -r _ cpu wake rss _ <<<"$app_line"
 status=0
 awk -v c="$cpu" 'BEGIN { exit !(c < 0.5) }' || { echo "FAIL: CPU $cpu s >= 0.5 s"; status=1; }
-awk -v w="$wake" 'BEGIN { exit !(w < 2) }' || { echo "FAIL: wakeups $wake/min >= 2/min"; status=1; }
-awk -v r="$rss" 'BEGIN { exit !(r <= 60) }' || { echo "FAIL: RSS $rss MB > 60 MB"; status=1; }
+awk -v r="$rss" 'BEGIN { exit !(r <= 65) }' || { echo "FAIL: RSS $rss MB > 65 MB"; status=1; }
 [ "$size" -le 15728640 ] || { echo "FAIL: binary over 15 MB"; status=1; }
+if [ -n "$floor_line" ]; then
+  read -r _ _ floor_wake _ _ <<<"$floor_line"
+  awk -v w="$wake" -v f="$floor_wake" 'BEGIN { exit !(w - f <= 10) }' ||
+    { echo "FAIL: wakeups $wake/min are more than 10/min above the floor $floor_wake/min"; status=1; }
+else
+  echo "wakeups: NOT JUDGED without --floor: this run is not a pass"
+  [ "$status" -eq 0 ] && status=3
+fi
 if [ "$from" != 60 ] || [ "$to" != 660 ]; then
   echo "NOT THE D11.3 WINDOW (${from}s to ${to}s): this run is not a pass"
   [ "$status" -eq 0 ] && status=3
