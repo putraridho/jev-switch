@@ -44,7 +44,10 @@
   --space-18: 4.5rem; /* 72 */
 
   /* Radius (S09). */
+  --radius-small: 4px; /* checkbox and menu item (S35, S38) */
   --radius-control: 6px;
+  --radius-switch: 12px; /* half of the 24 px switch track (S35) */
+  --radius-dialog: 8px; /* S39 */
   --radius-pill: 14px;
   --radius-full: 50%;
 
@@ -54,11 +57,50 @@
   --focus-ring: 2px;
   --hit-min: 2rem;
   --control-min: 1.75rem;
+  --control-h: 2rem; /* 32: buttons and inputs (S33, S34) */
+  --pill-h: 1.75rem; /* 28: range pills (S24) */
+  --pill-min-w: 2.25rem; /* 36 */
+  --row-h: 2.5rem; /* 40: settings rows (S53), table header (S43) */
+  --table-row-h: 3rem; /* 48 (S43) */
+
+  /* Switch geometry (S35). */
+  --switch-w: 40px;
+  --switch-h: 24px;
+  --switch-border: 1.5px;
+  --switch-inset: 3px;
+  --switch-knob-off: 15px;
+  --switch-knob-on: 18px;
+
+  /* Dialog (S39). */
+  --dialog-w: 25rem; /* 400 */
+  --text-title: 1.5rem; /* 24 / 32 dialog title (Instrument Serif) */
+  --text-title-line: 2rem;
+  --text-title-weight: 400;
+
+  /* Small button (S33), checkbox and radio (S35), menu (S38), tabs (S36), header (S25). */
+  --control-sm-h: 1.75rem; /* 28 */
+  --box: 1.125rem; /* 18 */
+  --menu-w: 17.5rem; /* 280 */
+  --tab-h: 2.25rem; /* 36 */
+  --tab-indicator: 2px;
+  --segment-radius: 16px;
+  --segment-inset: 2px;
+  --header-h: 1.75rem; /* 28 */
+  --tooltip-gap: 8px;
+  --text-wordmark: 0.9375rem; /* 15 / 20 */
+  --text-wordmark-weight: 600;
+
+  /* Icons (S11, S33): 16 glyph, 1.5 stroke. */
+  --icon-md: 1rem;
+
+  /* Icon beside 13/500 text (S29). */
+  --icon-sm: 0.875rem;
 
   /* Motion (S12). */
   --duration-fast: 120ms;
   --duration-base: 200ms;
-  --duration-slow: 320ms;
+  --duration-slow: 400ms;
+  --duration-tooltip: 300ms; /* open delay (S37) */
   --ease: cubic-bezier(0.2, 0, 0, 1);
 
   /* Colour: the Waffle paper-and-ink palette (S02, S03). */
@@ -71,6 +113,12 @@
   --color-alert: #b3391c;
   --color-critical-fill: #d9573a;
   --color-stale: #8a5a00;
+  --color-ink-hover: #3f3f45; /* primary button (S33) */
+  --color-ink-pressed: #121214;
+  --color-scrim: #26262a3d; /* ink at 24 % (S39) */
+  --color-hover: #f2f0ec; /* tints: ink over paper at 4, 8 and 12 % (S04). Fill only. */
+  --color-pressed: #e9e7e4;
+  --color-selected: #e1dfdc;
 
   /* Aliases so the shell/scaffold's token names keep working. */
   --color-bg: var(--color-paper);
@@ -107,8 +155,14 @@
     --color-rule: #34332f;
     --color-chip: #262529;
     --color-alert: #e56e52;
-    --color-critical-fill: #e56e52;
+    --color-critical-fill: #e0664a;
     --color-stale: #d9a441;
+    --color-ink-hover: #d6d2c9;
+    --color-ink-pressed: #fffdf8;
+    --color-scrim: #0000008f;
+    --color-hover: #232326;
+    --color-pressed: #2c2c2e;
+    --color-selected: #343436;
   }
 }
 
@@ -121,15 +175,21 @@
   --color-rule: #34332f;
   --color-chip: #262529;
   --color-alert: #e56e52;
-  --color-critical-fill: #e56e52;
+  --color-critical-fill: #e0664a;
   --color-stale: #d9a441;
+  --color-ink-hover: #d6d2c9;
+  --color-ink-pressed: #fffdf8;
+  --color-scrim: #0000008f;
+  --color-hover: #232326;
+  --color-pressed: #2c2c2e;
+  --color-selected: #343436;
 }
 
-/* Reduced motion: no movement, at most a 100 ms opacity change. */
+/* Reduced motion (S12): every duration is zero. */
 @media (prefers-reduced-motion: reduce) {
   :root {
-    --duration-fast: 100ms;
-    --duration-base: 100ms;
-    --duration-slow: 100ms;
+    --duration-fast: 0ms;
+    --duration-base: 0ms;
+    --duration-slow: 0ms;
   }
 }

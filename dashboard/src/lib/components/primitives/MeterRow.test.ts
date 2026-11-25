@@ -43,7 +43,9 @@ describe("MeterRow", () => {
     row();
     expect(screen.getByText("5-hour")).toBeTruthy();
     expect(screen.getByText("50%")).toBeTruthy();
-    expect(screen.getByText("Resets in 2h 14m")).toBeTruthy();
+    expect(
+      screen.getByText(/^Resets in 2h 14m · (today|tomorrow) /),
+    ).toBeTruthy();
     expect(screen.getByRole("meter", { name: "Claude 5-hour" })).toBeTruthy();
   });
 
@@ -66,25 +68,25 @@ describe("MeterRow", () => {
 
   it("opens the detail on keyboard focus and closes it when focus leaves", async () => {
     row();
-    expect(screen.queryByText("50.0 % used")).toBeNull();
+    expect(screen.queryByText("50.0 %")).toBeNull();
     await userEvent.tab();
-    expect(screen.getByText("50.0 % used")).toBeTruthy();
-    expect(screen.getByText("Status: Allowed")).toBeTruthy();
-    expect(screen.getByText(/^Resets (today|tomorrow|\w{3}) /)).toBeTruthy();
-    expect(screen.getByText(/^Seen at \d{1,2}:\d{2}/)).toBeTruthy();
+    expect(screen.getByText("50.0 %")).toBeTruthy();
+    expect(screen.getByText("Allowed")).toBeTruthy();
+    expect(screen.getByText("Exact reset")).toBeTruthy();
+    expect(screen.getByText("Seen at")).toBeTruthy();
     await userEvent.tab();
-    expect(screen.queryByText("50.0 % used")).toBeNull();
+    expect(screen.queryByText("50.0 %")).toBeNull();
   });
 
   it("opens the same detail on hover and keeps it while the pointer is over it", async () => {
     row();
     const meterEl = screen.getByRole("meter", { name: "Claude 5-hour" });
     await userEvent.hover(meterEl);
-    const detail = screen.getByText("50.0 % used");
+    const detail = screen.getByText("50.0 %");
     await userEvent.hover(detail);
-    expect(screen.getByText("50.0 % used")).toBeTruthy();
+    expect(screen.getByText("50.0 %")).toBeTruthy();
     await userEvent.unhover(detail);
-    expect(screen.queryByText("50.0 % used")).toBeNull();
+    expect(screen.queryByText("50.0 %")).toBeNull();
   });
 
   it("closes on Escape without moving focus, and reopens after focus leaves and returns", async () => {
@@ -93,12 +95,12 @@ describe("MeterRow", () => {
     const meterEl = screen.getByRole("meter", { name: "Claude 5-hour" });
     expect(closeTopmost()).toBe(true);
     await tick();
-    expect(screen.queryByText("50.0 % used")).toBeNull();
+    expect(screen.queryByText("50.0 %")).toBeNull();
     expect(document.activeElement).toBe(meterEl);
     expect(closeTopmost()).toBe(false);
     await userEvent.tab();
     await userEvent.tab({ shift: true });
-    expect(screen.getByText("50.0 % used")).toBeTruthy();
+    expect(screen.getByText("50.0 %")).toBeTruthy();
   });
 
   it("stays closed after Escape until the pointer and focus have both left", async () => {
@@ -107,10 +109,10 @@ describe("MeterRow", () => {
     await userEvent.hover(meterEl);
     closeTopmost();
     await tick();
-    expect(screen.queryByText("50.0 % used")).toBeNull();
+    expect(screen.queryByText("50.0 %")).toBeNull();
     await userEvent.unhover(meterEl);
     await userEvent.hover(meterEl);
-    expect(screen.getByText("50.0 % used")).toBeTruthy();
+    expect(screen.getByText("50.0 %")).toBeTruthy();
   });
 
   it("invents no number for an elapsed window", () => {
@@ -127,14 +129,36 @@ describe("MeterRow", () => {
 
   it("says so when the reset time is unknown", async () => {
     row({ resets_at: null });
-    expect(screen.getByText("Reset time unavailable")).toBeTruthy();
+    expect(screen.getByText("Reset time unknown")).toBeTruthy();
     await userEvent.tab();
-    expect(screen.getAllByText("Reset time unavailable").length).toBe(2);
+    expect(screen.getAllByText("Reset time unknown").length).toBe(2);
   });
 
   it("shows the level of a rejected window in words", async () => {
     row({ status: "rejected", severity: "critical", used_bp: 10_000 });
     await userEvent.tab();
-    expect(screen.getByText("Status: Limit reached")).toBeTruthy();
+    expect(screen.getByText("Limit reached")).toBeTruthy();
+    expect(screen.getByText("Near limit")).toBeTruthy();
+    expect(screen.getByText(/^Past the 80% mark\. Resets in /)).toBeTruthy();
+  });
+
+  it("keeps the last good value while stale, without alert or reset time", () => {
+    render(MeterRow, {
+      provider: "codex",
+      meter: { ...meter, used_bp: 9000, severity: "warn" },
+      observedAt,
+      heading: "Codex",
+      size: "medium",
+      stale: true,
+    });
+    expect(screen.getByText("90%")).toBeTruthy();
+    expect(screen.getByText("Last good read 1m ago")).toBeTruthy();
+    expect(screen.queryByText(/Resets in/)).toBeNull();
+    expect(screen.queryByText("Near limit")).toBeNull();
+    expect(
+      screen
+        .getByRole("meter", { name: "Codex 5-hour" })
+        .getAttribute("aria-valuetext"),
+    ).toMatch(/, stale, last good read 1m ago$/);
   });
 });

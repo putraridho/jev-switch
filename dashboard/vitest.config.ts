@@ -35,7 +35,12 @@ export default defineConfig({
     coverage: {
       provider: "v8",
       include: ["src/**/*.{ts,svelte}"],
-      exclude: ["src/lib/ipc/bindings/**", "src/**/*.test.ts", "src/env.d.ts"],
+      exclude: [
+        "src/lib/ipc/bindings/**",
+        "src/**/*.test.ts",
+        "src/env.d.ts",
+        "src/gallery/**",
+      ],
       // DESIGN 11.3: `src/lib` logic >= 95 %, components >= 85 % (line coverage).
       thresholds: {
         "src/lib/components/**": { lines: 85 },

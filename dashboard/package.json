@@ -11,6 +11,7 @@
     "dev": "sh scripts/dev.sh stub",
     "dev:real": "sh scripts/dev.sh real",
     "build": "vite build",
+    "gallery": "vite -c vite.gallery.config.ts",
     "check": "tsc --noEmit -p tsconfig.json --incremental --tsBuildInfoFile node_modules/.cache/tsc/check.tsbuildinfo && svelte-check --tsconfig ./tsconfig.json --fail-on-warnings && node scripts/check-types.ts",
     "lint": "eslint --no-inline-config --max-warnings 0 --cache --cache-location node_modules/.cache/eslint/ . && stylelint --cache --cache-location node_modules/.cache/stylelint/ \"src/**/*.{css,svelte}\" && prettier --check --cache --cache-location node_modules/.cache/prettier-check .",
     "test": "vitest run",

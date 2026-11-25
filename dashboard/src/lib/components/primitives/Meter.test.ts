@@ -1,5 +1,6 @@
 import { cleanup, render, screen } from "@testing-library/svelte";
 import { afterEach, describe, expect, it } from "vitest";
+import type { WaffleSize } from "./display";
 import Meter from "./Meter.svelte";
 
 afterEach(cleanup);
@@ -26,7 +27,7 @@ describe("Meter", () => {
     expect(
       [...dots].filter((dot) => dot.getAttribute("fill") !== "none").length,
     ).toBe(37);
-    expect(view.container.querySelector("path")).toBeNull();
+    expect(view.container.querySelectorAll("path").length).toBe(1);
   });
 
   it("marks a raised level with the critical colour past 80 and a glyph", () => {
@@ -42,7 +43,8 @@ describe("Meter", () => {
       fills.slice(80, 90).every((f) => f === "var(--color-critical-fill)"),
     ).toBe(true);
     expect(fills[79]).toBe("var(--waffle-fill)");
-    expect(view.container.querySelector("path")).not.toBeNull();
+    expect(view.container.querySelector(".warn-mark")).not.toBeNull();
+    expect(view.container.querySelector(".critical-mark")).toBeNull();
   });
 
   it("clamps the range and says no data for an unknown level", () => {
@@ -65,5 +67,78 @@ describe("Meter", () => {
       "1.0 percent used, resets in 5 minutes",
     );
     expect(meter.getAttribute("tabindex")).toBe("0");
+  });
+
+  it("anchors the marks outside the grid at their rows", () => {
+    const view = render(Meter, {
+      usedBp: 9600,
+      severity: "critical",
+      label: "x",
+    });
+    expect(view.container.querySelector(".warn-mark")?.getAttribute("d")).toBe(
+      "M242 180 L252 174 L252 186 Z",
+    );
+    expect(
+      view.container.querySelector(".critical-mark")?.getAttribute("d"),
+    ).toBe("M242 228 L252 222 L252 234 Z");
+  });
+
+  it("shows only the critical mark when both fall on one row", () => {
+    const view = render(Meter, {
+      usedBp: 9900,
+      severity: "critical",
+      label: "x",
+      warnAtPct: 91,
+    });
+    expect(view.container.querySelectorAll("path").length).toBe(1);
+  });
+
+  it("scales to the four sizes and drops outlines and marks in mini", () => {
+    const sizes: { size: WaffleSize; width: string }[] = [
+      { size: "large", width: "256" },
+      { size: "medium", width: "128" },
+      { size: "small", width: "64" },
+      { size: "mini", width: "24" },
+    ];
+    for (const s of sizes) {
+      const view = render(Meter, {
+        usedBp: 9900,
+        severity: "critical",
+        label: "x",
+        size: s.size,
+      });
+      expect(view.container.querySelector("svg")?.getAttribute("width")).toBe(
+        s.width,
+      );
+      if (s.size === "mini") {
+        expect(view.container.querySelector("path")).toBeNull();
+        expect(view.container.querySelector('[fill="none"]')).toBeNull();
+      }
+      cleanup();
+    }
+  });
+
+  it("draws a stale reading as outlines with no alert colour", () => {
+    const view = render(Meter, {
+      usedBp: 9900,
+      severity: "critical",
+      label: "x",
+      stale: true,
+    });
+    const dots = [...view.container.querySelectorAll("circle")];
+    expect(dots.every((c) => c.getAttribute("fill") === "none")).toBe(true);
+    expect(dots[99]?.getAttribute("stroke")).toBe("var(--color-rule)");
+    expect(view.container.querySelector(".critical-mark")).toBeNull();
+  });
+
+  it("has no meter role when decorative", () => {
+    render(Meter, {
+      usedBp: 100,
+      severity: "ok",
+      label: "d",
+      size: "mini",
+      decorative: true,
+    });
+    expect(screen.queryByRole("meter")).toBeNull();
   });
 });

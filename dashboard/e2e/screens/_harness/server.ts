@@ -2,14 +2,18 @@
 // `tauri.conf.json` as a response header (docs/dashboard/DESIGN.md 8.10): Tauri injects the
 // policy only at run time, so a CSP-breaking change has to fail here.
 //
-// Run: `node e2e/screens/_harness/server.ts [port]`.
+// Run: `node e2e/screens/_harness/server.ts [port] [directory]`.
 
 import { readFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { extname, join, normalize, resolve } from "node:path";
 import tauriConfig from "../../../src-tauri/tauri.conf.json" with { type: "json" };
 
-const root = resolve(import.meta.dirname, "../../../dist");
+const root = resolve(
+  import.meta.dirname,
+  "../../..",
+  process.argv[3] ?? "dist",
+);
 const csp = tauriConfig.app.security.csp;
 const port = Number(process.argv[2] ?? "4173");
 

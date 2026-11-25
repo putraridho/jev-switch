@@ -50,14 +50,22 @@ summary {
   color: inherit;
 }
 
-/* Buttons are quiet text controls with a hairline: no fill, no shadow. */
+/* Buttons (S33). The plain button is the outline kind; `.primary` and `.text` are the other
+   two the app uses. 32 high, radius 6, 13/500. One primary per view. */
 button {
-  min-height: var(--hit-min);
-  min-width: var(--hit-min);
-  padding-inline: var(--space-3);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  min-height: var(--control-h);
+  min-width: var(--control-h);
+  padding-inline: var(--space-4);
   background: none;
-  border: var(--outline) solid var(--color-border);
+  border: var(--outline) solid var(--color-border-strong);
   border-radius: var(--radius-control);
+  font-size: var(--text-sm);
+  font-weight: var(--text-sm-weight-strong);
+  line-height: var(--text-sm-line);
   cursor: pointer;
   transition-property: background-color, border-color, scale;
   transition-duration: var(--duration-fast);
@@ -65,31 +73,103 @@ button {
 }
 
 button:hover:not(:disabled) {
-  background: var(--color-surface-2);
+  background: var(--color-hover);
 }
 
-/* Press feedback: exactly 0.96, never below. */
 button:active:not(:disabled) {
+  background: var(--color-pressed);
+  /* Press feedback: exactly 0.96, never below. */
   scale: 0.96;
+}
+
+button.primary {
+  color: var(--color-paper);
+  background: var(--color-ink);
+  border-color: var(--color-ink);
+}
+
+button.primary:hover:not(:disabled) {
+  background: var(--color-ink-hover);
+  border-color: var(--color-ink-hover);
+}
+
+button.primary:active:not(:disabled) {
+  background: var(--color-ink-pressed);
+  border-color: var(--color-ink-pressed);
+}
+
+button.text {
+  padding-inline: var(--space-2);
+  border-color: transparent;
+}
+
+/* The 28 high size (S33). The 32 px target of D9.10 is kept by an invisible overhang. */
+button.small {
+  position: relative;
+  min-height: var(--control-sm-h);
+  min-width: var(--control-sm-h);
+  padding-inline: var(--space-3);
+}
+
+button.small::after {
+  content: "";
+  position: absolute;
+  inset: calc((var(--control-sm-h) - var(--control-h)) / 2);
+}
+
+button.small.text {
+  padding-inline: var(--space-2);
 }
 
 button:disabled {
   color: var(--color-text-2);
+  background: var(--color-rule);
+  border-color: var(--color-rule);
   cursor: default;
 }
 
+/* Text fields and the native select (S34). */
 input[type="number"],
+input[type="text"],
 select {
-  min-height: var(--control-min);
-  padding-inline: var(--space-2);
+  min-height: var(--control-h);
+  padding-inline: var(--space-3);
   background: var(--color-surface);
   border: var(--outline) solid var(--color-border-strong);
   border-radius: var(--radius-control);
+  font-size: var(--text-sm);
+  transition-property: border-color;
+  transition-duration: var(--duration-fast);
+  transition-timing-function: var(--ease);
+}
+
+input[type="number"]:hover:not(:disabled),
+input[type="text"]:hover:not(:disabled),
+select:hover:not(:disabled) {
+  border-color: var(--color-ink);
+}
+
+input[aria-invalid="true"],
+input[aria-invalid="true"]:hover:not(:disabled) {
+  border-color: var(--color-alert);
+}
+
+input:disabled,
+select:disabled {
+  color: var(--color-text-2);
+  background: var(--color-surface-2);
+  border-color: var(--color-rule);
 }
 
 input[type="number"] {
-  width: 5rem;
+  width: 7.5rem;
+  font-family: var(--font-mono);
   font-variant-numeric: tabular-nums;
+}
+
+/* A run of switch rows is separated by hairlines (S53). */
+.waffle-switch + .waffle-switch {
+  border-top: var(--rule) solid var(--color-rule);
 }
 
 input[type="checkbox"] {

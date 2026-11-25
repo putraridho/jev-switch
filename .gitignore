@@ -6,6 +6,7 @@ __pycache__/
 # Flashboard (dashboard/): installed packages, build output and test output.
 dashboard/node_modules/
 dashboard/dist/
+dashboard/dist-gallery/
 dashboard/test-results/
 dashboard/playwright-report/
 dashboard/e2e/screens/

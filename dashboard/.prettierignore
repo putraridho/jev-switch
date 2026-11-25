@@ -2,6 +2,7 @@
 src/lib/ipc/bindings/
 # Build output and tool state.
 dist/
+dist-gallery/
 node_modules/
 coverage/
 test-results/

@@ -95,6 +95,7 @@ export default defineConfig(
   {
     ignores: [
       "dist/",
+      "dist-gallery/",
       "node_modules/",
       "coverage/",
       "test-results/",

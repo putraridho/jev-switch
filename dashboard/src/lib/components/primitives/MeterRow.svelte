@@ -3,6 +3,7 @@
   import { pushEscape } from "../../escape";
   import {
     absolute,
+    age,
     countdown,
     meterValueText,
     percent,
@@ -15,34 +16,81 @@
   import { statusName } from "../../copy";
   import { clock } from "../../stores/clock.svelte";
   import { settings } from "../../stores/settings.svelte";
+  import BigNumber from "./BigNumber.svelte";
+  import DetailRows from "./DetailRows.svelte";
+  import type { DetailRow } from "./display";
   import Meter from "./Meter.svelte";
+  import MeterLabel from "./MeterLabel.svelte";
+  import StaleRow from "./StaleRow.svelte";
 
   interface Props {
     provider: ProviderKey;
     meter: WindowMeterView;
     /** When the reading was taken (epoch milliseconds). */
     observedAt: number;
+    /** The provider's name on the label line, when no heading above says it. */
+    heading?: string;
+    /** `medium` for secondary windows and narrow layouts (S15). */
+    size?: "large" | "medium";
+    /** The latest read failed: this is the last good value (S27). */
+    stale?: boolean;
   }
 
-  const { provider, meter, observedAt }: Props = $props();
+  const {
+    provider,
+    meter,
+    observedAt,
+    heading,
+    size = "large",
+    stale = false,
+  }: Props = $props();
 
   const hour = $derived(settings.value.hour_cycle);
   const name = $derived(windowName(meter.window));
   const label = $derived(`${providerName[provider]} ${name}`);
   const elapsed = $derived(meter.phase === "elapsed");
+  const warnAt = $derived(Math.round(settings.value.warn_bp / 100));
+  const criticalAt = $derived(Math.round(settings.value.critical_bp / 100));
+  const raised = $derived(
+    !stale &&
+      !elapsed &&
+      (meter.severity === "warn" || meter.severity === "critical"),
+  );
   const left = $derived(
     meter.resets_at === null ? null : countdown(meter.resets_at, clock.now),
   );
+  const lastRead = $derived(
+    `Last good read ${age(observedAt, clock.now, hour)}`,
+  );
   const valueText = $derived(
-    meterValueText(meter, clock.now, hour, observedAt),
+    stale
+      ? `${meterValueText(meter, clock.now, hour, observedAt)}, stale, ${lastRead.toLowerCase()}`
+      : meterValueText(meter, clock.now, hour, observedAt),
   );
   const quiet = $derived.by(() => {
-    if (meter.resets_at === null) return "Reset time unavailable";
+    if (meter.resets_at === null) return "Reset time unknown";
     if (elapsed || left === null) {
       return `Reset ${absolute(meter.resets_at, clock.now, hour)} · waiting for your next request`;
     }
-    return `Resets in ${left}`;
+    if (raised) return `Past the ${String(warnAt)}% mark. Resets in ${left}`;
+    return `Resets in ${left} · ${absolute(meter.resets_at, clock.now, hour)}`;
   });
+  const detail: DetailRow[] = $derived([
+    {
+      label: "Used",
+      value: percentDetail(meter.used_bp),
+      alert: raised,
+    },
+    {
+      label: "Exact reset",
+      value:
+        meter.resets_at === null
+          ? "Reset time unknown"
+          : absolute(meter.resets_at, clock.now, hour),
+    },
+    { label: "Status", value: statusName[meter.status] },
+    { label: "Seen at", value: timeOfDay(observedAt, hour) },
+  ]);
 
   // Level 1 (DESIGN 9.1): the detail opens on hover or keyboard focus, stays open while the
   // pointer is over it, and closes on Esc without moving focus (WCAG 1.4.13).
@@ -65,7 +113,7 @@
 </script>
 
 <div
-  class="row"
+  class="row {size}"
   role="presentation"
   onpointerenter={() => {
     hovered = true;
@@ -87,95 +135,90 @@
     }
   }}
 >
-  <p class="window">{name}</p>
-  <div class="value">{elapsed ? "—" : percent(meter.used_bp)}</div>
+  <div class="label">
+    <MeterLabel
+      name={heading}
+      window={name}
+      status={raised ? "near_limit" : undefined}
+    />
+  </div>
   <div class="waffle-slot">
     <Meter
       usedBp={meter.used_bp}
       severity={meter.severity}
       {label}
       {valueText}
+      {size}
+      {stale}
+      warnAtPct={warnAt}
+      criticalAtPct={criticalAt}
       focusable
     />
   </div>
-  <p class="quiet">{quiet}</p>
+  <div class="reading">
+    <BigNumber
+      value={elapsed ? "—" : percent(meter.used_bp)}
+      unit={elapsed ? undefined : "used"}
+      alert={raised}
+    />
+    {#if stale}
+      <StaleRow text={lastRead} />
+    {:else}
+      <p class="quiet">{quiet}</p>
+    {/if}
+  </div>
   {#if open}
     <div class="detail" aria-hidden="true">
-      <p>{percentDetail(meter.used_bp)} used</p>
-      <p>
-        {meter.resets_at === null
-          ? "Reset time unavailable"
-          : `Resets ${absolute(meter.resets_at, clock.now, hour)}`}
-      </p>
-      <p>Status: {statusName[meter.status]}</p>
-      <p>Seen at {timeOfDay(observedAt, hour)}</p>
+      <DetailRows rows={detail} />
     </div>
   {/if}
 </div>
 
 <style>
+  /* S22: a 256 column — label, 16, waffle, 24, number, 4, caption. */
   .row {
-    position: relative;
+    display: grid;
+    align-content: start;
+    inline-size: 16rem;
+    max-inline-size: 100%;
     padding-block: var(--space-3);
   }
-
-  /* With room (the 10x10 waffle is 240 px wide at its 24 px pitch) the number and the quiet
-     line sit beside it, as in the wireframes; narrower, everything stacks. The DOM order is
-     the reading order either way: name, number, meter, quiet line. */
-  @media (min-width: 34rem) {
-    .row {
-      display: grid;
-      grid-template-columns: 1fr max-content;
-      grid-template-rows: auto auto auto 1fr;
-      grid-template-areas:
-        "window waffle"
-        "value waffle"
-        "quiet waffle"
-        ". waffle";
-      column-gap: var(--space-6);
-    }
-    .window {
-      grid-area: window;
-    }
-    .value {
-      grid-area: value;
-    }
-    .waffle-slot {
-      grid-area: waffle;
-    }
-    .quiet {
-      grid-area: quiet;
-    }
+  .waffle-slot {
+    margin-block-start: var(--space-4);
   }
-
-  .window {
-    font-size: var(--text-sm);
-    font-weight: var(--text-sm-weight-strong);
-  }
-
-  .value {
-    font-family: var(--font-serif);
-    font-size: var(--num-xl);
-    line-height: var(--num-xl-line);
-    font-variant-numeric: tabular-nums;
-  }
-
-  /* Opens below the row: it never covers the meter that opened it. */
-  .detail {
-    position: absolute;
-    inset-inline: 0;
-    top: 100%;
-    z-index: 1;
+  .reading {
     display: grid;
     gap: var(--space-1);
-    padding: var(--space-3);
-    background: var(--color-surface-2);
-    border: var(--outline) solid var(--color-border);
-    border-radius: var(--radius-control);
+    margin-block-start: var(--space-6);
   }
 
-  .detail p {
-    color: var(--color-text);
+  /* S15: with the medium waffle the number sits beside it, never inside. */
+  .row.medium {
+    grid-template-columns: max-content 1fr;
+    column-gap: var(--space-4);
+    inline-size: 100%;
+  }
+  .medium .label {
+    grid-column: 1 / -1;
+  }
+  .medium .reading {
+    align-self: center;
+    margin-block-start: var(--space-4);
+  }
+  .medium .detail {
+    grid-column: 1 / -1;
+  }
+
+  .quiet {
+    margin: 0;
+    font-size: var(--text-sm);
+    line-height: var(--text-sm-line);
+    color: var(--color-muted);
     font-variant-numeric: tabular-nums;
+  }
+
+  /* S23: in flow below the caption, so it pushes what follows and never covers the meter. */
+  .detail {
+    margin-block-start: var(--space-4);
   }
 </style>
