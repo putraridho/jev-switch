@@ -1,0 +1,19 @@
+#!/bin/sh
+# Stub `claude` for development runs and the smoke test (T12 replaces it). Synthetic answers
+# only: no network, no real CLI, no files written, and never a prompt.
+if [ "$#" -eq 2 ] && [ "$1" = "auth" ] && [ "$2" = "status" ]; then
+  cat <<'JSON'
+{
+  "loggedIn": true,
+  "authMethod": "claude.ai",
+  "apiProvider": "firstParty",
+  "email": "canary-email@example.invalid",
+  "orgId": "jevcanary_9f3c1b7e",
+  "orgName": "JEVCANARY_9f3c1b7e_DO_NOT_SURFACE Org",
+  "subscriptionType": "max",
+  "planTier": "max_5x"
+}
+JSON
+  exit 0
+fi
+exit 1

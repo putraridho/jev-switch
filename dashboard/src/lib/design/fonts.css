@@ -1,0 +1,42 @@
+/* Self-hosted fonts, woff2 only: WebKitGTK reads woff2, and the woff fallbacks of the
+   fontsource stylesheets doubled the font weight past its budget (DESIGN 11.3). */
+@font-face {
+  font-family: "DM Sans";
+  font-style: normal;
+  font-display: swap;
+  font-weight: 400;
+  src: url(../../../node_modules/@fontsource/dm-sans/files/dm-sans-latin-400-normal.woff2)
+    format("woff2");
+}
+@font-face {
+  font-family: "DM Sans";
+  font-style: normal;
+  font-display: swap;
+  font-weight: 500;
+  src: url(../../../node_modules/@fontsource/dm-sans/files/dm-sans-latin-500-normal.woff2)
+    format("woff2");
+}
+@font-face {
+  font-family: "DM Sans";
+  font-style: normal;
+  font-display: swap;
+  font-weight: 600;
+  src: url(../../../node_modules/@fontsource/dm-sans/files/dm-sans-latin-600-normal.woff2)
+    format("woff2");
+}
+@font-face {
+  font-family: "Instrument Serif";
+  font-style: normal;
+  font-display: swap;
+  font-weight: 400;
+  src: url(../../../node_modules/@fontsource/instrument-serif/files/instrument-serif-latin-400-normal.woff2)
+    format("woff2");
+}
+@font-face {
+  font-family: "DM Mono";
+  font-style: normal;
+  font-display: swap;
+  font-weight: 400;
+  src: url(../../../node_modules/@fontsource/dm-mono/files/dm-mono-latin-400-normal.woff2)
+    format("woff2");
+}

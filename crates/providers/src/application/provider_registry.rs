@@ -62,6 +62,8 @@ pub struct Runtime {
     /// DeepSeek's remaining account balance, already formatted for display, filled in by a background fetch (it is pay per
     /// token, so a balance is what "credit left" means there, not a plan percentage).
     balance: std::sync::Arc<Mutex<Option<String>>>,
+    /// Gemini's quota, filled in by a background fetch (see [`plan`]).
+    gemini_plan: plan::GeminiPlanSlot,
     /// Providers that failed in a way another provider can cover and that is not a usage
     /// limit, with why. Session-only and kept out of the persisted cooldowns on purpose:
     /// a login problem or an unusable directory is not a limit, and an hour-long cooldown
@@ -163,6 +165,7 @@ impl Runtime {
             plan: HashMap::new(),
             plan_path: None,
             balance: std::sync::Arc::default(),
+            gemini_plan: Default::default(),
             blocked: HashMap::new(),
             breakers: Breakers::default(),
             breaker_path: None,

@@ -1,0 +1,15 @@
+{
+  "identifier": "main",
+  "windows": ["main"],
+  "local": true,
+  "permissions": [
+    "core:event:allow-listen",
+    "core:event:allow-unlisten",
+    "allow-get-snapshot",
+    "allow-refresh",
+    "allow-get-history",
+    "allow-get-settings",
+    "allow-update-settings",
+    "allow-get-diagnostics"
+  ]
+}

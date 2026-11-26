@@ -21,3 +21,9 @@ Notes for the parser:
   that feeding it to the parser surfaces nothing.
 - The full protocol schema: `codex app-server generate-json-schema --out DIR`
   (v2/GetAccountRateLimitsResponse.json, v2/GetAccountTokenUsageResponse.json).
+
+`paid_plan.response.json` is SYNTHETIC (not recorded): written from the schema for a paid
+plan (a 300-minute primary, a 10080-minute secondary, `credits` with a decimal-string
+balance, `planType` `plus`, a fractional `usedPercent`), in the envelope of
+`rate_limits_read.response.json`. The lead replaces it with the redacted real response
+after T04's run.

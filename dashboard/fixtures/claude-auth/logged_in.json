@@ -1,0 +1,16 @@
+{
+  "loggedIn": true,
+  "authMethod": "claude.ai",
+  "apiProvider": "firstParty",
+  "email": "canary-email@example.invalid",
+  "orgId": "jevcanary_9f3c1b7e",
+  "orgName": "JEVCANARY_9f3c1b7e_DO_NOT_SURFACE Org",
+  "subscriptionType": "max",
+  "planTier": "max_5x",
+  "configDirectory": "/synthetic/home/JEVCANARY_9f3c1b7e_DO_NOT_SURFACE/.claude",
+  "accountUuid": "00000000-0000-4000-8000-00000000c0de",
+  "displayName": "JEVCANARY_9f3c1b7e_DO_NOT_SURFACE",
+  "organizationRole": "jevcanary_9f3c1b7e",
+  "workspaceRole": null,
+  "hasExtraUsageEnabled": false
+}

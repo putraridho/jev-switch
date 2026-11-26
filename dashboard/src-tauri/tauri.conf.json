@@ -1,0 +1,26 @@
+{
+  "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
+  "productName": "Flashboard",
+  "mainBinaryName": "jev-dashboard",
+  "identifier": "dev.jev.flashboard",
+  "build": {
+    "frontendDist": "../dist",
+    "devUrl": "http://localhost:1420",
+    "beforeDevCommand": "pnpm exec vite",
+    "beforeBuildCommand": "pnpm build"
+  },
+  "app": {
+    "withGlobalTauri": false,
+    "windows": [],
+    "security": {
+      "csp": "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; font-src 'self'; connect-src ipc: http://ipc.localhost; base-uri 'none'; form-action 'none'; frame-ancestors 'none'; object-src 'none'",
+      "freezePrototype": true,
+      "dangerousDisableAssetCspModification": false,
+      "capabilities": ["main"]
+    }
+  },
+  "bundle": {
+    "active": false,
+    "targets": []
+  }
+}

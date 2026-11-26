@@ -166,6 +166,17 @@ impl ProviderHost for SystemProbes {
         jev_backend::infrastructure::codex::codex_plan::latest_plan().map(|(plan, _)| plan)
     }
 
+    fn fetch_gemini_plan(&self) -> BoxFuture<Option<PlanUsage>> {
+        Box::pin(async {
+            // This crate's tests run on the real host: never start a real `agy` from them.
+            if cfg!(test) {
+                return None;
+            }
+            let bin = super::backend_factory::agy_bin_in_use()?;
+            jev_backend::infrastructure::gemini::agy_plan::fetch(&bin).await
+        })
+    }
+
     fn fetch_credit(&self, key: String) -> BoxFuture<Option<String>> {
         Box::pin(async move { super::deepseek_balance::fetch_deepseek_balance(&key).await.as_ref().map(super::deepseek_balance::format_balance) })
     }

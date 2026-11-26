@@ -85,6 +85,12 @@ pub fn gemini_via() -> &'static str {
     }
 }
 
+/// The `agy` binary, when it is what runs Gemini here and is really installed.
+pub(super) fn agy_bin_in_use() -> Option<String> {
+    let bin = GeminiBackend::antigravity().bin;
+    (detect_gemini_flavor() == Flavor::Antigravity && crate::infrastructure::probe_host::installed_for_real(&bin)).then_some(bin)
+}
+
 fn detect_gemini_flavor() -> Flavor {
     let settings = std::env::var_os("HOME")
         .and_then(|h| std::fs::read_to_string(PathBuf::from(h).join(".gemini/settings.json")).ok());

@@ -4,6 +4,15 @@ See [docs/changelog-guide.md](docs/changelog-guide.md) for changelog formatting,
 
 ## Unreleased
 
+## 1.15.0
+
+Gemini plan usage in jev-code, and Flashboard, a desktop usage dashboard, joins the repository.
+
+- **jev-code shows how much of the Gemini quota is used.** When Gemini runs through the Antigravity CLI, jev-code asks `agy -p /usage` in the background (at start and after Gemini turns, at most every five minutes; no tokens are spent) and treats the busier of the 5-hour and weekly windows like Claude's and Codex's plan readings, in the router row, `/cost` and worker balancing. The CLI's auto-updater is switched off for that call. On by default; `JEV_GEMINI_USAGE=off` turns it off.
+
+- **Flashboard shows what you have used of your plans and credits.** A separate Linux desktop app (Tauri and Svelte, in `dashboard/`) with cards for Claude, Codex, Antigravity and DeepSeek, a history chart, threshold notifications, a tray icon and keyboard and screen-reader support. It is not part of the downloadable jev-code release: build and install it from a checkout as `dashboard/README.md` describes.
+- **Antigravity quota is read through `agy -p /usage`,** with the CLI's auto-updater switched off for that run. `agy` has also been seen answering with every window full while signed in; Flashboard shows that as no data.
+
 ## 1.14.3
 
 MCP elicitation questions reach the terminal, and `/update` survives a replaced binary.

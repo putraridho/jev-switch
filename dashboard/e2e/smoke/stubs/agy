@@ -1,0 +1,16 @@
+#!/bin/sh
+# Stub `agy` for development runs and the smoke test. Synthetic answer only: no network, no
+# real CLI, no files written, and never a prompt. It answers only the exact usage call, and
+# only with the updater switched off.
+if [ "$*" = "-p /usage --output-format json" ] && [ "${AGY_CLI_DISABLE_AUTO_UPDATE:-}" = "true" ]; then
+  later() { /usr/bin/date -u -d "+$1" +%Y-%m-%dT%H:%M:%SZ; }
+  printf '{"conversation_id":"","status":"SUCCESS","command":{"name":"usage","data":{"groups":['
+  printf '{"name":"JEVCANARY_9f3c1b7e_DO_NOT_SURFACE","buckets":['
+  printf '{"id":"gemini-weekly","remaining_fraction":0.82,"reset_time":"%s"},' "$(later '4 days')"
+  printf '{"id":"gemini-5h","remaining_fraction":0.59,"reset_time":"%s"}]},' "$(later '2 hours')"
+  printf '{"name":"3p","buckets":['
+  printf '{"id":"3p-weekly","remaining_fraction":1,"reset_time":"1970-01-01T00:00:00Z"},'
+  printf '{"id":"3p-5h","remaining_fraction":1,"reset_time":"1970-01-01T00:00:00Z"}]}]}}}\n'
+  exit 0
+fi
+exit 1

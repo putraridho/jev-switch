@@ -20,6 +20,8 @@ done
 JEV_ROUTER_ENV=$(mktemp)
 trap 'rm -f "$JEV_ROUTER_ENV"' EXIT
 export JEV_ROUTER_ENV
+# No test may ask a real `agy` for its usage.
+export JEV_GEMINI_USAGE=off
 export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1
 
 echo '==> Clippy'

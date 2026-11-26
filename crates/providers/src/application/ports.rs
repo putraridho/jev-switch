@@ -64,6 +64,11 @@ pub trait ProviderHost: ReadinessHost {
     fn plan_is_current(&self, plan: &PlanUsage, now_s: u64) -> bool;
     /// Codex's own latest reading, from its session files.
     fn latest_codex_plan(&self) -> Option<PlanUsage>;
+    /// Antigravity's latest quota reading for Gemini, asked from `agy` itself; `None` when
+    /// Gemini does not run through `agy`, or on any failure.
+    fn fetch_gemini_plan(&self) -> BoxFuture<Option<PlanUsage>> {
+        Box::pin(std::future::ready(None))
+    }
     /// DeepSeek's remaining balance for display (`$12.34 left`); `None` on any failure.
     fn fetch_credit(&self, key: String) -> BoxFuture<Option<String>>;
     /// A setting (`JEV_ALLOW_CREDITS`, `DEEPSEEK_API_KEY`): the environment first, then the key file.

@@ -38,6 +38,7 @@ impl Runtime {
         self.plan_path = plan_path;
         self.refresh_codex_plan();
         self.refresh_balance();
+        self.refresh_gemini_plan();
     }
 
     /// Like [`Runtime::start`], but a recent probe answer saved by an earlier run is used at

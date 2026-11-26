@@ -1,0 +1,32 @@
+# Flashboard's clippy configuration (docs/dashboard/DESIGN.md 11.1). It lives here and not at
+# the repository root, so it applies to the three app crates and never to the engine.
+
+disallowed-types = [
+    { path = "serde_json::Value", reason = "typed structs and enums at every boundary (DESIGN 1a)" },
+    { path = "serde_json::Map", reason = "typed structs and enums at every boundary (DESIGN 1a)" },
+]
+
+disallowed-macros = [
+    { path = "serde_json::json", reason = "typed structs and enums at every boundary (DESIGN 1a)" },
+    { path = "log::trace", reason = "diag::emit is the one diagnostic channel (DESIGN 8.4)", allow-invalid = true },
+    { path = "log::debug", reason = "diag::emit is the one diagnostic channel (DESIGN 8.4)", allow-invalid = true },
+    { path = "log::info", reason = "diag::emit is the one diagnostic channel (DESIGN 8.4)", allow-invalid = true },
+    { path = "log::warn", reason = "diag::emit is the one diagnostic channel (DESIGN 8.4)", allow-invalid = true },
+    { path = "log::error", reason = "diag::emit is the one diagnostic channel (DESIGN 8.4)", allow-invalid = true },
+    { path = "log::log", reason = "diag::emit is the one diagnostic channel (DESIGN 8.4)", allow-invalid = true },
+    { path = "tracing::trace", reason = "diag::emit is the one diagnostic channel (DESIGN 8.4)", allow-invalid = true },
+    { path = "tracing::debug", reason = "diag::emit is the one diagnostic channel (DESIGN 8.4)", allow-invalid = true },
+    { path = "tracing::info", reason = "diag::emit is the one diagnostic channel (DESIGN 8.4)", allow-invalid = true },
+    { path = "tracing::warn", reason = "diag::emit is the one diagnostic channel (DESIGN 8.4)", allow-invalid = true },
+    { path = "tracing::error", reason = "diag::emit is the one diagnostic channel (DESIGN 8.4)", allow-invalid = true },
+    { path = "tracing::event", reason = "diag::emit is the one diagnostic channel (DESIGN 8.4)", allow-invalid = true },
+]
+
+# The in-test switches: they cover `#[test]` functions; helpers are covered by the fixed
+# test header of DESIGN 11.1.
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true
+allow-panic-in-tests = true
+allow-indexing-slicing-in-tests = true
+allow-dbg-in-tests = false
+allow-print-in-tests = false

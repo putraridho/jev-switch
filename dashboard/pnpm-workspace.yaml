@@ -1,0 +1,6 @@
+# Supply-chain settings (docs/dashboard/DESIGN.md 8.9).
+# Dependency build scripts are blocked except this allow-list.
+onlyBuiltDependencies:
+  - esbuild
+# A version must be at least 7 days old before it can be resolved.
+minimumReleaseAge: 10080

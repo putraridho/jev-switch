@@ -1,0 +1,9 @@
+{
+  "loggedIn": false,
+  "authMethod": "none",
+  "apiProvider": "firstParty",
+  "email": "canary-email@example.invalid",
+  "orgId": "jevcanary_9f3c1b7e",
+  "orgName": "JEVCANARY_9f3c1b7e_DO_NOT_SURFACE Org",
+  "configDirectory": "/synthetic/home/JEVCANARY_9f3c1b7e_DO_NOT_SURFACE/.claude"
+}

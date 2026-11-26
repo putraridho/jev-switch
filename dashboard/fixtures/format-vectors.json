@@ -1,0 +1,740 @@
+{
+  "version": 1,
+  "notes": [
+    "Shared by the Rust `text` tests and the TypeScript `format` tests (DESIGN 9.9). Frozen: a wrong vector is a contract change.",
+    "All local times are in `zone` (a fixed offset, no DST). `now` of the time cases is Monday 14 Dec 2026 12:33:00 local unless a case says otherwise.",
+    "percent: whole, rounded down; 0 < x < 1 is '<1%'. percent_detail: one decimal, cut (not rounded), with a space before the sign.",
+    "countdown: >= 48 h 'Nd Nh'; >= 1 h 'Nh MMm' (minutes two digits); >= 1 min 'Nm'; below 'under a minute'; reset time not after now is null (the Elapsed state).",
+    "absolute: same local day 'today HH:MM'; next local day 'tomorrow HH:MM'; 2 to 6 local days ahead 'Thu HH:MM'; else 'D Mon HH:MM', with the year after the month when it differs from now's. h12 writes 'h:MM AM/PM'.",
+    "age: under 1 min (or in the future) 'just now'; under 1 h 'Nm ago'; same local day 'Nh MMm ago'; previous local day 'yesterday HH:MM'; else the date as in absolute.",
+    "money: two decimals, half away from zero, English grouping; usd '$', cny 'CN¥'; `other` is the plain number followed by the word 'balance'.",
+    "window_name: '5-hour', '7-day', '30-day'; rolling is 'N-day' when a whole number of days, else 'N-hour'; a named window is its raw label."
+  ],
+  "zone": {
+    "name": "Asia/Jakarta",
+    "utc_offset_minutes": 420
+  },
+  "percent": [
+    {
+      "id": "percent-zero",
+      "fn": "percent",
+      "bp": 0,
+      "expect": "0%"
+    },
+    {
+      "id": "percent-one-bp",
+      "fn": "percent",
+      "bp": 1,
+      "expect": "<1%"
+    },
+    {
+      "id": "percent-just-under-one",
+      "fn": "percent",
+      "bp": 99,
+      "expect": "<1%"
+    },
+    {
+      "id": "percent-exactly-one",
+      "fn": "percent",
+      "bp": 100,
+      "expect": "1%"
+    },
+    {
+      "id": "percent-half",
+      "fn": "percent",
+      "bp": 5000,
+      "expect": "50%"
+    },
+    {
+      "id": "percent-rounds-down-79-6",
+      "fn": "percent",
+      "bp": 7960,
+      "expect": "79%"
+    },
+    {
+      "id": "percent-rounds-down-79-99",
+      "fn": "percent",
+      "bp": 7999,
+      "expect": "79%"
+    },
+    {
+      "id": "percent-exactly-80",
+      "fn": "percent",
+      "bp": 8000,
+      "expect": "80%"
+    },
+    {
+      "id": "percent-never-rounds-up-to-100",
+      "fn": "percent",
+      "bp": 9999,
+      "expect": "99%"
+    },
+    {
+      "id": "percent-exactly-100",
+      "fn": "percent",
+      "bp": 10000,
+      "expect": "100%"
+    },
+    {
+      "id": "percent-over-100",
+      "fn": "percent",
+      "bp": 10400,
+      "expect": "104%"
+    },
+    {
+      "id": "percent-over-100-rounds-down",
+      "fn": "percent",
+      "bp": 10499,
+      "expect": "104%"
+    },
+    {
+      "id": "percent-saturated",
+      "fn": "percent",
+      "bp": 60000,
+      "expect": "600%"
+    }
+  ],
+  "percent_detail": [
+    {
+      "id": "detail-zero",
+      "fn": "percent_detail",
+      "bp": 0,
+      "expect": "0.0 %"
+    },
+    {
+      "id": "detail-half",
+      "fn": "percent_detail",
+      "bp": 5000,
+      "expect": "50.0 %"
+    },
+    {
+      "id": "detail-cut-79-96",
+      "fn": "percent_detail",
+      "bp": 7996,
+      "expect": "79.9 %"
+    },
+    {
+      "id": "detail-cut-99-99",
+      "fn": "percent_detail",
+      "bp": 9999,
+      "expect": "99.9 %"
+    },
+    {
+      "id": "detail-exactly-100",
+      "fn": "percent_detail",
+      "bp": 10000,
+      "expect": "100.0 %"
+    },
+    {
+      "id": "detail-over-100",
+      "fn": "percent_detail",
+      "bp": 10449,
+      "expect": "104.4 %"
+    }
+  ],
+  "countdown": [
+    {
+      "id": "countdown-3d-4h",
+      "fn": "countdown",
+      "resets_at_s": 1797501780,
+      "now_ms": 1797226380000,
+      "expect": "3d 4h"
+    },
+    {
+      "id": "countdown-exactly-48h",
+      "fn": "countdown",
+      "resets_at_s": 1797399180,
+      "now_ms": 1797226380000,
+      "expect": "2d 0h"
+    },
+    {
+      "id": "countdown-just-under-48h",
+      "fn": "countdown",
+      "resets_at_s": 1797399179,
+      "now_ms": 1797226380000,
+      "expect": "47h 59m"
+    },
+    {
+      "id": "countdown-30-days",
+      "fn": "countdown",
+      "resets_at_s": 1799818380,
+      "now_ms": 1797226380000,
+      "expect": "30d 0h"
+    },
+    {
+      "id": "countdown-2h-14m",
+      "fn": "countdown",
+      "resets_at_s": 1797234420,
+      "now_ms": 1797226380000,
+      "expect": "2h 14m"
+    },
+    {
+      "id": "countdown-2h-05m",
+      "fn": "countdown",
+      "resets_at_s": 1797233939,
+      "now_ms": 1797226380000,
+      "expect": "2h 05m"
+    },
+    {
+      "id": "countdown-exactly-1h",
+      "fn": "countdown",
+      "resets_at_s": 1797229980,
+      "now_ms": 1797226380000,
+      "expect": "1h 00m"
+    },
+    {
+      "id": "countdown-just-under-1h",
+      "fn": "countdown",
+      "resets_at_s": 1797229979,
+      "now_ms": 1797226380000,
+      "expect": "59m"
+    },
+    {
+      "id": "countdown-38m",
+      "fn": "countdown",
+      "resets_at_s": 1797228680,
+      "now_ms": 1797226380000,
+      "expect": "38m"
+    },
+    {
+      "id": "countdown-exactly-1m",
+      "fn": "countdown",
+      "resets_at_s": 1797226440,
+      "now_ms": 1797226380000,
+      "expect": "1m"
+    },
+    {
+      "id": "countdown-59s",
+      "fn": "countdown",
+      "resets_at_s": 1797226439,
+      "now_ms": 1797226380000,
+      "expect": "under a minute"
+    },
+    {
+      "id": "countdown-1s",
+      "fn": "countdown",
+      "resets_at_s": 1797226381,
+      "now_ms": 1797226380000,
+      "expect": "under a minute"
+    },
+    {
+      "id": "countdown-half-second",
+      "fn": "countdown",
+      "resets_at_s": 1797226381,
+      "now_ms": 1797226380500,
+      "expect": "under a minute"
+    },
+    {
+      "id": "countdown-at-reset",
+      "fn": "countdown",
+      "resets_at_s": 1797226380,
+      "now_ms": 1797226380000,
+      "expect": null
+    },
+    {
+      "id": "countdown-past",
+      "fn": "countdown",
+      "resets_at_s": 1797226379,
+      "now_ms": 1797226380000,
+      "expect": null
+    },
+    {
+      "id": "countdown-long-past",
+      "fn": "countdown",
+      "resets_at_s": 1796362380,
+      "now_ms": 1797226380000,
+      "expect": null
+    }
+  ],
+  "absolute": [
+    {
+      "id": "absolute-today-h24",
+      "fn": "absolute",
+      "resets_at_s": 1797231600,
+      "now_ms": 1797226380000,
+      "hour": "h24",
+      "expect": "today 14:00"
+    },
+    {
+      "id": "absolute-today-h12",
+      "fn": "absolute",
+      "resets_at_s": 1797231600,
+      "now_ms": 1797226380000,
+      "hour": "h12",
+      "expect": "today 2:00 PM"
+    },
+    {
+      "id": "absolute-today-last-minute",
+      "fn": "absolute",
+      "resets_at_s": 1797267540,
+      "now_ms": 1797226380000,
+      "hour": "h24",
+      "expect": "today 23:59"
+    },
+    {
+      "id": "absolute-tomorrow-midnight-h24",
+      "fn": "absolute",
+      "resets_at_s": 1797267600,
+      "now_ms": 1797226380000,
+      "hour": "h24",
+      "expect": "tomorrow 00:00"
+    },
+    {
+      "id": "absolute-tomorrow-midnight-h12",
+      "fn": "absolute",
+      "resets_at_s": 1797267600,
+      "now_ms": 1797226380000,
+      "hour": "h12",
+      "expect": "tomorrow 12:00 AM"
+    },
+    {
+      "id": "absolute-tomorrow-h24",
+      "fn": "absolute",
+      "resets_at_s": 1797274800,
+      "now_ms": 1797226380000,
+      "hour": "h24",
+      "expect": "tomorrow 02:00"
+    },
+    {
+      "id": "absolute-tomorrow-h12",
+      "fn": "absolute",
+      "resets_at_s": 1797274800,
+      "now_ms": 1797226380000,
+      "hour": "h12",
+      "expect": "tomorrow 2:00 AM"
+    },
+    {
+      "id": "absolute-tomorrow-noon-h12",
+      "fn": "absolute",
+      "resets_at_s": 1797310800,
+      "now_ms": 1797226380000,
+      "hour": "h12",
+      "expect": "tomorrow 12:00 PM"
+    },
+    {
+      "id": "absolute-two-days-is-weekday",
+      "fn": "absolute",
+      "resets_at_s": 1797385020,
+      "now_ms": 1797226380000,
+      "hour": "h24",
+      "expect": "Wed 08:37"
+    },
+    {
+      "id": "absolute-thursday-h24",
+      "fn": "absolute",
+      "resets_at_s": 1797447600,
+      "now_ms": 1797226380000,
+      "hour": "h24",
+      "expect": "Thu 02:00"
+    },
+    {
+      "id": "absolute-thursday-h12",
+      "fn": "absolute",
+      "resets_at_s": 1797447600,
+      "now_ms": 1797226380000,
+      "hour": "h12",
+      "expect": "Thu 2:00 AM"
+    },
+    {
+      "id": "absolute-six-days-is-weekday",
+      "fn": "absolute",
+      "resets_at_s": 1797732900,
+      "now_ms": 1797226380000,
+      "hour": "h24",
+      "expect": "Sun 09:15"
+    },
+    {
+      "id": "absolute-seven-days-is-date",
+      "fn": "absolute",
+      "resets_at_s": 1797831180,
+      "now_ms": 1797226380000,
+      "hour": "h24",
+      "expect": "21 Dec 12:33"
+    },
+    {
+      "id": "absolute-date-h24",
+      "fn": "absolute",
+      "resets_at_s": 1798421820,
+      "now_ms": 1797226380000,
+      "hour": "h24",
+      "expect": "28 Dec 08:37"
+    },
+    {
+      "id": "absolute-date-h12",
+      "fn": "absolute",
+      "resets_at_s": 1798421820,
+      "now_ms": 1797226380000,
+      "hour": "h12",
+      "expect": "28 Dec 8:37 AM"
+    },
+    {
+      "id": "absolute-next-year-h24",
+      "fn": "absolute",
+      "resets_at_s": 1799113020,
+      "now_ms": 1797226380000,
+      "hour": "h24",
+      "expect": "5 Jan 2027 08:37"
+    },
+    {
+      "id": "absolute-next-year-h12",
+      "fn": "absolute",
+      "resets_at_s": 1799845500,
+      "now_ms": 1797226380000,
+      "hour": "h12",
+      "expect": "13 Jan 2027 8:05 PM"
+    },
+    {
+      "id": "absolute-new-years-eve-tomorrow",
+      "fn": "absolute",
+      "resets_at_s": 1798738200,
+      "now_ms": 1798735800000,
+      "hour": "h24",
+      "expect": "tomorrow 00:30"
+    },
+    {
+      "id": "absolute-new-year-weekday-keeps-no-year",
+      "fn": "absolute",
+      "resets_at_s": 1798941600,
+      "now_ms": 1798735800000,
+      "hour": "h24",
+      "expect": "Sun 09:00"
+    },
+    {
+      "id": "absolute-local-day-not-utc-day",
+      "fn": "absolute",
+      "resets_at_s": 1797271200,
+      "now_ms": 1797265800000,
+      "hour": "h24",
+      "expect": "tomorrow 01:00"
+    },
+    {
+      "id": "absolute-utc-date-already-tomorrow",
+      "fn": "absolute",
+      "resets_at_s": 1797206340,
+      "now_ms": 1797181800000,
+      "hour": "h24",
+      "expect": "today 06:59"
+    }
+  ],
+  "age": [
+    {
+      "id": "age-now",
+      "fn": "age",
+      "at_ms": 1797226380000,
+      "now_ms": 1797226380000,
+      "hour": "h24",
+      "expect": "just now"
+    },
+    {
+      "id": "age-59s",
+      "fn": "age",
+      "at_ms": 1797226320001,
+      "now_ms": 1797226380000,
+      "hour": "h24",
+      "expect": "just now"
+    },
+    {
+      "id": "age-future-is-just-now",
+      "fn": "age",
+      "at_ms": 1797226470000,
+      "now_ms": 1797226380000,
+      "hour": "h24",
+      "expect": "just now"
+    },
+    {
+      "id": "age-exactly-1m",
+      "fn": "age",
+      "at_ms": 1797226320000,
+      "now_ms": 1797226380000,
+      "hour": "h24",
+      "expect": "1m ago"
+    },
+    {
+      "id": "age-5m",
+      "fn": "age",
+      "at_ms": 1797226050000,
+      "now_ms": 1797226380000,
+      "hour": "h24",
+      "expect": "5m ago"
+    },
+    {
+      "id": "age-59m",
+      "fn": "age",
+      "at_ms": 1797222781000,
+      "now_ms": 1797226380000,
+      "hour": "h24",
+      "expect": "59m ago"
+    },
+    {
+      "id": "age-exactly-1h",
+      "fn": "age",
+      "at_ms": 1797222780000,
+      "now_ms": 1797226380000,
+      "hour": "h24",
+      "expect": "1h 00m ago"
+    },
+    {
+      "id": "age-2h-05m",
+      "fn": "age",
+      "at_ms": 1797218880000,
+      "now_ms": 1797226380000,
+      "hour": "h24",
+      "expect": "2h 05m ago"
+    },
+    {
+      "id": "age-12h-32m-same-day",
+      "fn": "age",
+      "at_ms": 1797181260000,
+      "now_ms": 1797226380000,
+      "hour": "h24",
+      "expect": "12h 32m ago"
+    },
+    {
+      "id": "age-yesterday-h24",
+      "fn": "age",
+      "at_ms": 1797171000000,
+      "now_ms": 1797226380000,
+      "hour": "h24",
+      "expect": "yesterday 21:10"
+    },
+    {
+      "id": "age-yesterday-h12",
+      "fn": "age",
+      "at_ms": 1797171000000,
+      "now_ms": 1797226380000,
+      "hour": "h12",
+      "expect": "yesterday 9:10 PM"
+    },
+    {
+      "id": "age-under-an-hour-across-midnight",
+      "fn": "age",
+      "at_ms": 1797180600000,
+      "now_ms": 1797182400000,
+      "hour": "h24",
+      "expect": "30m ago"
+    },
+    {
+      "id": "age-hours-across-midnight-is-yesterday",
+      "fn": "age",
+      "at_ms": 1797177600000,
+      "now_ms": 1797188400000,
+      "hour": "h24",
+      "expect": "yesterday 23:00"
+    },
+    {
+      "id": "age-two-days-is-date",
+      "fn": "age",
+      "at_ms": 1797084600000,
+      "now_ms": 1797226380000,
+      "hour": "h24",
+      "expect": "12 Dec 21:10"
+    },
+    {
+      "id": "age-date-h12",
+      "fn": "age",
+      "at_ms": 1796169900000,
+      "now_ms": 1797226380000,
+      "hour": "h12",
+      "expect": "2 Dec 7:05 AM"
+    },
+    {
+      "id": "age-last-year",
+      "fn": "age",
+      "at_ms": 1764503100000,
+      "now_ms": 1797226380000,
+      "hour": "h24",
+      "expect": "30 Nov 2025 18:45"
+    }
+  ],
+  "money": [
+    {
+      "id": "money-usd",
+      "fn": "money",
+      "micros": 12340000,
+      "currency": "usd",
+      "expect": "$12.34"
+    },
+    {
+      "id": "money-usd-zero",
+      "fn": "money",
+      "micros": 0,
+      "currency": "usd",
+      "expect": "$0.00"
+    },
+    {
+      "id": "money-usd-grouping",
+      "fn": "money",
+      "micros": 1234567890000,
+      "currency": "usd",
+      "expect": "$1,234,567.89"
+    },
+    {
+      "id": "money-usd-rounds",
+      "fn": "money",
+      "micros": 1999999,
+      "currency": "usd",
+      "expect": "$2.00"
+    },
+    {
+      "id": "money-usd-negative",
+      "fn": "money",
+      "micros": -3500000,
+      "currency": "usd",
+      "expect": "-$3.50"
+    },
+    {
+      "id": "money-usd-sub-cent",
+      "fn": "money",
+      "micros": 4000,
+      "currency": "usd",
+      "expect": "$0.00"
+    },
+    {
+      "id": "money-cny",
+      "fn": "money",
+      "micros": 110000000,
+      "currency": "cny",
+      "expect": "CN¥110.00"
+    },
+    {
+      "id": "money-cny-fraction",
+      "fn": "money",
+      "micros": 10500000,
+      "currency": "cny",
+      "expect": "CN¥10.50"
+    },
+    {
+      "id": "money-other",
+      "fn": "money",
+      "micros": 12500000,
+      "currency": "other",
+      "expect": "12.50 balance"
+    },
+    {
+      "id": "money-other-grouping",
+      "fn": "money",
+      "micros": 1250000000,
+      "currency": "other",
+      "expect": "1,250.00 balance"
+    },
+    {
+      "id": "money-other-zero",
+      "fn": "money",
+      "micros": 0,
+      "currency": "other",
+      "expect": "0.00 balance"
+    }
+  ],
+  "window_name": [
+    {
+      "id": "window-five-hour",
+      "fn": "window_name",
+      "window": {
+        "kind": "five_hour",
+        "minutes": null,
+        "label": null
+      },
+      "expect": "5-hour"
+    },
+    {
+      "id": "window-seven-day",
+      "fn": "window_name",
+      "window": {
+        "kind": "seven_day",
+        "minutes": null,
+        "label": null
+      },
+      "expect": "7-day"
+    },
+    {
+      "id": "window-monthly",
+      "fn": "window_name",
+      "window": {
+        "kind": "monthly",
+        "minutes": null,
+        "label": null
+      },
+      "expect": "30-day"
+    },
+    {
+      "id": "window-rolling-1h",
+      "fn": "window_name",
+      "window": {
+        "kind": "rolling",
+        "minutes": 60,
+        "label": null
+      },
+      "expect": "1-hour"
+    },
+    {
+      "id": "window-rolling-2h",
+      "fn": "window_name",
+      "window": {
+        "kind": "rolling",
+        "minutes": 120,
+        "label": null
+      },
+      "expect": "2-hour"
+    },
+    {
+      "id": "window-rolling-12h",
+      "fn": "window_name",
+      "window": {
+        "kind": "rolling",
+        "minutes": 720,
+        "label": null
+      },
+      "expect": "12-hour"
+    },
+    {
+      "id": "window-rolling-1d",
+      "fn": "window_name",
+      "window": {
+        "kind": "rolling",
+        "minutes": 1440,
+        "label": null
+      },
+      "expect": "1-day"
+    },
+    {
+      "id": "window-rolling-36h",
+      "fn": "window_name",
+      "window": {
+        "kind": "rolling",
+        "minutes": 2160,
+        "label": null
+      },
+      "expect": "36-hour"
+    },
+    {
+      "id": "window-rolling-14d",
+      "fn": "window_name",
+      "window": {
+        "kind": "rolling",
+        "minutes": 20160,
+        "label": null
+      },
+      "expect": "14-day"
+    },
+    {
+      "id": "window-named",
+      "fn": "window_name",
+      "window": {
+        "kind": "named",
+        "minutes": null,
+        "label": "7d_oi"
+      },
+      "expect": "7d_oi"
+    },
+    {
+      "id": "window-named-other",
+      "fn": "window_name",
+      "window": {
+        "kind": "named",
+        "minutes": null,
+        "label": "primary"
+      },
+      "expect": "primary"
+    }
+  ]
+}

@@ -1,0 +1,66 @@
+[package]
+name = "jev-dashboard-fuzz"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+# Its own workspace: the root `exclude` lists dashboard/fuzz, and nightly-only tooling must not
+# touch the stable workspace's lockfile.
+[workspace]
+
+[dependencies]
+libfuzzer-sys = "=0.4.12"
+jev-usage-core = { path = "../crates/usage-core" }
+serde_json = "=1.0.151"
+
+[[bin]]
+name = "claude_log"
+path = "fuzz_targets/claude_log.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "claude_event"
+path = "fuzz_targets/claude_event.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "codex"
+path = "fuzz_targets/codex.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "deepseek"
+path = "fuzz_targets/deepseek.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "money_decimal"
+path = "fuzz_targets/money_decimal.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "meter_key"
+path = "fuzz_targets/meter_key.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "settings_json"
+path = "fuzz_targets/settings_json.rs"
+test = false
+doc = false
+bench = false

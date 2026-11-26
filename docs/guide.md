@@ -548,6 +548,9 @@ file named by `JEV_ROUTER_ENV`) or an environment variable, which wins. The exam
 need the Jev key to start: `JEV_API_KEY` (or `TYPESAFE_API_KEY`), `JEV_PROVIDERS`,
 `JEV_ORCHESTRATE`, `JEV_ALLOW_CREDITS`, `JEV_TIMEOUT_MS`, `CODE_IDLE_TIMEOUT_SECS`,
 `DEEPSEEK_API_KEY`, `CODE_PERMISSION_MODE`, `CODE_ALLOWED_TOOLS`, binary paths, and more.
+With Gemini running through the Antigravity CLI, jev-code asks `agy -p /usage` for the quota in
+the background (no tokens, updater off, at most every five minutes); `JEV_GEMINI_USAGE=off` stops
+that.
 `JEV_TYPESAFE_URL` points the Jev client at a proxy or a test server. `jev-code --help` lists them.
 
 #### Providers
