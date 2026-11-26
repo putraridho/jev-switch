@@ -1,10 +1,25 @@
+<!-- First run (DESIGN 9.5), drawn as the Waffle "connect a provider" view (S54): what was
+     found as hairline rows, the one command where a provider needs one, the placeholders
+     named under "Not supported yet", then Start at login and Continue. -->
 <script lang="ts">
   import { tick } from "svelte";
-  import { firstRunLine, providerOrder, unsupportedLine } from "../../copy";
+  import {
+    firstRunLine,
+    providerHint,
+    providerOrder,
+    setupCopy,
+    unavailableCopy,
+    unsupportedLine,
+  } from "../../copy";
+  import type { ProviderKey } from "../../ipc/bindings/ProviderKey";
   import type { ProviderView } from "../../ipc/bindings/ProviderView";
+  import type { UsageView } from "../../ipc/bindings/UsageView";
   import { announce } from "../../stores/announce.svelte";
   import { settings } from "../../stores/settings.svelte";
   import { usage } from "../../stores/usage.svelte";
+  import CommandLine from "../primitives/CommandLine.svelte";
+  import Section from "../primitives/Section.svelte";
+  import Switch from "../primitives/Switch.svelte";
 
   const known = $derived.by(() => {
     const found: ProviderView[] = [];
@@ -15,19 +30,36 @@
     }
     return found;
   });
+
+  /** The command that would connect a provider, when there is one to copy. */
+  function command(provider: ProviderKey, view: UsageView): string | undefined {
+    if (view.state === "not_configured")
+      return setupCopy(view.setup, provider).command;
+    if (view.state === "unavailable")
+      return unavailableCopy(view.reason, provider).command;
+    return undefined;
+  }
+
   const lines = $derived(
     known
       .filter((p) => p.usage.state !== "unsupported")
-      .map((p) => ({ key: p.provider, ...firstRunLine(p.provider, p.usage) })),
+      .map((p) => ({
+        key: p.provider,
+        command: command(p.provider, p.usage),
+        ...firstRunLine(p.provider, p.usage),
+      })),
   );
   const placeholders = $derived(
     known.filter((p) => p.usage.state === "unsupported").map((p) => p.provider),
   );
 
-  async function startAtLogin(box: HTMLInputElement): Promise<void> {
-    const result = await settings.update({ autostart: box.checked });
+  async function startAtLogin(
+    on: boolean,
+    input: HTMLInputElement,
+  ): Promise<void> {
+    const result = await settings.update({ autostart: on });
     if (result.status === "error") {
-      box.checked = settings.value.autostart;
+      input.checked = settings.value.autostart;
       announce.say("Couldn't change the start at login setting");
     }
   }
@@ -43,38 +75,62 @@
   }
 </script>
 
-<section aria-label="Welcome">
-  <h1 id="view-title" tabindex="-1">Usage, in one place.</h1>
-  <p>Claude and Codex appear automatically when they're set up.</p>
-  <ul>
-    {#each lines as line (line.key)}
-      <li><span aria-hidden="true">{line.glyph}</span> {line.text}</li>
-    {/each}
-  </ul>
+<section class="page" aria-label="Welcome">
+  <header>
+    <h1 id="view-title" tabindex="-1">Usage, in one place.</h1>
+    <p>Claude and Codex appear automatically when they're set up.</p>
+  </header>
+
+  <Section label="Providers">
+    <ul>
+      {#each lines as line (line.key)}
+        <li>
+          <span class="glyph" aria-hidden="true">{line.glyph}</span>
+          <div class="words">
+            <span class="name">{line.text}</span>
+            <span class="hint">{providerHint[line.key]}</span>
+            {#if line.command !== undefined}
+              <CommandLine command={line.command} />
+            {/if}
+          </div>
+        </li>
+      {/each}
+    </ul>
+  </Section>
+
   {#if placeholders.length > 0}
-    <p>{unsupportedLine(placeholders)}</p>
+    <Section label="Not supported yet">
+      <p>{unsupportedLine(placeholders)}</p>
+    </Section>
   {/if}
-  <p class="start">
-    Flashboard starts with your session and waits in the tray.
-  </p>
-  <label class="switch">
-    <input
-      type="checkbox"
+
+  <Section>
+    <p class="tray">
+      Flashboard starts with your session and waits in the tray.
+    </p>
+    <Switch
+      label="Start at login"
       checked={settings.value.autostart}
-      onchange={(event) => startAtLogin(event.currentTarget)}
+      onchange={startAtLogin}
     />
-    Start at login
-  </label>
-  <button type="button" class="continue" onclick={proceed}>Continue</button>
+    <div class="actions">
+      <button type="button" class="primary" onclick={proceed}>Continue</button>
+    </div>
+  </Section>
 </section>
 
 <style>
-  section {
-    padding: var(--space-8) var(--space-4);
+  .page {
+    padding: var(--space-6) var(--space-4) var(--space-12);
     max-width: 40rem;
     margin-inline: auto;
     color: var(--color-text);
     font-family: var(--font-sans);
+  }
+
+  header {
+    display: grid;
+    gap: var(--space-2);
   }
 
   h1 {
@@ -82,36 +138,55 @@
     font-size: var(--title-xl);
     line-height: var(--title-xl-line);
     font-weight: var(--title-xl-weight);
-    margin-bottom: var(--space-4);
   }
 
   ul {
     list-style: none;
-    margin: var(--space-6) 0;
+    margin: 0;
     padding: 0;
+  }
+
+  li {
     display: grid;
-    gap: var(--space-2);
+    grid-template-columns: var(--space-6) minmax(0, 1fr);
+    padding-block: var(--space-2);
+  }
+
+  li + li {
+    border-top: var(--rule) solid var(--color-rule);
+  }
+
+  .glyph {
+    font-size: var(--text-sm);
+    line-height: var(--text-md-line);
+  }
+
+  .words {
+    display: grid;
+    justify-items: start;
+    gap: var(--space-1);
+    min-width: 0;
+  }
+
+  .name {
     font-size: var(--text-md);
+    font-weight: var(--text-md-weight-strong);
+    line-height: var(--text-md-line);
   }
 
-  li span {
-    display: inline-block;
-    width: 1.25rem;
+  .hint {
+    color: var(--color-text-2);
+    font-size: var(--text-sm);
+    line-height: var(--text-sm-line);
   }
 
-  .start {
-    margin-top: var(--space-6);
+  .tray {
+    margin-bottom: var(--space-2);
   }
 
-  .switch {
+  .actions {
     display: flex;
-    align-items: center;
-    gap: var(--space-2);
-    min-height: var(--hit-min);
-    margin-top: var(--space-2);
-  }
-
-  .continue {
-    margin-top: var(--space-8);
+    justify-content: flex-end;
+    margin-top: var(--space-6);
   }
 </style>

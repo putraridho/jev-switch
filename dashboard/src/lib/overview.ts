@@ -1,6 +1,6 @@
 // How the overview orders and splits the providers (DESIGN 9.3): cards by severity
 // (critical, warn, ok, unknown) then by the fixed provider order; providers without a usage
-// source become one quiet line at the bottom; hidden providers have no card.
+// source become one quiet block at the bottom; hidden providers have no card.
 
 import { providerOrder } from "./copy";
 import type { ProviderView } from "./ipc/bindings/ProviderView";
@@ -23,6 +23,15 @@ export function worstSeverity(provider: ProviderView): Severity {
     if (rank[meter.severity] < rank[worst]) worst = meter.severity;
   }
   return worst;
+}
+
+/** Does this card draw a waffle (now or while loading)? The rest sit under "Other providers"
+ * (S31, S50). */
+export function hasWaffle(provider: ProviderView): boolean {
+  const usage = provider.usage;
+  if (usage.state === "pending") return true;
+  if (usage.state !== "known" && usage.state !== "stale") return false;
+  return usage.reading.meters.some((meter) => meter.kind === "window");
 }
 
 /** The cards in display order, and the names of the providers with no usage source. */

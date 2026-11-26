@@ -56,7 +56,7 @@ describe("FirstRun", () => {
     failing.fail = { updateSettings: { code: "io" } };
     await initStores(createMockClient(failing));
     render(FirstRun);
-    const box = screen.getByRole("checkbox", { name: "Start at login" });
+    const box = screen.getByRole("switch", { name: "Start at login" });
     expect(box).toHaveProperty("checked", true);
     await userEvent.click(box);
     await waitFor(() => {
@@ -68,7 +68,7 @@ describe("FirstRun", () => {
     await initStores(client);
     render(FirstRun);
     await userEvent.click(
-      screen.getByRole("checkbox", { name: "Start at login" }),
+      screen.getByRole("switch", { name: "Start at login" }),
     );
     await waitFor(() => {
       expect(settings.value.autostart).toBe(false);

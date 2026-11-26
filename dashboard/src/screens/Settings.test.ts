@@ -81,7 +81,7 @@ describe("Settings thresholds", () => {
 describe("Settings Claude live check", () => {
   it("asks first, keeps it off on Cancel and returns focus to the switch", async () => {
     render(Settings);
-    const box = screen.getByRole("checkbox", { name: /Claude live check/ });
+    const box = screen.getByRole("switch", { name: /Claude live check/ });
     await userEvent.click(box);
     expect(
       await screen.findByText("Turn on the Claude live check?"),
@@ -98,7 +98,7 @@ describe("Settings Claude live check", () => {
   it("closes on Escape before anything else", async () => {
     render(Settings);
     await userEvent.click(
-      screen.getByRole("checkbox", { name: /Claude live check/ }),
+      screen.getByRole("switch", { name: /Claude live check/ }),
     );
     await screen.findByText("Turn on the Claude live check?");
     expect(closeTopmost()).toBe(true);
@@ -109,7 +109,7 @@ describe("Settings Claude live check", () => {
 
   it("turns it on after the confirmation and off again without asking", async () => {
     render(Settings);
-    const box = screen.getByRole("checkbox", { name: /Claude live check/ });
+    const box = screen.getByRole("switch", { name: /Claude live check/ });
     await userEvent.click(box);
     await userEvent.click(
       await screen.findByRole("button", { name: "Turn on" }),
@@ -139,13 +139,68 @@ describe("Settings sections", () => {
     await waitFor(() => {
       expect(settings.value.theme).toBe("dark");
     });
-    await userEvent.click(screen.getByRole("checkbox", { name: "Hide Grok" }));
+    await userEvent.click(screen.getByRole("switch", { name: "Grok" }));
     await waitFor(() => {
       expect(settings.value.hidden_providers).toContain("grok");
     });
-    await userEvent.click(screen.getByRole("checkbox", { name: "Hide Grok" }));
+    await userEvent.click(screen.getByRole("switch", { name: "Grok" }));
     await waitFor(() => {
       expect(settings.value.hidden_providers).not.toContain("grok");
+    });
+  });
+
+  it("maps a provider switch to the hidden list: off hides, on shows", async () => {
+    render(Settings);
+    const claude = screen.getByRole("switch", { name: "Claude" });
+    expect(claude).toHaveProperty("checked", true);
+    await userEvent.click(claude);
+    await waitFor(() => {
+      expect(settings.value.hidden_providers).toContain("claude");
+    });
+  });
+
+  it("saves the clock and the tray setting", async () => {
+    render(Settings);
+    await userEvent.selectOptions(screen.getByLabelText("Clock"), "h24");
+    await waitFor(() => {
+      expect(settings.value.hour_cycle).toBe("h24");
+    });
+    const before = settings.value.close_to_tray;
+    await userEvent.click(
+      screen.getByRole("switch", { name: /Keep running in the tray/ }),
+    );
+    await waitFor(() => {
+      expect(settings.value.close_to_tray).toBe(!before);
+    });
+  });
+
+  it("disables the level switches while notifications are off", async () => {
+    render(Settings);
+    await userEvent.click(
+      screen.getByRole("switch", { name: "Send notifications" }),
+    );
+    await waitFor(() => {
+      expect(
+        screen.getByRole("switch", { name: /warning mark/ }),
+      ).toHaveProperty("disabled", true);
+    });
+    expect(
+      screen.getByRole("switch", { name: /critical mark/ }),
+    ).toHaveProperty("disabled", true);
+  });
+});
+
+describe("Settings without a saved change", () => {
+  it("puts a switch back when saving fails", async () => {
+    const failing = structuredClone(fixtures.known);
+    failing.fail = { updateSettings: { code: "io" } };
+    await initStores(createMockClient(failing));
+    render(Settings);
+    const start = screen.getByRole("switch", { name: "Start at login" });
+    expect(start).toHaveProperty("checked", true);
+    await userEvent.click(start);
+    await waitFor(() => {
+      expect(start).toHaveProperty("checked", true);
     });
   });
 });

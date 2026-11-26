@@ -21,6 +21,16 @@ export const providerName: Record<ProviderKey, string> = {
   grok: "Grok",
 };
 
+/** What each provider's row says in Settings (S53). */
+export const providerHint: Record<ProviderKey, string> = {
+  claude: "5-hour and 7-day windows.",
+  codex: "5-hour and weekly windows.",
+  deepseek: "Balance.",
+  gemini: "No source Flashboard can read yet.",
+  antigravity: "No source Flashboard can read yet.",
+  grok: "No source Flashboard can read yet.",
+};
+
 /** The fixed order of `ProviderKey::ALL`: the digits 1 to 6 follow it. */
 export const providerOrder: readonly ProviderKey[] = [
   "claude",

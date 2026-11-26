@@ -172,12 +172,6 @@ input[type="number"] {
   border-top: var(--rule) solid var(--color-rule);
 }
 
-input[type="checkbox"] {
-  width: 1rem;
-  height: 1rem;
-  accent-color: var(--color-ink);
-}
-
 summary {
   min-height: var(--hit-min);
   display: flex;

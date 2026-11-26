@@ -45,7 +45,7 @@
     font-size: var(--text-sm);
     line-height: var(--text-sm-line);
     font-weight: var(--text-sm-weight-strong);
-    white-space: nowrap;
+    min-width: 0;
   }
   svg {
     flex-shrink: 0;

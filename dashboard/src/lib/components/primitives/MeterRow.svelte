@@ -183,6 +183,10 @@
     max-inline-size: 100%;
     padding-block: var(--space-3);
   }
+  /* A status badge must not push one column's waffle below its neighbours'. */
+  .label {
+    min-block-size: var(--space-6);
+  }
   .waffle-slot {
     margin-block-start: var(--space-4);
   }
@@ -194,7 +198,7 @@
 
   /* S15: with the medium waffle the number sits beside it, never inside. */
   .row.medium {
-    grid-template-columns: max-content 1fr;
+    grid-template-columns: max-content minmax(0, 1fr);
     column-gap: var(--space-4);
     inline-size: 100%;
   }

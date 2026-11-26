@@ -31,7 +31,17 @@
 </script>
 
 <details>
-  <summary>About and diagnostics</summary>
+  <summary
+    >About and diagnostics <svg
+      class="chevron"
+      viewBox="0 0 16 16"
+      width="16"
+      height="16"
+      aria-hidden="true"
+    >
+      <path d="M6 4l4 4-4 4" />
+    </svg></summary
+  >
   {#if loaded.state === "loading"}
     <p>Loading…</p>
   {:else if loaded.state === "error"}
@@ -63,22 +73,18 @@
 </details>
 
 <style>
-  details {
-    margin-top: var(--space-8);
-  }
-
   summary {
+    justify-content: space-between;
+    color: var(--color-text);
     font-size: var(--text-md);
     font-weight: var(--text-md-weight-strong);
-    color: var(--color-text);
+    line-height: var(--text-md-line);
   }
 
   ul {
     list-style: none;
     margin: var(--space-3) 0;
     padding: 0;
-    display: grid;
-    gap: var(--space-2);
     font-size: var(--text-sm);
     line-height: var(--text-sm-line);
   }
@@ -86,6 +92,8 @@
   li {
     display: grid;
     gap: var(--space-1);
+    padding-block: var(--space-2);
+    border-bottom: var(--rule) solid var(--color-rule);
   }
 
   .name {
@@ -93,6 +101,26 @@
   }
 
   .about {
+    margin-top: var(--space-3);
+  }
+
+  .chevron {
+    flex-shrink: 0;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 1.5;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+    transition-property: rotate;
+    transition-duration: var(--duration-fast);
+    transition-timing-function: var(--ease);
+  }
+
+  details[open] .chevron {
+    rotate: 90deg;
+  }
+
+  button {
     margin-top: var(--space-3);
   }
 

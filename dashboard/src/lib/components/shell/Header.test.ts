@@ -10,36 +10,32 @@ afterEach(() => {
 });
 
 describe("Header", () => {
-  it("names the app and Settings in words, and marks the current view", () => {
+  const button = (name: string) => screen.getByRole("button", { name });
+
+  it("names the app and both views in words, and marks the current one", () => {
     render(Header);
-    const home = screen.getByRole("button", { name: "Flashboard" });
-    expect(home.getAttribute("aria-current")).toBe("page");
-    expect(
-      screen
-        .getByRole("button", { name: "Settings" })
-        .hasAttribute("aria-current"),
-    ).toBe(false);
+    expect(screen.getByText("Flashboard")).toBeTruthy();
+    expect(button("Usage").getAttribute("aria-current")).toBe("page");
+    expect(button("Settings").hasAttribute("aria-current")).toBe(false);
+    expect(button("Refresh")).toBeTruthy();
   });
 
-  it("reaches Settings and comes back", async () => {
+  it("reaches Settings and comes back; Refresh belongs to the overview", async () => {
     render(Header);
-    await userEvent.click(screen.getByRole("button", { name: "Settings" }));
+    await userEvent.click(button("Settings"));
     expect(router.route.name).toBe("settings");
-    expect(
-      screen
-        .getByRole("button", { name: "Settings" })
-        .getAttribute("aria-current"),
-    ).toBe("page");
-    await userEvent.click(screen.getByRole("button", { name: "Flashboard" }));
+    expect(button("Settings").getAttribute("aria-current")).toBe("page");
+    expect(screen.queryByRole("button", { name: "Refresh" })).toBeNull();
+    await userEvent.click(button("Usage"));
     expect(router.route.name).toBe("overview");
   });
 
   it("does not stack history when the view is already open", async () => {
     render(Header);
-    await userEvent.click(screen.getByRole("button", { name: "Flashboard" }));
+    await userEvent.click(button("Usage"));
     expect(router.canGoBack).toBe(false);
-    await userEvent.click(screen.getByRole("button", { name: "Settings" }));
-    await userEvent.click(screen.getByRole("button", { name: "Settings" }));
+    await userEvent.click(button("Settings"));
+    await userEvent.click(button("Settings"));
     router.back();
     expect(router.route.name).toBe("overview");
   });

@@ -9,7 +9,6 @@ dashboard/dist/
 dashboard/dist-gallery/
 dashboard/test-results/
 dashboard/playwright-report/
-dashboard/e2e/screens/
 dashboard/coverage/
 dashboard/src/__lint_selftest__/
 dashboard/src-tauri/gen/

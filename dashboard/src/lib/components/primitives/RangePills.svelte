@@ -152,6 +152,8 @@
   /* Fills are dropped in forced colours: the chosen pill gets a border. */
   @media (forced-colors: active) {
     input:checked + span {
+      color: inherit;
+      background: transparent;
       border: var(--focus-ring) solid currentColor;
     }
   }

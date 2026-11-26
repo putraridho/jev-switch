@@ -9,7 +9,13 @@
   import type { ProviderKey } from "../../ipc/bindings/ProviderKey";
   import { queries } from "../../stores/queries";
   import { settings } from "../../stores/settings.svelte";
+  import EmptyState from "../primitives/EmptyState.svelte";
+  import ErrorState from "../primitives/ErrorState.svelte";
   import HistoryChart from "../primitives/HistoryChart.svelte";
+  import LoadingWaffle from "../primitives/LoadingWaffle.svelte";
+  import RangePills from "../primitives/RangePills.svelte";
+  import Section from "../primitives/Section.svelte";
+  import SelectField from "../primitives/SelectField.svelte";
 
   interface Props {
     provider: ProviderKey;
@@ -71,63 +77,58 @@
   const currency = $derived(meter?.kind === "balance" ? meter.currency : null);
 </script>
 
-<section aria-labelledby="{uid}-title">
-  <h2 id="{uid}-title">History</h2>
+<Section label="History">
   <div class="controls">
     {#if meters.length > 1}
-      <label class="pick"
-        >Meter
-        <select
-          value={meter?.id}
-          onchange={(event) => {
-            chosen = event.currentTarget.value;
-          }}
-        >
-          {#each meters as item (item.id)}
-            <option value={item.id}>{nameOf(item)}</option>
-          {/each}
-        </select>
-      </label>
+      <SelectField
+        id="{uid}-meter"
+        label="Meter"
+        value={meter?.id}
+        options={meters.map((item) => ({
+          value: item.id,
+          label: nameOf(item),
+        }))}
+        onchange={(value: string) => {
+          chosen = value;
+        }}
+      />
     {/if}
-    <fieldset>
-      <legend>Range</legend>
-      {#each ranges as option (option)}
-        <label class:on={range === option}>
-          <input
-            type="radio"
-            name="{uid}-range"
-            value={option}
-            checked={range === option}
-            onchange={() => {
-              range = option;
-            }}
-          />
-          {rangeNames[option]}
-        </label>
-      {/each}
-    </fieldset>
-  </div>
-  {#if loaded.state === "loading"}
-    <p class="state">Loading history…</p>
-  {:else if loaded.state === "error"}
-    <p class="state">History isn't available right now.</p>
-    <button
-      type="button"
-      onclick={() => {
-        if (meter !== undefined) void load(meter.id, range);
-      }}>Retry</button
-    >
-  {:else if loaded.series.points.length === 0}
-    <p class="state">No history in this range yet.</p>
-  {:else if meter !== undefined}
-    <HistoryChart
-      series={loaded.series}
-      {range}
-      name={nameOf(meter)}
-      {thresholds}
-      {currency}
+    <RangePills
+      legend="Range"
+      options={ranges.map((value) => ({ value, label: rangeNames[value] }))}
+      value={range}
+      onchange={(value: HistoryRange) => {
+        range = value;
+      }}
     />
-  {/if}
+  </div>
+  <div class="plot">
+    {#if loaded.state === "loading"}
+      <LoadingWaffle size="medium" announcement="Loading history…" />
+    {:else if loaded.state === "error"}
+      {#snippet again()}<button
+          type="button"
+          onclick={() => {
+            if (meter !== undefined) void load(meter.id, range);
+          }}>Retry</button
+        >{/snippet}
+      <ErrorState message="History isn't available right now." action={again} />
+    {:else if loaded.series.points.length === 0}
+      <EmptyState
+        title="No history in this range yet."
+        body="It fills in as Flashboard reads this provider."
+        ghost
+      />
+    {:else if meter !== undefined}
+      <HistoryChart
+        series={loaded.series}
+        {range}
+        name={nameOf(meter)}
+        {thresholds}
+        {currency}
+      />
+    {/if}
+  </div>
   <p class="source">{sourceLine(provider)}</p>
   {#if provider === "claude" && settings.value.claude_live_check}
     <div class="check">
@@ -135,86 +136,33 @@
       <p>Uses one small request.</p>
     </div>
   {/if}
-</section>
+</Section>
 
 <style>
-  h2 {
-    margin-top: var(--space-8);
-    font-size: var(--text-md);
-    font-weight: var(--text-md-weight-strong);
-  }
-
   .controls {
     display: flex;
     flex-wrap: wrap;
-    align-items: center;
+    align-items: flex-end;
+    justify-content: space-between;
     gap: var(--space-4);
-    margin-top: var(--space-2);
   }
 
-  .pick {
-    display: flex;
-    align-items: center;
-    gap: var(--space-2);
-  }
-
-  fieldset {
-    display: flex;
-    gap: var(--space-1);
-    margin: 0;
-    padding: 0;
-    border: 0;
-  }
-
-  legend {
-    position: absolute;
-    width: 1px;
-    height: 1px;
-    overflow: hidden;
-    clip-path: inset(50%);
-  }
-
-  fieldset label {
-    display: flex;
-    align-items: center;
-    min-height: var(--hit-min);
-    padding-inline: var(--space-3);
-    border: var(--outline) solid var(--color-border);
-    border-radius: var(--radius-control);
-    font-size: var(--text-sm);
-    cursor: pointer;
-  }
-
-  /* The chosen range is marked by weight and an ink border, not by colour alone. */
-  fieldset label.on {
-    border-color: var(--color-ink);
-    font-weight: var(--text-sm-weight-strong);
-  }
-
-  fieldset label:has(:focus-visible) {
-    outline: var(--focus-ring) solid var(--color-accent);
-    outline-offset: 2px;
-  }
-
-  input[type="radio"] {
-    position: absolute;
-    opacity: 0;
-    width: 1px;
-    height: 1px;
-  }
-
-  .state {
-    margin-block: var(--space-4);
-    min-height: 6rem;
+  .plot {
+    min-height: 8rem;
+    margin-block-start: var(--space-4);
   }
 
   .source {
     margin-top: var(--space-6);
+    color: var(--color-muted);
+    font-size: var(--text-sm);
+    line-height: var(--text-sm-line);
   }
 
   .check {
     display: flex;
     align-items: center;
+    flex-wrap: wrap;
     gap: var(--space-3);
     margin-top: var(--space-2);
   }

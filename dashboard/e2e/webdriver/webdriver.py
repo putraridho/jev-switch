@@ -203,8 +203,7 @@ def main():
         driver.keys(",")
         driver.wait_text("Thresholds")
         element = driver.script(
-            "const l=[...document.querySelectorAll('label')].find(x=>x.textContent.includes('Warning'));"
-            "return l ? l.querySelector('input') : null;")
+            "return document.querySelector('input#warn');")
         if not element:
             fail("no Warning threshold input in Settings")
         key = [k for k in element if k.startswith("element-")][0]
