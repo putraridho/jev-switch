@@ -28,7 +28,7 @@ fi
 
 # Never fall through to a real CLI: both stubs must be there (they are wrappers on this
 # machine that can install or update, DESIGN 3.1).
-for tool in codex claude; do
+for tool in codex claude agy; do
   if [ ! -x "$dashboard/e2e/smoke/stubs/$tool" ]; then
     echo "dev.sh: missing stub e2e/smoke/stubs/$tool; refusing to start against the real PATH" >&2
     exit 1

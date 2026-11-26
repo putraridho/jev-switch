@@ -1,7 +1,7 @@
 # Flashboard
 
 A small desktop instrument that shows how much of your coding-assistant plans and credits
-you have used: Claude, Codex and DeepSeek today. It is a Tauri app (Rust shell, Svelte UI)
+you have used: Claude, Codex, Antigravity and DeepSeek today. It is a Tauri app (Rust shell, Svelte UI)
 in the `jev-router` workspace. Linux only.
 
 ## Build and install
@@ -54,6 +54,9 @@ What the app does:
   strips secrets from the child's environment. If a mise wrapper is first on `PATH`, the
   app treats a tool as installed only when its real executable is on disk, and sets mise's
   offline variables so the wrapper does not download anything.
+- Runs `agy -p /usage` to read Antigravity's remaining quota (every 15 minutes while the
+  window is open, hourly otherwise), with `agy`'s auto-updater switched off for that run.
+  `agy` talks to Google with your login and writes its own logs and session files.
 - Calls `api.deepseek.com` only when a DeepSeek key is configured, over HTTPS, with no
   proxy or redirects.
 - Stores history in `<state dir>/dashboard/history.db` and settings in `settings.json`,

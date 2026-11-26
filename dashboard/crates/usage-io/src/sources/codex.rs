@@ -80,10 +80,11 @@ impl UsageSource for CodexAppServerSource {
                 .unwrap_or(Err(Unavailable::Protocol))
                 .map_err(SourceError::Unavailable)?;
             let _ = exit;
+            let observed_at = self.clock.now();
             Ok(jev_usage_core::meter::Reading {
-                meters: limits.meters,
+                meters: limits.meters.without_implausible_resets(observed_at),
                 plan: limits.plan,
-                observed_at: self.clock.now(),
+                observed_at,
             })
         })
     }

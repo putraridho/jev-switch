@@ -39,10 +39,9 @@ fn now<T>(future: impl Future<Output = T>) -> T {
 const MIN: u64 = 60;
 
 #[test]
-fn placeholders_exist_for_exactly_the_three_providers_without_a_source() {
+fn placeholders_exist_for_exactly_the_two_providers_without_a_source() {
     let cases = [
         (ProviderKey::Gemini, SourceId::GeminiNone),
-        (ProviderKey::Antigravity, SourceId::AntigravityNone),
         (ProviderKey::Grok, SourceId::GrokNone),
     ];
     for (provider, id) in cases {
@@ -65,6 +64,7 @@ fn placeholders_exist_for_exactly_the_three_providers_without_a_source() {
         ProviderKey::Claude,
         ProviderKey::Codex,
         ProviderKey::DeepSeek,
+        ProviderKey::Antigravity,
     ] {
         assert_eq!(
             PlaceholderSource::new(provider),

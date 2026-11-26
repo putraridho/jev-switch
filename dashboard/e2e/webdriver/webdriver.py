@@ -129,7 +129,7 @@ def main():
     os.chmod(tree, 0o700)
     for name in ("home", "config", "data", "cache", "state/jev-router", "runtime", "bin"):
         os.makedirs(os.path.join(tree, name), mode=0o700, exist_ok=True)
-    for stub in ("codex", "claude"):
+    for stub in ("codex", "claude", "agy"):
         shutil.copy(os.path.join(SMOKE, "stubs", stub), os.path.join(tree, "bin", stub))
         os.chmod(os.path.join(tree, "bin", stub), 0o755)
     usage_path = os.path.join(tree, "state", "jev-router", "usage.jsonl")

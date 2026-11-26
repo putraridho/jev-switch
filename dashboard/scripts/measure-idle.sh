@@ -68,7 +68,7 @@ measure() {
   chmod 700 "$tree"
   mkdir -p "$tree"/{home,config,data,cache,state/jev-router,runtime,bin}
   chmod 700 "$tree"/{home,config,data,cache,state,state/jev-router,runtime}
-  cp "$dashboard/e2e/smoke/stubs/codex" "$dashboard/e2e/smoke/stubs/claude" "$tree/bin/"
+  cp "$dashboard/e2e/smoke/stubs/codex" "$dashboard/e2e/smoke/stubs/claude" "$dashboard/e2e/smoke/stubs/agy" "$tree/bin/"
   chmod 755 "$tree"/bin/*
   cp "$dashboard/fixtures/claude-gateway/sample.jsonl" "$tree/state/jev-router/usage.jsonl"
   chmod 600 "$tree/state/jev-router/usage.jsonl"

@@ -27,7 +27,7 @@ export const providerHint: Record<ProviderKey, string> = {
   codex: "5-hour and weekly windows.",
   deepseek: "Balance.",
   gemini: "No source Flashboard can read yet.",
-  antigravity: "No source Flashboard can read yet.",
+  antigravity: "Gemini and Claude/GPT limits.",
   grok: "No source Flashboard can read yet.",
 };
 
@@ -61,6 +61,12 @@ export function unavailableCopy(
     case "not_installed":
       return { text: `${name} isn't installed on this computer.` };
     case "not_logged_in": {
+      // `agy` answers the same blank way when signed out and before any use.
+      if (provider === "antigravity") {
+        return {
+          text: "No Antigravity usage to show. Use agy once, and check you're signed in.",
+        };
+      }
       const command = loginCommand[provider];
       return command === undefined
         ? { text: `Not signed in to ${name}.` }
@@ -222,8 +228,9 @@ export function sourceLine(provider: ProviderKey): string {
       return "Source: the Codex app-server (asked every few minutes)";
     case "deepseek":
       return "Source: DeepSeek balance (asked every few minutes)";
-    case "gemini":
     case "antigravity":
+      return "Source: agy /usage (asked every 15 minutes)";
+    case "gemini":
     case "grok":
       return "Source: none yet";
   }

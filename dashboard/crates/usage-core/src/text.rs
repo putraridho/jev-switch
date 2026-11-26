@@ -125,7 +125,7 @@ pub fn percent(p: Percent) -> String {
         format!("{}%", bp / 100)
     }
 }
-/// "5-hour", "7-day", "30-day", "N-hour"/"N-day", or the raw label.
+/// "5-hour", "7-day", "30-day", "N-hour"/"N-day", a known Antigravity window's words, or the raw label.
 pub fn window_name(k: &WindowKind) -> String {
     match k {
         WindowKind::FiveHour => "5-hour".to_owned(),
@@ -133,7 +133,13 @@ pub fn window_name(k: &WindowKind) -> String {
         WindowKind::Monthly => "30-day".to_owned(),
         WindowKind::Rolling { minutes } if minutes % 1440 == 0 => format!("{}-day", minutes / 1440),
         WindowKind::Rolling { minutes } => format!("{}-hour", minutes / 60),
-        WindowKind::Named { label } => label.as_str().to_owned(),
+        WindowKind::Named { label } => match label.as_str() {
+            "gemini_5h" => "Gemini 5-hour".to_owned(),
+            "gemini_7d" => "Gemini 7-day".to_owned(),
+            "claude_gpt_5h" => "Claude/GPT 5-hour".to_owned(),
+            "claude_gpt_7d" => "Claude/GPT 7-day".to_owned(),
+            other => other.to_owned(),
+        },
     }
 }
 /// "today 14:00", "tomorrow 02:00", "Thu 02:00" or "16 Dec 08:37".

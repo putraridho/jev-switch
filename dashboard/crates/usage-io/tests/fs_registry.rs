@@ -135,17 +135,18 @@ fn inputs(usage_log: Option<PathBuf>) -> RegistryInputs {
 }
 
 #[test]
-fn the_registry_lists_four_real_sources_then_the_three_placeholders() {
+fn the_registry_lists_five_real_sources_then_the_two_placeholders() {
     let sources = build(&inputs(None));
     let ids: Vec<SourceId> = sources.iter().map(|s| s.descriptor().id).collect();
     assert_eq!(ids.len(), 7);
     assert_eq!(
-        &ids[..4],
+        &ids[..5],
         &[
             SourceId::ClaudeGatewayLog,
             SourceId::ClaudeLive,
             SourceId::CodexAppServer,
             SourceId::DeepSeekBalance,
+            SourceId::AntigravityCli,
         ]
     );
     let mut unique = ids.clone();

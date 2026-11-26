@@ -5,14 +5,16 @@ use jev_usage_core::usage::Unavailable;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-/// The programs the app can start. There is no variant for `grok`, `agy` or `gemini`, so
-/// they cannot be run.
+/// The programs the app can start. There is no variant for `grok` or `gemini`, so they
+/// cannot be run.
 #[derive(Copy, Clone, Eq, PartialEq, Debug)]
 pub enum Program {
     /// `codex`.
     Codex,
     /// `claude`.
     Claude,
+    /// `agy`, the Antigravity CLI.
+    Agy,
 }
 
 /// What happens to the child's stderr.
@@ -92,6 +94,8 @@ pub const ENV_ALLOW: &[&str] = &[
 pub const ENV_CONST: &[(&str, &str)] = &[
     ("TERM", "dumb"),
     ("DISABLE_AUTOUPDATER", "1"),
+    // `agy`'s own background updater; only the exact value `true` switches it off.
+    ("AGY_CLI_DISABLE_AUTO_UPDATE", "true"),
     ("MISE_OFFLINE", "1"),
     ("MISE_AUTO_INSTALL", "false"),
     ("MISE_EXEC_AUTO_INSTALL", "false"),
@@ -102,6 +106,16 @@ pub const ENV_CONST: &[(&str, &str)] = &[
 /// launcher counts only when a version directory under `<mise data>/installs/<tool>/` holds
 /// the executable `<tool>` or `bin/<tool>`.
 pub fn resolve_in(name: &str, path_dirs: &[PathBuf], mise_data: Option<&Path>) -> Resolved {
+    resolve_tool_in(name, name, path_dirs, mise_data)
+}
+
+/// [`resolve_in`] for a binary `name` that mise installs under another tool name.
+fn resolve_tool_in(
+    name: &str,
+    tool: &str,
+    path_dirs: &[PathBuf],
+    mise_data: Option<&Path>,
+) -> Resolved {
     let Some(hit) = path_dirs
         .iter()
         .map(|dir| dir.join(name))
@@ -121,7 +135,7 @@ pub fn resolve_in(name: &str, path_dirs: &[PathBuf], mise_data: Option<&Path>) -
         return Resolved::Installed;
     }
     let installed = mise_data
-        .and_then(|data| std::fs::read_dir(data.join("installs").join(name)).ok())
+        .and_then(|data| std::fs::read_dir(data.join("installs").join(tool)).ok())
         .is_some_and(|entries| {
             entries.flatten().any(|entry| {
                 let dir = entry.path();
@@ -156,6 +170,7 @@ pub struct ProcRunner {
     workdir: PathBuf,
     codex: Option<PathBuf>,
     claude: Option<PathBuf>,
+    agy: Option<PathBuf>,
 }
 
 impl ProcRunner {
@@ -165,17 +180,29 @@ impl ProcRunner {
             workdir,
             codex: None,
             claude: None,
+            agy: None,
         }
     }
 
     /// Runs the given files instead of the names on `PATH` (feature `test-support`).
     #[cfg(feature = "test-support")]
     pub fn with_programs(workdir: PathBuf, codex: PathBuf, claude: PathBuf) -> Self {
+        // Never the real `agy` from `PATH`: without `with_agy` it counts as not installed.
+        let agy = Some(workdir.join("agy-not-configured"));
         Self {
+            agy,
             workdir,
             codex: Some(codex),
             claude: Some(claude),
         }
+    }
+
+    /// Runs the given file instead of `agy` (feature `test-support`).
+    #[cfg(feature = "test-support")]
+    #[must_use]
+    pub fn with_agy(mut self, agy: PathBuf) -> Self {
+        self.agy = Some(agy);
+        self
     }
 
     /// Whether `program` can be started; runs nothing.
@@ -183,10 +210,12 @@ impl ProcRunner {
         let path = match program {
             Program::Codex => &self.codex,
             Program::Claude => &self.claude,
+            Program::Agy => &self.agy,
         };
         let name = match program {
             Program::Codex => "codex",
             Program::Claude => "claude",
+            Program::Agy => "agy",
         };
         let dirs = path.as_ref().and_then(|p| p.parent()).map_or_else(
             || {
@@ -210,7 +239,12 @@ impl ProcRunner {
             .or_else(|| {
                 std::env::var_os("HOME").map(|p| PathBuf::from(p).join(".local/share/mise"))
             });
-        resolve_in(name, &dirs, data.as_deref())
+        // mise installs the `agy` binary under the tool name `antigravity-cli`.
+        let tool = match program {
+            Program::Agy => "antigravity-cli",
+            Program::Codex | Program::Claude => name,
+        };
+        resolve_tool_in(name, tool, &dirs, data.as_deref())
     }
 
     /// Spawns under the rules of DESIGN 8.6, writes `stdin`, calls `on_line` per output line.
@@ -236,6 +270,7 @@ impl ProcRunner {
         let path = match spec.program {
             Program::Codex => self.codex.as_deref().unwrap_or(Path::new("codex")),
             Program::Claude => self.claude.as_deref().unwrap_or(Path::new("claude")),
+            Program::Agy => self.agy.as_deref().unwrap_or(Path::new("agy")),
         };
         let mut command = tokio::process::Command::new(path);
         command
@@ -381,6 +416,7 @@ mod tests {
             [
                 ("TERM", "dumb"),
                 ("DISABLE_AUTOUPDATER", "1"),
+                ("AGY_CLI_DISABLE_AUTO_UPDATE", "true"),
                 ("MISE_OFFLINE", "1"),
                 ("MISE_AUTO_INSTALL", "false"),
                 ("MISE_EXEC_AUTO_INSTALL", "false"),

@@ -252,7 +252,7 @@ fn every_enum_variant_serialises_to_its_documented_form() {
         (SourceId::CodexAppServer, "codex_app_server"),
         (SourceId::DeepSeekBalance, "deepseek_balance"),
         (SourceId::GeminiNone, "gemini_none"),
-        (SourceId::AntigravityNone, "antigravity_none"),
+        (SourceId::AntigravityCli, "antigravity_cli"),
         (SourceId::GrokNone, "grok_none"),
     ] {
         assert_eq!(json(&value), format!("\"{name}\""));

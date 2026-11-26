@@ -3,4 +3,4 @@
 /**
  * One way of learning one provider's usage.
  */
-export type SourceId = "claude_gateway_log" | "claude_live" | "codex_app_server" | "deepseek_balance" | "gemini_none" | "antigravity_none" | "grok_none";
+export type SourceId = "claude_gateway_log" | "claude_live" | "codex_app_server" | "deepseek_balance" | "gemini_none" | "antigravity_cli" | "grok_none";

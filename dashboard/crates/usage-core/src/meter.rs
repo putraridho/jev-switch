@@ -201,6 +201,20 @@ impl Meters {
         Some(Self(v))
     }
 
+    /// The same meters, with any reset further ahead of `observed_at` than the longest real
+    /// window allows (40 days) treated as unknown: a nonsense time is not shown.
+    #[must_use]
+    pub fn without_implausible_resets(mut self, observed_at: UnixMillis) -> Self {
+        const HORIZON_S: u64 = 40 * 86_400;
+        let limit = observed_at.seconds().0.saturating_add(HORIZON_S);
+        for meter in &mut self.0 {
+            if let Meter::Window(window) = meter {
+                window.resets_at = window.resets_at.filter(|at| at.0 <= limit);
+            }
+        }
+        self
+    }
+
     /// The meters, in the order given.
     pub fn as_slice(&self) -> &[Meter] {
         &self.0

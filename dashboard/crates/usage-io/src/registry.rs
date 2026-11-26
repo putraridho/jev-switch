@@ -6,7 +6,8 @@ use crate::proc::ProcRunner;
 use crate::secrets::KeySources;
 use crate::service::Backfill;
 use crate::sources::{
-    claude_live::ClaudeLiveSource, claude_log::ClaudeGatewayLogSource, codex::CodexAppServerSource,
+    antigravity::AntigravityUsageSource, claude_live::ClaudeLiveSource,
+    claude_log::ClaudeGatewayLogSource, codex::CodexAppServerSource,
     deepseek::DeepSeekBalanceSource, placeholder::PlaceholderSource,
 };
 use crate::store::MetaKey;
@@ -56,6 +57,10 @@ pub fn build(i: &RegistryInputs) -> Vec<Arc<dyn UsageSource>> {
             Arc::clone(&i.http),
             Arc::clone(&i.clock),
             Arc::clone(&i.keys),
+        )),
+        Arc::new(AntigravityUsageSource::new(
+            Arc::clone(&i.runner),
+            Arc::clone(&i.clock),
         )),
     ];
     for provider in ProviderKey::ALL {

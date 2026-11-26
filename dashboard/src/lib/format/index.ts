@@ -227,6 +227,15 @@ export function money(micros: number, currency: Currency): string {
   return `${sign}${amount} balance`;
 }
 
+/** The words for the windows the app names itself (the Antigravity buckets); `text.rs` has
+ * the same four. */
+const namedWindows: ReadonlyMap<string, string> = new Map([
+  ["gemini_5h", "Gemini 5-hour"],
+  ["gemini_7d", "Gemini 7-day"],
+  ["claude_gpt_5h", "Claude/GPT 5-hour"],
+  ["claude_gpt_7d", "Claude/GPT 7-day"],
+]);
+
 /** "5-hour", "7-day", "30-day", "N-hour"/"N-day", or the raw label. */
 export function windowName(w: WindowKind): string {
   switch (w.kind) {
@@ -241,7 +250,7 @@ export function windowName(w: WindowKind): string {
         ? `${String(w.minutes / 1440)}-day`
         : `${String(Math.round(w.minutes / 60))}-hour`;
     case "named":
-      return w.label;
+      return namedWindows.get(w.label) ?? w.label;
   }
 }
 

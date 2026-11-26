@@ -1,5 +1,6 @@
 //! The adapters: one `UsageSource` per way of learning a provider's usage (DESIGN 6).
 
+pub mod antigravity;
 pub mod claude_live;
 pub mod claude_log;
 pub mod codex;

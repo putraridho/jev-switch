@@ -59,8 +59,8 @@ trap cleanup EXIT
 
 mkdir -p "$tree"/{home,config,data,cache,state/jev-router,runtime,bin}
 chmod 700 "$tree"/{home,config,data,cache,state,state/jev-router,runtime}
-cp "$here"/stubs/codex "$here"/stubs/claude "$tree/bin/"
-chmod 755 "$tree"/bin/codex "$tree"/bin/claude
+cp "$here"/stubs/codex "$here"/stubs/claude "$here"/stubs/agy "$tree/bin/"
+chmod 755 "$tree"/bin/codex "$tree"/bin/claude "$tree"/bin/agy
 usage="$tree/state/jev-router/usage.jsonl"
 cp "$dashboard/fixtures/claude-gateway/canary.jsonl" "$usage"
 chmod 600 "$usage"

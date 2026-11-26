@@ -303,7 +303,8 @@ Running `agy --help` under a 15 s timeout started a mise download of `antigravit
 it at about 7 of 99 MB. It left an empty directory
 `~/.local/share/mise/installs/antigravity-cli/1.5.9`, which the lead has since removed (the
 1.5.10 install there now is the user's own, 3.3). Rule
-added to the design: **never execute `agy`, `grok` or `gemini`; never start `codex` or
+added to the design: **never execute `agy`, `grok` or `gemini`** (since 2026-11-26 `agy` is
+run for its usage only, 6.5); **never start `codex` or
 `claude` unless a real install exists on disk; and switch mise's installers off in every
 child's environment** (section 8.6).
 
@@ -945,7 +946,18 @@ with no network call. 401/403 → `Unauthorized`. Unverified until the user has 
 asked once at start and when the window opens, never on a timer, and it does no IO. The
 UI lists these under "No usage source yet" (section 9.3) and never shows a number for them. Later, without touching the service or the UI:
 
-- Antigravity (the user has a subscription, 1a, so this is the first follow-up): an
+- Antigravity: **built** (`AntigravityUsageSource`, approved by the user after verification
+  runs on 2026-11-26). It runs `agy -p /usage --output-format json` through `proc` every
+  15 minutes while visible and hourly while hidden, with an empty stdin and a 45 s deadline.
+  Observed: 0 turns, 0 tokens, identical figures across idle runs, no account details in the
+  output; each run writes `agy`'s own logs and session files and touches the keyring.
+  `AGY_CLI_DISABLE_AUTO_UPDATE=true` is a child constant: without exactly `true` every run
+  can start `agy`'s background self-updater. The parser reads only `status` and each bucket's
+  `id`, `remaining_fraction` and `reset_time`, and maps the four known ids to fixed labels.
+  A signed-out `agy` answers `SUCCESS` with every window full and each reset one whole window
+  ahead or absent; such an answer is `NotLoggedIn`, never data (an account never used looks
+  the same, and the card's words say both). The text below is the record from before.
+  Before: an
   `AntigravityUsageSource` running `agy -p /usage --output-format json` through `proc`.
   It is **not** in v1 because nothing here has verified that the call spends no quota,
   what it prints (the JSON may carry identity), or what it writes; a `-p` argument is by
@@ -1599,7 +1611,8 @@ One module, `io::proc`, is the only place `std::process`/`tokio::process` may be
 (architecture test). Rules:
 
 - Program names come from a closed enum (`Program::Codex`, `Program::Claude`). There is no
-  variant for `grok`, `agy` or `gemini`, so they cannot be run.
+  variant for `grok` or `gemini`, so they cannot be run (`Program::Agy` exists for the
+  Antigravity usage call, 6.5; every child gets `AGY_CLI_DISABLE_AUTO_UPDATE=true`).
 - **Resolution, without running anything** (`proc::resolve(Program) -> Resolved`): take the
   first executable file of that name on the app's `PATH`. If it is a mise launcher (its
   path has a `command-wrappers` or `shims` component, or it resolves through symbolic links

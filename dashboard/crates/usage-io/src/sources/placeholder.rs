@@ -1,5 +1,4 @@
-//! Providers with no usage source the app can read yet (DESIGN 6.5): Gemini, Antigravity
-//! and Grok. The source does no IO and always answers `Unsupported`.
+//! Providers with no usage source the app can read yet (DESIGN 6.5): Gemini and Grok. The source does no IO and always answers `Unsupported`.
 
 use jev_usage_core::port::{
     Cost, FetchFuture, SourceDescriptor, SourceError, SourceId, Trigger, UsageSource,
@@ -16,15 +15,17 @@ pub struct PlaceholderSource {
 }
 
 impl PlaceholderSource {
-    /// The placeholder for Gemini, Antigravity or Grok. `None` for a provider that has a
-    /// real source (Claude, Codex, DeepSeek): there is no placeholder id for it, so a
+    /// The placeholder for Gemini or Grok. `None` for a provider that has a
+    /// real source (Claude, Codex, DeepSeek, Antigravity): there is no placeholder id for it, so a
     /// placeholder can never stand in for a real adapter by mistake.
     pub fn new(provider: ProviderKey) -> Option<Self> {
         let id = match provider {
             ProviderKey::Gemini => SourceId::GeminiNone,
-            ProviderKey::Antigravity => SourceId::AntigravityNone,
             ProviderKey::Grok => SourceId::GrokNone,
-            ProviderKey::Claude | ProviderKey::Codex | ProviderKey::DeepSeek => return None,
+            ProviderKey::Claude
+            | ProviderKey::Codex
+            | ProviderKey::DeepSeek
+            | ProviderKey::Antigravity => return None,
         };
         Some(Self { id, provider })
     }

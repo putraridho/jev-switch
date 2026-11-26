@@ -32,9 +32,9 @@ pub enum SourceId {
     /// Gemini: no source yet.
     #[serde(rename = "gemini_none")]
     GeminiNone,
-    /// Antigravity: no source yet.
-    #[serde(rename = "antigravity_none")]
-    AntigravityNone,
+    /// Antigravity's quota through `agy -p /usage`.
+    #[serde(rename = "antigravity_cli")]
+    AntigravityCli,
     /// Grok: no source yet.
     #[serde(rename = "grok_none")]
     GrokNone,
@@ -187,7 +187,7 @@ mod tests {
             (SourceId::CodexAppServer, "codex_app_server"),
             (SourceId::DeepSeekBalance, "deepseek_balance"),
             (SourceId::GeminiNone, "gemini_none"),
-            (SourceId::AntigravityNone, "antigravity_none"),
+            (SourceId::AntigravityCli, "antigravity_cli"),
             (SourceId::GrokNone, "grok_none"),
         ];
         for (id, name) in cases {

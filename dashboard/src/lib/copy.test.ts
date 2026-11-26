@@ -252,7 +252,8 @@ describe("detail-screen words", () => {
     expect(sourceLine("claude")).toContain("gateway log");
     expect(sourceLine("codex")).toContain("app-server");
     expect(sourceLine("deepseek")).toContain("DeepSeek balance");
-    for (const none of ["gemini", "antigravity", "grok"] as const) {
+    expect(sourceLine("antigravity")).toContain("agy /usage");
+    for (const none of ["gemini", "grok"] as const) {
       expect(sourceLine(none)).toBe("Source: none yet");
     }
   });

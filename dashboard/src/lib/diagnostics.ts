@@ -13,7 +13,7 @@ const sourceNames: Record<SourceId, string> = {
   codex_app_server: "Codex app-server",
   deepseek_balance: "DeepSeek balance",
   gemini_none: "Gemini (no source yet)",
-  antigravity_none: "Antigravity (no source yet)",
+  antigravity_cli: "Antigravity quota",
   grok_none: "Grok (no source yet)",
 };
 
