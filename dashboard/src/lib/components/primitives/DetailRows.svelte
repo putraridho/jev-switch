@@ -3,12 +3,14 @@
 
   interface Props {
     rows: readonly DetailRow[];
+    /** On the ink surface, as a disclosure floating over the page (S37's tooltip look). */
+    floating?: boolean;
   }
 
-  const { rows }: Props = $props();
+  const { rows, floating = false }: Props = $props();
 </script>
 
-<dl>
+<dl class:floating>
   {#each rows as row (row.label)}
     <div>
       <dt>{row.label}</dt>
@@ -42,5 +44,32 @@
   }
   dd.alert {
     color: var(--color-alert);
+  }
+
+  /* Floating: the system's one raised surface, the ink tooltip. Ink fill, paper text, radius
+     6, no border and no shadow; labels and the alert value take the on-ink colours. */
+  .floating {
+    padding: var(--space-2) var(--space-3);
+    border-top: 0;
+    border-radius: var(--radius-control);
+    background: var(--color-ink);
+    font-size: var(--text-micro);
+    line-height: var(--text-sm-line);
+  }
+  .floating dt {
+    color: var(--color-on-ink-muted);
+  }
+  .floating dd {
+    color: var(--color-paper);
+  }
+  .floating dd.alert {
+    color: var(--color-on-ink-alert);
+  }
+
+  /* The tooltip keeps its own ink-and-paper pair in forced colours, as the dot tooltip does. */
+  @media (forced-colors: active) {
+    .floating {
+      forced-color-adjust: none;
+    }
   }
 </style>

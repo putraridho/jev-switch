@@ -168,8 +168,9 @@
     {/if}
   </div>
   {#if open}
-    <div class="detail" aria-hidden="true">
-      <DetailRows rows={detail} />
+    <!-- Opened by the keyboard alone, it skips the hover-intent wait. -->
+    <div class="detail" class:instant={focused && !hovered} aria-hidden="true">
+      <DetailRows rows={detail} floating />
     </div>
   {/if}
 </div>
@@ -177,6 +178,7 @@
 <style>
   /* S22: a 256 column — label, 16, waffle, 24, number, 4, caption. */
   .row {
+    position: relative;
     display: grid;
     align-content: start;
     inline-size: 16rem;
@@ -209,9 +211,6 @@
     align-self: center;
     margin-block-start: var(--space-4);
   }
-  .medium .detail {
-    grid-column: 1 / -1;
-  }
 
   .quiet {
     margin: 0;
@@ -221,8 +220,57 @@
     font-variant-numeric: tabular-nums;
   }
 
-  /* S23: in flow below the caption, so it pushes what follows and never covers the meter. */
+  /* S23, floating: the detail opens over the space below the row instead of in flow, so
+     opening it moves nothing on the page, and it never covers the meter that opened it.
+     The 4 px above it is part of it (transparent), so the pointer can cross onto it and it
+     stays open (WCAG 1.4.13). After a short hover intent it unrolls downward out of the row
+     on the heavy spring, solid from the first frame (a clip reveal, not a fade), and its
+     rows land one after another. Unmounting closes it at once. */
   .detail {
-    margin-block-start: var(--space-4);
+    position: absolute;
+    inset-inline: 0;
+    top: 100%;
+    z-index: 3;
+    padding-block-start: var(--space-1);
+    transition: translate var(--duration-spring-heavy) var(--ease-spring-heavy)
+      var(--duration-intent);
+  }
+  .detail :global(dl) {
+    clip-path: inset(0 round var(--radius-control));
+    transition: clip-path var(--duration-spring-heavy) var(--ease-spring-heavy)
+      var(--duration-intent);
+  }
+  /* Rows land one after another (the CSP allows no inline style, so no index variable). */
+  .detail :global(dl > div) {
+    transition:
+      opacity var(--duration-fast) var(--ease) var(--row-delay),
+      translate var(--duration-spring-firm) var(--ease-spring-firm)
+        var(--row-delay);
+    --row-delay: calc(var(--duration-intent) + var(--duration-stagger) * 2);
+  }
+  .detail :global(dl > div:nth-child(2)) {
+    --row-delay: calc(var(--duration-intent) + var(--duration-stagger) * 3);
+  }
+  .detail :global(dl > div:nth-child(3)) {
+    --row-delay: calc(var(--duration-intent) + var(--duration-stagger) * 4);
+  }
+  .detail :global(dl > div:nth-child(n + 4)) {
+    --row-delay: calc(var(--duration-intent) + var(--duration-stagger) * 5);
+  }
+  .instant,
+  .instant :global(dl) {
+    transition-delay: 0s;
+  }
+  @starting-style {
+    .detail {
+      translate: 0 calc(var(--space-2) * -1);
+    }
+    .detail :global(dl) {
+      clip-path: inset(0 0 100% 0 round var(--radius-control));
+    }
+    .detail :global(dl > div) {
+      opacity: 0;
+      translate: 0 calc(var(--space-1) * -1.5);
+    }
   }
 </style>
