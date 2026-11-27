@@ -98,20 +98,28 @@
   .step:last-child {
     padding-block-end: 0;
   }
-  /* The timeline: a hairline from each mark down to the next. */
+  /* The timeline: a hairline from each mark's centre to the next one's, drawn behind the
+     marks. The mark (9 px) sits 8 px in, so its centre is 12.5 px; the 1 px line at 12 px
+     shares that centre exactly, and neither lands on a half pixel. */
   .step:not(:last-child)::before {
     content: "";
     position: absolute;
-    inset-block: calc(var(--space-4) + var(--space-1)) 0;
-    inset-inline-start: calc(var(--space-3) - var(--rule));
+    inset-block: calc(var(--text-sm-line) / 2) calc(var(--text-sm-line) / -2);
+    inset-inline-start: var(--space-3);
     border-inline-start: var(--rule) solid var(--color-rule);
   }
+  /* Centred on the summary's first line (whole pixels), however long the step runs. */
   .mark {
     position: relative;
-    justify-self: center;
+    justify-self: start;
     width: var(--step-mark);
     height: var(--step-mark);
-    margin-block-start: var(--space-2);
+    margin-block-start: round(
+      up,
+      calc((var(--text-sm-line) - var(--step-mark)) / 2),
+      1px
+    );
+    margin-inline-start: var(--space-2);
     border-radius: var(--radius-full);
     background: var(--color-ink);
   }
@@ -122,7 +130,7 @@
     background: var(--color-faint);
   }
   [data-state="waiting"] .mark {
-    background: transparent;
+    background: var(--color-paper);
     box-shadow: inset 0 0 0 var(--switch-border) var(--color-stale);
   }
   [data-state="running"] .mark::after {

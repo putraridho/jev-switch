@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- The dots on a reply's steps timeline sit centred on their line and on the step's text,
+  and the line now runs unbroken from dot to dot.
 - Chat no longer scrolls as a whole page: the header, the sessions list, the provider rail
   and the composer stay put while only the conversation scrolls, and a short conversation
   sits just above the composer. Turns show their time and a friendly model name ("Sonnet
