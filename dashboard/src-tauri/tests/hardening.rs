@@ -51,6 +51,16 @@ fn capabilities_are_exactly_the_event_listeners_and_six_commands() {
             "allow-get-settings",
             "allow-update-settings",
             "allow-get-diagnostics",
+            "allow-chat-get-state",
+            "allow-chat-send",
+            "allow-chat-cancel",
+            "allow-chat-set-workspace",
+            "allow-chat-set-mode",
+            "allow-chat-set-pin",
+            "allow-chat-set-orchestrate",
+            "allow-chat-answer-permission",
+            "allow-chat-new-session",
+            "allow-chat-list-dirs",
         ]
     );
     let files: Vec<_> = std::fs::read_dir(root().join("capabilities"))

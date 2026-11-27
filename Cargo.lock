@@ -2160,10 +2160,32 @@ dependencies = [
 ]
 
 [[package]]
+name = "jev-chat-core"
+version = "0.1.0"
+dependencies = [
+ "jev-usage-core",
+ "serde",
+ "ts-rs",
+]
+
+[[package]]
+name = "jev-chat-io"
+version = "0.1.0"
+dependencies = [
+ "jev-chat-core",
+ "jev-embed",
+ "jev-usage-core",
+ "tempfile",
+ "tokio",
+]
+
+[[package]]
 name = "jev-dashboard"
 version = "0.1.0"
 dependencies = [
  "chrono",
+ "jev-chat-core",
+ "jev-chat-io",
  "jev-usage-core",
  "jev-usage-io",
  "notify-rust",
@@ -2193,8 +2215,13 @@ dependencies = [
 name = "jev-embed"
 version = "1.15.0"
 dependencies = [
+ "jev-approval",
+ "jev-backend",
  "jev-providers",
+ "jev-routing",
+ "jev-session",
  "jev-shared",
+ "jev-turn",
 ]
 
 [[package]]

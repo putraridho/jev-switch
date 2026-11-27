@@ -1798,7 +1798,7 @@ One module, `io::proc`, is the only place `std::process`/`tokio::process` may be
 - Zoom (9.10) is applied from Rust with `WebviewWindow::set_zoom` from `settings.zoom_pct`,
   at window creation and on change. Tauri's own zoom hot keys stay off: on Linux they are a
   script polyfill that needs a webview permission, which this capability does not grant.
-- At start (`hardening::apply`), before any thread or child exists: `umask(0o077)`, core
+- At start (`hardening::apply`), before any thread or child exists: `umask(0o022)`, core
   dumps off (`RLIMIT_CORE = 0`), `PR_SET_DUMPABLE=0`, the panic hook. Uses safe wrappers from
   `rustix`; `unsafe` is forbidden (`#![forbid(unsafe_code)]`) in all three app crates (1a).
   That Tauri's `generate_context!`, `generate_handler!` and `#[tauri::command]` expansions
@@ -1809,7 +1809,9 @@ One module, `io::proc`, is the only place `std::process`/`tokio::process` may be
   the lead brings it to the user instead of relaxing the rule. `RLIMIT_CORE = 0` is
   inherited by every child, WebKit's helpers included; the dumpable flag is not (it resets
   on `exec`). Children inherit
-  the umask (their files become private, which is harmless). `PR_SET_DUMPABLE=0` makes
+  the umask, so it is 022, not 077: the chat's coding agents write into the user's project
+  and their files must get normal permissions (the app's own files are created 0600 / 0700
+  explicitly and never rely on it). `PR_SET_DUMPABLE=0` makes
   `/proc/<pid>` owned by root; if the T11 manual check finds that this breaks a portal
   lookup, WebKit's sandbox helper or its accessibility bridge on this machine, it is dropped
   and `RLIMIT_CORE = 0` stays (risk in section 14). Honest limit of that fallback: with a

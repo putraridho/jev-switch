@@ -4,6 +4,10 @@
 //! command that borrows state; it is always `Ok`. T11 writes the bodies.
 
 use crate::bus::TrayHost;
+use jev_chat_core::ipc::{
+    ChatDirListing, ChatMode, ChatPermissionReply, ChatPin, ChatSessionState,
+};
+use jev_chat_io::service::ChatServiceHandle;
 use jev_usage_core::ipc::{
     CommandError, Diagnostics, HistoryQuery, HistorySeries, Outcome, RefreshTarget, Settings,
     SettingsPatch, Snapshot,
@@ -74,4 +78,91 @@ pub async fn get_diagnostics<R: Runtime>(
     Ok(Outcome::Ok {
         value: svc.diagnostics(facts).await,
     })
+}
+
+/// Current coding-agent chat session state; always `ok`.
+#[tauri::command]
+pub fn chat_get_state(chat: State<'_, ChatServiceHandle>) -> Outcome<ChatSessionState> {
+    Outcome::Ok {
+        value: chat.state(),
+    }
+}
+
+/// Starts a routed coding-agent turn for `prompt`.
+#[tauri::command]
+pub async fn chat_send(
+    chat: State<'_, ChatServiceHandle>,
+    prompt: String,
+) -> Result<Outcome<ChatSessionState>, CommandError> {
+    Ok(Outcome::from(chat.send_prompt(prompt).await))
+}
+
+/// Cancels the active turn if running.
+#[tauri::command]
+pub fn chat_cancel(chat: State<'_, ChatServiceHandle>) -> Outcome<ChatSessionState> {
+    Outcome::Ok {
+        value: chat.cancel_turn(),
+    }
+}
+
+/// Switches the active workspace directory.
+#[tauri::command]
+pub async fn chat_set_workspace(
+    chat: State<'_, ChatServiceHandle>,
+    path: String,
+) -> Result<Outcome<ChatSessionState>, CommandError> {
+    Ok(Outcome::from(chat.set_workspace(path).await))
+}
+
+/// Sets the tool permission mode.
+#[tauri::command]
+pub async fn chat_set_mode(
+    chat: State<'_, ChatServiceHandle>,
+    mode: ChatMode,
+) -> Result<Outcome<ChatSessionState>, CommandError> {
+    Ok(Outcome::from(chat.set_mode(mode).await))
+}
+
+/// Sets the model routing pin.
+#[tauri::command]
+pub async fn chat_set_pin(
+    chat: State<'_, ChatServiceHandle>,
+    pin: ChatPin,
+) -> Result<Outcome<ChatSessionState>, CommandError> {
+    Ok(Outcome::from(chat.set_pin(pin).await))
+}
+
+/// Toggles `/orchestrate` delegation.
+#[tauri::command]
+pub async fn chat_set_orchestrate(
+    chat: State<'_, ChatServiceHandle>,
+    on: bool,
+) -> Result<Outcome<ChatSessionState>, CommandError> {
+    Ok(Outcome::from(chat.set_orchestrate(on).await))
+}
+
+/// Answers a pending tool permission request.
+#[tauri::command]
+pub fn chat_answer_permission(
+    chat: State<'_, ChatServiceHandle>,
+    reply: ChatPermissionReply,
+) -> Outcome<()> {
+    Outcome::from(chat.answer_permission(reply))
+}
+
+/// Starts a fresh coding-agent conversation.
+#[tauri::command]
+pub async fn chat_new_session(
+    chat: State<'_, ChatServiceHandle>,
+) -> Result<Outcome<ChatSessionState>, CommandError> {
+    Ok(Outcome::from(chat.new_session().await))
+}
+
+/// Lists subdirectories for the workspace folder picker.
+#[tauri::command]
+pub fn chat_list_dirs(
+    chat: State<'_, ChatServiceHandle>,
+    path: Option<String>,
+) -> Outcome<ChatDirListing> {
+    Outcome::from(chat.list_dirs(path))
 }

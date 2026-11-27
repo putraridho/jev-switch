@@ -7,3 +7,4 @@ pub mod usage_ledger_file;
 pub mod turn_log;
 pub mod worker_policy;
 pub mod engine_adapters;
+pub mod desktop_engine;

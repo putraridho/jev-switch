@@ -1,15 +1,15 @@
-//! Process hardening at start (DESIGN 8.8, 8.4): umask 077, `RLIMIT_CORE` 0,
+//! Process hardening at start (DESIGN 8.8, 8.4): umask 022, `RLIMIT_CORE` 0,
 //! `PR_SET_DUMPABLE` 0 and the panic hook (base name and line only). T15 writes the body.
 
 /// Applies the hardening. Called first, before any thread or child exists.
 pub fn apply() {
     use rustix::fs::Mode;
-    use rustix::process::{
-        set_dumpable_behavior, setrlimit, umask, DumpableBehavior, Resource, Rlimit,
-    };
+    use rustix::process::{setrlimit, umask, Resource, Rlimit};
 
-    // umask 077: files created by the app default to private.
-    let _ = umask(Mode::from_bits_truncate(0o077));
+    // umask 022, not 077: the chat's coding agents inherit it, and the files they create in
+    // the user's project must get normal permissions. The app's own files never rely on the
+    // umask (they are created 0600 / 0700 explicitly, DESIGN 8.4).
+    let _ = umask(Mode::from_bits_truncate(0o022));
     // No core dumps.
     let _ = setrlimit(
         Resource::Core,
@@ -19,7 +19,11 @@ pub fn apply() {
         },
     );
     // The process is not dumpable by other users.
-    let _ = set_dumpable_behavior(DumpableBehavior::NotDumpable);
+    #[cfg(target_os = "linux")]
+    {
+        use rustix::process::{set_dumpable_behavior, DumpableBehavior};
+        let _ = set_dumpable_behavior(DumpableBehavior::NotDumpable);
+    }
     // The panic hook prints a base name and a line number, never a path or the payload.
     std::panic::set_hook(Box::new(|info| {
         use std::io::Write;

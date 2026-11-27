@@ -15,10 +15,18 @@ impl TrayHost for SessionBusTrayHost {
     /// Runs the bus call on its own thread: it needs its own runtime, and building one on a
     /// thread that already drives async tasks (an async command) panics.
     fn present(&self) -> bool {
-        std::thread::spawn(ask_bus).join().unwrap_or(false)
+        #[cfg(target_os = "linux")]
+        {
+            std::thread::spawn(ask_bus).join().unwrap_or(false)
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            true
+        }
     }
 }
 
+#[cfg(target_os = "linux")]
 fn ask_bus() -> bool {
     let Ok(rt) = tokio::runtime::Builder::new_current_thread()
         .enable_all()

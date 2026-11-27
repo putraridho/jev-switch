@@ -472,13 +472,20 @@ fn the_engine_is_named_in_exactly_two_lines() {
         format!("jev_{}", "embed"),
     ];
     let rust = hits(&|p| p.extension().is_some_and(|e| e == "rs"), &identifiers);
+    let import_line = format!("use jev_{} as engine;", "engine");
     assert_eq!(
         rust,
-        [(
-            "crates/usage-io/src/engine_bridge.rs".to_owned(),
-            format!("use jev_{} as engine;", "engine")
-        )],
-        "only engine_bridge.rs may name the engine, in its one import line"
+        [
+            (
+                "crates/chat-io/src/engine_bridge.rs".to_owned(),
+                import_line.clone()
+            ),
+            (
+                "crates/usage-io/src/engine_bridge.rs".to_owned(),
+                import_line
+            ),
+        ],
+        "only each io crate's engine_bridge.rs may name the engine, in its one import line"
     );
 
     let packages = [
@@ -490,13 +497,16 @@ fn the_engine_is_named_in_exactly_two_lines() {
         &|p| p.file_name().is_some_and(|n| n == "Cargo.toml"),
         &packages,
     );
-    assert_eq!(manifests.len(), 1, "{manifests:?}");
-    assert_eq!(manifests[0].0, "crates/usage-io/Cargo.toml");
-    assert!(
-        manifests[0]
-            .1
-            .starts_with(&format!("jev-{} = {{ package = ", "engine")),
-        "{}",
-        manifests[0].1
-    );
+    assert_eq!(manifests.len(), 2, "{manifests:?}");
+    assert_eq!(manifests[0].0, "crates/chat-io/Cargo.toml");
+    assert_eq!(manifests[1].0, "crates/usage-io/Cargo.toml");
+    for entry in &manifests {
+        assert!(
+            entry
+                .1
+                .starts_with(&format!("jev-{} = {{ package = ", "engine")),
+            "{}",
+            entry.1
+        );
+    }
 }

@@ -8,6 +8,10 @@
   glides from dot to dot. The other window of the same provider fades back while you read.
 - Provider headings underline and show an arrow on hover, since they open the detail view;
   buttons press down and spring back; the header's view pills darken on hover.
+- Integrated **Coding chat** tab inside the main window: routes across Claude, Codex, Gemini, Grok and DeepSeek via `jev-turn`, with a built-in workspace folder browser, permission mode (`Ask`, `Edit`, `Plan`, `Auto`), model/provider pinning, live streaming tool calls, edit diffs, and interactive tool-approval cards.
+- Cross-platform IO/shell fallbacks so `jev-dashboard` builds and runs on macOS in addition to Linux.
+- Chat replies render minimal standard Markdown (headings, emphasis, code, lists, quotes, rules); links show their address and are not clickable. The chat opens at the repository root (the home folder when launched from Finder), keeps a stopped reply's partial text, follows new output while you are at the bottom, keeps an unsent draft across tabs, and Esc closes the folder picker first. Files the agents create get normal permissions (umask 022).
+
 - Antigravity usage source (Gemini and Claude/GPT windows). Reset times more than 40 days
   ahead are shown as unknown.
 

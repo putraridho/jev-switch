@@ -6,6 +6,9 @@ import type { Outcome } from "./bindings/Outcome";
 import type { Route } from "./bindings/Route";
 import type { Settings } from "./bindings/Settings";
 import type { Snapshot } from "./bindings/Snapshot";
+import type { ChatDirListing } from "./chat-bindings/ChatDirListing";
+import type { ChatEvent } from "./chat-bindings/ChatEvent";
+import type { ChatSessionState } from "./chat-bindings/ChatSessionState";
 import type { IpcClient } from "./client";
 
 /** The client the real app uses. */
@@ -47,6 +50,67 @@ export function createTauriClient(): IpcClient {
       }),
     onNavigate: (cb) =>
       listen<Route>("navigate", (event) => {
+        cb(event.payload);
+      }),
+
+    chatGetState: () =>
+      invoke<Outcome<ChatSessionState>>("chat_get_state").catch(() => ({
+        status: "error",
+        error: { code: "internal" },
+      })),
+    chatSend: (prompt) =>
+      invoke<Outcome<ChatSessionState>>("chat_send", { prompt }).catch(() => ({
+        status: "error",
+        error: { code: "internal" },
+      })),
+    chatCancel: () =>
+      invoke<Outcome<ChatSessionState>>("chat_cancel").catch(() => ({
+        status: "error",
+        error: { code: "internal" },
+      })),
+    chatSetWorkspace: (path) =>
+      invoke<Outcome<ChatSessionState>>("chat_set_workspace", { path }).catch(
+        () => ({
+          status: "error",
+          error: { code: "internal" },
+        }),
+      ),
+    chatSetMode: (mode) =>
+      invoke<Outcome<ChatSessionState>>("chat_set_mode", { mode }).catch(
+        () => ({
+          status: "error",
+          error: { code: "internal" },
+        }),
+      ),
+    chatSetPin: (pin) =>
+      invoke<Outcome<ChatSessionState>>("chat_set_pin", { pin }).catch(() => ({
+        status: "error",
+        error: { code: "internal" },
+      })),
+    chatSetOrchestrate: (on) =>
+      invoke<Outcome<ChatSessionState>>("chat_set_orchestrate", { on }).catch(
+        () => ({
+          status: "error",
+          error: { code: "internal" },
+        }),
+      ),
+    chatAnswerPermission: (reply) =>
+      invoke<Outcome<null>>("chat_answer_permission", { reply }).catch(() => ({
+        status: "error",
+        error: { code: "internal" },
+      })),
+    chatNewSession: () =>
+      invoke<Outcome<ChatSessionState>>("chat_new_session").catch(() => ({
+        status: "error",
+        error: { code: "internal" },
+      })),
+    chatListDirs: (path) =>
+      invoke<Outcome<ChatDirListing>>("chat_list_dirs", { path }).catch(() => ({
+        status: "error",
+        error: { code: "internal" },
+      })),
+    onChatEvent: (cb) =>
+      listen<ChatEvent>("chat_event", (event) => {
         cb(event.payload);
       }),
   };

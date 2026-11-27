@@ -10,6 +10,7 @@ import type { ProviderKey } from "./bindings/ProviderKey";
 import type { ReadingView } from "./bindings/ReadingView";
 import type { UsageView } from "./bindings/UsageView";
 import type { WindowKind } from "./bindings/WindowKind";
+import type { ChatSessionState } from "./chat-bindings/ChatSessionState";
 import type { MockScript } from "./mock";
 
 /** The name of a fixture script. */
@@ -58,6 +59,52 @@ function sampleHistory(): HistorySeries {
   };
 }
 
+function sampleChatState(): ChatSessionState {
+  return {
+    workspace: "/workspace/project",
+    mode: "edit",
+    pin: { kind: "auto" },
+    routing_enabled: true,
+    orchestrate: false,
+    jev_key_present: true,
+    busy: false,
+    active_route: null,
+    streaming_text: "",
+    streaming_thinking: "",
+    streaming_tools: [],
+    notes: [],
+    pending_permission: null,
+    messages: [],
+    providers: [
+      { provider: "claude", ready: true, detail: "Max 5x", plan: "max_5x" },
+      { provider: "codex", ready: true, detail: "Plus", plan: "plus" },
+      {
+        provider: "deepseek",
+        ready: false,
+        detail: "no key",
+        plan: null,
+      },
+      { provider: "gemini", ready: true, detail: "Ready", plan: null },
+      {
+        provider: "grok",
+        ready: false,
+        detail: "not installed",
+        plan: null,
+      },
+    ],
+    models: [
+      { provider: "claude", id: "claude-sonnet-5-5" },
+      { provider: "claude", id: "claude-opus-5-5" },
+      { provider: "claude", id: "claude-haiku-5-5" },
+      { provider: "codex", id: "gpt-6.1-sol" },
+      { provider: "codex", id: "gpt-6.1-terra" },
+      { provider: "gemini", id: "gemini-4-hydrogen" },
+      { provider: "deepseek", id: "deepseek-v4-pro" },
+      { provider: "grok", id: "grok-4.7" },
+    ],
+  };
+}
+
 const empty: MockScript = {
   snapshot: {
     generated_at: 1700000000000,
@@ -96,6 +143,7 @@ const empty: MockScript = {
     hidden_providers: [],
   },
   history: sampleHistory(),
+  chat: sampleChatState(),
   diagnostics: {
     app_version: "0.1.0",
     sources: [

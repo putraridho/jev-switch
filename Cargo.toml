@@ -1,5 +1,5 @@
 [workspace]
-members = [".", "crates/*", "dashboard/crates/usage-core", "dashboard/crates/usage-io", "dashboard/src-tauri"]
+members = [".", "crates/*", "dashboard/crates/usage-core", "dashboard/crates/usage-io", "dashboard/crates/chat-core", "dashboard/crates/chat-io", "dashboard/src-tauri"]
 default-members = [".", "crates/*"]
 exclude = [".claude", "dashboard/fuzz"]
 resolver = "2"

@@ -75,6 +75,7 @@ pub fn watch_file(
     }
 }
 
+#[cfg(target_os = "linux")]
 fn watch_blocking(
     path: &Path,
     file_name: Option<&std::ffi::OsStr>,
@@ -147,6 +148,36 @@ fn watch_blocking(
     }
 }
 
+#[cfg(not(target_os = "linux"))]
+fn watch_blocking(
+    path: &Path,
+    _file_name: Option<&std::ffi::OsStr>,
+    id: SourceId,
+    tx: &mpsc::Sender<SourceId>,
+    opts: WatchOptions,
+    stop: &AtomicBool,
+) {
+    let signature = || {
+        std::fs::metadata(path)
+            .ok()
+            .map(|m| (m.len(), m.modified().ok()))
+    };
+    // The state at arm time is the baseline: only a later change is a signal.
+    let mut last_sig = signature();
+    let poll_interval = opts.coalesce.max(Duration::from_millis(250));
+    while !stop.load(Ordering::SeqCst) {
+        std::thread::sleep(poll_interval);
+        let sig = signature();
+        if sig != last_sig {
+            last_sig = sig;
+            if tx.blocking_send(id).is_err() {
+                return;
+            }
+        }
+    }
+}
+
+#[cfg(any(target_os = "linux", test))]
 fn next_rearm(current: Duration, opts: WatchOptions) -> Duration {
     current.saturating_mul(2).min(opts.rearm_max)
 }

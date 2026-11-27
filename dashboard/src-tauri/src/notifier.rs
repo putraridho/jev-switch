@@ -19,6 +19,7 @@ pub trait NotificationSink: Send + Sync {
 pub struct NotifyRustSink;
 
 impl NotificationSink for NotifyRustSink {
+    #[cfg(target_os = "linux")]
     fn deliver(&self, title: &str, body: &str, critical: bool) -> bool {
         use notify_rust::Urgency;
         let urgency = if critical {
@@ -31,6 +32,16 @@ impl NotificationSink for NotifyRustSink {
             .summary(title)
             .body(body)
             .urgency(urgency)
+            .show()
+            .is_ok()
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    fn deliver(&self, title: &str, body: &str, _critical: bool) -> bool {
+        notify_rust::Notification::new()
+            .appname("Flashboard")
+            .summary(title)
+            .body(body)
             .show()
             .is_ok()
     }

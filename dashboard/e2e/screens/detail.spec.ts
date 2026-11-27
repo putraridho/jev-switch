@@ -90,9 +90,9 @@ test.describe("keyboard", () => {
     expect(stops).toEqual([
       "Refresh",
       "Usage",
+      "Chat",
       "Settings",
       "Claude Max 5x",
-      "Claude 5-hour",
     ]);
   });
 

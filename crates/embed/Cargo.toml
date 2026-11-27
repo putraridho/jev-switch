@@ -9,5 +9,10 @@ description = "The engine's one stable surface for other programs (Flashboard): 
 doctest = false
 
 [dependencies]
-jev-shared = { path = "../shared" }
+jev-approval = { path = "../approval" }
+jev-backend = { path = "../backend" }
 jev-providers = { path = "../providers" }
+jev-routing = { path = "../routing" }
+jev-session = { path = "../session" }
+jev-shared = { path = "../shared" }
+jev-turn = { path = "../turn" }

@@ -13,28 +13,26 @@ pub const MAIN_WINDOW: &str = "main";
 /// The product name: window title, tray tooltip, notifications (DESIGN 1a).
 pub const PRODUCT_NAME: &str = "Flashboard";
 
-/// Builds the service dependencies and starts the service; `None` when a required path or
-/// store could not be set up (the window still opens, but shows no data).
-fn start_service(app: &tauri::AppHandle) {
+/// Builds the service dependencies and starts the service; returns the usage signal sender
+/// when set up so the chat service can notify usage refresh on completed turns.
+fn start_service(app: &tauri::AppHandle) -> Option<tokio::sync::mpsc::Sender<SourceId>> {
     let state_dir = jev_usage_io::engine_bridge::state_dir();
     let dashboard_dir = state_dir
         .as_deref()
         .map(|d| d.join("dashboard"))
         .or_else(|| Some(std::env::temp_dir().join("jev-dashboard")));
 
-    let Some(dashboard_dir) = dashboard_dir else {
-        return;
-    };
+    let dashboard_dir = dashboard_dir?;
     let _ = jev_usage_io::fsutil::ensure_private_dir(&dashboard_dir);
 
     let store_path = dashboard_dir.join("history.db");
     let settings_path = dashboard_dir.join("settings.json");
     let usage_log = jev_usage_io::engine_bridge::usage_log_path();
 
-    let store = match jev_usage_io::store::SqliteStore::open(&store_path) {
-        Ok(store) => Arc::new(store),
-        Err(_) => return,
+    let Ok(store) = jev_usage_io::store::SqliteStore::open(&store_path) else {
+        return None;
     };
+    let store = Arc::new(store);
     let settings = Arc::new(jev_usage_io::settings_file::JsonSettingsStore::new(
         settings_path,
     ));
@@ -51,10 +49,10 @@ fn start_service(app: &tauri::AppHandle) {
         Arc::new(jev_usage_io::probe::CliProbe::new(Arc::clone(&runner)));
     let facts = jev_usage_io::probe::FactsCell::new(jev_usage_io::probe::LoginFacts::unknown());
 
-    let http = match jev_usage_io::http::HttpClient::new() {
-        Ok(http) => Arc::new(http),
-        Err(_) => return,
+    let Ok(http) = jev_usage_io::http::HttpClient::new() else {
+        return None;
     };
+    let http = Arc::new(http);
     let keys: Arc<dyn Fn() -> jev_usage_io::secrets::KeySources + Send + Sync> =
         Arc::new(jev_usage_io::secrets::KeySources::system);
 
@@ -77,6 +75,7 @@ fn start_service(app: &tauri::AppHandle) {
         ));
 
     let (signal_tx, signal_rx) = tokio::sync::mpsc::channel::<SourceId>(64);
+    let chat_signal = signal_tx.clone();
 
     let deps = jev_usage_io::service::ServiceDeps {
         clock,
@@ -108,6 +107,22 @@ fn start_service(app: &tauri::AppHandle) {
         );
         app.manage(guard);
     }
+    Some(chat_signal)
+}
+
+fn start_chat_service(
+    app: &tauri::AppHandle,
+    usage_signal: Option<tokio::sync::mpsc::Sender<SourceId>>,
+) {
+    let workspace = jev_chat_io::service::default_workspace(
+        std::env::current_dir().ok(),
+        std::env::var_os("HOME").map(PathBuf::from),
+    );
+    let runtime_handle = tauri::async_runtime::handle();
+    let rt = runtime_handle.inner().clone();
+    let handle = jev_chat_io::service::ChatServiceHandle::start(workspace, usage_signal, rt);
+    crate::events::forward_chat_events(app.clone(), handle.subscribe());
+    app.manage(handle);
 }
 
 /// SIGTERM ends the app through its normal exit, so the service is shut down and any
@@ -142,10 +157,21 @@ pub fn run() {
             commands::get_history,
             commands::get_settings,
             commands::update_settings,
-            commands::get_diagnostics
+            commands::get_diagnostics,
+            commands::chat_get_state,
+            commands::chat_send,
+            commands::chat_cancel,
+            commands::chat_set_workspace,
+            commands::chat_set_mode,
+            commands::chat_set_pin,
+            commands::chat_set_orchestrate,
+            commands::chat_answer_permission,
+            commands::chat_new_session,
+            commands::chat_list_dirs
         ])
         .setup(move |app| {
-            start_service(app.handle());
+            let usage_signal = start_service(app.handle());
+            start_chat_service(app.handle(), usage_signal);
             if let Some(svc) = app.try_state::<jev_usage_io::service::ServiceHandle>() {
                 crate::autostart::apply(svc.settings().autostart);
             }

@@ -9,6 +9,16 @@ fn main() -> impl std::process::Termination {
         "get_settings",
         "update_settings",
         "get_diagnostics",
+        "chat_get_state",
+        "chat_send",
+        "chat_cancel",
+        "chat_set_workspace",
+        "chat_set_mode",
+        "chat_set_pin",
+        "chat_set_orchestrate",
+        "chat_answer_permission",
+        "chat_new_session",
+        "chat_list_dirs",
     ];
     let manifest = tauri_build::AppManifest::new().commands(commands);
     tauri_build::try_build(tauri_build::Attributes::new().app_manifest(manifest))

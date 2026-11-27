@@ -1,0 +1,53 @@
+[package]
+name = "jev-chat-io"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Flashboard's coding-agent chat IO adapter: drives jev-turn Engine for the chat tab."
+
+[lib]
+doctest = false
+
+[dependencies]
+jev-chat-core = { path = "../chat-core" }
+jev-usage-core = { path = "../usage-core" }
+jev-engine = { package = "jev-embed", path = "../../../crates/embed" }
+tokio = { version = "=1.53.3", features = ["rt", "rt-multi-thread", "sync", "time", "macros"] }
+
+[dev-dependencies]
+tempfile = "=3.27.0"
+
+# The same table in all app crates (DESIGN 5 invariant 3, 11.1).
+[lints.rust]
+unsafe_code = "forbid"
+missing_docs = "warn"
+
+[lints.clippy]
+all = { level = "deny", priority = -1 }
+pedantic = { level = "deny", priority = -1 }
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+indexing_slicing = "deny"
+arithmetic_side_effects = "deny"
+as_conversions = "deny"
+print_stdout = "deny"
+print_stderr = "deny"
+dbg_macro = "deny"
+todo = "deny"
+unimplemented = "deny"
+disallowed_types = "deny"
+disallowed_macros = "deny"
+# The pedantic allow-list: style opinions that fight the signatures fixed by the design.
+module_name_repetitions = "allow"
+doc_markdown = "allow"
+must_use_candidate = "allow"
+return_self_not_must_use = "allow"
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+needless_pass_by_value = "allow"
+too_many_lines = "allow"
+trivially_copy_pass_by_ref = "allow"
+struct_excessive_bools = "allow"
+unused_async = "allow"
+unused_self = "allow"

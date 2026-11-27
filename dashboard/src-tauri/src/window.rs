@@ -50,7 +50,7 @@ pub fn open<R: Runtime>(app: &AppHandle<R>, route: Route) {
     let url = WebviewUrl::App(format!("index.html{fragment}").into());
     let _ = WebviewWindowBuilder::new(app, "main", url)
         .title("Flashboard")
-        .inner_size(420.0, 640.0)
+        .inner_size(560.0, 720.0)
         .min_inner_size(320.0, 400.0)
         .incognito(!automation_requested())
         .disable_drag_drop_handler()
@@ -86,6 +86,7 @@ pub fn remember_size<R: Runtime>(app: &AppHandle<R>, w: u32, h: u32) {
 fn route_fragment(route: &Route) -> String {
     match route {
         Route::Overview => "#/overview".to_owned(),
+        Route::Chat => "#/chat".to_owned(),
         Route::Provider { .. } => "#/provider".to_owned(),
         Route::Settings => "#/settings".to_owned(),
     }

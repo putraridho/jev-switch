@@ -21,13 +21,18 @@ tauri-build = { version = "=2.7.6", features = [] }
 [dependencies]
 jev-usage-core = { path = "../crates/usage-core" }
 jev-usage-io = { path = "../crates/usage-io" }
+jev-chat-core = { path = "../crates/chat-core" }
+jev-chat-io = { path = "../crates/chat-io" }
 tokio = { version = "=1.53.3", features = ["rt", "sync", "time", "macros", "signal"] }
 tauri = { version = "=2.12.7", features = ["tray-icon"] }
 tauri-plugin-single-instance = "=2.5.5"
-notify-rust = { version = "=4.19.0", default-features = false, features = ["z"] }
-zbus = { version = "=6.5.0", default-features = false }
+notify-rust = { version = "=4.19.0", default-features = false }
 chrono = { version = "=0.4.45", default-features = false, features = ["clock"] }
 rustix = { version = "=1.1.6", features = ["fs", "process"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+notify-rust = { version = "=4.19.0", default-features = false, features = ["z"] }
+zbus = { version = "=6.5.0", default-features = false }
 
 [dev-dependencies]
 jev-usage-io = { path = "../crates/usage-io", features = ["test-support"] }

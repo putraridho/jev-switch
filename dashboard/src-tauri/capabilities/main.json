@@ -10,6 +10,16 @@
     "allow-get-history",
     "allow-get-settings",
     "allow-update-settings",
-    "allow-get-diagnostics"
+    "allow-get-diagnostics",
+    "allow-chat-get-state",
+    "allow-chat-send",
+    "allow-chat-cancel",
+    "allow-chat-set-workspace",
+    "allow-chat-set-mode",
+    "allow-chat-set-pin",
+    "allow-chat-set-orchestrate",
+    "allow-chat-answer-permission",
+    "allow-chat-new-session",
+    "allow-chat-list-dirs"
   ]
 }

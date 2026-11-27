@@ -11,10 +11,11 @@
 
   const views = [
     { name: "overview", label: "Usage" },
+    { name: "chat", label: "Chat" },
     { name: "settings", label: "Settings" },
   ] as const;
 
-  function open(name: "overview" | "settings"): void {
+  function open(name: "overview" | "chat" | "settings"): void {
     if (router.route.name !== name) router.go({ name });
   }
 

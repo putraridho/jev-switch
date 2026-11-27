@@ -358,6 +358,7 @@ fn every_enum_variant_serialises_to_its_documented_form() {
     }
 
     assert_eq!(json(&Route::Overview), r#"{"name":"overview"}"#);
+    assert_eq!(json(&Route::Chat), r#"{"name":"chat"}"#);
     assert_eq!(json(&Route::Settings), r#"{"name":"settings"}"#);
     assert_eq!(
         json(&Route::Provider {

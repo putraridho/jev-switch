@@ -47,7 +47,15 @@ impl TypeSafe {
         Self { key: key.into(), url: url.into(), http: http_client() }
     }
 
+    /// A placeholder client when no Jev key is configured, so routing falls back cleanly.
+    pub fn unconfigured() -> Self {
+        Self { key: String::new(), url: String::new(), http: http_client() }
+    }
+
     async fn ask(&self, state: Value, questions: Value) -> Result<Value> {
+        if self.key.is_empty() {
+            bail!("Jev key not configured");
+        }
         let req = json!({ "state": state, "model": "jev-latest", "questions": questions });
         let resp = self
             .http

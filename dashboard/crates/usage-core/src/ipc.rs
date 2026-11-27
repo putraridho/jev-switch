@@ -396,6 +396,8 @@ pub struct Diagnostics {
 pub enum Route {
     /// The overview.
     Overview,
+    /// Integrated coding-agent chat.
+    Chat,
     /// One provider's detail.
     Provider {
         /// The provider.

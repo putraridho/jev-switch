@@ -52,9 +52,10 @@ async fn status_probe_and_sanitized_child_environment() {
             .unwrap()
             .success
     );
+    let expected_dir = std::fs::canonicalize(dir.path()).unwrap();
     assert_eq!(
         String::from_utf8(output).unwrap().trim(),
-        format!("unset|1|dumb|{}", dir.path().display())
+        format!("unset|1|dumb|{}", expected_dir.display())
     );
 }
 

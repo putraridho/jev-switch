@@ -18,6 +18,7 @@ type Entry = { route: Route; trigger: HTMLElement | null };
 /** The view a URL fragment names (DESIGN 7.3): `view`, and `provider` for a provider. */
 export function routeFromHash(hash: string): Route {
   const params = new SvelteURLSearchParams(hash.replace(/^#/, ""));
+  if (params.get("view") === "chat") return { name: "chat" };
   if (params.get("view") === "settings") return { name: "settings" };
   if (params.get("view") === "provider") {
     const provider = providers.find((key) => key === params.get("provider"));

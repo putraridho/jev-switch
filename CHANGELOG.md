@@ -4,6 +4,8 @@ See [docs/changelog-guide.md](docs/changelog-guide.md) for changelog formatting,
 
 ## Unreleased
 
+- **Integrated coding-agent chat in Flashboard (`dashboard/`).** Added a **Chat** tab inside the desktop app backed by `jev-turn`'s multi-provider router (Claude, Codex, Gemini/Antigravity, Grok, DeepSeek), with a workspace folder browser, permission modes (`Ask`, `Edit`, `Plan`, `Auto`), model pinning, live tool-approval prompts, edit diffs, and macOS portability alongside Linux.
+
 ## 1.15.0
 
 Gemini plan usage in jev-code, and Flashboard, a desktop usage dashboard, joins the repository.

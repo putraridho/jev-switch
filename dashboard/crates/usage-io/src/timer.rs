@@ -39,6 +39,7 @@ impl SystemTimer {
 }
 
 impl WallTimer for SystemTimer {
+    #[cfg(target_os = "linux")]
     fn sleep_until(&self, deadline: UnixMillis) -> TimerFuture<'_> {
         let secs = i64::try_from(deadline.0 / 1000).unwrap_or(i64::MAX);
         let nanos = i64::try_from((deadline.0 % 1000).saturating_mul(1_000_000)).unwrap_or(0);
@@ -79,6 +80,25 @@ impl WallTimer for SystemTimer {
             })
             .await
             .unwrap_or(Wake::ClockChanged)
+        })
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    fn sleep_until(&self, deadline: UnixMillis) -> TimerFuture<'_> {
+        Box::pin(async move {
+            loop {
+                let now_ms = u64::try_from(
+                    std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map_or(0, |d| d.as_millis()),
+                )
+                .unwrap_or(u64::MAX);
+                if now_ms >= deadline.0 {
+                    return Wake::Due;
+                }
+                let remain_ms = deadline.0.saturating_sub(now_ms).min(1_000);
+                tokio::time::sleep(std::time::Duration::from_millis(remain_ms)).await;
+            }
         })
     }
 }

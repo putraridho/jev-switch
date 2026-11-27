@@ -4,7 +4,7 @@ import type { ProviderKey } from "./ProviderKey";
 /**
  * A screen of the UI.
  */
-export type Route = { "name": "overview" } | { "name": "provider", 
+export type Route = { "name": "overview" } | { "name": "chat" } | { "name": "provider", 
 /**
  * The provider.
  */

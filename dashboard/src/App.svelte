@@ -11,6 +11,7 @@
   import { settings } from "./lib/stores/settings.svelte";
   import { usage } from "./lib/stores/usage.svelte";
   import Overview from "./screens/Overview.svelte";
+  import Chat from "./screens/Chat.svelte";
   import ProviderDetail from "./screens/ProviderDetail.svelte";
   import Settings from "./screens/Settings.svelte";
 
@@ -61,9 +62,11 @@
     document.title =
       route.name === "provider"
         ? `Flashboard: ${providerName[route.provider]}`
-        : route.name === "settings"
-          ? "Flashboard: Settings"
-          : "Flashboard: Overview";
+        : route.name === "chat"
+          ? "Flashboard: Chat"
+          : route.name === "settings"
+            ? "Flashboard: Settings"
+            : "Flashboard: Overview";
     if (first) {
       first = false;
       return;
@@ -91,6 +94,8 @@
     <FirstRun />
   {:else if router.route.name === "overview"}
     <Overview />
+  {:else if router.route.name === "chat"}
+    <Chat />
   {:else if router.route.name === "provider"}
     <ProviderDetail />
   {:else}
