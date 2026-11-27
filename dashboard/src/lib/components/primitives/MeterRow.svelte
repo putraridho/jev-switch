@@ -153,6 +153,7 @@
       warnAtPct={warnAt}
       criticalAtPct={criticalAt}
       focusable
+      dotTooltip
     />
   </div>
   <div class="reading">

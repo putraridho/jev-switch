@@ -177,6 +177,16 @@
 
   $effect(() => cancelTip);
 
+  /** Puts the ring on a dot. Set through the CSSOM, which the CSP allows (no inline
+      style attribute), so the translate property can glide between dots. */
+  function placeRing(node: SVGCircleElement, dot: number) {
+    const place = (at: number): void => {
+      node.style.translate = `${String((at % 10) * 24 + 12)}px ${String(Math.floor(at / 10) * 24 + 12)}px`;
+    };
+    place(dot);
+    return { update: place };
+  }
+
   const text = $derived(
     valueText ??
       (severity === "unknown" ? "No data" : `${String(valueNow)}% used`),
@@ -196,6 +206,7 @@
   >
     {#each dots as dot, i (i)}
       <circle
+        class:swell={tip?.dot === i}
         data-dot={named ? i : undefined}
         pointer-events={named ? "all" : undefined}
         cx={(i % 10) * 24 + 12}
@@ -213,6 +224,11 @@
       {#if criticalY !== null}
         <path class="critical-mark" d={triangle(criticalY)} />
       {/if}
+    {/if}
+    {#if tip !== null}
+      <!-- The ring lands on the named dot from a little larger and then glides from dot to
+           dot; it appears where it is first needed, never flying in from elsewhere. -->
+      <circle class="ring" r="12" use:placeRing={tip.dot} />
     {/if}
     {#if bubble !== null}
       <g
@@ -272,6 +288,32 @@
   .bridge {
     fill: transparent;
   }
+
+  /* The named dot swells on the pop spring; the ring settles onto it on the firm one. */
+  circle {
+    transform-box: fill-box;
+    transform-origin: center;
+    transition: scale var(--duration-spring-pop) var(--ease-spring-pop);
+  }
+  circle.swell {
+    scale: var(--dot-swell);
+  }
+  .ring {
+    fill: none;
+    stroke: var(--color-ink);
+    stroke-width: 1.5;
+    pointer-events: none;
+    transition:
+      translate var(--duration-spring-firm) var(--ease-spring-firm),
+      scale var(--duration-spring-firm) var(--ease-spring-firm),
+      opacity var(--duration-fast) var(--ease);
+  }
+  @starting-style {
+    .ring {
+      scale: var(--ring-land);
+      opacity: 0;
+    }
+  }
   .bubble {
     fill: var(--color-ink);
   }
@@ -299,6 +341,9 @@
   }
 
   @media (forced-colors: active) {
+    .ring {
+      stroke: currentColor;
+    }
     /* The tooltip keeps its own ink-on-paper pair, which already contrasts. */
     .dot-tip {
       forced-color-adjust: none;
