@@ -106,7 +106,7 @@
 
 <style>
   main {
-    min-height: calc(100vh - var(--space-12));
+    min-height: calc(100vh - var(--space-12) - var(--rule));
     background: var(--color-bg);
   }
 </style>

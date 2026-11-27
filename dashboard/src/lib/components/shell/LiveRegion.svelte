@@ -8,7 +8,10 @@
 
 <style>
   .live-region {
+    /* Pinned to the top so it never adds a pixel of scroll under a full-height view. */
     position: absolute;
+    inset-block-start: 0;
+    inset-inline-start: 0;
     width: 1px;
     height: 1px;
     padding: 0;

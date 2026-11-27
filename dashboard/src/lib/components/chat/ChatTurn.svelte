@@ -8,18 +8,28 @@
     who: string;
     /** The answering model, under the name. */
     model?: string | null;
+    /** When the turn arrived, "2:18 PM"; omitted when unknown. */
+    time?: string | null;
     /** Still being written: rises in and stays open. */
     live?: boolean;
     children: Snippet;
   }
 
-  const { role, who, model = null, live = false, children }: Props = $props();
+  const {
+    role,
+    who,
+    model = null,
+    time = null,
+    live = false,
+    children,
+  }: Props = $props();
 </script>
 
 <article class="msg" class:live data-role={role}>
   <header class="who">
     <span class="name" class:serif={role === "assistant"}>{who}</span>
     {#if model}<span class="model">{model}</span>{/if}
+    {#if time}<span class="time">{time}</span>{/if}
   </header>
   <div class="body">{@render children()}</div>
 </article>
@@ -51,13 +61,20 @@
     font-weight: var(--title-xl-weight);
     line-height: var(--name-serif-line);
   }
-  /* Model ids are written as the provider writes them (claude-sonnet-5-5). */
   .model {
     color: var(--color-muted);
-    font-family: var(--font-mono);
+    font-size: var(--text-micro);
+    font-weight: var(--text-sm-weight-strong);
+    line-height: var(--text-micro-line);
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    overflow-wrap: anywhere;
+  }
+  .time {
+    color: var(--color-faint);
     font-size: var(--text-micro);
     line-height: var(--text-micro-line);
-    overflow-wrap: anywhere;
+    font-variant-numeric: tabular-nums;
   }
   .body {
     display: flex;

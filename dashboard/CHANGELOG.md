@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Chat no longer scrolls as a whole page: the header, the sessions list, the provider rail
+  and the composer stay put while only the conversation scrolls, and a short conversation
+  sits just above the composer. Turns show their time and a friendly model name ("Sonnet
+  5.5"), ready providers list first, and the model picker, Orchestrate switch and Send
+  button are slimmer to match the design. Other views lose a stray pixel of scroll.
 - The Chat tab is redesigned: sessions on the left, the conversation in the middle and a
   rail on the right with every provider's plan usage as a small waffle. Each reply says
   which provider took it and why in plain words, shows its tool steps on one timeline, and

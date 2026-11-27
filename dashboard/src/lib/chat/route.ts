@@ -35,3 +35,25 @@ export function routeSentence(note: string): string {
   const sure = Math.round(Math.min(1, Math.max(0, parsed.confidence)) * 100);
   return `${article} ${parsed.task} task, so ${providerName[parsed.provider]} · ${String(sure)}% sure`;
 }
+
+/** "claude-sonnet-5-5" → "Sonnet 5.5", "gpt-6.1-sol" → "GPT 6.1 Sol": the model as people
+    say it. The provider's own prefix is dropped, version dashes become dots. */
+export function modelLabel(
+  provider: ProviderKey | null,
+  model: string,
+): string {
+  let rest = model.trim();
+  if (provider !== null && rest.toLowerCase().startsWith(`${provider}-`)) {
+    rest = rest.slice(provider.length + 1);
+  }
+  rest = rest.replace(/(\d+)-(\d+)/g, "$1.$2");
+  return rest
+    .split("-")
+    .filter((w) => w.length > 0)
+    .map((w) =>
+      /^(gpt|glm|o\d)$/i.test(w)
+        ? w.toUpperCase()
+        : w.charAt(0).toUpperCase() + w.slice(1),
+    )
+    .join(" ");
+}

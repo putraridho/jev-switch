@@ -32,8 +32,14 @@
 
 <div class="bar">
   <div class="inner">
-    <AppHeader warnAtPct={Math.round(settings.value.warn_bp / 100)}>
-      {#if newest !== null}<Freshness atMs={newest} />{/if}
+    <AppHeader
+      warnAtPct={router.route.name === "chat"
+        ? null
+        : Math.round(settings.value.warn_bp / 100)}
+    >
+      {#if newest !== null && router.route.name !== "chat"}<Freshness
+          atMs={newest}
+        />{/if}
       <div class="controls">
         {#if router.route.name === "overview"}
           <IconButton

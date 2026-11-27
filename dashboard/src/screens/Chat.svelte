@@ -1,21 +1,27 @@
 <!-- Coding-agent chat (C1): sessions | conversation | this session. Turns put the speaker in
      a gutter, tool calls sit on one timeline, and every reply says what it drew from the
      provider's plan window, so routing and plan usage are visible where the work happens. -->
+<script module lang="ts">
+  import { SvelteMap } from "svelte/reactivity";
+  // Arrival times outlive the view (leaving the tab and coming back keeps them).
+  const seen = new SvelteMap<number, number | null>();
+  let primed = false;
+</script>
+
 <script lang="ts">
-  import { tick } from "svelte";
+  import { tick, untrack } from "svelte";
   import ApprovalPanel from "../lib/components/chat/ApprovalPanel.svelte";
   import ChatTurn from "../lib/components/chat/ChatTurn.svelte";
   import Markdown from "../lib/components/chat/Markdown.svelte";
   import SessionRail from "../lib/components/chat/SessionRail.svelte";
   import SpendWaffle from "../lib/components/chat/SpendWaffle.svelte";
   import ToolSteps from "../lib/components/chat/ToolSteps.svelte";
-  import Switch from "../lib/components/primitives/Switch.svelte";
   import { planUsage, turnSpend, usageByProvider } from "../lib/chat/quota";
-  import { routeSentence } from "../lib/chat/route";
+  import { modelLabel, routeSentence } from "../lib/chat/route";
   import { changedFiles, sessionTitle, tokensLine } from "../lib/chat/session";
   import { providerName } from "../lib/copy";
   import { pushEscape } from "../lib/escape";
-  import { percent, windowName } from "../lib/format";
+  import { percent, timeOfDay, windowName } from "../lib/format";
   import type { ProviderKey } from "../lib/ipc/bindings/ProviderKey";
   import type { ChatDecision } from "../lib/ipc/chat-bindings/ChatDecision";
   import type { ChatDirListing } from "../lib/ipc/chat-bindings/ChatDirListing";
@@ -24,6 +30,7 @@
   import type { ChatPin } from "../lib/ipc/chat-bindings/ChatPin";
   import { chat } from "../lib/stores/chat.svelte";
   import { clock } from "../lib/stores/clock.svelte";
+  import { settings } from "../lib/stores/settings.svelte";
   import { usage } from "../lib/stores/usage.svelte";
 
   const modes: readonly { value: ChatMode; name: string; help: string }[] = [
@@ -53,6 +60,7 @@
   let listing = $state<ChatDirListing | null>(null);
   let pickerError = $state<string | null>(null);
   let promptBox = $state<HTMLTextAreaElement | null>(null);
+  let transcriptEl = $state<HTMLDivElement | null>(null);
 
   const messages = $derived(chat.state.messages);
   const workspace = $derived(
@@ -80,6 +88,30 @@
       ),
     ].map((p) => providerName[p]),
   );
+
+  // When each entry arrived. The chat sends no times, so the screen notes the moment it
+  // first sees an entry; entries already there when the app opened stay untimed.
+  $effect.pre(() => {
+    const now = Date.now();
+    const ids = messages.map((m) => m.id);
+    untrack(() => {
+      for (const id of ids) {
+        if (!seen.has(id)) seen.set(id, primed ? now : null);
+      }
+      primed = true;
+    });
+  });
+  function timeOf(id: number): string | null {
+    const at = seen.get(id);
+    return at == null ? null : timeOfDay(at, settings.value.hour_cycle);
+  }
+  const replies = $derived(
+    messages.filter((m) => m.role === "assistant").length,
+  );
+  const startedAt = $derived.by(() => {
+    const first = messages.find((m) => m.role === "user");
+    return first ? timeOf(first.id) : null;
+  });
 
   const pinKey = $derived.by(() => {
     const p = chat.state.pin;
@@ -213,13 +245,13 @@
   $effect.pre(() => {
     if (activity === lastActivity) return;
     lastActivity = activity;
-    const page = document.scrollingElement ?? document.documentElement;
-    const atBottom =
-      page.scrollHeight - page.scrollTop - page.clientHeight < 160;
+    const box = transcriptEl;
+    if (box === null) return;
+    const atBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 160;
     if (!atBottom && !followLatest) return;
     followLatest = false;
     void tick().then(() => {
-      page.scrollTop = page.scrollHeight;
+      box.scrollTop = box.scrollHeight;
     });
   });
 
@@ -340,13 +372,15 @@
       <button
         type="button"
         class="small"
+        aria-label="New session"
         disabled={chat.state.busy || messages.length === 0}
         onclick={() => {
           void chat.newSession();
-        }}>New session</button
+        }}>New</button
       >
     </div>
     {#if started}
+      <h3 class="group">Today</h3>
       <div class="session" aria-current="true">
         <span class="session-title">{title}</span>
         <span class="session-meta"
@@ -364,138 +398,151 @@
       <header class="chat-head">
         <h1 id="view-title" tabindex="-1">{title}</h1>
         <p class="chat-sub">
-          {messages.filter((m) => m.role === "assistant").length === 1
-            ? "1 reply"
-            : `${String(messages.filter((m) => m.role === "assistant").length)} replies`}
+          {startedAt ? `Started ${startedAt} · ` : ""}{replies === 1
+            ? "1 turn"
+            : `${String(replies)} turns`}
         </p>
       </header>
     {/if}
 
-    <div class="transcript" role="log" aria-label="Conversation">
-      {#if !started}
-        <div class="empty">
-          <h1 id="view-title" tabindex="-1">What should we work on?</h1>
-          <p class="empty-lede">
-            Each turn goes to whichever provider suits it and has room left.
-            {#if ready.length > 0}
-              {ready.join(", ")}
-              {ready.length === 1 ? "is" : "are"} ready; their plan usage is on the
-              right.
-            {/if}
-          </p>
-          <ul class="suggestions">
-            {#each suggestions as text (text)}
-              <li>
-                <button
-                  type="button"
-                  class="text"
-                  onclick={() => {
-                    suggest(text);
-                  }}><span aria-hidden="true">→</span> {text}</button
-                >
-              </li>
-            {/each}
-          </ul>
-        </div>
-      {/if}
+    <div
+      class="transcript"
+      role="log"
+      aria-label="Conversation"
+      bind:this={transcriptEl}
+    >
+      <div class="flow">
+        {#if !started}
+          <div class="empty">
+            <h1 id="view-title" tabindex="-1">What should we work on?</h1>
+            <p class="empty-lede">
+              Each turn goes to whichever provider suits it and has room left.
+              {#if ready.length > 0}
+                {ready.join(", ")}
+                {ready.length === 1 ? "is" : "are"} ready; their plan usage is on
+                the right.
+              {/if}
+            </p>
+            <ul class="suggestions">
+              {#each suggestions as text (text)}
+                <li>
+                  <button
+                    type="button"
+                    class="text"
+                    onclick={() => {
+                      suggest(text);
+                    }}><span aria-hidden="true">→</span> {text}</button
+                  >
+                </li>
+              {/each}
+            </ul>
+          </div>
+        {/if}
 
-      {#each messages as msg (msg.id)}
-        {#if msg.role === "user"}
-          <ChatTurn role="user" who="You">
-            <div class="msg-body">{msg.content}</div>
-          </ChatTurn>
-        {:else}
-          {@const spend = spendFor(msg)}
+        {#each messages as msg (msg.id)}
+          {#if msg.role === "user"}
+            <ChatTurn role="user" who="You" time={timeOf(msg.id)}>
+              <div class="msg-body">{msg.content}</div>
+            </ChatTurn>
+          {:else}
+            {@const spend = spendFor(msg)}
+            <ChatTurn
+              role="assistant"
+              who={msg.provider ? providerName[msg.provider] : "Assistant"}
+              model={msg.model ? modelLabel(msg.provider, msg.model) : null}
+              time={timeOf(msg.id)}
+            >
+              {#if msg.route_reason}
+                <p class="route">
+                  <span aria-hidden="true">↳</span>
+                  {routeSentence(msg.route_reason)}
+                </p>
+              {/if}
+              {#if msg.status !== "answered"}
+                <p class="status" data-status={msg.status}>
+                  {statusLine[msg.status]}
+                </p>
+              {/if}
+              {#if msg.thinking}
+                <details class="reasoning">
+                  <summary>Reasoning</summary>
+                  <pre>{msg.thinking}</pre>
+                </details>
+              {/if}
+              <ToolSteps tools={msg.tool_calls} />
+              <div class="msg-body md"><Markdown text={msg.content} /></div>
+              {#if spend !== null || msg.usage !== null || msg.changed_files.length > 0}
+                <div class="cost">
+                  {#if spend}<SpendWaffle
+                      beforeBp={spend.beforeBp}
+                      afterBp={spend.afterBp}
+                    />{/if}
+                  <span>
+                    {#if spend && msg.provider}
+                      Used <strong
+                        >{percent(spend.afterBp - spend.beforeBp)}</strong
+                      >
+                      of {providerName[msg.provider]}'s {spend.window} window ({percent(
+                        spend.beforeBp,
+                      )} → {percent(spend.afterBp)})
+                    {/if}
+                    {#if msg.usage}{spend ? " · " : ""}{tokensLine([
+                        msg.usage,
+                      ])}{/if}
+                    {#if msg.changed_files.length > 0}
+                      {spend !== null || msg.usage !== null ? " · " : ""}Changed
+                      <span class="mono">{msg.changed_files.join(", ")}</span>
+                    {/if}
+                  </span>
+                </div>
+              {/if}
+            </ChatTurn>
+          {/if}
+        {/each}
+
+        {#if chat.state.busy}
           <ChatTurn
             role="assistant"
-            who={msg.provider ? providerName[msg.provider] : "Assistant"}
-            model={msg.model}
+            who={chat.state.active_route
+              ? providerName[chat.state.active_route.provider]
+              : "…"}
+            model={chat.state.active_route
+              ? modelLabel(
+                  chat.state.active_route.provider,
+                  chat.state.active_route.model,
+                )
+              : null}
+            live
           >
-            {#if msg.route_reason}
-              <p class="route">
+            <p class="route">
+              {#if chat.state.active_route}
                 <span aria-hidden="true">↳</span>
-                {routeSentence(msg.route_reason)}
-              </p>
-            {/if}
-            {#if msg.status !== "answered"}
-              <p class="status" data-status={msg.status}>
-                {statusLine[msg.status]}
-              </p>
-            {/if}
-            {#if msg.thinking}
-              <details class="reasoning">
-                <summary>Reasoning</summary>
-                <pre>{msg.thinking}</pre>
-              </details>
-            {/if}
-            <ToolSteps tools={msg.tool_calls} />
-            <div class="msg-body md"><Markdown text={msg.content} /></div>
-            {#if spend !== null || msg.usage !== null || msg.changed_files.length > 0}
-              <div class="cost">
-                {#if spend}<SpendWaffle
-                    beforeBp={spend.beforeBp}
-                    afterBp={spend.afterBp}
-                  />{/if}
-                <span>
-                  {#if spend && msg.provider}
-                    Used <strong
-                      >{percent(spend.afterBp - spend.beforeBp)}</strong
-                    >
-                    of {providerName[msg.provider]}'s {spend.window} window ({percent(
-                      spend.beforeBp,
-                    )} → {percent(spend.afterBp)})
-                  {/if}
-                  {#if msg.usage}{spend ? " · " : ""}{tokensLine([
-                      msg.usage,
-                    ])}{/if}
-                  {#if msg.changed_files.length > 0}
-                    {spend !== null || msg.usage !== null ? " · " : ""}Changed
-                    <span class="mono">{msg.changed_files.join(", ")}</span>
-                  {/if}
-                </span>
+                {routeSentence(chat.state.active_route.reason)}
+              {:else}
+                <span class="dots" aria-hidden="true"
+                  ><span></span><span></span><span></span></span
+                >
+                Choosing who answers{ready.length > 0
+                  ? ` — ${ready.join(", ")}`
+                  : ""}
+              {/if}
+            </p>
+            {#each chat.state.notes as note, idx (idx)}
+              <p class="note">{note}</p>
+            {/each}
+            <ToolSteps
+              tools={chat.state.streaming_tools}
+              live
+              waiting={chat.state.pending_permission?.summary ?? null}
+            />
+            {#if chat.state.streaming_text.length > 0}
+              <div class="msg-body md">
+                <Markdown text={chat.state.streaming_text} />
               </div>
             {/if}
           </ChatTurn>
         {/if}
-      {/each}
-
-      {#if chat.state.busy}
-        <ChatTurn
-          role="assistant"
-          who={chat.state.active_route
-            ? providerName[chat.state.active_route.provider]
-            : "…"}
-          model={chat.state.active_route?.model ?? null}
-          live
-        >
-          <p class="route">
-            {#if chat.state.active_route}
-              <span aria-hidden="true">↳</span>
-              {routeSentence(chat.state.active_route.reason)}
-            {:else}
-              <span class="dots" aria-hidden="true"
-                ><span></span><span></span><span></span></span
-              >
-              Choosing who answers{ready.length > 0
-                ? ` — ${ready.join(", ")}`
-                : ""}
-            {/if}
-          </p>
-          {#each chat.state.notes as note, idx (idx)}
-            <p class="note">{note}</p>
-          {/each}
-          <ToolSteps
-            tools={chat.state.streaming_tools}
-            live
-            waiting={chat.state.pending_permission?.summary ?? null}
-          />
-          {#if chat.state.streaming_text.length > 0}
-            <div class="msg-body md">
-              <Markdown text={chat.state.streaming_text} />
-            </div>
-          {/if}
-        </ChatTurn>
-      {/if}
+      </div>
     </div>
 
     <div class="dock">
@@ -569,14 +616,20 @@
                 </optgroup>
               </select>
             </label>
-            <Switch
-              label="Orchestrate"
-              checked={chat.state.orchestrate}
-              placement="start"
-              onchange={(checked: boolean) => {
-                void chat.setOrchestrate(checked);
-              }}
-            />
+            <label class="orchestrate">
+              <input
+                type="checkbox"
+                role="switch"
+                checked={chat.state.orchestrate}
+                onchange={(event) => {
+                  if (event.currentTarget instanceof HTMLInputElement) {
+                    void chat.setOrchestrate(event.currentTarget.checked);
+                  }
+                }}
+              />
+              <span class="track" aria-hidden="true"></span>
+              Orchestrate
+            </label>
             {#if chat.state.busy}
               <button
                 type="button"
@@ -588,7 +641,11 @@
               <button
                 type="submit"
                 class="primary"
-                disabled={chat.draft.trim().length === 0}>Send</button
+                disabled={chat.draft.trim().length === 0}
+                >Send{#if chat.draft.trim().length > 0}<span
+                    class="key"
+                    aria-hidden="true">↵</span
+                  >{/if}</button
               >
             {/if}
           </div>
@@ -619,6 +676,7 @@
     {answering}
     {changed}
     tokens={sessionTokens}
+    warnPct={Math.round(settings.value.warn_bp / 100)}
   />
 </div>
 
@@ -628,18 +686,19 @@
     grid-template-columns: var(--chat-sessions-w) minmax(0, 1fr) var(
         --chat-rail-w
       );
-    align-items: start;
-    min-height: calc(100vh - var(--space-12));
+    /* The view fills the window under the header and never scrolls as a page: only the
+       conversation scrolls, each rail scrolls on its own, the composer stays put. */
+    height: calc(100dvh - var(--space-12) - var(--rule));
+    overflow: hidden;
   }
 
   /* Sessions */
   .sessions {
-    position: sticky;
-    top: 0;
     display: flex;
     flex-direction: column;
     gap: var(--space-1);
-    min-height: calc(100vh - var(--space-12));
+    min-height: 0;
+    overflow-y: auto;
     padding: var(--space-6) var(--space-4);
     border-inline-end: var(--rule) solid var(--color-rule);
   }
@@ -655,6 +714,16 @@
     font-size: var(--text-sm);
     font-weight: var(--text-md-weight-strong);
     line-height: var(--text-sm-line);
+  }
+  .group {
+    margin: 0;
+    padding: var(--space-3) var(--space-2) var(--space-1);
+    color: var(--color-faint);
+    font-size: var(--text-micro);
+    font-weight: var(--text-sm-weight-strong);
+    line-height: var(--text-micro-line);
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
   }
   .session {
     position: relative;
@@ -696,7 +765,7 @@
     display: flex;
     flex-direction: column;
     min-width: 0;
-    min-height: calc(100vh - var(--space-12));
+    min-height: 0;
     padding: var(--space-8) var(--space-12) 0;
   }
   .chat-head {
@@ -716,9 +785,20 @@
     font-size: var(--text-micro);
   }
   .transcript {
-    display: flex;
     flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+  }
+  /* Short conversations sit just above the composer; long ones scroll. An auto margin
+     rather than justify-content: flex-end, so the top stays reachable. */
+  .flow {
+    display: flex;
     flex-direction: column;
+    min-height: 100%;
+  }
+  .flow > :global(:first-child) {
+    margin-block-start: auto;
   }
 
   .empty {
@@ -830,8 +910,7 @@
 
   /* Dock: the composer, or an approval in its place, pinned to the bottom of the window. */
   .dock {
-    position: sticky;
-    bottom: 0;
+    flex: none;
     display: flex;
     flex-direction: column;
     gap: var(--space-2);
@@ -906,11 +985,79 @@
     color: var(--color-muted);
     font-size: var(--text-micro);
   }
+  /* The model picker reads as words ("Model Auto ▾"), not a boxed field. */
   .model select {
+    /* Sized to the chosen model's name where supported, so the ▾ sits right after it. */
+    field-sizing: content;
     width: auto;
-    max-width: 8.5rem;
+    max-width: 9rem;
     min-height: var(--control-sm-h);
+    padding-inline: var(--space-1);
+    border-color: transparent;
+    background-color: transparent;
+    color: var(--color-ink);
     font-size: var(--text-micro);
+    font-weight: var(--text-sm-weight-strong);
+  }
+  .model select:hover:not(:disabled) {
+    border-color: transparent;
+    background-color: var(--color-hover);
+  }
+  /* Orchestrate: a compact switch that fits the composer's line. */
+  .orchestrate {
+    position: relative;
+    display: inline-flex;
+    flex: none;
+    align-items: center;
+    gap: var(--space-2);
+    color: var(--color-ink);
+    font-size: var(--text-micro);
+    font-weight: var(--text-sm-weight-strong);
+    cursor: pointer;
+  }
+  .orchestrate input {
+    position: absolute;
+    inset: 0;
+    margin: 0;
+    opacity: 0;
+    cursor: pointer;
+  }
+  .track {
+    position: relative;
+    width: var(--space-6);
+    height: var(--space-4);
+    border-radius: var(--radius-pill);
+    box-shadow: inset 0 0 0 var(--switch-border) var(--color-faint);
+    transition: background-color var(--duration-fast) var(--ease);
+  }
+  .track::after {
+    content: "";
+    position: absolute;
+    inset-block-start: var(--space-1);
+    inset-inline-start: var(--space-1);
+    width: var(--space-2);
+    height: var(--space-2);
+    border-radius: var(--radius-full);
+    background: var(--color-faint);
+    transition:
+      translate var(--duration-spring-firm) var(--ease-spring-firm),
+      background-color var(--duration-fast) var(--ease);
+  }
+  .orchestrate input:checked + .track {
+    background: var(--color-ink);
+    box-shadow: none;
+  }
+  .orchestrate input:checked + .track::after {
+    background: var(--color-paper);
+    translate: var(--space-2) 0;
+  }
+  .orchestrate input:focus-visible + .track {
+    outline: var(--focus-ring) solid var(--color-accent);
+    outline-offset: var(--space-1);
+  }
+  .key {
+    margin-inline-start: var(--space-2);
+    opacity: 0.6;
   }
   .error-line {
     color: var(--color-alert);
@@ -1001,8 +1148,18 @@
     }
   }
   @media (max-width: 59.99rem) {
+    /* One column: back to page scrolling, with the composer pinned to the bottom. */
     .chat {
       grid-template-columns: minmax(0, 1fr);
+      height: auto;
+      overflow: visible;
+    }
+    .transcript {
+      overflow: visible;
+    }
+    .dock {
+      position: sticky;
+      bottom: 0;
     }
     .conversation {
       padding-inline: var(--space-6);

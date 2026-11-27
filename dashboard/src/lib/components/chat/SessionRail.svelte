@@ -27,6 +27,8 @@
     changed: readonly ChangedFile[];
     /** "4,212 in · 612 out", or empty. */
     tokens?: string;
+    /** Where the meters' warning mark sits, for the legend. */
+    warnPct?: number;
   }
 
   const {
@@ -41,6 +43,7 @@
     answering = null,
     changed,
     tokens = "",
+    warnPct = 80,
   }: Props = $props();
 
   const rows = $derived(
@@ -49,6 +52,8 @@
         const status = providers.find((p) => p.provider === key);
         return status === undefined ? [] : [status];
       })
+      // Ready providers first; the order is otherwise kept (the sort is stable).
+      .sort((a, b) => Number(b.ready) - Number(a.ready))
       .map((status) => {
         const usage = planUsage(snapshot, status.provider);
         const resets =
@@ -90,7 +95,12 @@
   </section>
 
   <section class="block">
-    <h2 class="label">Providers</h2>
+    <div class="label-row">
+      <h2 class="label">Providers</h2>
+      <span class="legend"
+        ><span aria-hidden="true">▸</span> {warnPct}% warning mark</span
+      >
+    </div>
     <ul class="providers">
       {#each rows as row (row.key)}
         <li
@@ -160,10 +170,8 @@
 
 <style>
   .rail {
-    position: sticky;
-    top: 0;
-    align-self: stretch;
-    min-height: calc(100vh - var(--space-12));
+    min-height: 0;
+    overflow-y: auto;
     display: flex;
     flex-direction: column;
     gap: var(--space-8);
@@ -238,7 +246,24 @@
     color: var(--color-muted);
     font-size: var(--text-micro);
     line-height: var(--text-micro-line);
-    overflow-wrap: anywhere;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .label-row {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: var(--space-2);
+  }
+  /* The small waffle drawn a little smaller here, so a row stays close to two lines. */
+  .provider :global(svg) {
+    width: var(--space-12);
+    height: auto;
+  }
+  .legend {
+    color: var(--color-faint);
+    font-size: var(--text-micro);
   }
   .pct {
     font-family: var(--font-serif);

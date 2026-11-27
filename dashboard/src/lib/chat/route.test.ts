@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parseRouteNote, routeSentence } from "./route";
+import { modelLabel, parseRouteNote, routeSentence } from "./route";
 
 describe("route notes", () => {
   it("reads the engine's routing note", () => {
@@ -30,5 +30,13 @@ describe("route notes", () => {
     expect(routeSentence("task: feature (0.9) -> nobody m")).toBe(
       "task: feature (0.9) -> nobody m",
     );
+  });
+
+  it("names models the way people say them", () => {
+    expect(modelLabel("claude", "claude-sonnet-5-5")).toBe("Sonnet 5.5");
+    expect(modelLabel("codex", "gpt-6.1-sol")).toBe("GPT 6.1 Sol");
+    expect(modelLabel("gemini", "gemini-4-hydrogen")).toBe("4 Hydrogen");
+    expect(modelLabel("deepseek", "deepseek-v4-pro")).toBe("V4 Pro");
+    expect(modelLabel(null, "m")).toBe("M");
   });
 });

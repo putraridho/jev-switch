@@ -5,7 +5,8 @@
   import WarningLegend from "./WarningLegend.svelte";
 
   interface Props {
-    warnAtPct?: number;
+    /** Null hides the legend, for a view that shows it in its own place. */
+    warnAtPct?: number | null;
     /** Replaces the plain wordmark, for example with a link home. */
     wordmark?: Snippet;
     /** Freshness and controls. */
@@ -20,7 +21,7 @@
     {#if wordmark}{@render wordmark()}{:else}<span class="wordmark"
         >Flashboard</span
       >{/if}
-    <WarningLegend {warnAtPct} />
+    {#if warnAtPct !== null}<WarningLegend {warnAtPct} />{/if}
   </div>
   {#if children}<div class="group">{@render children()}</div>{/if}
 </header>
