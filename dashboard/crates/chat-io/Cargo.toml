@@ -12,7 +12,7 @@ doctest = false
 jev-chat-core = { path = "../chat-core" }
 jev-usage-core = { path = "../usage-core" }
 jev-engine = { package = "jev-embed", path = "../../../crates/embed" }
-tokio = { version = "=1.53.3", features = ["rt", "rt-multi-thread", "sync", "time", "macros"] }
+tokio = { version = "=1.53.3", features = ["rt", "rt-multi-thread", "sync", "time", "macros", "process", "io-util"] }
 
 [dev-dependencies]
 tempfile = "=3.27.0"

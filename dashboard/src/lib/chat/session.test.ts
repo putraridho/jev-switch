@@ -38,6 +38,25 @@ describe("session summary", () => {
     ).toBe("Please look through the whole usage-io crate…");
   });
 
+  it("prefers the title a model wrote, once the session has started", () => {
+    const prompt = [
+      message({
+        role: "user",
+        content: "hey so the cache is stale again pls fix",
+      }),
+    ];
+    expect(sessionTitle(prompt, "Fix stale usage cache")).toBe(
+      "Fix stale usage cache",
+    );
+    expect(sessionTitle(prompt, "   ")).toBe(
+      "hey so the cache is stale again pls fix",
+    );
+    expect(sessionTitle(prompt, null)).toBe(
+      "hey so the cache is stale again pls fix",
+    );
+    expect(sessionTitle([], "Left over from before")).toBe("New session");
+  });
+
   it("collects changed files with line counts from edits", () => {
     const files = changedFiles([
       message({

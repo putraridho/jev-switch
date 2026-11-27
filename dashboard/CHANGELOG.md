@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Chat sessions get a short title written by Claude Haiku after the first reply (through your own `claude` login, no tools or project settings), instead of the first line of the prompt; the first line stays as the fallback.
 - The dots on a reply's steps timeline sit centred on their line and on the step's text,
   and the line now runs unbroken from dot to dot.
 - Chat no longer scrolls as a whole page: the header, the sessions list, the provider rail

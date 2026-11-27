@@ -37,6 +37,11 @@ export type ChatSessionState = {
    */
   jev_key_present: boolean;
   /**
+   * A short title a model wrote for the session after its first reply; `None` until then
+   * (or when no model could write one), and the UI falls back to the first prompt.
+   */
+  title: string | null;
+  /**
    * True while a turn is currently running.
    */
   busy: boolean;

@@ -13,6 +13,7 @@ use jev_usage_core::ipc::CommandError;
 use jev_usage_core::port::SourceId;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use tokio::sync::{broadcast, mpsc, Mutex as AsyncMutex};
 
@@ -98,6 +99,13 @@ pub struct ChatServiceHandle {
     usage_signal: Option<mpsc::Sender<SourceId>>,
     next_msg_id: Arc<Mutex<u64>>,
     rt: tokio::runtime::Handle,
+    /// Bumped by every new session or folder change, so a late title is not put on the
+    /// wrong conversation.
+    session_gen: Arc<AtomicU64>,
+    /// Set once a title has been asked for in this session.
+    title_asked: Arc<AtomicBool>,
+    /// The `claude` binary the title is asked through.
+    title_bin: Arc<str>,
 }
 
 impl ChatServiceHandle {
@@ -114,6 +122,7 @@ impl ChatServiceHandle {
             routing_enabled: true,
             orchestrate: false,
             jev_key_present: false,
+            title: None,
             busy: false,
             active_route: None,
             streaming_text: String::new(),
@@ -142,12 +151,68 @@ impl ChatServiceHandle {
             usage_signal,
             next_msg_id: Arc::new(Mutex::new(0)),
             rt: rt.clone(),
+            session_gen: Arc::new(AtomicU64::new(0)),
+            title_asked: Arc::new(AtomicBool::new(false)),
+            title_bin: Arc::from(crate::title::claude_bin()),
         };
         let init_handle = handle.clone();
         rt.spawn(async move {
             let _ = init_handle.ensure_engine().await;
         });
         handle
+    }
+
+    /// Uses `bin` instead of `claude` for session titles (tests).
+    #[must_use]
+    pub fn with_title_bin(mut self, bin: &str) -> Self {
+        self.title_bin = Arc::from(bin);
+        self
+    }
+
+    /// Forgets the session's title, and makes any title still being written arrive too late.
+    fn reset_title(&self, st: &mut ChatSessionState) {
+        st.title = None;
+        self.session_gen.fetch_add(1, Ordering::SeqCst);
+        self.title_asked.store(false, Ordering::SeqCst);
+    }
+
+    /// After the session's first answered reply, asks a small model for a title in the
+    /// background. Once per session; the first-prompt title stays until it arrives.
+    fn maybe_request_title(&self, st: &ChatSessionState) {
+        if st.title.is_some() {
+            return;
+        }
+        let Some(reply) = st
+            .messages
+            .iter()
+            .rev()
+            .find(|m| m.role == ChatRole::Assistant && m.status == ChatTurnStatus::Answered)
+        else {
+            return;
+        };
+        let Some(prompt) = st.messages.iter().find(|m| m.role == ChatRole::User) else {
+            return;
+        };
+        if self.title_asked.swap(true, Ordering::SeqCst) {
+            return;
+        }
+        let (prompt, reply) = (prompt.content.clone(), reply.content.clone());
+        let generation = self.session_gen.load(Ordering::SeqCst);
+        let service = self.clone();
+        self.rt.spawn(async move {
+            let cwd = std::env::temp_dir();
+            let title =
+                crate::title::generate_title(&service.title_bin, &cwd, &prompt, &reply).await;
+            let Some(title) = title else { return };
+            {
+                let mut st = service.state.lock().unwrap_or_else(PoisonError::into_inner);
+                if service.session_gen.load(Ordering::SeqCst) != generation || st.title.is_some() {
+                    return;
+                }
+                st.title = Some(title);
+            }
+            service.emit_full_state();
+        });
     }
 
     /// Subscribes to live `ChatEvent` stream.
@@ -313,6 +378,7 @@ impl ChatServiceHandle {
                     status: summary.status,
                     usage: summary.usage,
                 });
+                service.maybe_request_title(&st);
             }
             if let Some(tx) = &service.usage_signal {
                 let _ = tx.try_send(SourceId::ClaudeGatewayLog);
@@ -373,6 +439,7 @@ impl ChatServiceHandle {
             let mut st = self.state.lock().unwrap_or_else(PoisonError::into_inner);
             st.workspace = canonical.to_string_lossy().into_owned();
             st.messages.clear();
+            self.reset_title(&mut st);
             st.notes.clear();
             st.active_route = None;
             (st.mode, st.orchestrate, st.pin.clone(), st.routing_enabled)
@@ -454,6 +521,7 @@ impl ChatServiceHandle {
         {
             let mut st = self.state.lock().unwrap_or_else(PoisonError::into_inner);
             st.messages.clear();
+            self.reset_title(&mut st);
             st.notes.clear();
             st.streaming_text.clear();
             st.streaming_thinking.clear();

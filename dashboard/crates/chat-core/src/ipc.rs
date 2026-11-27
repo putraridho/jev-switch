@@ -248,6 +248,9 @@ pub struct ChatSessionState {
     pub orchestrate: bool,
     /// True when `JEV_API_KEY` or `TYPESAFE_API_KEY` is configured.
     pub jev_key_present: bool,
+    /// A short title a model wrote for the session after its first reply; `None` until then
+    /// (or when no model could write one), and the UI falls back to the first prompt.
+    pub title: Option<String>,
     /// True while a turn is currently running.
     pub busy: bool,
     /// Active route chosen for the in-flight turn.

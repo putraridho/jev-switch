@@ -67,7 +67,7 @@
     chat.state.workspace === "" ? "." : chat.state.workspace,
   );
   const started = $derived(messages.length > 0 || chat.state.busy);
-  const title = $derived(sessionTitle(messages));
+  const title = $derived(sessionTitle(messages, chat.state.title));
   const mode = $derived(
     modes.find((m) => m.value === chat.state.mode) ?? modes[1],
   );

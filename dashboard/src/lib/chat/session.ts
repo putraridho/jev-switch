@@ -8,8 +8,17 @@ export interface ChangedFile {
   removed: number;
 }
 
-/** The session's name: its first prompt, cut at a word near 48 characters. */
-export function sessionTitle(messages: readonly ChatMessage[]): string {
+/**
+ * The session's name: the title a model wrote after the first reply when there is one,
+ * else (until it arrives, or when none could be written) the first prompt, cut at a word
+ * near 48 characters.
+ */
+export function sessionTitle(
+  messages: readonly ChatMessage[],
+  generated: string | null = null,
+): string {
+  const written = generated?.trim() ?? "";
+  if (written !== "" && messages.length > 0) return written;
   const first = messages.find((m) => m.role === "user")?.content.trim() ?? "";
   if (first === "") return "New session";
   const line = first.split("\n")[0] ?? first;

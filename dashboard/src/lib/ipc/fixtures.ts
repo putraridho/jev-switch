@@ -67,6 +67,7 @@ function sampleChatState(): ChatSessionState {
     routing_enabled: true,
     orchestrate: false,
     jev_key_present: true,
+    title: null,
     busy: false,
     active_route: null,
     streaming_text: "",

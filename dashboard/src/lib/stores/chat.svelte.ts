@@ -16,6 +16,7 @@ const emptyState: ChatSessionState = {
   routing_enabled: true,
   orchestrate: false,
   jev_key_present: false,
+  title: null,
   busy: false,
   active_route: null,
   streaming_text: "",
