@@ -112,6 +112,24 @@ describe("token contrast", () => {
     }
   }
 
+  // The ink surface (tooltips, the floating meter detail): paper text 7:1, the muted labels
+  // and the alert value 4.5:1, in both themes.
+  for (const theme of themes) {
+    const ink = colour(theme.colors, "color-ink");
+    it(`${theme.name}: paper text is 7:1 on the ink surface`, () => {
+      expect(
+        ratio(colour(theme.colors, "color-paper"), ink),
+      ).toBeGreaterThanOrEqual(7);
+    });
+    for (const text of ["color-on-ink-muted", "color-on-ink-alert"]) {
+      it(`${theme.name}: ${text} is 4.5:1 on the ink surface`, () => {
+        expect(ratio(colour(theme.colors, text), ink)).toBeGreaterThanOrEqual(
+          4.5,
+        );
+      });
+    }
+  }
+
   it("the system-dark block repeats the explicit dark theme", () => {
     const media = palette(':root:not([data-theme="light"])');
     expect(media).toEqual(dark);

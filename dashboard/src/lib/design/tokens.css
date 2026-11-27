@@ -103,6 +103,32 @@
   --duration-tooltip: 300ms; /* open delay (S37) */
   --ease: cubic-bezier(0.2, 0, 0, 1);
 
+  /* Interaction motion. What arrives moves on a damped spring (a mass-spring simulated once
+     and written out as linear()), so it accelerates, carries a little past the mark and
+     settles; what leaves is quick and plain. Colour keeps --ease. */
+  --ease-in: cubic-bezier(0.4, 0, 1, 1);
+  --duration-exit: 100ms; /* a disclosure or ring leaving */
+  --duration-intent: 60ms; /* hover intent before the meter detail opens */
+  --duration-stagger: 20ms; /* between the detail's rows */
+  /* Heavy: the meter detail, the receding neighbour. k 900, c 46, m 1.2: 3.5 % overshoot. */
+  --duration-spring-heavy: 367ms;
+  --ease-spring-heavy: linear(0, 0.069, 0.202, 0.306, 0.465, 0.612, 0.738, 0.807, 0.891, 0.951, 0.992, 1.01, 1.026, 1.034, 1.035, 1.033, 1.029, 1.023, 1.018, 1.014, 1.01, 1.006, 1.003, 1.002, 1.001, 1, 0.999, 0.999, 0.999, 0.999, 0.999, 0.999, 1);
+  /* Firm: the dot ring, the detail rows, the heading arrow. k 1000, c 44. */
+  --duration-spring-firm: 325ms;
+  --ease-spring-firm: linear(0, 0.049, 0.197, 0.318, 0.501, 0.613, 0.757, 0.833, 0.92, 0.961, 0.991, 1.019, 1.029, 1.035, 1.034, 1.03, 1.026, 1.022, 1.016, 1.012, 1.007, 1.005, 1.002, 1.001, 1, 0.999, 0.999, 0.999, 0.999, 0.999, 0.999, 0.999, 1);
+  /* Key: a pressed button coming back up. k 1400, c 44. */
+  --duration-spring-key: 350ms;
+  --ease-spring-key: linear(0, 0.126, 0.271, 0.511, 0.729, 0.846, 0.975, 1.03, 1.074, 1.085, 1.081, 1.064, 1.044, 1.031, 1.015, 1.006, 0.998, 0.994, 0.993, 0.993, 0.994, 0.995, 0.997, 0.998, 0.999, 1, 1, 1.001, 1.001, 1.001, 1, 1, 1);
+  /* Pop: the hovered dot swelling. k 1100, c 32. */
+  --duration-spring-pop: 462ms;
+  --ease-spring-pop: linear(0, 0.103, 0.379, 0.613, 0.882, 1.026, 1.135, 1.163, 1.149, 1.118, 1.067, 1.032, 0.998, 0.982, 0.974, 0.974, 0.98, 0.986, 0.992, 0.999, 1.002, 1.004, 1.004, 1.004, 1.003, 1.001, 1, 1, 0.999, 0.999, 0.999, 1, 1);
+  --press-scale: 0.96; /* exactly, never below (S33) */
+  --press-sink: 1px;
+  --recede-scale: 0.985;
+  --recede-opacity: 0.5;
+  --dot-swell: 1.3;
+  --ring-land: 1.5; /* the dot ring settles onto its dot from this size */
+
   /* Colour: the Waffle paper-and-ink palette (S02, S03). */
   --color-paper: #faf8f4;
   --color-ink: #26262a;
@@ -119,6 +145,10 @@
   --color-hover: #f2f0ec; /* tints: ink over paper at 4, 8 and 12 % (S04). Fill only. */
   --color-pressed: #e9e7e4;
   --color-selected: #e1dfdc;
+  /* Text on the ink surface (tooltips, the meter detail): the other theme's muted and alert,
+     which are the ones made to read on ink. */
+  --color-on-ink-muted: #a29b90;
+  --color-on-ink-alert: #e56e52;
 
   /* Aliases so the shell/scaffold's token names keep working. */
   --color-bg: var(--color-paper);
@@ -163,6 +193,8 @@
     --color-hover: #232326;
     --color-pressed: #2c2c2e;
     --color-selected: #343436;
+    --color-on-ink-muted: #625d54;
+    --color-on-ink-alert: #b3391c;
   }
 }
 
@@ -183,6 +215,8 @@
   --color-hover: #232326;
   --color-pressed: #2c2c2e;
   --color-selected: #343436;
+  --color-on-ink-muted: #625d54;
+  --color-on-ink-alert: #b3391c;
 }
 
 /* Reduced motion (S12): every duration is zero. */
@@ -191,5 +225,15 @@
     --duration-fast: 0ms;
     --duration-base: 0ms;
     --duration-slow: 0ms;
+    --duration-exit: 0ms;
+    --duration-intent: 0ms;
+    --duration-stagger: 0ms;
+    --duration-spring-heavy: 0ms;
+    --duration-spring-firm: 0ms;
+    --duration-spring-key: 0ms;
+    --duration-spring-pop: 0ms;
+    --press-sink: 0px;
+    --recede-scale: 1;
+    --ring-land: 1;
   }
 }
