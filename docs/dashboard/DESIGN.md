@@ -1901,7 +1901,8 @@ is a rule the reviewers check.
     the source, the live check; Settings holds diagnostics.
     Nothing at level 1 or 2 is pointer-only or sight-only. A level-1 disclosure opens on focus
     as well as hover, stays open while the pointer is over it, closes on `Esc` without moving
-    focus (WCAG 1.4.13), and never covers the control that opened it. `Esc` has one order of
+    focus (WCAG 1.4.13), and never covers the control that opened it. It floats over the space
+    below its row on the ink surface rather than opening in flow, so opening it moves nothing. `Esc` has one order of
     precedence everywhere: it closes an open dialog, else an open level-1 disclosure, else it
     goes back one view; one press does one of these. Its complete content is
     **always** in the row's accessible text (`aria-valuetext`), so a screen-reader user gets
@@ -1909,7 +1910,8 @@ is a rule the reviewers check.
 - **Beautiful.** Considered typography (three families, an eight-role scale, numerals
   that line up across cards), one 4 px spacing scale, concentric radii, optical alignment,
   hairlines instead of boxes, a warm paper-and-ink palette, and
-  motion that is subtle, short, tied to a value changing, and absent under reduced motion.
+  motion that is subtle, short, tied to a value changing or answering the pointer (damped
+  springs that settle, quick exits), and absent under reduced motion.
 - **Accessible.** A hard gate, not a goal: WCAG 2.2 AA (9.10). A task that fails any item of
   9.10 is not done, however good it looks.
 
