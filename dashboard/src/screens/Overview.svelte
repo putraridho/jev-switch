@@ -91,7 +91,7 @@
           router.go({ name: "provider", provider: key });
         }}
       >
-        <span>{providerName[key]}</span>
+        <span class="name">{providerName[key]}</span>
         {#if reading?.plan}<PlanTag plan={planName(reading.plan)} />{/if}
       </button>
     </svelte:element>
@@ -248,6 +248,58 @@
     border: none;
     font-size: var(--text-md);
     font-weight: var(--text-md-weight-strong);
+  }
+  /* The heading opens the detail view, so it reads as a link: on hover the name underlines
+     and an arrow slides in (its space is always kept, so nothing shifts). No tint box. */
+  .provider-link:hover:not(:disabled),
+  .provider-link:active:not(:disabled) {
+    background: none;
+  }
+  .name {
+    text-decoration: underline var(--rule) transparent;
+    text-underline-offset: var(--space-1);
+    transition: text-decoration-color var(--duration-fast) var(--ease);
+  }
+  .provider-link:hover .name {
+    text-decoration-color: currentColor;
+  }
+  /* Drawn in CSS with empty alt text, so the heading's text and accessible name are
+     unchanged ("Claude Max 5x"). */
+  .provider-link::after {
+    content: "→" / "";
+    opacity: 0;
+    translate: calc(var(--space-1) * -1.5) 0;
+    transition:
+      opacity var(--duration-exit) var(--ease-in),
+      translate var(--duration-exit) var(--ease-in);
+  }
+  .provider-link:hover::after,
+  .provider-link:focus-visible::after {
+    opacity: 1;
+    translate: 0 0;
+    transition:
+      opacity var(--duration-fast) var(--ease),
+      translate var(--duration-spring-firm) var(--ease-spring-firm);
+  }
+
+  /* Hovering one window of a provider brings it forward: its neighbours recede, a touch
+     smaller, grey and lighter, after the same hover intent as the detail. */
+  .readings :global(.row) {
+    transform-origin: 50% 0;
+    transition:
+      opacity var(--duration-fast) var(--ease),
+      scale var(--duration-fast) var(--ease),
+      filter var(--duration-fast) var(--ease);
+  }
+  .readings:has(:global(.row:hover)) :global(.row:not(:hover)) {
+    opacity: var(--recede-opacity);
+    scale: var(--recede-scale);
+    filter: grayscale(1);
+    transition:
+      opacity var(--duration-base) var(--ease) var(--duration-intent),
+      scale var(--duration-spring-heavy) var(--ease-spring-heavy)
+        var(--duration-intent),
+      filter var(--duration-base) var(--ease) var(--duration-intent);
   }
   .note-row {
     display: flex;

@@ -93,6 +93,9 @@
     font-size: var(--text-sm);
     font-weight: var(--text-sm-weight-strong);
   }
+  .pill:hover:not(:disabled):not([aria-current="page"]) {
+    color: var(--color-ink);
+  }
   /* The open view is marked by a filled pill and aria-current, not by colour alone. */
   .pill[aria-current="page"] {
     background: var(--color-ink);
