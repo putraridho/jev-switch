@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- The Chat tab is redesigned: sessions on the left, the conversation in the middle and a
+  rail on the right with every provider's plan usage as a small waffle. Each reply says
+  which provider took it and why in plain words, shows its tool steps on one timeline, and
+  marks how much of the provider's plan window it used. Mode, model and Orchestrate move
+  into the composer, and tool approvals take the composer's place until answered.
 - Hovering a meter no longer pushes the page down: its detail now floats below the row on
   the dark tooltip surface, and opens with a short, springy unroll.
 - The waffle answers the pointer: the hovered dot swells and a ring settles on it, then

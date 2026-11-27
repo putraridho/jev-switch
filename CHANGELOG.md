@@ -4,6 +4,7 @@ See [docs/changelog-guide.md](docs/changelog-guide.md) for changelog formatting,
 
 ## Unreleased
 
+- **Flashboard's Chat tab is redesigned.** Providers' plan usage sits beside the conversation, each reply explains its routing in plain words and shows how much of the provider's plan window it used, and tool steps, edits and approvals read as one timeline.
 - **Integrated coding-agent chat in Flashboard (`dashboard/`).** Added a **Chat** tab inside the desktop app backed by `jev-turn`'s multi-provider router (Claude, Codex, Gemini/Antigravity, Grok, DeepSeek), with a workspace folder browser, permission modes (`Ask`, `Edit`, `Plan`, `Auto`), model pinning, live tool-approval prompts, edit diffs, and macOS portability alongside Linux.
 
 ## 1.15.0

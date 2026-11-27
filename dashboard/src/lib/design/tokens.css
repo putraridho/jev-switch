@@ -90,6 +90,18 @@
   --text-wordmark: 0.9375rem; /* 15 / 20 */
   --text-wordmark-weight: 600;
 
+  /* Chat (C1): reading text, the session title, speaker names in the serif. */
+  --text-lg: 1rem; /* 16 / 26 replies and prompts */
+  --text-lg-line: 1.625rem;
+  --title-lg: 2.5rem; /* 40 / 44 session title (Instrument Serif) */
+  --title-lg-line: 2.75rem;
+  --name-serif: 1.75rem; /* 28 / 30 a provider's name beside its reply */
+  --name-serif-line: 1.875rem;
+  --chat-sessions-w: 15.5rem; /* 248 */
+  --chat-rail-w: 20rem; /* 320 */
+  --chat-gutter: 8.5rem; /* 136: the speaker column */
+  --step-mark: 0.5625rem; /* 9: a dot on the steps timeline */
+
   /* Icons (S11, S33): 16 glyph, 1.5 stroke. */
   --icon-md: 1rem;
 

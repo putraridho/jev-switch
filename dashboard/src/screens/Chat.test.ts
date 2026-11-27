@@ -17,7 +17,9 @@ describe("Chat screen", () => {
     const stop = await initChat(client);
     render(Chat);
 
-    expect(screen.getByRole("heading", { name: "Coding chat" })).toBeTruthy();
+    expect(
+      screen.getByRole("heading", { name: "What should we work on?" }),
+    ).toBeTruthy();
 
     // Open folder picker and select another folder.
     await userEvent.click(screen.getByRole("button", { name: /Folder:/ }));
@@ -27,14 +29,16 @@ describe("Chat screen", () => {
     const pathInput = screen.getByRole("textbox", { name: "Workspace path" });
     await userEvent.clear(pathInput);
     await userEvent.type(pathInput, "/workspace/demo");
-    await userEvent.click(screen.getByRole("button", { name: "Select" }));
+    await userEvent.click(screen.getByRole("button", { name: "Use folder" }));
     expect(screen.getByRole("button", { name: "Folder: demo" })).toBeTruthy();
 
     // Send a prompt.
     const box = screen.getByRole("textbox", { name: "Prompt" });
     await userEvent.type(box, "Check status");
     await userEvent.click(screen.getByRole("button", { name: "Send" }));
-    expect(screen.getByText("Check status")).toBeTruthy();
+    expect(screen.getAllByText("Check status").length).toBeGreaterThan(0);
+    // The session is named after its first prompt.
+    expect(screen.getByRole("heading", { name: "Check status" })).toBeTruthy();
     expect(screen.getByText(/Mock reply in \/workspace\/demo/)).toBeTruthy();
 
     // Simulate a tool permission request and approve it.
@@ -49,9 +53,13 @@ describe("Chat screen", () => {
         always_label: "Bash(git status:*)",
       },
     });
-    expect(await screen.findByText("Approve Bash?")).toBeTruthy();
+    const approval = await screen.findByRole("alertdialog", {
+      name: "Tool approval required",
+    });
+    expect(approval.textContent).toContain("wants to use Bash");
+    expect(approval.textContent).toContain("git status");
     await userEvent.click(screen.getByRole("button", { name: "Allow once" }));
-    expect(screen.queryByText("Approve Bash?")).toBeNull();
+    expect(screen.queryByRole("alertdialog")).toBeNull();
 
     stop();
   });
@@ -90,7 +98,7 @@ describe("Chat screen", () => {
       "**not bold**",
     );
     await userEvent.click(screen.getByRole("button", { name: "Send" }));
-    expect(screen.getByText("**not bold**")).toBeTruthy();
+    expect(screen.getAllByText("**not bold**").length).toBeGreaterThan(0);
     client.pushChat({
       kind: "state",
       state: {
@@ -117,6 +125,42 @@ describe("Chat screen", () => {
     const last = [...view.container.querySelectorAll("article.msg")].at(-1);
     expect(last?.querySelector("strong")?.textContent).toBe("built");
     expect(last?.querySelector("code")?.textContent).toBe("ok");
+    stop();
+  });
+
+  it("sets the mode from the composer and writes the router's note as a sentence", async () => {
+    const client = createMockClient(fixtures.mixed);
+    const stop = await initChat(client);
+    render(Chat);
+    const plan = screen.getByRole("button", { name: "Plan" });
+    await userEvent.click(plan);
+    expect(plan.getAttribute("aria-pressed")).toBe("true");
+    expect(screen.getByText("Read only")).toBeTruthy();
+
+    await userEvent.type(
+      screen.getByRole("textbox", { name: "Prompt" }),
+      "Explain the router",
+    );
+    await userEvent.click(screen.getByRole("button", { name: "Send" }));
+    expect(
+      await screen.findByText(/A feature task, so Claude · 88% sure/),
+    ).toBeTruthy();
+    expect(screen.queryByText(/task: feature \(0\.88\)/)).toBeNull();
+    stop();
+  });
+
+  it("fills the prompt from a suggestion without sending it", async () => {
+    const client = createMockClient(fixtures.mixed);
+    const stop = await initChat(client);
+    render(Chat);
+    await userEvent.click(
+      screen.getByRole("button", { name: /Run the checks and fix what fails/ }),
+    );
+    const box = screen.getByRole("textbox", { name: "Prompt" });
+    if (!(box instanceof HTMLTextAreaElement)) throw new Error("no textarea");
+    expect(box.value).toBe("Run the checks and fix what fails");
+    expect(chat.state.messages.length).toBe(0);
+    chat.draft = "";
     stop();
   });
 });
