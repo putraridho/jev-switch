@@ -101,6 +101,13 @@
   --chat-rail-w: 20rem; /* 320 */
   --chat-gutter: 8.5rem; /* 136: the speaker column */
   --step-mark: 0.5625rem; /* 9: a dot on the steps timeline */
+  --attach-h: 3rem; /* 48: an attachment chip */
+  --attach-tag: 2rem; /* 32: a chip's type tag */
+  --attach-thumb-w: 4rem; /* 64: an image chip's preview */
+  --attach-chip-max: 16.25rem; /* 260 */
+  --attach-sent-w: 10rem; /* 160: a sent picture */
+  --attach-sent-h: 6.5rem; /* 104 */
+  --attach-dot: 0.25rem; /* 4: a dot of the reading row */
 
   /* Icons (S11, S33): 16 glyph, 1.5 stroke. */
   --icon-md: 1rem;

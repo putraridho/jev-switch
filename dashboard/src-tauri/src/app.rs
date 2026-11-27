@@ -167,7 +167,9 @@ pub fn run() {
             commands::chat_set_orchestrate,
             commands::chat_answer_permission,
             commands::chat_new_session,
-            commands::chat_list_dirs
+            commands::chat_list_dirs,
+            commands::chat_attach_data,
+            commands::chat_attach_text
         ])
         .setup(move |app| {
             let usage_signal = start_service(app.handle());

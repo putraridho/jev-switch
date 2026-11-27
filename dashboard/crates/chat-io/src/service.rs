@@ -1,13 +1,14 @@
 //! Stateful coding-agent chat service for Flashboard's integrated Chat tab.
 
+use crate::attachments::{self, MAX_PER_MESSAGE};
 use crate::engine_bridge::{
     build_engine, catalog_models, provider_statuses, resolve_permission, run_turn, to_engine_mode,
     to_engine_pin, CancelToken, ChatSink, DesktopChatUi, EngineHandle, PermissionMap, TOOL_EDIT,
     TOOL_RESULT,
 };
 use jev_chat_core::ipc::{
-    ChatDirListing, ChatEvent, ChatMessage, ChatMode, ChatPermissionReply, ChatPin, ChatRole,
-    ChatSessionState, ChatToolCall, ChatTurnStatus,
+    ChatAttachResult, ChatAttachment, ChatDirListing, ChatEvent, ChatMessage, ChatMode,
+    ChatPermissionReply, ChatPin, ChatRole, ChatSessionState, ChatToolCall, ChatTurnStatus,
 };
 use jev_usage_core::ipc::CommandError;
 use jev_usage_core::port::SourceId;
@@ -271,13 +272,67 @@ impl ChatServiceHandle {
         Ok(())
     }
 
-    /// Starts a coding-agent turn for `prompt`. Returns immediately once spawned; progress
-    /// arrives over `chat_event`.
-    pub async fn send_prompt(&self, prompt: String) -> Result<ChatSessionState, CommandError> {
-        let trimmed = prompt.trim().to_owned();
-        if trimmed.is_empty() {
+    /// Checks files offered as attachments (dropped or picked by path).
+    pub fn attach_paths(&self, paths: Vec<String>) -> Vec<ChatAttachResult> {
+        paths
+            .iter()
+            .map(|p| attachments::check_path(Path::new(p.trim())))
+            .collect()
+    }
+
+    /// Keeps uploaded or pasted bytes (`data`, base64) named `name` as an attachment.
+    pub fn attach_data(&self, name: &str, data: &str) -> Result<ChatAttachResult, CommandError> {
+        let dir = Self::staging_dir()?;
+        Ok(attachments::stage_data(
+            &dir,
+            name,
+            data,
+            std::time::SystemTime::now(),
+        ))
+    }
+
+    /// Keeps pasted `text` as an attachment.
+    pub fn attach_text(&self, text: &str) -> Result<ChatAttachResult, CommandError> {
+        if text.trim().is_empty() {
             return Err(CommandError::InvalidArgument);
         }
+        let dir = Self::staging_dir()?;
+        Ok(attachments::stage_text(
+            &dir,
+            text,
+            std::time::SystemTime::now(),
+        ))
+    }
+
+    fn staging_dir() -> Result<PathBuf, CommandError> {
+        jev_engine::state_dir()
+            .map(|state| attachments::staging_dir(&state))
+            .ok_or(CommandError::Io)
+    }
+
+    /// Starts a coding-agent turn for `prompt` with the files at `attachment_paths`. Returns
+    /// immediately once spawned; progress arrives over `chat_event`. Every attachment is
+    /// checked again here, since a file can change between attaching and sending.
+    pub async fn send_prompt(
+        &self,
+        prompt: String,
+        attachment_paths: Vec<String>,
+    ) -> Result<ChatSessionState, CommandError> {
+        let trimmed = prompt.trim().to_owned();
+        if attachment_paths.len() > MAX_PER_MESSAGE {
+            return Err(CommandError::InvalidArgument);
+        }
+        let mut attached: Vec<ChatAttachment> = Vec::with_capacity(attachment_paths.len());
+        for result in self.attach_paths(attachment_paths) {
+            match result {
+                ChatAttachResult::Ready { attachment } => attached.push(attachment),
+                ChatAttachResult::Refused { .. } => return Err(CommandError::InvalidArgument),
+            }
+        }
+        if trimmed.is_empty() && attached.is_empty() {
+            return Err(CommandError::InvalidArgument);
+        }
+        let (engine_prompt, images) = attachments::compose(&trimmed, &attached);
         {
             let mut st = self.state.lock().unwrap_or_else(PoisonError::into_inner);
             if st.busy {
@@ -303,6 +358,7 @@ impl ChatServiceHandle {
                 changed_files: Vec::new(),
                 status: ChatTurnStatus::Answered,
                 usage: None,
+                attachments: attached,
             });
         }
         self.emit_full_state();
@@ -329,7 +385,8 @@ impl ChatServiceHandle {
                 Arc::clone(&service.pending_perms),
                 service.usage_signal.clone(),
             );
-            let summary = run_turn(eng, &trimmed, &mut ui, &cancel).await;
+            eng.attach_images(images);
+            let summary = run_turn(eng, &engine_prompt, &mut ui, &cancel).await;
             let providers = provider_statuses(eng);
             drop(eng_guard);
 
@@ -377,6 +434,7 @@ impl ChatServiceHandle {
                     changed_files: summary.changed_files,
                     status: summary.status,
                     usage: summary.usage,
+                    attachments: Vec::new(),
                 });
                 service.maybe_request_title(&st);
             }

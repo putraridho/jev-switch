@@ -3,6 +3,12 @@
 ## Unreleased
 
 - Chat sessions get a short title written by Claude Haiku after the first reply (through your own `claude` login, no tools or project settings), instead of the first line of the prompt; the first line stays as the fallback.
+- Chat takes attachments. Drop files on the conversation, paste a screenshot, or press +
+  (⌘U) to pick them. They wait in the composer as chips: pictures with a preview, other
+  files with their type and size. Long pasted text becomes an attachment, so the prompt
+  stays readable. A file over 20 MB, or one that can't be read, says so on its chip. Up to
+  10 files go with a message: pictures are sent as images, and text, code and PDFs are
+  handed to the agent by path. Sent messages show what went with them.
 - The dots on a reply's steps timeline sit centred on their line and on the step's text,
   and the line now runs unbroken from dot to dot.
 - Chat no longer scrolls as a whole page: the header, the sessions list, the provider rail

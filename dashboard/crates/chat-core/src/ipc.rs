@@ -139,6 +139,61 @@ pub struct ChatUsage {
     pub cache_read_tokens: u64,
 }
 
+/// What an attachment is, which decides how it reaches the model.
+#[derive(Copy, Clone, Eq, PartialEq, Debug, Serialize, Deserialize)]
+#[cfg_attr(feature = "bindings", derive(ts_rs::TS))]
+#[serde(rename_all = "snake_case")]
+pub enum ChatAttachmentKind {
+    /// A picture (PNG, JPEG, GIF, WebP): sent to the model as an image.
+    Image,
+    /// Text, code or a PDF: the model is given its path to read.
+    File,
+    /// Text pasted into the composer, kept as a file so the prompt stays short.
+    Text,
+}
+
+/// A file going with a message. The path is absolute; pasted content is staged in the app's
+/// state folder first, so every attachment is a file on disk by the time it is sent.
+#[derive(Clone, Eq, PartialEq, Debug, Serialize, Deserialize)]
+#[cfg_attr(feature = "bindings", derive(ts_rs::TS))]
+pub struct ChatAttachment {
+    /// The name shown on its chip.
+    pub name: String,
+    /// Absolute path of the file.
+    pub path: String,
+    /// How it reaches the model.
+    pub kind: ChatAttachmentKind,
+    /// Size in bytes.
+    #[cfg_attr(feature = "bindings", ts(type = "number"))]
+    pub bytes: u64,
+    /// Line count, for text (pasted text shows "84 lines" rather than a size).
+    #[cfg_attr(feature = "bindings", ts(type = "number | null"))]
+    pub lines: Option<u64>,
+}
+
+/// The answer to one file offered as an attachment: taken, or refused with the reason the
+/// chip shows ("212 MB · over 20 MB").
+#[derive(Clone, Eq, PartialEq, Debug, Serialize, Deserialize)]
+#[cfg_attr(feature = "bindings", derive(ts_rs::TS))]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub enum ChatAttachResult {
+    /// The file can go with the message.
+    Ready {
+        /// What will be sent.
+        attachment: ChatAttachment,
+    },
+    /// The file can't be attached.
+    Refused {
+        /// The file's name.
+        name: String,
+        /// Size in bytes, when it could be read.
+        #[cfg_attr(feature = "bindings", ts(type = "number | null"))]
+        bytes: Option<u64>,
+        /// Why, in a few words: "over 20 MB", "not a file", "can't read this kind of file".
+        reason: String,
+    },
+}
+
 /// One entry in the chat transcript.
 #[derive(Clone, Eq, PartialEq, Debug, Serialize, Deserialize)]
 #[cfg_attr(feature = "bindings", derive(ts_rs::TS))]
@@ -166,6 +221,9 @@ pub struct ChatMessage {
     pub status: ChatTurnStatus,
     /// Token usage, when reported.
     pub usage: Option<ChatUsage>,
+    /// Files sent with a user message, in the order attached.
+    #[serde(default)]
+    pub attachments: Vec<ChatAttachment>,
 }
 
 /// Pending tool permission prompt waiting for user confirmation.

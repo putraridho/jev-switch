@@ -148,10 +148,13 @@ export const chat = {
   set draft(value: string) {
     draft = value;
   },
-  async send(prompt: string): Promise<Outcome<ChatSessionState>> {
+  async send(
+    prompt: string,
+    attachments: readonly string[] = [],
+  ): Promise<Outcome<ChatSessionState>> {
     if (client === null)
       return { status: "error", error: { code: "internal" } };
-    const result = await client.chatSend(prompt);
+    const result = await client.chatSend(prompt, attachments);
     if (result.status === "ok") {
       state = result.value;
       loaded = true;

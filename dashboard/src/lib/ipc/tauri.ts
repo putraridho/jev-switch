@@ -6,6 +6,7 @@ import type { Outcome } from "./bindings/Outcome";
 import type { Route } from "./bindings/Route";
 import type { Settings } from "./bindings/Settings";
 import type { Snapshot } from "./bindings/Snapshot";
+import type { ChatAttachResult } from "./chat-bindings/ChatAttachResult";
 import type { ChatDirListing } from "./chat-bindings/ChatDirListing";
 import type { ChatEvent } from "./chat-bindings/ChatEvent";
 import type { ChatSessionState } from "./chat-bindings/ChatSessionState";
@@ -58,11 +59,29 @@ export function createTauriClient(): IpcClient {
         status: "error",
         error: { code: "internal" },
       })),
-    chatSend: (prompt) =>
-      invoke<Outcome<ChatSessionState>>("chat_send", { prompt }).catch(() => ({
+    chatSend: (prompt, attachments) =>
+      invoke<Outcome<ChatSessionState>>("chat_send", {
+        prompt,
+        attachments,
+      }).catch(() => ({
         status: "error",
         error: { code: "internal" },
       })),
+    chatAttachData: (name, data) =>
+      invoke<Outcome<ChatAttachResult>>("chat_attach_data", {
+        name,
+        data,
+      }).catch(() => ({
+        status: "error",
+        error: { code: "internal" },
+      })),
+    chatAttachText: (text) =>
+      invoke<Outcome<ChatAttachResult>>("chat_attach_text", { text }).catch(
+        () => ({
+          status: "error",
+          error: { code: "internal" },
+        }),
+      ),
     chatCancel: () =>
       invoke<Outcome<ChatSessionState>>("chat_cancel").catch(() => ({
         status: "error",

@@ -4,11 +4,14 @@ import { afterEach, describe, expect, it } from "vitest";
 import { fixtures } from "../lib/ipc/fixtures";
 import { createMockClient } from "../lib/ipc/mock";
 import { closeTopmost } from "../lib/escape";
+import { tray } from "../lib/stores/attachments.svelte";
 import { chat, initChat } from "../lib/stores/chat.svelte";
 import Chat from "./Chat.svelte";
 
 afterEach(() => {
   cleanup();
+  tray.clearAll();
+  chat.draft = "";
 });
 
 describe("Chat screen", () => {
@@ -117,6 +120,7 @@ describe("Chat screen", () => {
             changed_files: [],
             status: "answered",
             usage: null,
+            attachments: [],
           },
         ],
       },
@@ -161,6 +165,95 @@ describe("Chat screen", () => {
     expect(box.value).toBe("Run the checks and fix what fails");
     expect(chat.state.messages.length).toBe(0);
     chat.draft = "";
+    stop();
+  });
+
+  it("attaches picked files, sends them without words and shows them on the message", async () => {
+    const client = createMockClient(fixtures.mixed);
+    const stop = await initChat(client);
+    tray.init(client);
+    render(Chat);
+
+    const send = screen.getByRole("button", { name: /^Send/ });
+    expect(send.hasAttribute("disabled")).toBe(true);
+    const input = document.querySelector(".file-input");
+    if (!(input instanceof HTMLInputElement)) throw new Error("no file input");
+    await userEvent.upload(input, [
+      new File(["a { color: red }"], "theme-tokens.css", { type: "text/css" }),
+      new File([new Uint8Array([137, 80, 78, 71])], "shot.png", {
+        type: "image/png",
+      }),
+    ]);
+    const list = await screen.findByRole("list", { name: "Attachments" });
+    expect(list.textContent).toContain("theme-tokens.css");
+    expect(list.textContent).toContain("shot.png");
+    // A picture narrows routing, and the composer says so.
+    expect(screen.getByText("Sent to a model that sees images")).toBeTruthy();
+
+    await userEvent.click(screen.getByRole("button", { name: /^Send/ }));
+    expect(
+      client.calls.filter((c) => c.command === "chatAttachData"),
+    ).toHaveLength(2);
+    const sent = chat.state.messages.find((m) => m.role === "user");
+    expect(sent?.attachments.map((a) => a.name)).toEqual([
+      "theme-tokens.css",
+      "shot.png",
+    ]);
+    expect(tray.items).toHaveLength(0);
+    const shown = screen.getByRole("list", { name: "Attachments" });
+    expect(shown.textContent).toContain("theme-tokens.css");
+    stop();
+  });
+
+  it("refuses a file over 20 MB in its chip and holds Send until it's removed", async () => {
+    const client = createMockClient(fixtures.mixed);
+    const stop = await initChat(client);
+    tray.init(client);
+    render(Chat);
+
+    const big = new File(["x"], "screen-recording.mov", {
+      type: "video/quicktime",
+    });
+    Object.defineProperty(big, "size", { value: 212 * 1024 * 1024 });
+    const input = document.querySelector(".file-input");
+    if (!(input instanceof HTMLInputElement)) throw new Error("no file input");
+    // A drop isn't filtered by the picker's types, so this stands for one.
+    await userEvent.setup({ applyAccept: false }).upload(input, big);
+    expect(await screen.findByText(/212 MB · over 20 MB/)).toBeTruthy();
+    await userEvent.type(
+      screen.getByRole("textbox", { name: "Prompt" }),
+      "Look at this",
+    );
+    expect(
+      screen.getByRole("button", { name: /^Send/ }).hasAttribute("disabled"),
+    ).toBe(true);
+    await userEvent.click(
+      screen.getByRole("button", { name: "Remove screen-recording.mov" }),
+    );
+    expect(
+      screen.getByRole("button", { name: /^Send/ }).hasAttribute("disabled"),
+    ).toBe(false);
+    expect(client.calls.some((c) => c.command === "chatAttachData")).toBe(
+      false,
+    );
+    stop();
+  });
+
+  it("turns a long paste into a text attachment and keeps a short one inline", async () => {
+    const client = createMockClient(fixtures.mixed);
+    const stop = await initChat(client);
+    tray.init(client);
+    render(Chat);
+
+    const box = screen.getByRole("textbox", { name: "Prompt" });
+    await userEvent.click(box);
+    await userEvent.paste("short note");
+    expect(chat.draft).toBe("short note");
+    await userEvent.paste("line\n".repeat(84));
+    const list = await screen.findByRole("list", { name: "Attachments" });
+    expect(list.textContent).toContain("Pasted text");
+    expect(list.textContent).toContain("85 lines");
+    expect(chat.draft).toBe("short note");
     stop();
   });
 });

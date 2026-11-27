@@ -13,9 +13,10 @@
 #[cfg(feature = "bindings")]
 mod bindings {
     use jev_chat_core::ipc::{
-        ChatCatalogModel, ChatDecision, ChatDirListing, ChatEdit, ChatEvent, ChatMessage, ChatMode,
-        ChatPermissionPrompt, ChatPermissionReply, ChatPin, ChatProviderStatus, ChatRole,
-        ChatRouteInfo, ChatSessionState, ChatToolCall, ChatTurnStatus, ChatUsage,
+        ChatAttachResult, ChatAttachment, ChatAttachmentKind, ChatCatalogModel, ChatDecision,
+        ChatDirListing, ChatEdit, ChatEvent, ChatMessage, ChatMode, ChatPermissionPrompt,
+        ChatPermissionReply, ChatPin, ChatProviderStatus, ChatRole, ChatRouteInfo,
+        ChatSessionState, ChatToolCall, ChatTurnStatus, ChatUsage,
     };
     use std::path::PathBuf;
     use ts_rs::TS;
@@ -66,6 +67,9 @@ mod bindings {
         export_one::<ChatToolCall>(&mut files);
         export_one::<ChatRouteInfo>(&mut files);
         export_one::<ChatUsage>(&mut files);
+        export_one::<ChatAttachmentKind>(&mut files);
+        export_one::<ChatAttachment>(&mut files);
+        export_one::<ChatAttachResult>(&mut files);
         export_one::<ChatMessage>(&mut files);
         export_one::<ChatPermissionPrompt>(&mut files);
         export_one::<ChatPermissionReply>(&mut files);

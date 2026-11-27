@@ -5,7 +5,7 @@
 
 use crate::bus::TrayHost;
 use jev_chat_core::ipc::{
-    ChatDirListing, ChatMode, ChatPermissionReply, ChatPin, ChatSessionState,
+    ChatAttachResult, ChatDirListing, ChatMode, ChatPermissionReply, ChatPin, ChatSessionState,
 };
 use jev_chat_io::service::ChatServiceHandle;
 use jev_usage_core::ipc::{
@@ -88,13 +88,34 @@ pub fn chat_get_state(chat: State<'_, ChatServiceHandle>) -> Outcome<ChatSession
     }
 }
 
-/// Starts a routed coding-agent turn for `prompt`.
+/// Starts a routed coding-agent turn for `prompt` with the attachments at `attachments`
+/// (paths returned by `chat_attach_data` or `chat_attach_text`).
 #[tauri::command]
 pub async fn chat_send(
     chat: State<'_, ChatServiceHandle>,
     prompt: String,
+    attachments: Vec<String>,
 ) -> Result<Outcome<ChatSessionState>, CommandError> {
-    Ok(Outcome::from(chat.send_prompt(prompt).await))
+    Ok(Outcome::from(chat.send_prompt(prompt, attachments).await))
+}
+
+/// Keeps a dropped, picked or pasted file (`data` in base64) as an attachment.
+#[tauri::command]
+pub fn chat_attach_data(
+    chat: State<'_, ChatServiceHandle>,
+    name: String,
+    data: String,
+) -> Outcome<ChatAttachResult> {
+    Outcome::from(chat.attach_data(&name, &data))
+}
+
+/// Keeps long pasted text as an attachment.
+#[tauri::command]
+pub fn chat_attach_text(
+    chat: State<'_, ChatServiceHandle>,
+    text: String,
+) -> Outcome<ChatAttachResult> {
+    Outcome::from(chat.attach_text(&text))
 }
 
 /// Cancels the active turn if running.

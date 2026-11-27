@@ -11,11 +11,19 @@
 <script lang="ts">
   import { tick, untrack } from "svelte";
   import ApprovalPanel from "../lib/components/chat/ApprovalPanel.svelte";
+  import AttachChip from "../lib/components/chat/AttachChip.svelte";
   import ChatTurn from "../lib/components/chat/ChatTurn.svelte";
   import Markdown from "../lib/components/chat/Markdown.svelte";
   import SessionRail from "../lib/components/chat/SessionRail.svelte";
   import SpendWaffle from "../lib/components/chat/SpendWaffle.svelte";
   import ToolSteps from "../lib/components/chat/ToolSteps.svelte";
+  import {
+    ACCEPT,
+    chipMeta,
+    dragHasFiles,
+    isLongPaste,
+    typeTag,
+  } from "../lib/chat/attachments";
   import { planUsage, turnSpend, usageByProvider } from "../lib/chat/quota";
   import { modelLabel, routeSentence } from "../lib/chat/route";
   import { changedFiles, sessionTitle, tokensLine } from "../lib/chat/session";
@@ -23,11 +31,17 @@
   import { pushEscape } from "../lib/escape";
   import { percent, timeOfDay, windowName } from "../lib/format";
   import type { ProviderKey } from "../lib/ipc/bindings/ProviderKey";
+  import type { ChatAttachment } from "../lib/ipc/chat-bindings/ChatAttachment";
   import type { ChatDecision } from "../lib/ipc/chat-bindings/ChatDecision";
   import type { ChatDirListing } from "../lib/ipc/chat-bindings/ChatDirListing";
   import type { ChatMessage } from "../lib/ipc/chat-bindings/ChatMessage";
   import type { ChatMode } from "../lib/ipc/chat-bindings/ChatMode";
   import type { ChatPin } from "../lib/ipc/chat-bindings/ChatPin";
+  import {
+    pendingMeta,
+    previews,
+    tray,
+  } from "../lib/stores/attachments.svelte";
   import { chat } from "../lib/stores/chat.svelte";
   import { clock } from "../lib/stores/clock.svelte";
   import { settings } from "../lib/stores/settings.svelte";
@@ -61,6 +75,13 @@
   let pickerError = $state<string | null>(null);
   let promptBox = $state<HTMLTextAreaElement | null>(null);
   let transcriptEl = $state<HTMLDivElement | null>(null);
+  let fileInput = $state<HTMLInputElement | null>(null);
+  // Files dragged over the conversation: a count, since entering a child fires dragenter
+  // before the parent's dragleave.
+  let dragDepth = $state(0);
+  const dropping = $derived(dragDepth > 0);
+  // How many files are coming, when the drag says (the browser may not until the drop).
+  let dragFiles = $state(0);
 
   const messages = $derived(chat.state.messages);
   const workspace = $derived(
@@ -188,23 +209,118 @@
     };
   }
 
+  // Something to send (words or attachments), and nothing in the tray holding it up.
+  const canSend = $derived(
+    !chat.state.busy &&
+      tray.clear &&
+      (chat.draft.trim().length > 0 || tray.ready),
+  );
+
   async function submitPrompt(): Promise<void> {
+    if (!canSend) return;
     const text = chat.draft.trim();
-    if (text.length === 0 || chat.state.busy) return;
+    const attached: ChatAttachment[] = tray.attachments;
     errorText = null;
     chat.draft = "";
+    tray.clearAll();
     followLatest = true;
     freezeCosts();
     sentUsage = usageByProvider(usage.snapshot);
-    const res = await chat.send(text);
+    const res = await chat.send(
+      text,
+      attached.map((a) => a.path),
+    );
     if (res.status === "error") {
       chat.draft = text;
+      tray.restore(attached);
       sentUsage = null;
       errorText =
         res.error.code === "busy"
           ? "A turn is already running."
-          : "Could not send message.";
+          : attached.length > 0
+            ? "Could not send. An attachment may have changed or moved."
+            : "Could not send message.";
     }
+  }
+
+  function attachFiles(list: FileList | null | undefined): void {
+    if (!list || list.length === 0) return;
+    void tray.addFiles([...list]);
+  }
+
+  // Pasted pictures and files join the tray; long text does too, so the prompt stays short.
+  function onComposerPaste(event: ClipboardEvent): void {
+    const data = event.clipboardData;
+    if (!data) return;
+    if (data.files.length > 0) {
+      event.preventDefault();
+      attachFiles(data.files);
+      return;
+    }
+    const text = data.getData("text/plain");
+    if (isLongPaste(text)) {
+      event.preventDefault();
+      void tray.addText(text);
+    }
+  }
+
+  function onDragEnter(event: DragEvent): void {
+    if (!dragHasFiles([...(event.dataTransfer?.types ?? [])])) return;
+    event.preventDefault();
+    if (chat.state.busy || chat.state.pending_permission) return;
+    if (dragDepth === 0) {
+      dragFiles = [...(event.dataTransfer?.items ?? [])].filter(
+        (item) => item.kind === "file",
+      ).length;
+    }
+    dragDepth += 1;
+  }
+  function onDragOver(event: DragEvent): void {
+    if (!dragHasFiles([...(event.dataTransfer?.types ?? [])])) return;
+    event.preventDefault();
+    if (event.dataTransfer) {
+      event.dataTransfer.dropEffect = dropping ? "copy" : "none";
+    }
+  }
+  function onDragLeave(): void {
+    if (dragDepth > 0) dragDepth -= 1;
+  }
+  function onDrop(event: DragEvent): void {
+    event.preventDefault();
+    const was = dropping;
+    dragDepth = 0;
+    if (was) {
+      attachFiles(event.dataTransfer?.files);
+      void tick().then(() => promptBox?.focus());
+    }
+  }
+
+  // ⌘U (Ctrl+U) opens the file picker while the composer is there.
+  function onWindowKeydown(event: KeyboardEvent): void {
+    if (
+      (event.metaKey || event.ctrlKey) &&
+      !event.altKey &&
+      !event.shiftKey &&
+      event.key.toLowerCase() === "u" &&
+      fileInput !== null &&
+      !chat.state.busy &&
+      !chat.state.pending_permission
+    ) {
+      event.preventDefault();
+      fileInput.click();
+    }
+  }
+
+  function trayMeta(item: (typeof tray.items)[number]): string {
+    return item.status === "ready"
+      ? chipMeta(item.attachment)
+      : pendingMeta(item);
+  }
+  function trayName(item: (typeof tray.items)[number]): string {
+    return item.status === "ready" ? item.attachment.name : item.name;
+  }
+  function tagFor(a: { name: string; kind: string }): string {
+    return a.kind === "text" ? "¶" : typeTag(a.name);
   }
 
   function onComposerKeydown(event: KeyboardEvent): void {
@@ -365,6 +481,8 @@
   {/if}
 {/snippet}
 
+<svelte:window onkeydown={onWindowKeydown} />
+
 <div class="chat">
   <aside class="sessions" aria-label="Sessions">
     <div class="sessions-head">
@@ -393,7 +511,15 @@
     {/if}
   </aside>
 
-  <section class="conversation">
+  <div
+    class="conversation"
+    role="region"
+    aria-label="Chat"
+    ondragenter={onDragEnter}
+    ondragover={onDragOver}
+    ondragleave={onDragLeave}
+    ondrop={onDrop}
+  >
     {#if started}
       <header class="chat-head">
         <h1 id="view-title" tabindex="-1">{title}</h1>
@@ -442,7 +568,24 @@
         {#each messages as msg (msg.id)}
           {#if msg.role === "user"}
             <ChatTurn role="user" who="You" time={timeOf(msg.id)}>
-              <div class="msg-body">{msg.content}</div>
+              {#if msg.content.length > 0}
+                <div class="msg-body">{msg.content}</div>
+              {/if}
+              {#if msg.attachments.length > 0}
+                <ul class="sent" aria-label="Attachments">
+                  {#each msg.attachments as a (a.path)}
+                    <li>
+                      <AttachChip
+                        name={a.name}
+                        meta={chipMeta(a)}
+                        tag={tagFor(a)}
+                        preview={previews.get(a.path) ?? null}
+                        large
+                      />
+                    </li>
+                  {/each}
+                </ul>
+              {/if}
             </ChatTurn>
           {:else}
             {@const spend = spendFor(msg)}
@@ -560,11 +703,35 @@
       {:else}
         <form
           class="composer"
+          class:filled={chat.draft.length > 0 || tray.items.length > 0}
           onsubmit={(event) => {
             event.preventDefault();
             void submitPrompt();
           }}
         >
+          {#if tray.items.length > 0}
+            <ul class="tray" aria-label="Attachments">
+              {#each tray.items as item (item.id)}
+                <li>
+                  <AttachChip
+                    name={trayName(item)}
+                    meta={trayMeta(item)}
+                    tag={item.status === "ready"
+                      ? tagFor(item.attachment)
+                      : typeTag(item.name)}
+                    status={item.status}
+                    preview={item.status === "ready"
+                      ? (previews.get(item.attachment.path) ?? null)
+                      : null}
+                    onremove={() => {
+                      tray.remove(item.id);
+                      void tick().then(() => promptBox?.focus());
+                    }}
+                  />
+                </li>
+              {/each}
+            </ul>
+          {/if}
           <textarea
             aria-label="Prompt"
             rows="2"
@@ -574,8 +741,51 @@
             bind:this={promptBox}
             bind:value={chat.draft}
             onkeydown={onComposerKeydown}
+            onpaste={onComposerPaste}
             disabled={chat.state.busy}></textarea>
+          {#if dropping}
+            <div class="drop-target" aria-hidden="true">
+              <svg class="drop-edge"
+                ><rect x="0" y="0" width="100%" height="100%" rx="8" /></svg
+              >
+              <span class="drop-count"
+                >{dragFiles === 1
+                  ? "1 file"
+                  : dragFiles > 1
+                    ? `${String(dragFiles)} files`
+                    : "Files"}</span
+              >
+              <span class="drop-hint">join this message</span>
+            </div>
+          {/if}
           <div class="composer-foot">
+            <input
+              class="file-input"
+              type="file"
+              multiple
+              accept={ACCEPT}
+              tabindex="-1"
+              aria-hidden="true"
+              bind:this={fileInput}
+              onchange={(event) => {
+                if (event.currentTarget instanceof HTMLInputElement) {
+                  attachFiles(event.currentTarget.files);
+                  event.currentTarget.value = "";
+                }
+              }}
+            />
+            <button
+              type="button"
+              class="attach"
+              aria-label="Attach files"
+              title="Attach files (⌘U). You can also drop or paste them."
+              disabled={chat.state.busy}
+              onclick={() => fileInput?.click()}
+            >
+              <svg viewBox="0 0 16 16" aria-hidden="true"
+                ><path d="M8 3v10M3 8h10" /></svg
+              >
+            </button>
             <div class="modes" role="group" aria-label="Permission mode">
               {#each modes as m (m.value)}
                 <button
@@ -587,7 +797,11 @@
                 >
               {/each}
             </div>
-            <span class="mode-help">{mode?.help}</span>
+            <span class="mode-help" class:note={tray.hasImage}
+              >{tray.hasImage
+                ? "Sent to a model that sees images"
+                : mode?.help}</span
+            >
             <label class="model">
               <span>Model</span>
               <select
@@ -638,13 +852,8 @@
                 }}>Stop</button
               >
             {:else}
-              <button
-                type="submit"
-                class="primary"
-                disabled={chat.draft.trim().length === 0}
-                >Send{#if chat.draft.trim().length > 0}<span
-                    class="key"
-                    aria-hidden="true">↵</span
+              <button type="submit" class="primary" disabled={!canSend}
+                >Send{#if canSend}<span class="key" aria-hidden="true">↵</span
                   >{/if}</button
               >
             {/if}
@@ -660,7 +869,15 @@
         </p>
       {/if}
     </div>
-  </section>
+    {#if dropping}
+      <div class="drop-veil" aria-hidden="true">
+        <p class="drop-title">Drop to attach</p>
+        <p class="drop-sub">
+          Images, text and code, PDFs · up to 20 MB each · 10 at a time
+        </p>
+      </div>
+    {/if}
+  </div>
 
   <SessionRail
     workspace={chat.state.workspace}
@@ -762,6 +979,7 @@
 
   /* Conversation */
   .conversation {
+    position: relative;
     display: flex;
     flex-direction: column;
     min-width: 0;
@@ -918,6 +1136,7 @@
     background: var(--color-paper);
   }
   .composer {
+    position: relative;
     display: flex;
     flex-direction: column;
     border: var(--outline) solid var(--color-faint);
@@ -925,8 +1144,147 @@
     background: var(--color-paper);
     transition: border-color var(--duration-fast) var(--ease);
   }
-  .composer:focus-within {
+  .composer:focus-within,
+  .composer.filled {
     border-color: var(--color-ink);
+  }
+
+  /* Attachments: the tray above the prompt, chips that wrap. */
+  .tray,
+  .sent {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: flex-start;
+    gap: var(--space-3);
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+  .tray {
+    padding: var(--space-4) var(--space-4) 0;
+  }
+  .tray + textarea {
+    padding-block-start: var(--space-3);
+  }
+  .attach {
+    display: inline-flex;
+    flex: none;
+    align-items: center;
+    justify-content: center;
+    width: var(--control-sm-h);
+    min-width: 0;
+    height: var(--control-sm-h);
+    min-height: 0;
+    padding: 0;
+    border-color: var(--color-rule);
+    border-radius: var(--radius-full);
+  }
+  .attach svg {
+    width: var(--space-4);
+    height: var(--space-4);
+    fill: none;
+    stroke: currentColor;
+    stroke-linecap: round;
+    stroke-width: 1.5;
+  }
+  .file-input {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    opacity: 0;
+    pointer-events: none;
+  }
+  .mode-help.note {
+    color: var(--color-stale);
+  }
+
+  /* Dropping: the composer's edge becomes a run of dots (the waffle's grain) that follows
+     its corners and marches slowly, and the conversation behind fades back. */
+  .drop-target {
+    position: absolute;
+    inset: calc(var(--outline) * -1);
+    z-index: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: var(--space-3);
+    border-radius: var(--radius-dialog);
+    background: var(--color-paper);
+    pointer-events: none;
+  }
+  .drop-edge {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    overflow: visible;
+  }
+  .drop-edge rect {
+    fill: none;
+    stroke: var(--color-ink);
+    stroke-dasharray: 0 9;
+    stroke-linecap: round;
+    stroke-width: 2.6;
+    animation: march calc(var(--duration-slow) * 5) linear infinite;
+  }
+  .drop-count {
+    font-size: var(--text-md);
+    font-weight: var(--text-md-weight-strong);
+  }
+  .drop-hint {
+    color: var(--color-muted);
+    font-size: var(--text-micro);
+  }
+  .drop-veil {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: var(--space-2);
+    padding-block-end: var(--space-18);
+    pointer-events: none;
+    animation: fade-in var(--duration-fast) var(--ease) both;
+  }
+  .drop-veil::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    background: var(--color-paper);
+    opacity: 0.86;
+  }
+  .drop-title,
+  .drop-sub {
+    position: relative;
+    margin: 0;
+  }
+  .drop-title {
+    color: var(--color-ink);
+    font-family: var(--font-serif);
+    font-size: var(--title-lg);
+    line-height: var(--title-lg-line);
+  }
+  .drop-sub {
+    color: var(--color-muted);
+    font-size: var(--text-sm);
+  }
+  /* The composer stays above the veil, where the drop lands. */
+  .dock {
+    position: relative;
+    z-index: 1;
+  }
+  @keyframes march {
+    to {
+      stroke-dashoffset: -18;
+    }
+  }
+  @keyframes fade-in {
+    from {
+      opacity: 0;
+    }
   }
   textarea {
     resize: none;
@@ -1133,7 +1491,9 @@
     }
   }
   @media (prefers-reduced-motion: reduce) {
-    .dots span {
+    .dots span,
+    .drop-edge rect,
+    .drop-veil {
       animation: none;
     }
   }

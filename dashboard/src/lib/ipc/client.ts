@@ -11,6 +11,7 @@ import type { Route } from "./bindings/Route";
 import type { Settings } from "./bindings/Settings";
 import type { SettingsPatch } from "./bindings/SettingsPatch";
 import type { Snapshot } from "./bindings/Snapshot";
+import type { ChatAttachResult } from "./chat-bindings/ChatAttachResult";
 import type { ChatDirListing } from "./chat-bindings/ChatDirListing";
 import type { ChatEvent } from "./chat-bindings/ChatEvent";
 import type { ChatMode } from "./chat-bindings/ChatMode";
@@ -30,7 +31,18 @@ export interface IpcClient {
   onNavigate(cb: (r: Route) => void): Promise<() => void>;
 
   chatGetState(): Promise<Outcome<ChatSessionState>>;
-  chatSend(prompt: string): Promise<Outcome<ChatSessionState>>;
+  /** Sends `prompt` with the attachments at `attachments` (paths from the attach commands). */
+  chatSend(
+    prompt: string,
+    attachments: readonly string[],
+  ): Promise<Outcome<ChatSessionState>>;
+  /** Keeps a dropped, picked or pasted file (`data` in base64) as an attachment. */
+  chatAttachData(
+    name: string,
+    data: string,
+  ): Promise<Outcome<ChatAttachResult>>;
+  /** Keeps long pasted text as an attachment. */
+  chatAttachText(text: string): Promise<Outcome<ChatAttachResult>>;
   chatCancel(): Promise<Outcome<ChatSessionState>>;
   chatSetWorkspace(path: string): Promise<Outcome<ChatSessionState>>;
   chatSetMode(mode: ChatMode): Promise<Outcome<ChatSessionState>>;

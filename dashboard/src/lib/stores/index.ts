@@ -2,12 +2,14 @@
 
 import type { IpcClient } from "../ipc/client";
 import { initRouter } from "../router.svelte";
+import { tray } from "./attachments.svelte";
 import { initChat } from "./chat.svelte";
 import { initQueries } from "./queries";
 import { initSettings } from "./settings.svelte";
 import { initUsage } from "./usage.svelte";
 
 export { announce } from "./announce.svelte";
+export { tray } from "./attachments.svelte";
 export { chat } from "./chat.svelte";
 export { clock } from "./clock.svelte";
 export { settings } from "./settings.svelte";
@@ -22,6 +24,7 @@ export async function initStores(client: IpcClient): Promise<() => void> {
   initQueries(client);
   const unsubscribeUsage = await initUsage(client);
   const unsubscribeChat = await initChat(client);
+  tray.init(client);
   await initSettings(client);
   const unsubscribeRouter = await initRouter(client);
   return () => {

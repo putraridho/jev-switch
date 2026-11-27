@@ -15,6 +15,7 @@ function message(over: Partial<ChatMessage>): ChatMessage {
     changed_files: [],
     status: "answered",
     usage: null,
+    attachments: [],
     ...over,
   };
 }

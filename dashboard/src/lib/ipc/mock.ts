@@ -6,6 +6,8 @@ import type { HistorySeries } from "./bindings/HistorySeries";
 import type { Route } from "./bindings/Route";
 import type { Settings } from "./bindings/Settings";
 import type { Snapshot } from "./bindings/Snapshot";
+import type { ChatAttachment } from "./chat-bindings/ChatAttachment";
+import type { ChatAttachResult } from "./chat-bindings/ChatAttachResult";
 import type { ChatEvent } from "./chat-bindings/ChatEvent";
 import type { ChatSessionState } from "./chat-bindings/ChatSessionState";
 import type { IpcClient } from "./client";
@@ -19,7 +21,11 @@ export type MockScript = {
   chat: ChatSessionState;
   fail: Partial<
     Record<
-      "refresh" | "getHistory" | "updateSettings" | "chatSend",
+      | "refresh"
+      | "getHistory"
+      | "updateSettings"
+      | "chatSend"
+      | "chatAttachData",
       CommandError
     >
   >;
@@ -36,6 +42,8 @@ export type MockCall = {
     | "getDiagnostics"
     | "chatGetState"
     | "chatSend"
+    | "chatAttachData"
+    | "chatAttachText"
     | "chatCancel"
     | "chatSetWorkspace"
     | "chatSetMode"
@@ -68,6 +76,13 @@ export function createMockClient(script: MockScript): MockIpcClient {
     providers: [...script.chat.providers],
     models: [...script.chat.models],
   };
+
+  // Files "kept" by the attach commands, by path, the way the app stages them.
+  const staged = new Map<string, ChatAttachment>();
+  function stage(attachment: ChatAttachment): ChatAttachResult {
+    staged.set(attachment.path, attachment);
+    return { status: "ready", attachment };
+  }
 
   function emitChat(event: ChatEvent): void {
     chatEvents.forEach((cb) => {
@@ -128,12 +143,53 @@ export function createMockClient(script: MockScript): MockIpcClient {
       calls.push({ command: "chatGetState" });
       return Promise.resolve({ status: "ok", value: currentChat });
     },
-    chatSend: (prompt) => {
+    chatAttachData: (name, data) => {
+      calls.push({ command: "chatAttachData" });
+      const error = script.fail.chatAttachData;
+      if (error) return Promise.resolve({ status: "error", error });
+      const bytes = Math.floor((data.replace(/=+$/, "").length * 3) / 4);
+      const ext = name.slice(name.lastIndexOf(".") + 1).toLowerCase();
+      const image = ["png", "jpg", "jpeg", "gif", "webp"].includes(ext);
+      return Promise.resolve({
+        status: "ok",
+        value: stage({
+          name,
+          path: `/staged/${String(staged.size)}/${name}`,
+          kind: image ? "image" : "file",
+          bytes,
+          lines: null,
+        }),
+      });
+    },
+    chatAttachText: (text) => {
+      calls.push({ command: "chatAttachText" });
+      return Promise.resolve({
+        status: "ok",
+        value: stage({
+          name: "Pasted text",
+          path: `/staged/${String(staged.size)}/pasted-text.txt`,
+          kind: "text",
+          bytes: text.length,
+          lines: text.split("\n").length,
+        }),
+      });
+    },
+    chatSend: (prompt, attachmentPaths) => {
       calls.push({ command: "chatSend" });
       const error = script.fail.chatSend;
       if (error) return Promise.resolve({ status: "error", error });
       const trimmed = prompt.trim();
-      if (trimmed.length === 0) {
+      const attachments = attachmentPaths.flatMap((p) => {
+        const a = staged.get(p);
+        return a === undefined ? [] : [a];
+      });
+      if (attachments.length !== attachmentPaths.length) {
+        return Promise.resolve({
+          status: "error",
+          error: { code: "invalid_argument" },
+        });
+      }
+      if (trimmed.length === 0 && attachments.length === 0) {
         return Promise.resolve({
           status: "error",
           error: { code: "invalid_argument" },
@@ -156,6 +212,7 @@ export function createMockClient(script: MockScript): MockIpcClient {
             changed_files: [],
             status: "answered",
             usage: null,
+            attachments,
           },
           {
             id: nextId + 1,
@@ -173,6 +230,7 @@ export function createMockClient(script: MockScript): MockIpcClient {
               output_tokens: 64,
               cache_read_tokens: 0,
             },
+            attachments: [],
           },
         ],
       };

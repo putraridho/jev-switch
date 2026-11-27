@@ -19,6 +19,8 @@ fn main() -> impl std::process::Termination {
         "chat_answer_permission",
         "chat_new_session",
         "chat_list_dirs",
+        "chat_attach_data",
+        "chat_attach_text",
     ];
     let manifest = tauri_build::AppManifest::new().commands(commands);
     tauri_build::try_build(tauri_build::Attributes::new().app_manifest(manifest))
