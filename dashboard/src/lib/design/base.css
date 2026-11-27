@@ -67,19 +67,37 @@ button {
   font-weight: var(--text-sm-weight-strong);
   line-height: var(--text-sm-line);
   cursor: pointer;
-  transition-property: background-color, border-color, scale;
-  transition-duration: var(--duration-fast);
-  transition-timing-function: var(--ease);
+  /* Colour eases; the key's return is a spring, so a released button comes back up with a
+     little weight instead of gliding. */
+  transition:
+    background-color var(--duration-fast) var(--ease),
+    border-color var(--duration-fast) var(--ease),
+    color var(--duration-fast) var(--ease),
+    scale var(--duration-spring-key) var(--ease-spring-key),
+    translate var(--duration-spring-key) var(--ease-spring-key);
 }
 
 button:hover:not(:disabled) {
   background: var(--color-hover);
 }
 
+/* The outline button's edge darkens to ink on hover. Kept at the specificity of
+   button:hover, so a component that sets its own border colour still wins. */
+button:where(:not(.primary, .text)):hover:where(:not(:disabled)) {
+  border-color: var(--color-ink);
+}
+
+/* Press: the key goes down at once (exactly 0.96, never below, and 1 px), then springs back. */
 button:active:not(:disabled) {
   background: var(--color-pressed);
-  /* Press feedback: exactly 0.96, never below. */
-  scale: 0.96;
+  scale: var(--press-scale);
+  translate: 0 var(--press-sink);
+  transition:
+    background-color var(--duration-exit) var(--ease),
+    border-color var(--duration-exit) var(--ease),
+    color var(--duration-exit) var(--ease),
+    scale var(--duration-exit) var(--ease-in),
+    translate var(--duration-exit) var(--ease-in);
 }
 
 button.primary {
