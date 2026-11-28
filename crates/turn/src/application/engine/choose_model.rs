@@ -52,7 +52,13 @@ impl Engine {
             self.guards.privacy_allows(ProviderId::Claude, &turn, now).map_err(|why| NoRoute::Refused { why })?;
             return Ok(self.legacy_choice(want, base));
         }
-        let usable = self.runtime.usable(now).without(excluded);
+        let required: Vec<_> = (self.mcp_discovery)(&self.dir).into_iter().filter(|s| s.mentioned(prompt)).collect();
+        let usable = self.runtime.usable(now).without(excluded)
+            .filter(|provider, _| required.iter().all(|s| s.providers.contains(&provider)));
+        if usable.is_empty() && !required.is_empty() {
+            return Err(NoRoute::Refused { why: format!("no available provider is configured for the required MCP server(s): {} (see /mcp)",
+                required.iter().map(|s| s.name.as_str()).collect::<Vec<_>>().join(", ")) });
+        }
         // A pin the person set is never rerouted silently: when the provider is held below the
         // rung it needs, or paused, the turn says which rung and what to do.
         if self.pin_origin == PinOrigin::User {
@@ -148,7 +154,8 @@ impl Engine {
         };
         let outcome = self.plan_orchestration(signals, &decision, &input, base);
         let (spec, reason, mcp) = self.apply_orchestration(outcome, &decision);
-        let notes: Vec<String> = team_note.into_iter().chain(rule_notes).collect();
+        let mcp_note = (!required.is_empty()).then(|| format!("MCP: {}", required.iter().map(|s| s.name.as_str()).collect::<Vec<_>>().join(", ")));
+        let notes: Vec<String> = team_note.into_iter().chain(rule_notes).chain(mcp_note).collect();
         let reason = if notes.is_empty() { reason } else { format!("{reason}; {}", notes.join("; ")) };
         let facts = RouteFacts {
             provider: spec.provider.to_string(),

@@ -186,10 +186,12 @@ pub trait UsageLedger: std::fmt::Debug + Send + Sync {
     fn read(&self, path: &Path) -> Option<Book>;
 }
 
-/// The adapters an [`Engine`](crate::application::engine::Engine) cannot build itself
-/// (they live in outer layers or other contexts); the composition root passes them to
-/// `Engine::new`.
+/// Discover named MCP servers and the providers configured to use each.
+pub type McpDiscovery = Box<dyn Fn(&Path) -> Vec<crate::domain::mcp_access::McpAccess> + Send + Sync>;
+
+/// The outer adapters passed by the composition root to the turn engine.
 pub struct Adapters {
+    pub mcp_discovery: McpDiscovery,
     pub backend_factory: BackendFactory,
     pub git_status: GitStatus,
     pub turn_log: Arc<dyn TurnLog>,

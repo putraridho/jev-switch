@@ -35,6 +35,7 @@ impl Engine {
         let turn_log = host.env("JEV_CODE_LOG").or_else(|| Some(host.state_dir()?.join("code-turns.jsonl").to_string_lossy().into_owned()));
         let allowed_tools = permission_rule::split_rules(&host.env("CODE_ALLOWED_TOOLS").unwrap_or_default());
         Self {
+            mcp_discovery: adapters.mcp_discovery,
             runtime,
             sessions: Sessions::new(),
             routing: RoutingState::default(),

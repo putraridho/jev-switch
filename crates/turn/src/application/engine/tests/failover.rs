@@ -341,3 +341,65 @@ async fn every_main_attempt_reserves_in_the_shared_ledger_and_settles_it_whether
     assert_eq!(session.spent.len(), 2, "the failed attempt and the answer");
     assert_eq!(session.spent.iter().filter(|s| s.usage.measurement == jev_shared::Measurement::Unavailable).count(), 1, "the failure reported nothing: unknown, not zero");
 }
+
+#[tokio::test]
+async fn mcp_access_answer_fails_over_without_cooling_the_provider() {
+    let ready = [Claude, Gemini, Codex];
+    let mut r = rig(&ready);
+    let first = first_choice(TaskType::Feature, &ready);
+    r.script(first, "printf 'FIN:I cannot access the Linear MCP server.\n'");
+    let report = r.turn("find my assigned issues", want(TaskType::Feature)).await;
+    assert_eq!(report.status, TurnStatus::Answered);
+    assert_ne!(report.provider, Some(first));
+    assert_eq!(report.attempts, 2);
+    assert!(r.engine.runtime.cooldowns.active(first, NOW).is_none());
+    assert!(r.ui.texts.iter().all(|text| text == "the answer"));
+    assert!(r.started()[1].prompt.contains("FAILED"));
+}
+
+#[tokio::test]
+async fn named_mcp_server_routes_only_to_configured_provider() {
+    let mut r = rig(&[Claude, Gemini, Codex]);
+    r.engine.mcp_discovery = Box::new(|_| vec![crate::domain::mcp_access::McpAccess {
+        name: "linear".into(), providers: vec![Claude],
+    }]);
+    let report = r.turn("Use Linear to find my issues", want(TaskType::Feature)).await;
+    assert_eq!(report.provider, Some(Claude));
+    assert_eq!(r.started().len(), 1);
+}
+
+#[tokio::test]
+async fn mcp_transport_error_skips_all_models_of_the_failed_provider() {
+    let ready = [Claude, Codex];
+    let mut r = rig(&ready);
+    let first = first_choice(TaskType::Feature, &ready);
+    r.script(first, "printf 'FAIL:MCP server: failed to connect\n'");
+    let report = r.turn("find my assigned issues", want(TaskType::Feature)).await;
+    assert_eq!(report.status, TurnStatus::Answered);
+    assert_ne!(report.provider, Some(first));
+    assert_eq!(report.attempts, 2);
+}
+
+#[tokio::test]
+async fn mcp_access_failure_respects_attempt_limit() {
+    let mut r = rig(&[Claude, Codex]);
+    r.engine.guards.failover.max_attempts = 1;
+    for provider in [Claude, Codex] {
+        r.script(provider, "printf 'FIN:I cannot access the Linear MCP server.\n'");
+    }
+    let report = r.turn("find my issues", want(TaskType::Feature)).await;
+    assert_eq!(report.status, TurnStatus::Failed);
+    assert_eq!(r.started().len(), 1);
+}
+
+#[tokio::test]
+async fn mcp_routing_does_not_override_an_explicit_provider_pin() {
+    let mut r = rig(&[Claude, Gemini]);
+    r.engine.mcp_discovery = Box::new(|_| vec![crate::domain::mcp_access::McpAccess {
+        name: "linear".into(), providers: vec![Claude],
+    }]);
+    r.engine.pin = Pin::Provider(Gemini);
+    let report = r.turn("Use Linear to find my issues", want(TaskType::Feature)).await;
+    assert_eq!(report.status, TurnStatus::NoRoute);
+    assert!(r.started().is_empty());
+}

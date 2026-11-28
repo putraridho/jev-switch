@@ -56,6 +56,7 @@ const CATCH_UP_TOKENS: usize = 10_000;
 type Clock = Box<dyn Fn() -> u64 + Send + Sync>;
 
 pub struct Engine {
+    mcp_discovery: crate::application::ports::McpDiscovery,
     pub runtime: Runtime,
     pub sessions: Sessions,
     pub routing: RoutingState,

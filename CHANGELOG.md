@@ -4,6 +4,9 @@ See [docs/changelog-guide.md](docs/changelog-guide.md) for changelog formatting,
 
 ## Unreleased
 
+## 1.15.1
+
+- **Route MCP requests to configured providers.** Named MCP servers restrict automatic routing to providers with that configuration. Explicit MCP access failures try another provider instead of ending with an error answer.
 - **Flashboard's Chat takes attachments.** Drop, paste or pick images, text, code and PDFs (up to 20 MB each, 10 per message). Images go to the model as images; other files are handed over by path.
 - **Flashboard's Chat scrolls like an app.** Only the conversation scrolls; the header, side rails and composer stay in place.
 - **Flashboard's Chat tab is redesigned.** Providers' plan usage sits beside the conversation, each reply explains its routing in plain words and shows how much of the provider's plan window it used, and tool steps, edits and approvals read as one timeline.

@@ -148,7 +148,14 @@ impl Engine {
             // A fresh reading: the attempt may have run for minutes, and "resets in 3h20m"
             // counts from when the error arrived, not from when the attempt began.
             let failed_at = (self.now)();
-            let retry_note = self.runtime.react(spec.provider, spec.id, &err, &mut excluded, failed_at);
+            let retry_note = if crate::domain::mcp_access::access_failure(&err.message) {
+                for model in jev_catalog::domain::model_table::models().iter().filter(|m| m.provider == spec.provider) {
+                    excluded.insert((model.provider, model.id.to_string()));
+                }
+                Some(format!("{} cannot access the MCP server; trying another provider", spec.provider))
+            } else {
+                self.runtime.react(spec.provider, spec.id, &err, &mut excluded, failed_at)
+            };
             match retry_note {
                 Some(note) if attempts < max_attempts => {
                     let note = if attempt.discarded {

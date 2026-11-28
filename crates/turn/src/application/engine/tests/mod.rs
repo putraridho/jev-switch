@@ -222,6 +222,8 @@ fn rig_in(dir: PathBuf, states: &[(ProviderId, State)], script: &'static str) ->
         .with_clock(Box::new(move || ck.load(Ordering::SeqCst)))
         .with_idle_timeout(Duration::from_millis(300))
         .with_turn_log(None);
+    let mut engine = engine;
+    engine.mcp_discovery = Box::new(|_| Vec::new());
     Rig { engine, scripts, started, attached, factory_calls, clock, attempt_ms,
         usage, ui: Recorder::default() }
 }

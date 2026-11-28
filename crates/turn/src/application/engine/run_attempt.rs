@@ -142,7 +142,12 @@ impl Engine {
         };
         let cancelled = result.is_none();
         runtime.after_turn(provider);
-        let result = result.unwrap_or_else(|| Err(TurnError::new(ErrorKind::Other, "cancelled by the user")));
+        let mut result = result.unwrap_or_else(|| Err(TurnError::new(ErrorKind::Other, "cancelled by the user")));
+        if let Ok(out) = &result {
+            if crate::domain::mcp_access::access_refusal(&out.text) {
+                result = Err(TurnError::new(ErrorKind::Other, out.text.clone()).with_usage(out.usage));
+            }
+        }
         let discarded = result.is_err() && (!held.is_empty() || streamed_any);
         if let Ok(out) = &result {
             let streamed = |t: &str| {

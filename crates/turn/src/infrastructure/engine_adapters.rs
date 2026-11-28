@@ -16,6 +16,7 @@ use super::turn_log::FileTurnLog;
 
 pub fn real() -> Adapters {
     Adapters {
+        mcp_discovery: Box::new(super::mcp_access::discover),
         backend_factory: Box::new(session_backend_for),
         git_status: Box::new(git_status_short),
         turn_log: Arc::new(FileTurnLog),

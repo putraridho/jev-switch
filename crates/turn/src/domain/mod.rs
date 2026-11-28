@@ -14,3 +14,5 @@ pub mod route_facts;
 pub mod schedule;
 pub mod scoreboard;
 pub mod usage_ledger;
+
+pub mod mcp_access;
